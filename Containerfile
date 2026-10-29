@@ -32,14 +32,24 @@ RUN set -eux; \
         ; \
     rm -rf /var/lib/apt/lists/*
 
-# virt-cat is the right tool for reading a path out of a disk image and it is the one
-# that may not install: guestfs-tools -> libguestfs0t64 -> udev wants
-# libsystemd-shared (= 257.13-1~deb13u1) while this base ships 261.2-1, and
-# --allow-downgrades does not reconcile them.
+# virt-cat reads a path out of a disk image, which is what the smoke test wants when it
+# asks "is this really the system we installed".
 #
-# Tried separately so its failure is reported rather than taking the image with it,
-# and so a build that has it is visibly different from one that does not.
+# Tried separately so its failure is reported rather than taking the image with it.
+#
+# apt-get update IS NEEDED HERE, and leaving it out produced a wrong diagnosis once
+# already: the RUN above ends with `rm -rf /var/lib/apt/lists/*`, so without a fresh
+# update this one had no package index and answered
+#
+#   E: Unable to locate package guestfs-tools
+#
+# which is not "the package does not exist" - it is "I have no index to look in". The
+# earlier note in easysandbox-vm/bake blamed a dependency conflict
+# (guestfs-tools -> libguestfs0t64 -> udev wanting libsystemd-shared 257.13 while the
+# base ships 261.2), and that may also be true on this base, but it was never the error
+# this line actually printed.
 RUN set -eux; \
+    apt-get update; \
     if DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
          guestfs-tools; then \
         echo "guestfs-tools: installed"; \
