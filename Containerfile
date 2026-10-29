@@ -32,33 +32,6 @@ RUN set -eux; \
         ; \
     rm -rf /var/lib/apt/lists/*
 
-# virt-cat reads a path out of a disk image, which is what the smoke test wants when it
-# asks "is this really the system we installed".
-#
-# Tried separately so its failure is reported rather than taking the image with it.
-#
-# apt-get update IS NEEDED HERE, and leaving it out produced a wrong diagnosis once
-# already: the RUN above ends with `rm -rf /var/lib/apt/lists/*`, so without a fresh
-# update this one had no package index and answered
-#
-#   E: Unable to locate package guestfs-tools
-#
-# which is not "the package does not exist" - it is "I have no index to look in". The
-# earlier note in easysandbox-vm/bake blamed a dependency conflict
-# (guestfs-tools -> libguestfs0t64 -> udev wanting libsystemd-shared 257.13 while the
-# base ships 261.2), and that may also be true on this base, but it was never the error
-# this line actually printed.
-RUN set -eux; \
-    apt-get update; \
-    if DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-         guestfs-tools; then \
-        echo "guestfs-tools: installed"; \
-        virt-cat --version | head -1; \
-    else \
-        echo "guestfs-tools: NOT AVAILABLE on this base - debugfs is the fallback"; \
-    fi; \
-    rm -rf /var/lib/apt/lists/*
-
 # A build-time self-check. A base image that loses one of these is caught here rather
 # than twenty minutes into a bake, and every entry is a tool the drivers call directly.
 RUN set -eux; \
