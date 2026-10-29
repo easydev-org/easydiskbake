@@ -104,7 +104,7 @@ bake_wait_port 127.0.0.1 5900 90 "vnc" || log "vnc did not answer"
 # The frames are captured over QMP instead and encoded afterwards, which needs nothing
 # the image does not already have.
 mkdir -p "$FRAMES/shots"
-python3 "$LIB/snapshots.py" "$QMP_RECORD" "$FRAMES/shots" "${SNAPSHOT_INTERVAL:-5}" 1500 \
+python3 "$LIB/snapshots.py" "$QMP_RECORD" "$FRAMES/shots" "${SNAPSHOT_INTERVAL:-1}" 1500 \
   2>&1 | tee -a "$FRAMES/shots/snapshots.log" | sed -u 's/^/[snap] /' &
 SNAP_PID=$!
 log "snapshot every ${SNAPSHOT_INTERVAL:-5}s, pid $SNAP_PID"
