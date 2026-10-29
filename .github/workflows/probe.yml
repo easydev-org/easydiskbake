@@ -1,0 +1,77 @@
+name: probe
+
+# Ask the shipped image what it can actually do about recording, rather than reading
+# release notes about what it ought to be able to do.
+#
+# The question: ffmpeg -f vnc fails with "Unknown input format: 'vnc'". Four ways to
+# get a video of a guest, and each is settled by one command against this image.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/easydev-org/easydiskbake:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: what the binaries can do
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: probe-record
+          interval: "10"
+          command: |
+            set -u
+
+            echo "=== 1. is there a vnc demuxer in this ffmpeg ==="
+            ffmpeg -hide_banner -demuxers 2>/dev/null | grep -i vnc || echo "  NO vnc demuxer"
+
+            echo
+            echo "=== 1b. would a package provide it ==="
+            (apt-get update -qq 2>/dev/null || true)
+            apt-cache search vnc 2>/dev/null | grep -i 'vnc\|ffmpeg' | head -8 || true
+            echo "--- does ffmpeg depend on libvncclient ---"
+            apt-cache depends ffmpeg 2>/dev/null | grep -i vnc || echo "  no"
+
+            echo
+            echo "=== 1c. is there a separate package with the demuxer ==="
+            apt-file --version >/dev/null 2>&1 && echo "apt-file present" || echo "apt-file absent"
+            apt-cache search libvncclient 2>/dev/null | head -5 || true
+
+            echo
+            echo "=== 2. ffmpeg input devices available ==="
+            ffmpeg -hide_banner -devices 2>/dev/null | sed -n '/Devices:/,$p' | head -25
+
+            echo
+            echo "=== 3. qemu display backends compiled in ==="
+            qemu-system-x86_64 -display help 2>&1 | head -20
+
+            echo
+            echo "=== 3b. qemu's own GTK recorder option ==="
+            qemu-system-x86_64 -display gtk,help 2>&1 | head -40
+
+            echo
+            echo "=== 3c. does the gtk display even exist ==="
+            qemu-system-x86_64 -display gtk -monitor none -serial none -S 2>&1 | head -5 &
+            sleep 3; kill %1 2>/dev/null || true
+
+            echo
+            echo "=== 4. alternatives packaged for debian ==="
+            apt-cache search '^ffmpeg' 2>/dev/null | head -5 || true
+            echo "--- x11 tools, in case x11grab is preferred over vnc ---"
+            for t in Xvfb x11vnc xdotool; do
+              command -v "$t" >/dev/null 2>&1 && echo "  $t: present" || echo "  $t: absent"
+            done
+
+            echo
+            echo "PROBE_DONE"
