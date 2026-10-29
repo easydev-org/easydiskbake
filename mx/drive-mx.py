@@ -98,7 +98,19 @@ WELCOME = ("install mx linux", "install", "installer")
 # to be empty. It is only used to dismiss a dialog, further down.
 INSTALLER_FORWARD = ("next", "continue", "forward", "start")
 INSTALLER_AGREE = ("agree", "accept", "i agree")
-INSTALLER_FINISH = ("finish", "close", "done", "reboot now", "restart now")
+# No "close" and no "done" here.
+#
+# A run that had already finished installing spent its last three steps like this:
+#
+#   step 19: clicking 'done' at (818, 649)     - the word "done" in body copy
+#   step 20: clicking 'Close' at (520, 694)    - the window's close button
+#   step 21: STUCK for 6 steps - stopping
+#
+# The install was complete by then, so nothing was lost - but the driver quit early and
+# the recording stopped with it, which is why the video was 55 seconds of a nine-minute
+# install. "Close" is never the right control to press on a pane that is still working,
+# and "done" appears in prose often enough ("once done, ...") to be dangerous.
+INSTALLER_FINISH = ("finish", "reboot now", "restart now")
 INSTALLER_SKIP = ("skip", "not now", "later")
 ALL = (WELCOME + INSTALLER_FORWARD + INSTALLER_AGREE + INSTALLER_FINISH
        + INSTALLER_SKIP + ("ok", "yes", "begin", "start"))
@@ -205,6 +217,24 @@ def main():
         # appears - so it would be treated as busy and left alone for ever, which is what
         # happened: six steps of 'the installer is working (a Pause control); not
         # clicking' on a pane that was waiting for a username.
+        # A pane that only reports progress has nothing to click.
+        #
+        # "Installation in Progress - Updating: MX Linux is installing" is a status
+        # page. Its only control is Close, and pressing it ends the installer's window
+        # while the install carries on - which makes the driver think it is stuck and
+        # quit, taking the recording with it.
+        #
+        # Nothing is gained by clicking here and something is lost, so the loop simply
+        # watches until the pane changes by itself.
+        final_pane = ("installation in progress" in low
+                      or "mx linux is installing" in low
+                      or ("installing" in low and "close" in low))
+        if final_pane and "default user" not in low:
+            log("step %d: the installer reports progress and offers nothing to press;"
+                " watching" % step)
+            time.sleep(10)
+            continue
+
         if "default user login" in low or "default user account" in low:
             done = getattr(main, "user_filled", False)
             if not done:
