@@ -226,10 +226,20 @@ def main():
         #
         # Nothing is gained by clicking here and something is lost, so the loop simply
         # watches until the pane changes by itself.
+        # Only the pane whose title says the whole job is running.
+        #
+        # The earlier version also matched anything containing "installing" alongside a
+        # Close button, and that matched the Computer Identity pane - which is a
+        # configuration pane with a Close button, and which was waiting for a computer
+        # name. The driver sat there "watching" a pane that needed typing, for six steps,
+        # and the run ended with the install half-configured.
+        #
+        # The progress pane is identifiable by its title, not by the word "installing":
+        # it is the one that says Installation in Progress. Everything else that
+        # mentions installing is either a configuration pane or body copy.
         final_pane = ("installation in progress" in low
-                      or "mx linux is installing" in low
-                      or ("installing" in low and "close" in low))
-        if final_pane and "default user" not in low:
+                      or "mx linux is installing" in low)
+        if final_pane:
             log("step %d: the installer reports progress and offers nothing to press;"
                 " watching" % step)
             time.sleep(10)
