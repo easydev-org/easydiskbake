@@ -118,7 +118,7 @@ class Screen:
             words.append((text, x + w // 2, y + h // 2, w, h))
         return words
 
-    def text_in(self, ppm, region, psm="7"):
+    def text_in(self, ppm, region, psm="6"):
         """OCR one rectangle only: [(text, x_centre, y_centre, width, height)].
 
         `region` is (x0, y0, x1, y1) in frame pixels; returned coordinates are absolute.
@@ -135,9 +135,22 @@ class Screen:
         filtering by coordinate afterwards was the first version and it is the slow path
         this method exists to avoid.
 
-        --psm 7 ("treat the image as a single text line") is right for a title strip.
-        The default --psm 3 looks for a document structure that is not there, and on a
-        strip this short it sometimes decides the text is noise and returns nothing.
+        --psm 6, ASSUME A UNIFORM BLOCK, not --psm 7.
+
+        --psm 7 means "treat the image as a single text line" and it was the first
+        choice here on the theory that a title strip holds one line. It returned NOTHING
+        - an empty string, not a wrong one - because the strips that matter hold two
+        lines: a card title and its description, or a heading and the first field's
+        label. A whole driver run then waited ninety seconds for a window it was
+        looking straight at.
+
+        Measured on one frame, same crop, same binary:
+
+          --psm 7   (empty)
+          --psm 6   "Install MX Linux FAQ  Install MX Linux on this computer."
+
+        --psm 6 is right for a short block of one or two lines, which is what all of
+        these strips are.
         """
         if not ppm:
             return []
