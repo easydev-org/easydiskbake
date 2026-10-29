@@ -141,7 +141,7 @@ class Driver:
             # Without this the log for a failed wait was one line - "waiting for the
             # welcome window" - and there was no way to tell a wrong region from a
             # tesseract that returned nothing at all. Those need different fixes.
-            if attempts == 1 or attempts % 10 == 0:
+            if attempts == 1 or attempts % 5 == 0:
                 log("  waiting (%d): strip said %r" % (attempts, last[:70]))
             time.sleep(1)
         return ""
@@ -182,7 +182,18 @@ def main():
 
     # The desktop takes a few seconds after login; the welcome window is on top of it.
     log("waiting for the welcome window")
-    if not d.expect("w00", ["install mx linux", "mx welcome"], 90, WELCOME_STRIP):
+    # LONGER THAN IT LOOKS LIKE IT NEEDS.
+    #
+    # Ninety seconds was the first value and it failed every time. The clock from qemu
+    # starting to the welcome window appearing includes: the kernel booting, the live
+    # session's getty coming up, three login cycles at fifteen seconds each, the desktop
+    # starting, and only then this window. That is two to three minutes before the first
+    # frame with any text in it exists at all.
+    #
+    # The wait prints what the strip says every ten attempts, so a genuinely wrong
+    # region is still distinguishable from a slow boot.
+    if not d.expect("w00", ["install mx linux", "mx welcome", "mx-25"], 600,
+                    WELCOME_STRIP):
         log("the welcome window never appeared")
         return 1
 
