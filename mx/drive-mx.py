@@ -123,10 +123,19 @@ class Driver:
         """
         deadline = time.time() + seconds
         last = ""
+        attempts = 0
         while time.time() < deadline:
             last = self.title(stem, strip)
+            attempts += 1
             if any(p in last for p in patterns):
                 return last
+            # Say what was actually read, on the first and every tenth attempt.
+            #
+            # Without this the log for a failed wait was one line - "waiting for the
+            # welcome window" - and there was no way to tell a wrong region from a
+            # tesseract that returned nothing at all. Those need different fixes.
+            if attempts == 1 or attempts % 10 == 0:
+                log("  waiting (%d): strip said %r" % (attempts, last[:70]))
             time.sleep(1)
         return ""
 
