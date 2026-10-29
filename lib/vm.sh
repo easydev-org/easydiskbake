@@ -139,7 +139,7 @@ bake_vm_record_from_frames() {
 # originals keep the timestamps that say when each was taken.
 bake_vm_record_many() {
   local out="$1"; shift
-  : "${RECORD_FPS:=5}"
+  : "${RECORD_FPS:=1}"
   local stage
   stage=$(mktemp -d)
   local n=0 dir
