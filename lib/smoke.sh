@@ -14,7 +14,8 @@
 # Nothing here knows what distribution it is testing. What a desktop looks like, and
 # which string proves it arrived, is the caller's business.
 
-. "$(dirname "${BASH_SOURCE[0]}")/vm.sh"
+SMOKE_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SMOKE_LIB/vm.sh"
 
 # --- reading the disk -------------------------------------------------------------
 
@@ -36,14 +37,32 @@ smoke_check_mbr() {
     return 2
   fi
 
-  # qemu-io read -v prints a hex dump: offset, sixteen bytes, ascii. The signature is
-  # the last two bytes of the first line at 0x1f0.
-  sig=$(sed -n 's/.*1f0: \(..\) \(..\).*/\1\2/p' "$tmp" | head -1)
-  code=$(sed -n '2p' "$tmp" | cut -c11-42 | tr -d ' ')
+  # The MBR, by offset:
+  #
+  #   0x000..0x1bd   boot code (446 bytes)
+  #   0x1be..0x1fd   four partition entries, 16 bytes each
+  #   0x1fe..0x1ff   0x55 0xAA - the signature
+  #
+  # 0x1fe, not 0x1f0. The first version of this read at 0x1f0, which is the middle of
+  # the partition table, so it reported "unreadable" or "0000" on disks that were
+  # perfectly fine, and three runs were spent believing a working disk was broken.
+  #
+  # The bytes are parsed out of the dump by a small Python reader: the offset column is
+  # padded to sixteen digits and two attempts at a sed expression failed on that.
+  local reader="$SMOKE_LIB/hexdump.py"
+  sig=$(python3 "$reader" "$tmp" 1fe 2 2>/dev/null || true)
+  code=$(python3 "$reader" "$tmp" 0 8 2>/dev/null || true)
 
   echo "[disk] mbr signature: ${sig:-unreadable}"
   echo "[disk] mbr boot code: ${code:-unreadable}"
 
+  if [ -z "$sig" ]; then
+    echo "[disk] THE MBR COULD NOT BE PARSED - this says nothing about the disk."
+    echo "[disk] the raw dump:"
+    head -4 "$tmp" | sed 's/^/    /'
+    rm -f "$tmp"
+    return 2
+  fi
   if [ "$sig" != "55aa" ]; then
     echo "[disk] NO MBR SIGNATURE - SeaBIOS has nothing to run"
     rm -f "$tmp"
@@ -153,10 +172,20 @@ smoke_boot() {
   # "cd: out: No such file or directory" two steps after this function returned.
   #
   # So the disk is resolved here and nothing depends on where we are afterwards.
+  #
+  # The work directory is created if it does not exist, before anything is resolved
+  # against it. It did not exist on the first run of this code, the `cd` failed, and a
+  # failed `cd` inside a command substitution leaves the variable EMPTY rather than
+  # raising - so every path below became "/smoke.log" and the boot check "passed"
+  # against a file that was never written.
+  mkdir -p "$work" || return 2
+  mkdir -p "$frames" || return 2
   disk="$(cd "$(dirname "$disk")" && pwd)/$(basename "$disk")"
   work="$(cd "$work" && pwd)"
   case "$frames" in /*) ;; *) frames="$work/$frames" ;; esac
-  mkdir -p "$frames"
+  echo "[boot] disk=$disk"
+  echo "[boot] work=$work"
+  echo "[boot] frames=$frames"
 
   VM_STDOUT="$work/smoke.log" VM_STDIN=/dev/null \
     bake_vm_start "$work" -drive "file=$disk,if=virtio,format=qcow2" -no-reboot
@@ -171,7 +200,7 @@ smoke_boot() {
   # Photograph the boot from the second qemu starts. The recording is the point of the
   # whole pipeline: it is what shows a lightdm greeter, a GRUB prompt or a kernel panic
   # when every log line looked the same.
-  python3 "$(dirname "${BASH_SOURCE[0]}")/snapshots.py" "$QMP_RECORD" "$frames" \
+  python3 "$SMOKE_LIB/snapshots.py" "$QMP_RECORD" "$frames" \
     "${SNAPSHOT_INTERVAL:-1}" 900 \
     2>&1 | sed 's/^/[snap] /' &
   SNAP_PID=$!
