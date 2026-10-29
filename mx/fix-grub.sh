@@ -57,7 +57,7 @@ log "qemu pid $QPID"
 # is on the guest's screen, and a serial log of a curses-free console still loses the
 # ordering of what was drawn.
 mkdir -p shots-grubfix
-python3 "$(dirname "$0")/../lib/snapshots.py" "$PWD/grubfix.qmp" "$PWD/shots-grubfix" 30 120 \
+python3 "$(dirname "$0")/../lib/snapshots.py" "$PWD/grubfix.qmp" "$PWD/shots-grubfix" "${SNAPSHOT_INTERVAL:-5}" 400 \
   > shots-grubfix/snapshots.log 2>&1 &
 SNAP_PID=$!
 
