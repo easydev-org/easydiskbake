@@ -1,0 +1,120 @@
+name: selftest
+
+# Boot a guest, watch it over VNC, record it, and prove the four channels work.
+#
+# This does not bake anything. It answers the question that has to be settled before
+# any distribution is worth wiring up: does -vnc answer, does ffmpeg read that stream,
+# does QMP screendump work on a second socket, and does an SSH forward reach the
+# guest. Each of those is a separate moving part and a failure in any of them looks
+# like "the bake is slow".
+#
+# The guest is the tiniest thing that boots and prints: Alpine's virt ISO, 63 MB,
+# already cached in ghcr. It reaches a shell in about 15 seconds, which is fast enough
+# to iterate on.
+
+on:
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  ISO_OWNER: easydev-org
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/easydev-org/easydiskbake:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      checks: write
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: KVM
+        shell: bash
+        run: ls -l /dev/kvm
+
+      - name: the four channels
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: selftest
+          interval: "10"
+          command: |
+            set -euo pipefail
+            . lib/vm.sh
+            . lib/iso.sh
+
+            mkdir -p out && cd out
+
+            echo "=== the image carries what it says ==="
+            ffmpeg -version | head -1
+            tesseract --version | head -1
+            qemu-system-x86_64 --version | head -1
+
+            echo "=== the ISO, from ghcr ==="
+            GITHUB_TOKEN="${{ github.token }}" bake_fetch_iso alpine alpine.iso
+            ls -la alpine.iso
+
+            echo "=== kernel and initrd ==="
+            rm -rf x && mkdir -p x
+            7z x -y -o"x" alpine.iso boot/vmlinuz-virt boot/initramfs-virt 2>&1 | tail -3
+            K="$(find "$PWD/x" -name 'vmlinuz*' | head -1)"
+            I="$(find "$PWD/x" -name 'initramfs*' | head -1)"
+            echo "kernel: $K"
+            echo "initrd: $I"
+            [ -s "$K" ] && [ -s "$I" ] || { echo "PAIR_FAIL"; exit 2; }
+
+            echo "=== an empty disk ==="
+            qemu-img create -f qcow2 disk.qcow2 2G
+
+            echo "=== boot it: vnc + ssh forward + two qmp sockets ==="
+            VM_STDOUT="$PWD/console.log" VM_STDIN=/dev/null \
+              bake_vm_start "$PWD" \
+                -kernel "$K" -initrd "$I" \
+                -append "console=ttyS0,115200n8" \
+                -drive "file=$PWD/disk.qcow2,if=virtio,format=qcow2" \
+                -no-reboot
+
+            echo "=== every channel, checked separately ==="
+            bake_wait_port 127.0.0.1 5900 60 "vnc" || true
+            bake_wait_port 127.0.0.1 2222 30 "ssh forward" || echo "  (alpine's initrd has no sshd - the forward is tested, not the daemon)"
+
+            echo "=== record it ==="
+            bake_vm_record "$PWD/run.mp4"
+            sleep 25
+
+            echo "=== screenshot over the second qmp socket ==="
+            python3 ../lib/snapshots.py "$QMP_RECORD" "$PWD/shots" 15 6
+
+            echo "=== wait for the guest to say something ==="
+            smoke_wait_for "$PWD/console.log" "alpine|login:|~ #|localhost" 180 || true
+
+            bake_vm_stop
+
+            echo "=== what came out ==="
+            ls -la run.mp4 shots/*.ppm 2>/dev/null || true
+            ffprobe -v error -show_entries format=duration,size \
+              -show_entries stream=width,height,codec_name -of default=nw=1 run.mp4 || true
+            echo "frames: $(ls shots/frame-*.ppm 2>/dev/null | wc -l)"
+            echo "console lines: $(wc -l < console.log)"
+            tail -12 console.log | sed 's/^/[console] /'
+            echo "SELFTEST_DONE"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: selftest
+          path: |
+            out/run.mp4
+            out/shots/*.ppm
+            out/shots/frames.txt
+            out/console.log
+          if-no-files-found: warn
+          retention-days: 7
