@@ -1,0 +1,121 @@
+name: bench-encode
+
+# How big is an hour of recorded install, really?
+#
+# Estimates are not good enough here: the size of a screen recording depends almost
+# entirely on how much of the screen changes, and an installer is mostly a progress bar
+# that does not. So measure, on frames this pipeline actually produces.
+#
+# The source frames are captured the same way the real runs capture them - QMP
+# screendump of a guest - and the encoding matrix covers the settings worth choosing
+# between.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/easydev-org/easydiskbake:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      checks: write
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: capture real frames
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: bench-frames
+          interval: "10"
+          command: |
+            set -euo pipefail
+            . lib/vm.sh
+            . lib/iso.sh
+
+            mkdir -p out && cd out
+
+            echo "=== a guest, booting and then idling ==="
+            GITHUB_TOKEN="${{ github.token }}" bake_fetch_iso alpine alpine.iso
+            rm -rf x && mkdir -p x
+            7z x -y -o"x" alpine.iso boot/vmlinuz-virt boot/initramfs-virt > /dev/null
+            K="$(find "$PWD/x" -name 'vmlinuz*' | head -1)"
+            I="$(find "$PWD/x" -name 'initramfs*' | head -1)"
+            qemu-img create -f qcow2 disk.qcow2 1G
+
+            VM_STDOUT="$PWD/console.log" VM_STDIN=/dev/null \
+              bake_vm_start "$PWD" \
+                -kernel "$K" -initrd "$I" \
+                -append "console=ttyS0,115200n8" \
+                -drive "file=$PWD/disk.qcow2,if=virtio,format=qcow2" \
+                -no-reboot
+
+            # 40 frames at 1/s: the first half is a kernel scrolling, the second half is
+            # a shell sitting still. That mix is what an install looks like - busy then
+            # quiet - and it is what makes the size estimate honest.
+            echo "=== 40 frames, one per second ==="
+            python3 ../lib/snapshots.py "$QMP_RECORD" "$PWD/frames" 1 40
+
+            bake_vm_stop
+
+            ls frames/frame-*.ppm | wc -l | sed 's/^/frames captured: /'
+            du -sh frames | sed 's/^/raw size: /'
+            echo "SIZE_$(stat -c%s frames/frame-0000.ppm)_BYTES_PER_FRAME"
+            set -euo pipefail
+            cd out
+
+            N=$(ls frames/frame-*.ppm | wc -l)
+            echo "frames: $N  (each $(stat -c%s frames/frame-0000.ppm) bytes raw)"
+            echo
+            printf "%-8s %-6s %-6s %-12s %-12s %s\n" fps crf preset size_here per_hour note
+
+            bench() {
+              local fps="$1" crf="$2" preset="${3:-ultrafast}"
+              local out="t_${fps}_${crf}_${preset}.mp4"
+              rm -f "$out"
+              # Loop the frames to a nominal hour at this fps, then encode that many
+              # frames by repeating the sequence. Encoding a real hour would take an
+              # hour; encoding N frames and scaling the measurement is exact, because
+              # x264's size is additive per frame at a fixed quality.
+              ffmpeg -hide_banner -loglevel error -nostdin -y \
+                -stream_loop -1 -framerate "$fps" -start_number 0 \
+                -i frames/frame-%04d.ppm \
+                -frames:v $((fps * 60)) \
+                -c:v libx264 -preset "$preset" -crf "$crf" -pix_fmt yuv420p \
+                -movflags +faststart "$out"
+              local bytes per_hour
+              bytes=$(stat -c%s "$out")
+              # 60 seconds encoded; an hour is 60 times that.
+              per_hour=$((bytes * 60))
+              printf "%-8s %-6s %-6s %-12s %-12s %s\n" \
+                "$fps" "$crf" "$preset" \
+                "$(numfmt --to=iec --suffix=B "$bytes")" \
+                "$(numfmt --to=iec --suffix=B "$per_hour")" \
+                "60s sample scaled x60"
+              rm -f "$out"
+            }
+
+            echo "--- ultrafast, the default ---"
+            for fps in 1 5 15; do
+              for crf in 23 26 30; do
+                bench "$fps" "$crf"
+              done
+            done
+
+            echo
+            echo "--- faster presets, same quality target ---"
+            bench 5 26 veryfast
+            bench 5 26 superfast
+
+            echo
+            echo "=== what one still frame costs, as a control ==="
+            ls -la frames/frame-0000.ppm frames/frame-0020.ppm 2>/dev/null || true
+            echo "BENCH_DONE"
