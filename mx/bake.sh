@@ -147,7 +147,18 @@ log "=== third boot: the installed system, with no ISO attached ==="
 smoke_check_disk "$WORK/disk.qcow2" || log "disk checks did not all pass"
 
 BOOT_OK=0
-smoke_boot disk.qcow2 "lightdm|login:|MX-25|MX 25" 600 "$WORK/smoke"   "$WORK/shots-boot" && BOOT_OK=1
+# The pattern has to be something only the installed system prints.
+#
+# The first version used "lightdm|login:|MX-25|MX 25" and matched after one second -
+# because GRUB's own menu says "Booting 'MX 25.3 Infinity'". The check then declared
+# success and stopped qemu while the kernel was still unpacking its initramfs, so the
+# recording ends at "Loading initial ramdisk" and the system was never seen to start.
+#
+# GRUB's menu text is not evidence that the system boots. A serial getty, or lightdm
+# reaching its greeter, is.
+smoke_boot disk.qcow2 \
+    "mx1 login:|Starting lightdm|Reached target Graphical Interface|lightdm-gtk-greeter" \
+    600 "$WORK/smoke" "$WORK/shots-boot" && BOOT_OK=1
 if [ "$BOOT_OK" = 1 ]; then
   log "THE INSTALLED SYSTEM STARTED"
 else
