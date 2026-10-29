@@ -129,6 +129,62 @@ bake_vm_record_from_frames() {
   return 1
 }
 
+# Record several frame directories as one video, in the order given.
+#
+# A bake is not one boot. MX installs in the first one and installs its bootloader in a
+# second, and a recording that covers only the first is 55 seconds of a nine-minute job -
+# which is exactly what the first attempt produced.
+#
+# The frames are renumbered into a scratch directory rather than renamed in place, so the
+# originals keep the timestamps that say when each was taken.
+bake_vm_record_many() {
+  local out="$1"; shift
+  : "${RECORD_FPS:=5}"
+  local stage
+  stage=$(mktemp -d)
+  local n=0 dir
+
+  for dir in "$@"; do
+    [ -d "$dir" ] || continue
+    if ! ls "$dir"/frame-*.ppm >/dev/null 2>&1; then
+      echo "[record] no frames in $dir, skipping"
+      continue
+    fi
+    local count
+    count=$(ls "$dir"/frame-*.ppm | wc -l)
+    echo "[record] $count frames from $dir"
+    # Renumbered in shell-glob order, which is the order they were captured.
+    for f in "$dir"/frame-*.ppm; do
+      cp "$f" "$stage/$(printf 'frame-%04d.ppm' "$n")"
+      n=$((n + 1))
+    done
+  done
+
+  if [ "$n" -eq 0 ]; then
+    echo "[record] nothing to encode"
+    rm -rf "$stage"
+    return 1
+  fi
+
+  echo "[record] $n frames in total -> $out at ${RECORD_FPS}fps ($(echo "scale=1; $n / $RECORD_FPS" | bc 2>/dev/null || echo "?")s)"
+  local rc=0
+  ffmpeg -hide_banner -loglevel warning -nostdin -y \
+    -framerate "$RECORD_FPS" -start_number 0 -i "$stage/frame-%04d.ppm" \
+    -c:v libx264 -preset ultrafast -pix_fmt yuv420p -movflags +faststart \
+    "$out" || rc=1
+  rm -rf "$stage"
+
+  if [ "$rc" -eq 0 ]; then
+    ls -la "$out"
+    ffprobe -v error -show_entries format=duration,size \
+      -show_entries stream=width,height,codec_name,nb_frames \
+      -of default=nw=1 "$out" 2>/dev/null | sed 's/^/[record]   /'
+  else
+    echo "[record] encoding failed"
+  fi
+  return "$rc"
+}
+
 bake_vm_stop() {
   local rc=0
   if [ -n "${RECORD_PID:-}" ]; then
