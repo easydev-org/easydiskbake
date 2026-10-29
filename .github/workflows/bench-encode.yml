@@ -69,8 +69,12 @@ jobs:
             ls frames/frame-*.ppm | wc -l | sed 's/^/frames captured: /'
             du -sh frames | sed 's/^/raw size: /'
             echo "SIZE_$(stat -c%s frames/frame-0000.ppm)_BYTES_PER_FRAME"
-            set -euo pipefail
-            cd out
+
+            # Both snapshots.py and bake_vm_stop change directory, so come back to the
+            # output directory by absolute path rather than relying on where we are.
+            cd "$GITHUB_WORKSPACE/out"
+            echo "now in $(pwd)"
+            ls -d frames
 
             N=$(ls frames/frame-*.ppm | wc -l)
             echo "frames: $N  (each $(stat -c%s frames/frame-0000.ppm) bytes raw)"
