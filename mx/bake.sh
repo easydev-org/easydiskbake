@@ -133,14 +133,35 @@ fi
 log "=== second boot: install the bootloader ==="
 bash "$HERE/fix-grub.sh" "$WORK" || log "grub fix reported failure"
 
-# One recording, both boots.
+# THE THIRD BOOT IS THE ONE THAT MATTERS.
 #
-# The install happens in the first boot and the bootloader in the second, and the first
-# attempt encoded only the first: 55 seconds of a nine-minute job. The two frame
-# directories are concatenated in the order they were captured, so the video runs from
-# the live ISO starting to grub.cfg being written.
-log "=== encode the recording: install, then bootloader ==="
-bake_vm_record_many "$WORK/install.mp4" "$FRAMES/shots" "$WORK/shots-grubfix" || true
+# Every check up to here reads the disk or reads a live session: 8 GB of filesystem, a
+# grub.cfg with 159 lines, RC_*=0 for each chroot step. None of that is evidence that the
+# installed system starts - and a recording that ends after the second boot shows the
+# INSTALLER a second time, which is exactly what a viewer noticed.
+#
+# So the disk is booted on its own, with no ISO attached, and the console and the screen
+# are what decide.
+. "$LIB/smoke.sh"
+log "=== third boot: the installed system, with no ISO attached ==="
+smoke_check_disk "$WORK/disk.qcow2" || log "disk checks did not all pass"
+
+BOOT_OK=0
+smoke_boot disk.qcow2 "lightdm|login:|MX-25|MX 25" 600 "$WORK/smoke"   "$WORK/shots-boot" && BOOT_OK=1
+if [ "$BOOT_OK" = 1 ]; then
+  log "THE INSTALLED SYSTEM STARTED"
+else
+  log "=== THE INSTALLED SYSTEM DID NOT REACH A LOGIN ==="
+  tail -40 "$WORK/smoke/smoke.log" 2>/dev/null | sed 's/^/[boot]   /'
+fi
+
+# One recording, every boot.
+#
+# The install happens in the first boot, the bootloader in the second, and the proof in
+# the third. The frames are concatenated in capture order, so the video runs from the
+# live ISO starting to the installed system reaching its greeter.
+log "=== encode the recording: install, bootloader, then the real boot ==="
+bake_vm_record_many "$WORK/install.mp4"   "$FRAMES/shots" "$WORK/shots-grubfix" "$WORK/shots-boot" || true
 
 bake_compress_disk() {
   qemu-img convert -O qcow2 -c -o compression_type=zstd "$1" "$2"
