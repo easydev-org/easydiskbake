@@ -333,6 +333,26 @@ def main():
         card, card_text = find_phrase(words, WELCOME_CARD)
         if card is None:
             card, card_text = find_phrase(words, "start the installer")
+        # The card title is not always readable.
+        #
+        # OCR sometimes returns the welcome window's own header and nothing else:
+        #
+        #   + MX Welcome MX-25.3 "Infinity" About this system || Manual | | About
+        #
+        # The card grid is below that, and on this frame none of it was read at all -
+        # so find_phrase returned nothing, the loop fell through to the generic button
+        # finder, clicked empty space at (971,693), and after six identical panes
+        # declared itself stuck. The install never started.
+        #
+        # The window itself is unmistakable - "About this system" and "Manual" are its
+        # header buttons and appear on no other pane - so when the header is all that
+        # was read, the card is taken from its known position. That position was
+        # measured from a frame where the title WAS read: "Install MX Linux" at
+        # (385, 257), the first cell of the grid.
+        if card is None and "about this system" in low and "manual" in low:
+            card, card_text = (385, 257), "Install MX Linux (position, title unreadable)"
+            log("step %d: welcome window header only; using the measured card position"
+                % step)
         if card is not None:
             log("step %d: welcome window; clicking card %r at %s"
                 % (step, card_text, card))
