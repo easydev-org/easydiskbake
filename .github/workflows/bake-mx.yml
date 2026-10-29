@@ -1,0 +1,95 @@
+name: bake-mx
+
+# Install MX Linux by driving its graphical installer, and record it.
+#
+# The record is the point of this run. Every previous attempt at MX was diagnosed from
+# log lines, and a log line is a summary of something that already happened - while the
+# questions that actually cost time (is a dialog waiting, did the pane change, is
+# lightdm up) are answered by a picture and by nothing else.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mx_version:
+        description: "MX release"
+        required: false
+        default: "25.3"
+      mx_edition:
+        description: "Xfce"
+        required: false
+        default: "Xfce"
+      drive_seconds:
+        description: "How long the OCR driver may work"
+        required: false
+        default: "1800"
+      snapshot_interval:
+        description: "Seconds between recorded frames"
+        required: false
+        default: "5"
+
+jobs:
+  bake:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/easydev-org/easydiskbake:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      checks: write
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: KVM
+        shell: bash
+        run: ls -l /dev/kvm
+
+      - name: bake
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: bake-mx
+          interval: "10"
+          command: |
+            set -euo pipefail
+            mkdir -p out/frames
+            export MX_VERSION="${{ github.event.inputs.mx_version }}"
+            export MX_EDITION="${{ github.event.inputs.mx_edition }}"
+            export DRIVE_SECONDS="${{ github.event.inputs.drive_seconds }}"
+            export SNAPSHOT_INTERVAL="${{ github.event.inputs.snapshot_interval }}"
+            export GITHUB_TOKEN="${{ github.token }}"
+            export OUT="$PWD/out/mx.qcow2"
+            bash mx/bake.sh
+
+      # The disk, if the install landed.
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: mx-disk
+          path: out/mx.qcow2
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      # The recording, always - it is what explains a failed run.
+      #
+      # Encoded at the end of the bake from the frames, because this ffmpeg has no
+      # 'vnc' demuxer: Debian builds it without --enable-libvncclient, so
+      # 'ffmpeg -f vnc -i localhost:5900' answers "Unknown input format: 'vnc'" even
+      # though qemu's VNC server is running fine.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mx-recording
+          path: |
+            out/install.mp4
+            out/frames/bake.log
+            out/frames/shots/snapshots.log
+            out/console.log
+            out/shots-grubfix/frames.txt
+          if-no-files-found: warn
+          retention-days: 14
