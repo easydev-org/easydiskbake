@@ -137,12 +137,26 @@ smoke_wait_for() {
 #
 # EXPECT is what proves arrival for this distribution - "login:" for a server,
 # a shell name for a desktop. The caller supplies it because only the caller knows.
+#
+# FRAMES names the directory the boot is photographed into; the caller passes it so that
+# this boot's frames can be concatenated with the ones from the install. Without a
+# parameter every recording would land in the same directory and the last one would win.
 smoke_boot() {
   local disk="$1" expect="$2" seconds="${3:-600}"
   local work="${4:-.}"
+  local frames="${5:-$work/shots}"
 
-  cd "$work" || return 2
-  mkdir -p shots
+  # Absolute paths and no chdir.
+  #
+  # bake_vm_stop and snapshots.py both change directory, and a caller that comes back to
+  # a changed cwd finds its relative paths broken - which happened once, as
+  # "cd: out: No such file or directory" two steps after this function returned.
+  #
+  # So the disk is resolved here and nothing depends on where we are afterwards.
+  disk="$(cd "$(dirname "$disk")" && pwd)/$(basename "$disk")"
+  work="$(cd "$work" && pwd)"
+  case "$frames" in /*) ;; *) frames="$work/$frames" ;; esac
+  mkdir -p "$frames"
 
   VM_STDOUT="$work/smoke.log" VM_STDIN=/dev/null \
     bake_vm_start "$work" -drive "file=$disk,if=virtio,format=qcow2" -no-reboot
@@ -157,10 +171,11 @@ smoke_boot() {
   # Photograph the boot from the second qemu starts. The recording is the point of the
   # whole pipeline: it is what shows a lightdm greeter, a GRUB prompt or a kernel panic
   # when every log line looked the same.
-  python3 "$(dirname "${BASH_SOURCE[0]}")/snapshots.py" "$QMP_RECORD" "$work/shots" 30 60 \
+  python3 "$(dirname "${BASH_SOURCE[0]}")/snapshots.py" "$QMP_RECORD" "$frames" \
+    "${SNAPSHOT_INTERVAL:-1}" 900 \
     2>&1 | sed 's/^/[snap] /' &
   SNAP_PID=$!
-  bake_vm_record "$work/run.mp4"
+  # No recording here: the caller concatenates every boot's frames into one video.
 
   local rc=0
   smoke_wait_for "$work/smoke.log" "$expect" "$seconds" || rc=1
@@ -169,8 +184,7 @@ smoke_boot() {
   kill "$SNAP_PID" 2>/dev/null || true
 
   echo "=== recorded ==="
-  ls -la "$work/run.mp4" 2>/dev/null || echo "  no recording"
   echo "=== frames ==="
-  ls "$work"/shots/frame-*.ppm 2>/dev/null | wc -l | sed 's/^/  frames: /'
+  ls "$frames"/frame-*.ppm 2>/dev/null | wc -l | sed 's/^/  frames: /'
   return "$rc"
 }
