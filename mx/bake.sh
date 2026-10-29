@@ -122,9 +122,6 @@ wait "$FEED" 2>/dev/null || true
 bake_vm_stop
 kill "$SNAP_PID" 2>/dev/null || true
 
-log "=== encode the recording ==="
-bake_vm_record_from_frames "$FRAMES/shots" "$WORK/install.mp4" || true
-
 log "=== the disk so far ==="
 DISK_BYTES=$(stat -c%s disk.qcow2)
 log "disk.qcow2 is ${DISK_BYTES} bytes"
@@ -135,6 +132,15 @@ fi
 
 log "=== second boot: install the bootloader ==="
 bash "$HERE/fix-grub.sh" "$WORK" || log "grub fix reported failure"
+
+# One recording, both boots.
+#
+# The install happens in the first boot and the bootloader in the second, and the first
+# attempt encoded only the first: 55 seconds of a nine-minute job. The two frame
+# directories are concatenated in the order they were captured, so the video runs from
+# the live ISO starting to grub.cfg being written.
+log "=== encode the recording: install, then bootloader ==="
+bake_vm_record_many "$WORK/install.mp4" "$FRAMES/shots" "$WORK/shots-grubfix" || true
 
 bake_compress_disk() {
   qemu-img convert -O qcow2 -c -o compression_type=zstd "$1" "$2"
