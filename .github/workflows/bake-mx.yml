@@ -25,7 +25,7 @@ on:
       snapshot_interval:
         description: "Seconds between recorded frames"
         required: false
-        default: "5"
+        default: "1"
 
 jobs:
   bake:
