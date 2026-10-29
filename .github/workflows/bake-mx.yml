@@ -91,5 +91,7 @@ jobs:
             out/frames/shots/snapshots.log
             out/console.log
             out/shots-grubfix/frames.txt
+            out/shots-boot/frames.txt
+            out/smoke/smoke.log
           if-no-files-found: warn
           retention-days: 14
