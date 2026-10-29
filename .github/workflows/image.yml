@@ -1,0 +1,79 @@
+name: image
+
+# Build the easydiskbake image and publish it to ghcr.
+#
+# The build is streamed, not waited on. GitHub serves a running job's Actions log from
+# an internal store and the public endpoints answer 404 until the job ends - but a check
+# run's output.text has no such restriction, and log-stream keeps that current. With no
+# interval it barely moves; with interval and output on stdout it is a live view.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - Containerfile
+      - .github/workflows/image.yml
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ${{ github.repository_owner }}/easydiskbake
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+      checks: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: log in to ghcr
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Built through log-stream so the apt output for sixty packages is visible while
+      # it happens, rather than after a failure that says only "exit code 100".
+      #
+      # --progress=plain, because the default buildkit output redraws a single line with
+      # carriage returns: log-stream stamps every line and caps the total, so a
+      # redrawing progress bar fills the budget and pushes the useful output out.
+      - name: build and push
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: easydiskbake-image
+          interval: "10"
+          command: |
+            set -euo pipefail
+            echo "base image pull"
+            docker pull qemux/qemu:7.50
+            echo "building"
+            docker build \
+              --progress=plain \
+              -f Containerfile \
+              -t "$REGISTRY/$IMAGE:latest" \
+              -t "$REGISTRY/$IMAGE:$(date -u +%Y.%m.%d)" \
+              .
+            echo "verifying what the image actually carries"
+            docker run --rm --entrypoint /bin/bash "$REGISTRY/$IMAGE:latest" -c '
+              set -x
+              ffmpeg -version | head -1
+              tesseract --version | head -1
+              tesseract --list-langs
+              debugfs -V 2>&1 | head -1
+              genisoimage --version 2>&1 | head -1
+              qemu-system-x86_64 --version | head -1
+              virt-cat --version 2>&1 | head -1 || echo "virt-cat: absent, debugfs is the fallback"
+            '
+            echo "pushing"
+            docker push "$REGISTRY/$IMAGE:latest"
+            docker push "$REGISTRY/$IMAGE:$(date -u +%Y.%m.%d)"
+            echo "IMAGE_READY"
