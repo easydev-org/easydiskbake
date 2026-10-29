@@ -79,27 +79,54 @@ bake_wait_port() {
   return 1
 }
 
-# Record the screen for as long as qemu runs.
+# Record the run as video, from frames -- not from the VNC stream.
 #
-# ffmpeg reads qemu's own VNC server, so the recording is exactly what a person would
-# have seen - including the parts no log line mentions. Stopped by killing the pid.
+# The obvious approach is `ffmpeg -f vnc -i localhost:5900`. It does not work here:
 #
-# -f vnc takes a host:port; -framerate 5 is enough to read a progress bar without
-# producing a file nobody can open. yuv420p and faststart, because a recording that
-# needs a particular player is a recording nobody watches.
-bake_vm_record() {
-  local out="${1:-run.mp4}"
-  local port=$((5900 + VNC_DISPLAY))
-  : "${RECORD_FPS:=5}"
+#   [in#0] Unknown input format: 'vnc'
+#
+# Debian builds ffmpeg without --enable-libvncclient, so there is no VNC demuxer in the
+# package at all. VNC itself is fine - the port answered in two seconds - the decoder is
+# simply not in this build.
+#
+# The frames are already being captured over QMP, which needs no extra dependency, is
+# driven by us rather than by a protocol, and produces something a person can look at
+# individually as well as in sequence. So the recording is made from those:
+#
+#   QMP screendump every N seconds  ->  ffmpeg -framerate N -i frame-%04d.ppm  ->  mp4
+#
+# The cost is a cap on smoothness: an installer animating at 30fps is captured at one
+# frame every few seconds, so the video is a time-lapse, not a film. For the question
+# this answers - what was on the screen, and when did it change - a time-lapse is
+# enough, and it is the part that a serial log cannot show at all.
+bake_vm_record_from_frames() {
+  local dir="$1"
+  local out="${2:-run.mp4}"
+  : "${RECORD_FPS:=1}"
 
-  echo "[record] $VNC_BIND:$port -> $out at ${RECORD_FPS}fps"
-  ffmpeg -hide_banner -loglevel warning -nostdin \
-    -f vnc -framerate "$RECORD_FPS" -i "${VNC_BIND}:${port}" \
-    -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
-    -movflags +faststart \
-    "$out" &
-  RECORD_PID=$!
-  echo "[record] ffmpeg pid $RECORD_PID"
+  if ! ls "$dir"/frame-*.ppm >/dev/null 2>&1; then
+    echo "[record] no frames in $dir - nothing to encode"
+    return 1
+  fi
+
+  local n
+  n=$(ls "$dir"/frame-*.ppm | wc -l)
+  echo "[record] $n frames from $dir -> $out at ${RECORD_FPS}fps"
+
+  # -start_number 0 matches the frame-0000 naming; yuv420p and faststart because a file
+  # that needs a particular player is a file nobody watches.
+  if ffmpeg -hide_banner -loglevel warning -nostdin -y \
+       -framerate "$RECORD_FPS" -start_number 0 -i "$dir/frame-%04d.ppm" \
+       -c:v libx264 -preset ultrafast -pix_fmt yuv420p -movflags +faststart \
+       "$out"; then
+    ls -la "$out"
+    ffprobe -v error -show_entries format=duration,size \
+      -show_entries stream=width,height,codec_name,nb_frames \
+      -of default=nw=1 "$out" 2>/dev/null | sed 's/^/[record]   /'
+    return 0
+  fi
+  echo "[record] encoding failed"
+  return 1
 }
 
 bake_vm_stop() {
