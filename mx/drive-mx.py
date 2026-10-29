@@ -125,7 +125,14 @@ class Driver:
         last = ""
         attempts = 0
         while time.time() < deadline:
-            last = self.title(stem, strip)
+            # A FRESH FILENAME EACH TIME.
+            #
+            # screendump writes asynchronously and does not promise to have finished
+            # when it returns. Reusing one name meant the crop and the OCR could both
+            # read the previous frame - and the previous frame here is the black screen
+            # from before the desktop finished loading, which is exactly why nine runs
+            # in a row reported "strip said ''" for ninety seconds.
+            last = self.title("%s-%03d" % (stem, attempts), strip)
             attempts += 1
             if any(p in last for p in patterns):
                 return last
