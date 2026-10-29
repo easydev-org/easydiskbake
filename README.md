@@ -32,7 +32,7 @@ ISO --> qemu (VNC + SSH + QMP) --> live system --> installer --> disk --> smoke
 
 The base is `qemux/qemu:7.50`. Measured, not assumed: `qemu-system-x86_64 11.1.0`,
 `qemu-img 11.1.0`, `7z 25.01`, `xorriso 1.5.6`, and `curl wget python3 jq mkfifo timeout
-setsid unshare` are all present. `virt-cat` is not.
+setsid unshare` are all present.
 
 Everything below is a tool a requirement names.
 
@@ -81,23 +81,14 @@ buttons on another.
 `tesseract-ocr-eng` matters as much as the binary: without a language pack tesseract
 runs, exits zero, and reads nothing, which looks exactly like a blank screen.
 
-### 5. Reading a file out of a finished disk - **libguestfs-tools**, or **e2fsprogs**
+### 5. Reading a file out of a finished disk - **e2fsprogs**
 
 The smoke test has to answer questions only the disk can: is there boot code in the MBR,
-is there a root filesystem, what is in `/etc/shadow`. The first two are 512 bytes and a
-superblock and `qemu-io` reads them with no package at all. Anything deeper needs a
-filesystem reader.
+is there a root filesystem, what is in `/etc/shadow`.
 
-`virt-cat` does it in about a second. The alternative measured in `easysandbox-vm/bake`
-was 174 lines of shell over `qemu-img` and `debugfs` that took over seven minutes,
-because `qemu-img` walks a qcow2 cluster by cluster.
-
-**libguestfs may not install.** Its chain is
-`guestfs-tools -> libguestfs0t64 -> udev`, and `udev` wants
-`libsystemd-shared (= 257.13-1~deb13u1)` while the base image ships `261.2-1`.
-`--allow-downgrades` does not help; the packages are incompatible.
-
-So: try it, keep `e2fsprogs` as the fallback that reads ext4 without any of that.
+The first two are 512 bytes and a superblock, and `qemu-io` reads them with no package
+at all. For a path inside the filesystem, `debugfs` - from `e2fsprogs`, which the base
+image already carries - reads ext4 directly.
 
 ### 6. Building a modified ISO - `genisoimage`, and `xorriso` which is present
 
@@ -122,8 +113,7 @@ RUN set -eux; \
         ffmpeg \
         tesseract-ocr tesseract-ocr-eng \
         e2fsprogs \
-        genisoimage \
-        guestfs-tools || true; \
+        genisoimage; \
     rm -rf /var/lib/apt/lists/*
 ```
 
@@ -133,12 +123,7 @@ RUN set -eux; \
 | `tesseract-ocr` + `-eng` | OCR for installers with no unattended mode | no |
 | `e2fsprogs` | read a file out of the finished disk (`debugfs`) | check, often present |
 | `genisoimage` | rebuild an ISO with an answer file inside | no (`xorriso` is) |
-| `guestfs-tools` | `virt-cat`, if the dependency chain resolves | no, and it may not |
 | qemu, 7z, xorriso, python3, jq, curl, mkfifo, timeout | everything else | **yes** |
-
-`guestfs-tools || true` on purpose: it is the right tool and it is the one that failed
-to install on this base before. A build that silently loses it must say so and fall back
-to `debugfs`, not fail the whole image.
 
 ## Log streaming, from the first second
 
