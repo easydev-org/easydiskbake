@@ -118,6 +118,95 @@ class Screen:
             words.append((text, x + w // 2, y + h // 2, w, h))
         return words
 
+    def text_in(self, ppm, region, psm="7"):
+        """OCR one rectangle only: [(text, x_centre, y_centre, width, height)].
+
+        `region` is (x0, y0, x1, y1) in frame pixels; returned coordinates are absolute.
+
+        WHY THIS EXISTS
+
+        Reading a whole 1280x800 frame costs seconds and is what made the previous
+        driver take eight to ten seconds per step. The only part that needs reading here
+        is a title strip about 620x40 - a twentieth of the frame - and tesseract returns
+        from that in well under a second.
+
+        The region is CROPPED OUT OF THE FILE first and tesseract is pointed at the crop,
+        so the decoder never sees the rest of the screen. Reading the whole frame and
+        filtering by coordinate afterwards was the first version and it is the slow path
+        this method exists to avoid.
+
+        --psm 7 ("treat the image as a single text line") is right for a title strip.
+        The default --psm 3 looks for a document structure that is not there, and on a
+        strip this short it sometimes decides the text is noise and returns nothing.
+        """
+        if not ppm:
+            return []
+        import subprocess
+        x0, y0, x1, y1 = region
+
+        crop = self._crop_ppm(ppm, region)
+        if not crop:
+            return []
+        proc = subprocess.run(
+            ["tesseract", crop, "stdout", "--psm", psm, "tsv"],
+            capture_output=True, text=True,
+        )
+
+        words = []
+        for line in proc.stdout.splitlines()[1:]:
+            parts = line.split("\t")
+            if len(parts) < 12:
+                continue
+            try:
+                conf = float(parts[10])
+                x, y, w, h = (int(parts[6]), int(parts[7]),
+                              int(parts[8]), int(parts[9]))
+            except ValueError:
+                continue
+            text = parts[11].strip()
+            if not text or conf < 30:
+                continue
+            # Back to frame coordinates, so a caller can click what was read.
+            words.append((text, x0 + x + w // 2, y0 + y + h // 2, w, h))
+        return words
+
+    def _crop_ppm(self, ppm, region):
+        """Write a cropped copy of a P6 PPM and return its path."""
+        import struct
+        out = ppm[:-4] + "-crop.ppm" if ppm.endswith(".ppm") else ppm + "-crop.ppm"
+        x0, y0, x1, y1 = region
+        try:
+            with open(ppm, "rb") as f:
+                data = f.read()
+            if not data.startswith(b"P6"):
+                return None
+            fields, i = [], 2
+            while len(fields) < 3:
+                while i < len(data) and data[i:i + 1].isspace():
+                    i += 1
+                start = i
+                while i < len(data) and not data[i:i + 1].isspace():
+                    i += 1
+                fields.append(int(data[start:i]))
+            i += 1
+            w, h, _ = fields
+            px = data[i:]
+            x1 = min(x1, w)
+            y1 = min(y1, h)
+            cw, ch = x1 - x0, y1 - y0
+            if cw <= 0 or ch <= 0:
+                return None
+            rows = []
+            for y in range(y0, y1):
+                o = (y * w + x0) * 3
+                rows.append(px[o:o + cw * 3])
+            with open(out, "wb") as f:
+                f.write(b"P6\n%d %d\n255\n" % (cw, ch))
+                f.write(b"".join(rows))
+            return out
+        except Exception:
+            return None
+
     def click(self, x, y):
         qmpmod.click(self.q, x, y)
 
