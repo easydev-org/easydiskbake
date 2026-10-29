@@ -64,6 +64,17 @@ W, H = 1280, 800
 # second.
 TITLE_STRIP = (467, 215, 1090, 265)
 
+# The welcome window is a different window at a different place, and it needs its own
+# strip. Using the installer's coordinates to wait for it was the first thing this
+# version got wrong: the driver sat for its full ninety-second timeout looking at a band
+# of desktop wallpaper and then exited, having done nothing at all.
+#
+# Measured from the frames:
+#
+#   y=100..140   "MX-25.3 Infinity"                 window title
+#   y=245..285   "Install MX Linux | FAQ"           the card grid
+WELCOME_STRIP = (320, 245, 1060, 285)
+
 # Measured coordinates. Every one of these was read off a frame this pipeline captured.
 WELCOME_CARD = (385, 257)
 FORWARD = (971, 693)          # the installer's own panes
@@ -89,8 +100,8 @@ class Driver:
 
     # -- observing ------------------------------------------------------------
 
-    def title(self, stem):
-        """Read only the title strip. Returns the words found there, lowercased.
+    def title(self, stem, strip=None):
+        """Read a title strip. Returns the words found there, lowercased.
 
         text_in crops the frame on disk and points tesseract at the crop, so the decoder
         never sees the other 98% of the screen. Reading the whole frame and filtering by
@@ -100,10 +111,10 @@ class Driver:
         ppm = self.screen.grab(stem)
         if not ppm:
             return ""
-        words = self.screen.text_in(ppm, TITLE_STRIP)
+        words = self.screen.text_in(ppm, strip or TITLE_STRIP)
         return " ".join(w[0] for w in words).lower()
 
-    def expect(self, stem, patterns, seconds=20):
+    def expect(self, stem, patterns, seconds=20, strip=None):
         """Wait until the title strip mentions one of `patterns`.
 
         Returns the title it settled on, or "" if it never matched. A miss is not fatal
@@ -113,7 +124,7 @@ class Driver:
         deadline = time.time() + seconds
         last = ""
         while time.time() < deadline:
-            last = self.title(stem)
+            last = self.title(stem, strip)
             if any(p in last for p in patterns):
                 return last
             time.sleep(1)
@@ -155,7 +166,7 @@ def main():
 
     # The desktop takes a few seconds after login; the welcome window is on top of it.
     log("waiting for the welcome window")
-    if not d.expect("w00", ["mx welcome", "install mx linux"], 90):
+    if not d.expect("w00", ["install mx linux", "mx welcome"], 90, WELCOME_STRIP):
         log("the welcome window never appeared")
         return 1
 
