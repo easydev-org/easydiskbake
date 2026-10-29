@@ -159,6 +159,11 @@ class Screen:
 
         crop = self._crop_ppm(ppm, region)
         if not crop:
+            print("[ocr] crop failed for region %s of %s" % (region, ppm), flush=True)
+            return []
+        import os as _os
+        if not _os.path.exists(crop) or _os.path.getsize(crop) == 0:
+            print("[ocr] crop %s is missing or empty" % crop, flush=True)
             return []
         proc = subprocess.run(
             ["tesseract", crop, "stdout", "--psm", psm, "tsv"],
