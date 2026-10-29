@@ -169,6 +169,9 @@ class Screen:
             ["tesseract", crop, "stdout", "--psm", psm, "tsv"],
             capture_output=True, text=True,
         )
+        if not proc.stdout.strip():
+            print("[ocr] tesseract produced no output for %s (region %s); stderr: %r"
+                  % (crop, region, proc.stderr.strip()[:200]), flush=True)
 
         words = []
         for line in proc.stdout.splitlines()[1:]:
