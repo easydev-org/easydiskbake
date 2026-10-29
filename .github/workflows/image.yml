@@ -71,7 +71,6 @@ jobs:
               debugfs -V 2>&1 | head -1
               genisoimage --version 2>&1 | head -1
               qemu-system-x86_64 --version | head -1
-              virt-cat --version 2>&1 | head -1 || echo "virt-cat: absent, debugfs is the fallback"
             '
             echo "pushing"
             docker push "$REGISTRY/$IMAGE:latest"
