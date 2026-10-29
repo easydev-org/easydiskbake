@@ -226,24 +226,26 @@ def main():
         #
         # Nothing is gained by clicking here and something is lost, so the loop simply
         # watches until the pane changes by itself.
-        # Only the pane whose title says the whole job is running.
+        # A pane that needs an answer says so, and that overrides everything.
         #
-        # The earlier version also matched anything containing "installing" alongside a
-        # Close button, and that matched the Computer Identity pane - which is a
-        # configuration pane with a Close button, and which was waiting for a computer
-        # name. The driver sat there "watching" a pane that needed typing, for six steps,
-        # and the run ended with the install half-configured.
+        # "Installation in Progress" is NOT a page title on this installer - it is the
+        # progress heading that stays on screen once the copy starts, on every pane.
+        # Two attempts treated it as a page title and therefore decided that the
+        # Computer Identity pane was a status page needing no input, and sat there
+        # watching it for six steps while it waited for a computer name.
         #
-        # The progress pane is identifiable by its title, not by the word "installing":
-        # it is the one that says Installation in Progress. Everything else that
-        # mentions installing is either a configuration pane or body copy.
-        final_pane = ("installation in progress" in low
-                      or "mx linux is installing" in low)
-        if final_pane:
-            log("step %d: the installer reports progress and offers nothing to press;"
-                " watching" % step)
-            time.sleep(10)
-            continue
+        # The reliable distinction is the other way round: a pane that wants typing says
+        # "Paused for required operator input". If it does not say that and it offers
+        # only Close, it is a status pane and there is nothing to press.
+        needs_input = ("paused for required" in low
+                       or "required operator input" in low)
+        if not needs_input:
+            status_only = ("installation in progress" in low
+                           or "mx linux is installing" in low)
+            if status_only:
+                log("step %d: status pane, nothing to press; watching" % step)
+                time.sleep(10)
+                continue
 
         if "default user login" in low or "default user account" in low:
             done = getattr(main, "user_filled", False)
