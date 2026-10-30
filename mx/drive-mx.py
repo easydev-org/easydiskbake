@@ -283,15 +283,42 @@ def main():
     #    pane offers only Close, and pressing Close takes the window away while the copy
     #    runs on - which is what made an earlier run declare itself stuck one step
     #    before the end.
-    log("waiting for the copy to finish; not clicking anything")
-    for i in range(120):
-        t = d.title("s-wait-%02d" % i)
+    # Wait for the copy to finish, measured rather than read.
+    #
+    # The first version looked for the words "complete" or "finished" in the title
+    # strip, and MX's installer never prints either - so the loop ran its full twenty
+    # minutes every time while the install had actually finished in four. The driver
+    # was not stuck; it was reading for a signal that does not exist.
+    #
+    # What does exist is the disk file growing. qemu writes to it as the installer
+    # copies, so "the size has not changed for a while" is a direct measurement of
+    # "the copy has stopped". A quiet period also covers the install's own post-copy
+    # steps, which write little but do write something.
+    log("waiting for the copy to finish; watching the disk grow")
+    disk = os.path.join(d.workdir, "disk.qcow2")
+    last_size, quiet, i = -1, 0, 0
+    while i < 180:
+        try:
+            size = os.path.getsize(disk)
+        except OSError:
+            size = -1
+        if size == last_size:
+            quiet += 1
+        else:
+            quiet = 0
+            last_size = size
         if i % 6 == 0:
-            log("  still copying: %r" % (t[:60] or "(no title)"))
-        if "complete" in t or "finished" in t:
-            log("the installer reports completion")
+            log("  disk %.2f GiB, quiet for %ds" % (size / 1073741824.0, quiet * 10))
+        # Six quiet readings is a minute. The longest pause observed inside a successful
+        # copy was about twenty seconds, so a minute cannot be a lull mid-copy.
+        if quiet >= 6 and size > 100 * 1024 * 1024:
+            log("the disk stopped growing at %.2f GiB - the copy is done"
+                % (size / 1073741824.0))
             break
+        i += 1
         time.sleep(10)
+    else:
+        log("WARNING: the disk was still growing after 30 minutes")
 
     log("driver finished after %d steps" % d.step)
     d.screen.close()
