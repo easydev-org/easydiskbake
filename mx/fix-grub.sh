@@ -76,6 +76,22 @@ SNAP_PID=$!
   printf 'echo GRUBFIX_LOGIN $(id -u)\n'; sleep 5
 
   printf 'echo demo | sudo -S mkdir -p /mnt/mxroot\n'; sleep 4
+  # What does the disk actually look like before touching it?
+  #
+  # A run where mount failed with RC=32 went on to chroot into an EMPTY directory and
+  # run grub-install there. grub-install could not find its modules, wrote zeroes over
+  # the MBR's boot code, and returned 0 - so the log said GRUB was installed while the
+  # disk had just been made unbootable:
+  #
+  #   mbr signature: 0000
+  #   mbr boot code: 0000000000000000
+  #   ext superblock magic 53ef found      <- the filesystem was fine all along
+  #
+  # So the partition list is printed first, and the mount is not attempted unless a
+  # partition is there.
+  printf 'echo demo | sudo -S lsblk -o NAME,SIZE,TYPE,FSTYPE /dev/vda; echo LSBLK_RC=$?\n'; sleep 6
+  printf 'echo demo | sudo -S parted -s /dev/vda print; echo PARTED_RC=$?\n'; sleep 6
+
   printf 'echo demo | sudo -S mount /dev/vda1 /mnt/mxroot; echo RC_MOUNT=$?\n'; sleep 8
   printf 'echo demo | sudo -S ls /mnt/mxroot/etc/debian_version; echo RC_ETC=$?\n'; sleep 6
   printf 'echo demo | sudo -S ls /mnt/mxroot/boot | head -5\n'; sleep 6
