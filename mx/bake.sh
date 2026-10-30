@@ -131,7 +131,7 @@ if [ "$DISK_BYTES" -lt 1000000000 ]; then
 fi
 
 log "=== second boot: install the bootloader ==="
-bash "$HERE/fix-grub.sh" "$WORK" || log "grub fix reported failure"
+python3 "$HERE/fix_grub.py" "$WORK" || log "grub fix reported failure"
 
 # THE THIRD BOOT IS THE ONE THAT MATTERS.
 #
