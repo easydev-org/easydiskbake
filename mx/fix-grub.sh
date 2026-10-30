@@ -89,7 +89,11 @@ SNAP_PID=$!
   #
   # So the partition list is printed first, and the mount is not attempted unless a
   # partition is there.
-  printf 'echo demo | sudo -S lsblk -o NAME,SIZE,TYPE,FSTYPE /dev/vda; echo LSBLK_RC=$?\n'; sleep 6
+  # Written to a file and then printed, because the serial line drops lines whose
+  # output arrives in a burst - lsblk and parted were both sent and neither produced
+  # anything in the log, so the one piece of evidence needed was the one that vanished.
+  printf 'echo demo | sudo -S sh -c "lsblk > /tmp/lsblk.txt 2>&1; parted -s /dev/vda print >> /tmp/lsblk.txt 2>&1; blkid >> /tmp/lsblk.txt 2>&1"\n'; sleep 12
+  printf 'echo DISK_REPORT_BEGIN; echo demo | sudo -S cat /tmp/lsblk.txt; echo DISK_REPORT_END\n'; sleep 10
   printf 'echo demo | sudo -S parted -s /dev/vda print; echo PARTED_RC=$?\n'; sleep 6
 
   printf 'echo demo | sudo -S mount /dev/vda1 /mnt/mxroot; echo RC_MOUNT=$?\n'; sleep 8
