@@ -148,19 +148,59 @@ class Driver:
 
     # -- acting ---------------------------------------------------------------
 
+    def sample(self, stem):
+        """Read the strip a few times and keep the longest result.
+
+        Tesseract on this installer is intermittent: one frame of the Terms pane read
+        "mx linux uses some components from mepis linux which are released under..."
+        and the next, eight seconds later, read nothing at all. Taking the best of
+        three readings over four seconds turns that from a coin flip into a
+        near-certainty, and costs less than the failure did.
+        """
+        best = ""
+        for i in range(3):
+            got = self.title("%s-r%d" % (stem, i))
+            if len(got) > len(best):
+                best = got
+            if best:
+                break
+            time.sleep(2)
+        return best
+
     def click(self, what, xy, then_expect=None, attempts=3):
+        """Click, then check the pane actually changed.
+
+        THE CHECK IS "DID THE SCREEN CHANGE", NOT "DOES IT SAY THE RIGHT WORD".
+
+        Requiring a specific phrase failed for a reason that took a while to see: the
+        strip does not hold each pane's title. It holds whatever text sits at that
+        height, which on the Terms pane is the licence body - "MX Linux uses some
+        components from MEPIS Linux which are released under..." - and on the options
+        pane is the selected drive line. The pane names in this file are what a reader
+        would call them; the OCR never returns those words.
+
+        So the test is: the strip now yields text, and that text is not what it said
+        before the click. A click that lands changes the pane; a click that misses does
+        not. `then_expect` is still accepted and still used when given, because for the
+        welcome card there is a genuine before/after (nothing, then the installer), and
+        saying so in the log is worth the extra parameter.
+        """
         self.step += 1
+        before = getattr(self, "last_text", "")
         for attempt in range(1, attempts + 1):
             log("step %d: click %s at %s (try %d)" % (self.step, what, xy, attempt))
             self.screen.click(*xy)
-            time.sleep(4)
-            if then_expect is None:
+            time.sleep(3)
+
+            after = self.sample("s%02d-%d" % (self.step, attempt))
+            changed = after and after != before
+            matched = bool(then_expect) and any(p in after for p in then_expect)
+
+            if changed or matched:
+                self.last_text = after
+                log("step %d: ok, pane now reads %r" % (self.step, after[:70]))
                 return True
-            found = self.expect("s%02d-%d" % (self.step, attempt), then_expect)
-            if found:
-                log("step %d: ok, now at %r" % (self.step, found[:60]))
-                return True
-            log("step %d: expected %s, title said %r" % (self.step, then_expect, found[:60]))
+            log("step %d: no change (reads %r)" % (self.step, after[:70]))
         log("step %d: GAVE UP after %d attempts" % (self.step, attempts))
         return False
 
