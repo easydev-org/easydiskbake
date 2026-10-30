@@ -97,17 +97,49 @@ SNAP_PID=$!
   printf 'echo demo | sudo -S ls /mnt/mxroot/boot | head -5\n'; sleep 6
   printf 'echo demo | sudo -S ls /mnt/mxroot/usr/sbin/grub-install; echo RC_GRUBBIN=$?\n'; sleep 6
 
-  # Bind mounts, one line each. update-grub needs /proc and /sys to enumerate devices,
-  # and grub-install needs /dev to write. Missing any of them fails quietly.
-  printf 'echo demo | sudo -S mount --bind /dev /mnt/mxroot/dev; echo RC_DEV=$?\n'; sleep 5
-  printf 'echo demo | sudo -S mount --bind /dev/pts /mnt/mxroot/dev/pts; echo RC_PTS=$?\n'; sleep 5
-  printf 'echo demo | sudo -S mount --bind /proc /mnt/mxroot/proc; echo RC_PROC=$?\n'; sleep 5
-  printf 'echo demo | sudo -S mount --bind /sys /mnt/mxroot/sys; echo RC_SYS=$?\n'; sleep 5
+  # GATE: is there actually a system at /mnt/mxroot?
+  #
+  # Everything below this point writes to the disk. If the mount failed, chroot enters
+  # an EMPTY directory and grub-install writes zeroes over the MBR while returning 0 -
+  # which turns a working 8 GB installation into an unbootable disk and reports success
+  # doing it. That happened once:
+  #
+  #   RC_MOUNT=32
+  #   RC_INSTALL=0
+  #   mbr signature: 0000
+  #   mbr boot code: 0000000000000000
+  #   ext superblock magic 53ef found     <- the system was intact on a partition
+  #                                          that had simply not been mounted
+  #
+  # So the marker file is checked and the rest is skipped outright when it is missing.
+  # A bake that stops here has cost one run; a bake that continues has cost the disk.
+  printf 'if [ -f /mnt/mxroot/etc/debian_version ]; then echo FIXUP_GATE=open; else echo FIXUP_GATE=closed; fi\n'; sleep 6
+
+  # An empty directory has no /proc, so even the bind mounts are pointless when the gate
+  # is shut. They are written to run only in the open case.
+  printf 'if [ -f /mnt/mxroot/etc/debian_version ]; then \
+'
+  printf '  echo demo | sudo -S mount --bind /dev /mnt/mxroot/dev; echo RC_DEV=$?; \
+'
+  printf '  echo demo | sudo -S mount --bind /dev/pts /mnt/mxroot/dev/pts; echo RC_PTS=$?; \
+'
+  printf '  echo demo | sudo -S mount --bind /proc /mnt/mxroot/proc; echo RC_PROC=$?; \
+'
+  printf '  echo demo | sudo -S mount --bind /sys /mnt/mxroot/sys; echo RC_SYS=$?; \
+'
+  printf 'else echo RC_DEV=skipped RC_PTS=skipped RC_PROC=skipped RC_SYS=skipped; fi\n'; sleep 25
 
   # grub-install first: it writes stage 1 and creates /boot/grub/i386-pc. update-grub
   # then writes the menu. The order matters - update-grub alone produces a menu for a
   # bootloader that was never installed.
-  printf 'echo demo | sudo -S chroot /mnt/mxroot grub-install --target=i386-pc --recheck /dev/vda 2>&1 | tail -25; echo RC_INSTALL=$?\n'; sleep 45
+  #
+  # Also gated, and for a sharper reason: this is the command that destroys the MBR when
+  # its chroot is empty.
+  printf 'if [ -f /mnt/mxroot/etc/debian_version ]; then \
+'
+  printf '  echo demo | sudo -S chroot /mnt/mxroot grub-install --target=i386-pc --recheck /dev/vda 2>&1 | tail -25; echo RC_INSTALL=$?; \
+'
+  printf 'else echo RC_INSTALL=skipped_no_root; fi\n'; sleep 50
 
   # The menu has to boot by itself, and it has to talk to the serial port.
   #
@@ -124,8 +156,11 @@ SNAP_PID=$!
   # GRUB_TIMEOUT=0 boots the default entry immediately, and GRUB_TERMINAL="console
   # serial" plus the console= on the kernel line put the menu and the boot on ttyS0 -
   # which is also what makes the smoke test able to read it.
-  printf 'echo demo | sudo -S touch /mnt/mxroot/etc/default/grub\n'; sleep 3
-  printf 'echo demo | sudo -S sed -i "/^GRUB_TIMEOUT=/d;/^GRUB_TERMINAL=/d;/^GRUB_CMDLINE_LINUX_DEFAULT=/d" /mnt/mxroot/etc/default/grub\n'; sleep 4
+  # Everything from here writes into /mnt/mxroot. Ungated, a failed mount means these
+  # lines edit the LIVE system's own /mnt, which is both useless and confusing to read
+  # afterwards.
+  printf 'if [ -f /mnt/mxroot/etc/debian_version ]; then echo demo | sudo -S touch /mnt/mxroot/etc/default/grub; echo RC_TOUCH=$?; else echo RC_TOUCH=skipped_no_root; fi\n'; sleep 5
+  printf 'if [ -f /mnt/mxroot/etc/debian_version ]; then echo demo | sudo -S sed -i "/^GRUB_TIMEOUT=/d;/^GRUB_TERMINAL=/d;/^GRUB_CMDLINE_LINUX_DEFAULT=/d" /mnt/mxroot/etc/default/grub; echo RC_SED=$?; else echo RC_SED=skipped_no_root; fi\n'; sleep 5
   # Written one line at a time with echo and no quoting at all.
   #
   # The first attempt bundled three appends into one sh -c with escaped quotes inside a
@@ -137,10 +172,11 @@ SNAP_PID=$!
   printf 'echo demo | sudo -S tee -a /mnt/mxroot/etc/default/grub <<< GRUB_CMDLINE_LINUX_DEFAULT=console=ttyS0,115200n8\n'; sleep 4
   printf 'echo demo | sudo -S cat /mnt/mxroot/etc/default/grub; echo RC_GRUBDEF=$?\n'; sleep 6
 
-  printf 'echo demo | sudo -S chroot /mnt/mxroot update-grub 2>&1 | tail -25; echo RC_UPDATE=$?\n'; sleep 60
+  printf 'if [ -f /mnt/mxroot/etc/debian_version ]; then echo demo | sudo -S chroot /mnt/mxroot update-grub 2>&1 | tail -25; echo RC_UPDATE=$?; else echo RC_UPDATE=skipped_no_root; fi\n'; sleep 60
 
-  # Prove it, rather than assume it.
-  printf 'echo demo | sudo -S ls -la /mnt/mxroot/boot/grub/grub.cfg; echo RC_CFG=$?\n'; sleep 8
+  # Prove it, rather than assume it - and if there was no root to write into, say that
+  # instead of reporting a missing file as a failure of update-grub.
+  printf 'if [ -f /mnt/mxroot/etc/debian_version ]; then echo demo | sudo -S ls -la /mnt/mxroot/boot/grub/grub.cfg; echo RC_CFG=$?; else echo "RC_CFG=skipped_no_root (grub was NOT installed)"; fi\n'; sleep 8
   printf 'echo demo | sudo -S wc -l /mnt/mxroot/boot/grub/grub.cfg\n'; sleep 6
   printf 'echo demo | sudo -S head -20 /mnt/mxroot/boot/grub/grub.cfg\n'; sleep 8
   printf 'echo GRUBFIX_DONE\n'; sleep 5
