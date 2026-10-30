@@ -54,15 +54,34 @@ def log(msg):
 class Guest:
     """The live session's serial console, as an object that can wait for things.
 
-    The guest prints to serial.out. Every method that waits does so by polling that
-    file for a line, which is the only mechanism here that does not involve guessing a
+    The guest prints to console. Every method that waits does so by polling that file
+    for a line, which is the only mechanism here that does not involve guessing a
     duration.
+
+    The feed is opened NON-BLOCKING and retried, because opening a FIFO for writing
+    blocks until a reader appears - and a blocked open here is indistinguishable from a
+    hung guest. It was: the first run of this file sat for fifteen minutes with no
+    output at all, because qemu had not yet opened the other end of the fifo.
     """
 
-    def __init__(self, feed, console):
-        self.feed = feed
+    def __init__(self, fifo, console):
         self.console = console
         self.sent = 0
+        self.feed = self._open_feed(fifo)
+
+    @staticmethod
+    def _open_feed(fifo, seconds=90):
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            try:
+                # O_NONBLOCK on a write-only FIFO fails with ENXIO while there is no
+                # reader, which is exactly the condition worth retrying.
+                fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+                os.set_blocking(fd, True)
+                return os.fdopen(fd, "w", buffering=1)
+            except OSError:
+                time.sleep(1)
+        raise SystemExit("no reader appeared on %s within %ds" % (fifo, seconds))
 
     def send(self, command, settle=1.0):
         """Write one line to the guest and give it a moment to echo it."""
@@ -216,8 +235,9 @@ def main():
         stderr=subprocess.STDOUT,
     )
 
-    feed = open(fifo, "w")
-    guest = Guest(feed, console)
+    # Opened inside Guest, non-blocking with retry: a plain open(fifo,"w") blocks until
+    # qemu opens the read end, and that is a silent hang.
+    guest = Guest(fifo, console)
     rc = 1
     try:
         # Log in. Three cycles is enough; every cycle after the first success types
@@ -312,7 +332,7 @@ def main():
             log("=== no grub.cfg - the menu was not generated ===")
 
     finally:
-        feed.close()
+        guest.feed.close()
         qemu.send_signal(signal.SIGTERM)
         try:
             qemu.wait(timeout=20)
