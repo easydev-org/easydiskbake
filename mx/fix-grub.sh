@@ -117,7 +117,25 @@ SNAP_PID=$!
   # prints one line either way, and the mount below only runs if it appeared. The
   # numbers: 120 tries, half a second each, a minute - four times the longest wait ever
   # observed for the node to appear once the installer had finished with the disk.
-  printf 'echo demo | sudo -S sh -c "for i in $(seq 1 120); do if [ -b /dev/vda1 ]; then echo VDA1_READY_AT_TRY_$i; exit 0; fi; sleep 0.5; done; echo VDA1_NEVER_APPEARED; ls /dev/vda* 2>&1"\n'
+  # THE LOOP IS WRITTEN OUT, NOT GENERATED WITH seq.
+  #
+  # The first version sent "for i in $(seq 1 120)" inside a double-quoted string. The
+  # HOST shell expanded it before the text ever reached the guest, so the serial line
+  # received a command carrying a hundred and twenty numbers, truncated it, and neither
+  # VDA1_READY nor VDA1_NEVER_APPEARED appeared in the log at all. The check that was
+  # supposed to remove a timing guess failed by not running.
+  #
+  # A counted while-loop has no subshell for the host to expand and is a fixed length.
+  # Passed as an argument to %s so that NOTHING in it is interpreted here.
+  #
+  # printf with the text in the format string still processes backslashes: a \\$i in the
+  # format reaches the guest as the literal two characters \\$, which is not a variable
+  # and makes the loop test nonsense. Verified with the same printf on this machine:
+  #
+  #   printf 'A: i=\\$i\n'   ->  A: i=\$i
+  #   printf 'B: i=$i\n'     ->  B: i=
+  #   printf '%s\n' '...$i...'  ->  ...$i...      <- unchanged, which is what is wanted
+  printf 'echo demo | sudo -S sh -c %s\n' '"i=0; while [ $i -lt 120 ]; do if [ -b /dev/vda1 ]; then echo VDA1_READY; exit 0; fi; i=$((i+1)); sleep 0.5; done; echo VDA1_NEVER_APPEARED; ls /dev/vda* 2>&1"'
   sleep 20
   printf 'echo VDA1_CHECK_DONE\n'; sleep 4
   # What does the disk actually look like before touching it?
@@ -146,7 +164,7 @@ SNAP_PID=$!
   # exist while the kernel is not yet ready to read a filesystem on it, and a device a
   # process has only just stopped writing can answer EBUSY for a moment. Ten attempts, a
   # second apart, and whichever result the last one gives is what gets reported.
-  printf 'echo demo | sudo -S sh -c "for i in $(seq 1 10); do if mount /dev/vda1 /mnt/mxroot 2>/tmp/mnt.err; then echo RC_MOUNT=0; exit 0; fi; sleep 1; done; echo RC_MOUNT_FAILED; cat /tmp/mnt.err"\n'
+  printf 'echo demo | sudo -S sh -c %s\n' '"i=0; while [ $i -lt 10 ]; do if mount /dev/vda1 /mnt/mxroot 2>/tmp/mnt.err; then echo RC_MOUNT=0; exit 0; fi; i=$((i+1)); sleep 1; done; echo RC_MOUNT_FAILED; cat /tmp/mnt.err"'
   sleep 25
   printf 'echo MOUNT_CHECK_DONE\n'; sleep 4
   printf 'echo demo | sudo -S ls /mnt/mxroot/etc/debian_version; echo RC_ETC=$?\n'; sleep 6
