@@ -28,6 +28,30 @@ cd "$WORK"
 
 log() { echo "[grub $(date -u +%H:%M:%S)] $*"; }
 
+# Wait for a line to appear in what the guest has printed.
+#
+# The alternative was a fixed sleep before each step, with the sum of all of them as an
+# implicit deadline. That made the whole stage depend on how fast the machine happened
+# to be: the same script gave RC_MOUNT=0 at 330 seconds and RC_MOUNT=32 at 280, and the
+# 32 case went on to destroy the MBR while reporting success.
+#
+# Waiting for the guest to say it has finished is not a longer guess, it is not a guess.
+# The ceiling only exists so that a genuinely hung guest still fails the run.
+wait_for_marker() {
+  local marker="$1" seconds="${2:-180}"
+  local CONSOLE="${CONSOLE_LOG:-serial.out}"
+  local i
+  for i in $(seq 1 "$seconds"); do
+    if grep -qa "$marker" "$CONSOLE" 2>/dev/null; then
+      log "saw $marker after ${i}s"
+      return 0
+    fi
+    sleep 1
+  done
+  log "NEVER SAW $marker after ${seconds}s - the guest stopped responding"
+  return 1
+}
+
 K=$(find "$PWD/x" -name 'vmlinuz*' -type f | head -1)
 I=$(find "$PWD/x" -name 'initrd*' -type f | head -1)
 [ -s "$K" ] || { log "no kernel in $WORK/x"; exit 2; }
@@ -76,6 +100,26 @@ SNAP_PID=$!
   printf 'echo GRUBFIX_LOGIN $(id -u)\n'; sleep 5
 
   printf 'echo demo | sudo -S mkdir -p /mnt/mxroot\n'; sleep 4
+
+  # WAIT FOR THE PARTITION, DO NOT GUESS HOW LONG IT TAKES.
+  #
+  # The previous version put a fixed sleep before every step and used their sum as a
+  # deadline. Mount then succeeded or failed depending on how long the live session took
+  # to settle, which varied run to run - 330 seconds worked, 280 did not - and the
+  # failure was silent:
+  #
+  #   RC_MOUNT=32          mount /dev/vda1: no such device
+  #   RC_INSTALL=0         grub-install chrooted into an empty directory, wrote zeroes
+  #                        over the MBR, and returned success
+  #   mbr signature: 0000
+  #
+  # So the waiting happens in the guest now. This loop polls for the device node and
+  # prints one line either way, and the mount below only runs if it appeared. The
+  # numbers: 120 tries, half a second each, a minute - four times the longest wait ever
+  # observed for the node to appear once the installer had finished with the disk.
+  printf 'echo demo | sudo -S sh -c "for i in $(seq 1 120); do if [ -b /dev/vda1 ]; then echo VDA1_READY_AT_TRY_$i; exit 0; fi; sleep 0.5; done; echo VDA1_NEVER_APPEARED; ls /dev/vda* 2>&1"\n'
+  sleep 20
+  printf 'echo VDA1_CHECK_DONE\n'; sleep 4
   # What does the disk actually look like before touching it?
   #
   # A run where mount failed with RC=32 went on to chroot into an EMPTY directory and
@@ -96,7 +140,15 @@ SNAP_PID=$!
   printf 'echo DISK_REPORT_BEGIN; echo demo | sudo -S cat /tmp/lsblk.txt; echo DISK_REPORT_END\n'; sleep 10
   printf 'echo demo | sudo -S parted -s /dev/vda print; echo PARTED_RC=$?\n'; sleep 6
 
-  printf 'echo demo | sudo -S mount /dev/vda1 /mnt/mxroot; echo RC_MOUNT=$?\n'; sleep 8
+  # The mount itself retries in the guest, for the same reason.
+  #
+  # Waiting for the device node and then mounting once is still a race: the node can
+  # exist while the kernel is not yet ready to read a filesystem on it, and a device a
+  # process has only just stopped writing can answer EBUSY for a moment. Ten attempts, a
+  # second apart, and whichever result the last one gives is what gets reported.
+  printf 'echo demo | sudo -S sh -c "for i in $(seq 1 10); do if mount /dev/vda1 /mnt/mxroot 2>/tmp/mnt.err; then echo RC_MOUNT=0; exit 0; fi; sleep 1; done; echo RC_MOUNT_FAILED; cat /tmp/mnt.err"\n'
+  sleep 25
+  printf 'echo MOUNT_CHECK_DONE\n'; sleep 4
   printf 'echo demo | sudo -S ls /mnt/mxroot/etc/debian_version; echo RC_ETC=$?\n'; sleep 6
   printf 'echo demo | sudo -S ls /mnt/mxroot/boot | head -5\n'; sleep 6
   printf 'echo demo | sudo -S ls /mnt/mxroot/usr/sbin/grub-install; echo RC_GRUBBIN=$?\n'; sleep 6
@@ -131,7 +183,11 @@ SNAP_PID=$!
 '
   printf '  echo demo | sudo -S mount --bind /sys /mnt/mxroot/sys; echo RC_SYS=$?; \
 '
-  printf 'else echo RC_DEV=skipped RC_PTS=skipped RC_PROC=skipped RC_SYS=skipped; fi\n'; sleep 25
+  printf '  echo BINDS_DONE; \\
+'
+  printf 'else echo RC_DEV=skipped RC_PTS=skipped RC_PROC=skipped RC_SYS=skipped; echo BINDS_DONE; fi\n'
+  sleep 8
+  wait_for_marker "BINDS_DONE" 60
 
   # grub-install first: it writes stage 1 and creates /boot/grub/i386-pc. update-grub
   # then writes the menu. The order matters - update-grub alone produces a menu for a
@@ -143,7 +199,14 @@ SNAP_PID=$!
 '
   printf '  echo demo | sudo -S chroot /mnt/mxroot grub-install --target=i386-pc --recheck /dev/vda 2>&1 | tail -25; echo RC_INSTALL=$?; \
 '
-  printf 'else echo RC_INSTALL=skipped_no_root; fi\n'; sleep 50
+  printf '  echo GRUB_INSTALL_DONE; \\\n'
+  printf 'else echo RC_INSTALL=skipped_no_root; echo GRUB_INSTALL_DONE; fi\n'
+  sleep 10
+  # Wait for grub-install to say it is finished instead of sleeping fifty seconds and
+  # hoping. grub-install on a 64 GB disk takes anywhere from ten to forty seconds, and
+  # the previous fixed sleep was simultaneously too long in the common case and too
+  # short when the disk was slow.
+  wait_for_marker "GRUB_INSTALL_DONE" 180
 
   # The menu has to boot by itself, and it has to talk to the serial port.
   #
@@ -176,7 +239,12 @@ SNAP_PID=$!
   printf 'echo demo | sudo -S tee -a /mnt/mxroot/etc/default/grub <<< GRUB_CMDLINE_LINUX_DEFAULT=console=ttyS0,115200n8\n'; sleep 4
   printf 'echo demo | sudo -S cat /mnt/mxroot/etc/default/grub; echo RC_GRUBDEF=$?\n'; sleep 6
 
-  printf 'if [ -f /mnt/mxroot/etc/debian_version ]; then echo demo | sudo -S chroot /mnt/mxroot update-grub 2>&1 | tail -25; echo RC_UPDATE=$?; else echo RC_UPDATE=skipped_no_root; fi\n'; sleep 60
+  printf 'if [ -f /mnt/mxroot/etc/debian_version ]; then echo demo | sudo -S chroot /mnt/mxroot update-grub 2>&1 | tail -25; echo RC_UPDATE=$?; echo UPDATE_GRUB_DONE; else echo RC_UPDATE=skipped_no_root; echo UPDATE_GRUB_DONE; fi\n'
+  sleep 10
+  # update-grub runs os-prober and probes every filesystem; sixty seconds was the old
+  # fixed wait and it is both too long when there is one disk and too short when
+  # os-prober decides to look harder.
+  wait_for_marker "UPDATE_GRUB_DONE" 240
 
   # Prove it, rather than assume it - and if there was no root to write into, say that
   # instead of reporting a missing file as a failure of update-grub.
