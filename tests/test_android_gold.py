@@ -66,6 +66,63 @@ class WipeData(unittest.TestCase):
         self.assertEqual([a for a in bake if a != "-wipe-data"], check)
 
 
+class EmulatorArgv(unittest.TestCase):
+    """-qmp goes to qemu through -qemu, and nothing may follow it.
+
+    THE FAILURE
+
+        [emulator] pid 79
+        [android] FAILED: the emulator exited with 1 before opening QMP.
+        Last lines of emulator.log:
+            INFO | Android emulator version 37.2.13.0 ...
+            unknown option: -qmp
+            please use -help for a list of valid options
+
+    The emulator has its own argument parser in front of qemu's and does not know -qmp.
+    `-qemu <args>` passes the rest of the vector to the qemu underneath, which does.
+
+    THE ORDER IS THE CONSTRAINT. Everything after -qemu is handed to qemu, so an
+    emulator option placed there is never seen by the emulator - it becomes a qemu
+    argument, and qemu rejects it with a different message several steps later.
+    """
+
+    def argv(self):
+        with mock.patch("shutil.which", return_value="/opt/android-sdk/emulator/emulator"):
+            return emulator.build_args("sandbox", "/tmp/work")
+
+    def test_qmp_is_not_a_top_level_option(self):
+        argv = self.argv()
+        # "-qmp" must never be the thing the emulator is asked to parse directly.
+        if "-qmp" in argv:
+            self.assertIn("-qemu", argv)
+            self.assertLess(argv.index("-qemu"), argv.index("-qmp"))
+
+    def test_qemu_is_the_last_entry(self):
+        argv = self.argv()
+        self.assertIn("-qemu", argv)
+        following = argv[argv.index("-qemu") + 1:]
+        self.assertEqual(following[:1], ["-qmp"])
+        # Only the socket argument may follow the -qmp flag itself.
+        self.assertEqual(len(following), 2, following)
+
+    def test_emulator_options_come_before_qemu(self):
+        argv = self.argv()
+        cutoff = argv.index("-qemu")
+        for option in ("-no-window", "-no-audio", "-no-boot-anim", "-no-snapshot",
+                       "-no-metrics", "-no-keys", "-wipe-data", "-gpu", "-accel"):
+            if option in argv:
+                self.assertLess(argv.index(option), cutoff,
+                                f"{option} after -qemu would be passed to qemu")
+
+    def test_the_socket_has_a_server_and_does_not_wait(self):
+        # wait=off: the emulator must not block until a client connects, or a bake that
+        # starts it before attaching its recorder deadlocks.
+        argv = self.argv()
+        socket = argv[argv.index("-qmp") + 1]
+        self.assertIn("server=on", socket)
+        self.assertIn("wait=off", socket)
+
+
 class GoldMarker(unittest.TestCase):
 
     def test_the_marker_is_unique_per_run(self):

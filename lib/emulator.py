@@ -112,13 +112,27 @@ def build_args(avd: str, work: str, *, api: int = 35, abi: str = "x86_64",
         "-memory", str(memory_mb),
         "-cores", str(cores),
         "-port", "5554",
-        # QMP is what makes this reusable: lib/qmp.py screenshots and clicks through
-        # it, and lib/snapshots.py records frames from the same socket.
-        "-qmp", f"unix:{qmp},server=on,wait=off",
+        # QMP REACHES QEMU THROUGH -qemu, NOT AS A TOP-LEVEL OPTION.
+        #
+        # The emulator is Google's qemu fork with its own argument parser in front of
+        # qemu's. Its parser does not know -qmp:
+        #
+        #     unknown option: -qmp
+        #     please use -help for a list of valid options
+        #
+        # `-qemu <args>` passes everything after it straight through to the qemu
+        # underneath, which is where -qmp lives. Everything downstream of this line -
+        # lib/qmp.py, lib/snapshots.py - is unchanged: the socket is a real QMP socket,
+        # it is only the route to it that differs.
         # -no-metrics and -no-keys keep the emulator from making network calls of its
         # own; a bake should not depend on Google's telemetry endpoints being up.
+        #
+        # THE ORDER MATTERS: everything after -qemu goes to qemu, so these have to be
+        # before it or the emulator never sees them.
         "-no-metrics",
         "-no-keys",
+        # LAST, because -qemu hands the rest of the vector to qemu underneath.
+        "-qemu", "-qmp", f"unix:{qmp},server=on,wait=off",
     ]
     return args
 
