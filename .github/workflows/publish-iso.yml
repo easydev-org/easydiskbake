@@ -63,6 +63,14 @@ env:
 jobs:
   publish:
     runs-on: ubuntu-24.04
+    # In the image, like every other job here: it carries oras, curl and aria2, and
+    # a publish that runs in a different environment from the bake is one more
+    # difference to explain when an image is missing.
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     timeout-minutes: 120
     permissions:
       contents: read

@@ -84,11 +84,32 @@ def check_kvm() -> None:
         with open(path, "r+b"):
             pass
     except OSError as exc:
-        raise Failed(
-            f"{path} cannot be opened read-write by uid {os.getuid()}: {exc}\n"
-            f"The runner's container needs --device /dev/kvm; a job that only has the\n"
-            f"device node without write access will fail at qemu startup instead."
-        ) from exc
+        # The device node exists but this uid cannot use it. On a GitHub runner the
+        # node is 0o660 root:kvm and the job's uid is neither.
+        #
+        # sudo chmod 666 is the standard fix and is safe here: /dev/kvm is a character
+        # device that only grants the ability to create VMs the kernel is already
+        # willing to run, and the job that can reach this code can already run qemu.
+        # Refusing instead would make every bake on a stock runner fail in prepare.
+        log(f"{path} is not accessible to uid {os.getuid()} ({exc}); granting 0666")
+        result = subprocess.run(
+            ["sudo", "chmod", "0666", path], capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            raise Failed(
+                f"{path} cannot be opened by uid {os.getuid()} and could not be "
+                f"made accessible:\n{result.stderr.strip()[:300]}\n"
+                f"The runner needs to expose /dev/kvm; on a container job that is\n"
+                f"`options: --device /dev/kvm`."
+            ) from exc
+
+        try:
+            with open(path, "r+b"):
+                pass
+        except OSError as second:
+            raise Failed(
+                f"{path} is still not accessible after chmod 0666: {second}"
+            ) from second
 
     log("kvm: usable")
 

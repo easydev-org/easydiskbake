@@ -57,6 +57,13 @@ env:
 jobs:
   recovery:
     runs-on: ubuntu-24.04
+    # In the image: aria2c is what makes an 850 MiB transfer from Apple's CDN survive,
+    # and it is in the Containerfile for exactly this.
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     timeout-minutes: 90
     permissions:
       contents: read

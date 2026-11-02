@@ -14,21 +14,23 @@ name: bake-windows
 # published base, the way dockur-macos does its stage 3, so that a broken second stage
 # cannot invalidate a base that was otherwise finished. Not implemented.
 #
+# THE JOB RUNS INSIDE THE IMAGE
+#
+# `container:` with `--device /dev/kvm`, exactly as bake-mx.yml does. The image is the
+# environment: qemu, xorriso, swtpm, OVMF, 7z, wimlib, aria2 and python3 are all pinned
+# by the Containerfile, so a bake is the same whether it runs here or by hand.
+#
+# The first version ran on the host and shelled out to `docker run` for each step. It
+# looked equivalent and was not: the `prepare` step then executed as the runner's uid,
+# which cannot open /dev/kvm (0o660, root:kvm), so every bake failed in twelve seconds
+# asking for a permission the image already had. A container job that needs a device
+# should be a container job.
+#
 # EVERY STEP RUNS THROUGH LOG-STREAM
 #
 # GitHub serves a running job's Actions log from an internal store and the public
 # endpoints answer 404 until the job ends, so a 90-minute bake is invisible while it
-# runs. A check run's output.text has no such restriction. Every step here - including
-# the disk pruning, the login and the push - is wrapped, so there is no silent gap.
-#
-# The work itself lives in Python (lib/ci.py, lib/publish_disk.py, windows/11/bake.py).
-# The `command:` blocks below are two lines each: an optional ci.py call and the script.
-#
-# WHY THE BAKE RUNS IN THE IMAGE
-#
-# Everything the bake needs (qemu, xorriso, swtpm, ffmpeg, 7z, wimlib, OVMF, python3)
-# is in this repository's own package, pinned by the Containerfile. The runner supplies
-# /dev/kvm and nothing else.
+# runs. A check run's output.text has no such restriction.
 #
 # MANUAL ONLY
 #
@@ -61,23 +63,28 @@ concurrency:
   group: bake-windows-${{ github.ref }}
   cancel-in-progress: false
 
-env:
-  REGISTRY: ghcr.io
-  BAKE_IMAGE: ghcr.io/${{ github.repository }}:latest
-
 jobs:
   base:
     runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
     timeout-minutes: 180
     permissions:
       contents: read
       checks: write
+      # write, not read: this job pushes the disk as well as pulling the ISO. One job
+      # rather than two, because the disk is already in the container's filesystem and
+      # an artifact round-trip of 4 GiB to move it to a second job buys nothing.
       packages: write
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: prepare the runner
+      - name: prepare
         uses: easydev-org/easyagent-github-ext/actions/log-stream@main
         with:
           token: ${{ github.token }}
@@ -99,21 +106,15 @@ jobs:
           command: |
             set -euo pipefail
             mkdir -p out
-            docker run --rm \
-              --device /dev/kvm \
-              --volume "$PWD/out:/work" \
-              --volume "$PWD:/repo:ro" \
-              --workdir /work \
-              --env GITHUB_TOKEN="${{ github.token }}" \
-              --env SNAPSHOT_INTERVAL="${{ inputs.snapshot_interval || '5' }}" \
-              --env RECORD_FPS=1 \
-              "$BAKE_IMAGE" \
-              python3 /repo/windows/11/bake.py \
-                --out /work/windows11.qcow2 \
-                --answer /repo/windows/11/answer \
-                --image "${{ inputs.image || 'windows11' }}" \
-                --disk-size "${{ inputs.disk_size || '64G' }}" \
-                --timeout 5400
+            export GITHUB_TOKEN="${{ github.token }}"
+            export SNAPSHOT_INTERVAL="${{ inputs.snapshot_interval || '5' }}"
+            export RECORD_FPS=1
+            python3 windows/11/bake.py \
+              --out out/windows11.qcow2 \
+              --answer windows/11/answer \
+              --image "${{ inputs.image || 'windows11' }}" \
+              --disk-size "${{ inputs.disk_size || '64G' }}" \
+              --timeout 5400
 
       # A second, independent read of the disk. The bake already checked it, but the
       # bake also had the ISO attached and a live installer in memory: this is a
@@ -126,12 +127,7 @@ jobs:
           interval: "10"
           command: |
             set -euo pipefail
-            docker run --rm \
-              --volume "$PWD/out:/work" \
-              --volume "$PWD:/repo:ro" \
-              --workdir /work \
-              "$BAKE_IMAGE" \
-              python3 /repo/windows/11/verify.py /work/windows11.qcow2
+            python3 windows/11/verify.py out/windows11.qcow2
 
       # The recording is what explains a failure: a setup pane waiting for a click and
       # a hung kernel look identical in a log, and this is the only artifact that shows
@@ -166,25 +162,8 @@ jobs:
           retention-days: 7
           compression-level: 0   # qcow2 is already zstd-compressed
 
-  publish:
-    needs: base
-    if: ${{ inputs.publish == true || inputs.publish == null }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    permissions:
-      contents: read
-      checks: write
-      packages: write
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: windows11-qcow2
-          path: out
-
       - name: push the disk
+        if: ${{ inputs.publish == true || inputs.publish == null }}
         uses: easydev-org/easyagent-github-ext/actions/log-stream@main
         with:
           token: ${{ github.token }}

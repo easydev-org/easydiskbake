@@ -29,22 +29,44 @@ class Kvm(unittest.TestCase):
         self.assertIn("/dev/kvm", str(ctx.exception))
         self.assertIn("impossible", str(ctx.exception))
 
-    def test_unopenable_kvm_is_a_failure(self):
-        # The device exists but the process cannot open it: the container was given the
-        # node without access. This is what a runner without --device /dev/kvm looks
-        # like from inside.
+    def test_it_grants_access_when_the_device_is_denied(self):
+        # What a stock GitHub runner looks like: /dev/kvm is 0o660 root:kvm and the
+        # job's uid is neither. Refusing would fail every bake in prepare, so the
+        # function chmods it and tries again.
         fake_stat = type("S", (), {"st_mode": 0o660, "st_rdev": 0})()
+        handle = mock.MagicMock()
+        handle.__enter__ = mock.Mock(return_value=handle)
+        handle.__exit__ = mock.Mock(return_value=False)
+        calls = {"n": 0}
 
-        def fake_major(_): return 10
-        def fake_minor(_): return 232
+        def fake_open(*_args, **_kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise PermissionError(13, "denied")
+            return handle
 
         with mock.patch("os.path.exists", return_value=True), \
              mock.patch("os.stat", return_value=fake_stat), \
-             mock.patch("os.major", fake_major), mock.patch("os.minor", fake_minor), \
-             mock.patch("builtins.open", side_effect=PermissionError(13, "denied")):
+             mock.patch("os.major", lambda _: 10), mock.patch("os.minor", lambda _: 232), \
+             mock.patch("builtins.open", side_effect=fake_open), \
+             mock.patch("subprocess.run") as run:
+            run.return_value = mock.Mock(returncode=0, stderr="")
+            ci.check_kvm()
+
+        run.assert_called_once()
+        self.assertEqual(run.call_args[0][0], ["sudo", "chmod", "0666", "/dev/kvm"])
+
+    def test_it_fails_when_chmod_does_not_help(self):
+        fake_stat = type("S", (), {"st_mode": 0o660, "st_rdev": 0})()
+
+        with mock.patch("os.path.exists", return_value=True), \
+             mock.patch("os.stat", return_value=fake_stat), \
+             mock.patch("os.major", lambda _: 10), mock.patch("os.minor", lambda _: 232), \
+             mock.patch("builtins.open", side_effect=PermissionError(13, "denied")), \
+             mock.patch("subprocess.run") as run:
+            run.return_value = mock.Mock(returncode=1, stderr="chmod: failed")
             with self.assertRaises(ci.Failed) as ctx:
                 ci.check_kvm()
-        self.assertIn("read-write", str(ctx.exception))
         self.assertIn("--device /dev/kvm", str(ctx.exception))
 
     def test_permission_is_decided_by_opening_not_by_os_access(self):
