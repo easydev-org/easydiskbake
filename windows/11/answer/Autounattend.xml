@@ -111,10 +111,31 @@
         </OSImage>
       </ImageInstall>
 
+      <!-- THE PRODUCT KEY IS NOT OPTIONAL, EVEN THOUGH NOTHING GETS ACTIVATED.
+
+           Without a <ProductKey> here, setup stops at "Enter a product key" and waits
+           - which is exactly what the first complete run did for nine minutes: 131
+           identical frames of that page, and the screen check correctly kept saying
+           "not a desktop yet".
+
+           This is the generic install key for Windows 11 Pro. It selects the edition
+           during setup and does not activate anything; the guest runs unactivated,
+           which is what a sandbox needs and what dockur/windows uses for the same
+           reason. It is published by Microsoft for exactly this: installing without a
+           retail key so the edition can be chosen from the image.
+
+           I removed this once, on the reasoning that an ISO without an answer file
+           installs without a key. That is true of an interactive install and false of
+           an unattended one: the pass is incomplete without it, so setup falls back to
+           asking. -->
       <UserData>
         <AcceptEula>true</AcceptEula>
         <FullName>easydiskbake</FullName>
         <Organization>easydev-org</Organization>
+        <ProductKey>
+          <Key>VK7JG-NPHTM-C97JM-9MPGT-3V66T</Key>
+          <WillShowUI>Never</WillShowUI>
+        </ProductKey>
       </UserData>
     </component>
   </settings>

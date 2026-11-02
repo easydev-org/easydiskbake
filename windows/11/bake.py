@@ -186,16 +186,31 @@ class Baker:
         root of any removable drive, so a second CD is enough - see lib/winiso.py for
         why that beats remastering 7.2 GiB, and for the 448 KB ISO that proved it.
 
-        The template carries __ADMIN_PASSWORD__ and __COMPUTER_NAME__ rather than
-        values, so the password is not in the repository and the machine name is not
-        the same in every bake. The substitution happens here, into a copy, so
-        windows/11/answer/ stays a template.
+        The template carries placeholders rather than values, so the password is not in
+        the repository and the machine name is not the same in every bake. The
+        substitution happens here, into a copy, so windows/11/answer/ stays a template.
+
+        EVERY PLACEHOLDER MUST BE SUBSTITUTED, AND THAT IS CHECKED BELOW.
+
+        __WINDOWS_IMAGE_INDEX__ was missing from this function while the template used
+        it. Setup received a literal string where it expected the index of the edition
+        to install, could not resolve it, and abandoned the unattended flow - landing
+        on the first page that needs a person, which turned out to be "Enter a product
+        key". The bake then recorded 131 identical frames of that page for nine
+        minutes, and the desktop check correctly reported that no desktop had appeared.
         """
         staging = os.path.join(self.work, "answer")
         os.makedirs(staging, exist_ok=True)
 
         password = os.environ.get("WINDOWS_ADMIN_PASSWORD", "docker")
         name = os.environ.get("WINDOWS_COMPUTER_NAME", "sandbox")
+        pin = images.pin_for_bake(self.args.image)
+
+        substitutions = {
+            "__ADMIN_PASSWORD__": password,
+            "__COMPUTER_NAME__": name,
+            "__WINDOWS_IMAGE_INDEX__": str(pin["index"]),
+        }
 
         for entry in os.listdir(self.args.answer):
             source = os.path.join(self.args.answer, entry)
@@ -203,7 +218,17 @@ class Baker:
                 continue
             with open(source, "r", encoding="utf-8", errors="replace") as fh:
                 text = fh.read()
-            text = text.replace("__ADMIN_PASSWORD__", password).replace("__COMPUTER_NAME__", name)
+            for placeholder, value in substitutions.items():
+                text = text.replace(placeholder, value)
+
+            # A placeholder left in the answer file is a setup that falls back to
+            # asking a human - a nine-minute wait for a page nobody clicks. Fail here,
+            # naming the placeholder, rather than at the far end of a bake.
+            leftover = [ph for ph in substitutions if ph in text]
+            if leftover:
+                raise SystemExit(
+                    f"{entry} still contains {', '.join(leftover)} after substitution"
+                )
 
             # Windows .cmd files must be CRLF: cmd.exe treats a bare LF as part of
             # the line in some paths, and a label such as ":state_done" followed by
