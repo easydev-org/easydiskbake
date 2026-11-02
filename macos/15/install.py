@@ -360,17 +360,62 @@ class Recovery:
             digest = (digest * 131 + pixels[index]) & 0xFFFFFFFF
         return digest
 
+    def wait_until_drawn(self, timeout: float = 180.0, settle: float = 5.0,
+                         why: str = "") -> bool:
+        """Wait until the screen stops changing, i.e. a pane has finished painting.
+
+        THIS IS THE ONE THE FIRST CLICK NEEDS. Run 41480111851 clicked the Disk Utility
+        row at 16:20:15, while the display was still blank, and the menu did not appear
+        until about 16:20:40. A click delivered into a window that does not exist yet is
+        not lost - the firmware buffers it - and it lands on whatever is at that point
+        once the window arrives. It landed on the FIRST row, "Restore from Time Machine",
+        and the whole run proceeded through the wrong application.
+
+        WHY NOT "WAIT FOR THE SCREEN TO BE BRIGHT". A threshold has to be tuned against
+        this guest's rendering, and a mostly-dark pane (the installer's licence sheet is
+        dark) would fail it. Stability needs no threshold: two consecutive fingerprints
+        that match mean nothing is being painted.
+
+        Returns False on timeout so the caller can say what it was looking at.
+        """
+        started = time.time()
+        deadline = started + timeout
+        last = self.fingerprint()
+        if last is None:
+            # Nothing can be seen. Say so by returning True: the caller's fixed sleeps
+            # are all the pacing there is, and a failure here would be a guess.
+            log("  the screen cannot be read; falling back to the caller's waits")
+            return True
+
+        stable = 0
+        while time.time() < deadline:
+            time.sleep(settle)
+            now = self.fingerprint()
+            if now is None:
+                continue
+            if now == last:
+                stable += 1
+                # Two matches: the last two samples agree, so nothing is moving.
+                if stable >= 2:
+                    log(f"  the screen settled after {time.time() - started:.0f}s"
+                        + (f" - {why}" if why else ""))
+                    return True
+            else:
+                stable = 0
+            last = now
+
+        log(f"  the screen never settled in {timeout:.0f}s"
+            + (f" - {why}" if why else ""))
+        return False
+
     def wait_for_change(self, timeout: float = 60.0, settle: float = 5.0,
                         why: str = "") -> bool:
         """Wait until the screen looks different from how it looked a moment ago.
 
-        WHY THE INSTALLER PANES NEED THIS AND THE DISK UTILITY DOES NOT
-
-        A fixed sleep is right when the thing being waited for is bounded: Disk Utility
-        paints in fifteen seconds, so fifteen seconds is a wait that works. The installer
-        panes are not bounded the same way - they are separate windows handed off by a
-        process that has just restarted, and any one of them can take a second or a
-        minute. Run 41477776580 shows what a fixed sleep costs there:
+        Used after a click that is supposed to replace one pane with another. The
+        installer panes are handed off between processes and are not bounded the way
+        Disk Utility's own painting is, so a fixed sleep is a guess that gets worse the
+        slower the guest is. Run 41477776580 shows the cost:
 
             16:10:04  click welcome Continue
             16:10:14  wait for the licence pane (ten seconds, as written)
@@ -379,13 +424,16 @@ class Recovery:
             the frame at 16:10:37 still shows "To set up the installation of macOS
             Sequoia, click Continue."
 
-        The click had not taken effect when the driver moved on, so three clicks aimed
-        at the licence pane landed on the welcome pane, and every pane after that was one
-        behind. The installation never started and the disk stayed at zero.
+        Three clicks aimed at the licence pane landed on the welcome pane, and every
+        pane after that was one behind.
 
         NOT OCR, and not a reading of what the pane says. This is the same evidence the
         rest of the file uses: the screen changed, so the pane changed. What it says is
         still somebody else's question.
+
+        A change is also followed by wait_until_drawn(), because "different" on the
+        first sample of a repaint is not "finished" - the caller's next click would land
+        mid-draw, which is the same swallowed click by another route.
         """
         before = self.fingerprint()
         if before is None:
@@ -400,6 +448,8 @@ class Recovery:
             if now is not None and now != before:
                 log(f"  the pane changed after {time.time() - started:.0f}s"
                     + (f" - {why}" if why else ""))
+                self.wait_until_drawn(timeout=60, settle=settle,
+                                      why="the new pane has to finish painting")
                 return True
         log(f"  the pane did not change in {timeout:.0f}s"
             + (f" - {why}" if why else ""))
@@ -460,39 +510,46 @@ class Recovery:
 
 
 def disk_utility(d: Recovery) -> None:
-    """Open Disk Utility from the recovery menu.
+    """Open Disk Utility from the recovery menu, once the menu is really there.
 
-    THE MENU IS NOT UP WHEN THE GUEST CONNECTS, AND THAT COST A WHOLE RUN.
+    SIXTY SECONDS IS NOT ENOUGH, AND THE RECORDING OF RUN 41480111851 PROVES IT
 
-    The recording of run 41472163272, read frame by frame, is unambiguous:
+    Frame by frame, against the driver's own log:
 
-        t= 0..21s   mean grey 0.6    the display is blank
-        t=22s       mean grey 1.1    still blank
-        t=23s       mean grey 23.6   the first frame with any picture in it
+        t=11s  (16:20:15)  #1 click Disk Utility row     the display is still BLANK
+        t=13s  (16:20:21)  #2 click recovery Continue
+        t=16s              the first frame with any picture in it
+        t=20s              the recovery menu is fully drawn
 
-    The driver had been clicking since t=1s. All seventeen actions - Disk Utility,
-    Continue, View, Show All Devices, two Ups, Erase, the name, Done, Cmd-Q, Reinstall,
-    welcome Continue, both Agree clicks - landed on a blank display. Nothing was
-    erased, and the run then failed at the destination pane because there was no
-    erased disk to install onto. The log said every click succeeded, because a click
-    that is delivered is a click that succeeded; whether it hit a *menu row* is a
-    different question and this file was not asking it.
+    The click was delivered at 16:20:15 and the menu did not exist until 16:20:40-ish.
+    Everything after it was aimed at a window that was not there, so the driver spent
+    the run inside "Time Machine System Restore" (visible at t=40) - the FIRST row of
+    the menu, which is where a click that arrives early lands - and then went back to
+    the menu, then into Reinstall. Disk Utility was never opened at all.
 
-    SO THE MENU GETS A FULL MINUTE BEFORE ANYTHING IS CLICKED, and every action after
-    that is spaced by five seconds. The pacing is the fix: these panes are drawn by a
-    guest with no acceleration, and a click that arrives during a repaint is lost. A
-    minute up front covers the debut of the display and the menu both.
+    THE FIX IS TO WAIT LONGER THAN THE SCREEN TAKES, WHICH IS 120 SECONDS.
+
+    The measured gap was 83 seconds from QMP connect to a usable menu (16:19:17 first
+    frame, 16:20:40 the menu). Sixty was the number in this file and it was not enough;
+    120 is that measurement with room, and it is a single wait at the top of the run
+    rather than a guess repeated at every step.
+
+    THE FIVE SECOND SPACING STAYS. It is not the thing that was wrong - the panes really
+    do take seconds to paint - it just cannot carry the weight of the first wait.
     """
-    d.wait(60, "the recovery menu draws")
+    d.wait(120, "the recovery menu draws")
+
     d.click((ROW_X, ROW_Y[3]), "Disk Utility row", settle=5)
+    d.wait_until_drawn(timeout=90,
+                       why="Disk Utility has to replace the recovery menu")
     d.click(CONTINUE_MENU, "recovery Continue", settle=20)
 
-    # DISK UTILITY HAS TO BE FULLY DRAWN BEFORE THE SIDEBAR IS TOUCHED, because the
-    # NEXT thing the sequence does is press Up twice and the sidebar's selection is what
-    # those presses move. Fifteen seconds, not five: this window paints its source list
-    # in stages on an unaccelerated guest, and an Up arriving early moves a selection
-    # that is not the one the two-press count assumes.
-    d.wait(15, "Disk Utility finishes drawing its sidebar")
+    # THE SIDEBAR HAS TO BE FINISHED BEFORE IT IS TOUCHED, because the next thing the
+    # sequence does is press Up twice and those presses move whatever the sidebar has
+    # selected. This window paints its source list in stages, and an Up arriving early
+    # moves a selection that is not the one the two-press count assumes.
+    d.wait_until_drawn(timeout=120,
+                       why="Disk Utility has to finish drawing its sidebar")
 
 
 def select_and_erase(d: Recovery) -> None:
@@ -580,13 +637,32 @@ def leave_disk_utility(d: Recovery) -> None:
     d.n += 1
     log(f"#{d.n} key combo cmd-Q")
     qmpmod.key_combo(d.q, "meta_l", "q")
-    time.sleep(20)
+    time.sleep(5)
+    # The menu is redrawn when the utility closes; the Reinstall click is the next thing
+    # that happens and a click into a window that is still closing goes nowhere.
+    d.wait_until_drawn(timeout=120, why="the recovery menu has to come back")
     d.shot(f"after-{d.n:02d}-leave-disk-utility")
 
 
 def reinstall(d: Recovery) -> None:
+    """Pick Reinstall from the menu and press Continue.
+
+    ROW_Y[1] is "Reinstall macOS Sequoia". The menu order was read off a frame:
+
+        y=240  Restore from Time Machine
+        y=333  Reinstall macOS Sequoia
+        y=425  Safari
+        y=514  Disk Utility
+
+    A click that lands here while the menu is still blank goes to whatever row the
+    firmware puts at this point once it arrives - which is how run 41480111851 ended up
+    in Time Machine System Restore while its log said "Disk Utility row".
+    """
     d.click((ROW_X, ROW_Y[1]), "Reinstall macOS row", settle=5)
     d.click(CONTINUE_MENU, "recovery Continue", settle=30)
+    # The recovery menu is replaced by the installer's own window.
+    d.wait_for_change(timeout=180,
+                      why="the installer window has to replace the recovery menu")
 
 
 def wait_for_install_start(d: Recovery, timeout: int = 120) -> bool:

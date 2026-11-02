@@ -409,3 +409,109 @@ class TheInstallerPanesAreWaited(unittest.TestCase):
         self.assertEqual(body.count("def capture"), 1)
         self.assertLess(body.index("def capture"), body.index("def brightness"))
         self.assertLess(body.index("def capture"), body.index("def fingerprint"))
+
+
+class TheFirstClickWaitsForTheMenu(unittest.TestCase):
+    """The Disk Utility click has to happen after the menu exists, not after 60 seconds.
+
+    MEASURED ON RUN 41480111851, frame by frame against the driver's own log:
+
+        t=11s  (16:20:15)  #1 click Disk Utility row      the display is still BLANK
+        t=13s  (16:20:21)  #2 click recovery Continue
+        t=16s              the first frame with any picture in it
+        t=20s              the recovery menu is fully drawn
+
+    A click delivered into a window that does not exist yet is not lost - the firmware
+    buffers it - and it lands on whatever is at that point when the window arrives. It
+    landed on the FIRST row of the menu:
+
+        y=240  Restore from Time Machine    <- where the click went
+        y=333  Reinstall macOS Sequoia
+        y=425  Safari
+        y=514  Disk Utility                 <- where it was aimed
+
+    The recording shows "Time Machine System Restore" at t=40, then the menu again, then
+    the installer. Disk Utility was never opened, and every erase step ran inside the
+    wrong application. The log said each click succeeded, because delivery is success;
+    whether it hit a menu row is a different question.
+
+    A fixed sleep cannot fix this. It has to be longer than the slowest boot, which
+    slows every other run and still fails when one boot is slower than the guess.
+    """
+
+    def source(self):
+        with open(os.path.join(MACOS15, "install.py"), encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_the_first_click_waits_two_minutes(self):
+        """120 seconds before the first click, and the number comes from a measurement.
+
+        The gap from QMP connect to a usable menu was 83 seconds on run 41480111851
+        (16:19:17 first frame, 16:20:40 the menu). The file had 60 and the click went
+        into a blank display. 120 is that measurement with room.
+        """
+        body = self.source()
+        start = body.index("def disk_utility")
+        end = body.index("def select_and_erase")
+        utility = body[start:end]
+
+        click_at = utility.index('"Disk Utility row"')
+        wait_at = utility.index('d.wait(120,')
+        self.assertLess(wait_at, click_at,
+                        "the first click must come after the 120 second wait")
+        self.assertIn('d.wait(120, "the recovery menu draws")', utility)
+
+    def test_nothing_is_clicked_before_the_first_wait(self):
+        """The 120 seconds is the FIRST thing the driver does, not the fourth.
+
+        The docstring quotes the click that went wrong, so the code under test begins at
+        the first `d.wait(` of the function body.
+        """
+        body = self.source()
+        start = body.index("def disk_utility")
+        end = body.index("def select_and_erase")
+        utility = body[start:end]
+        code = utility[utility.index("d.wait("):]
+
+        first_click = code.index("d.click(")
+        self.assertEqual(code[:first_click].strip(),
+                         'd.wait(120, "the recovery menu draws")',
+                         "something happens before the menu is waited for")
+        self.assertIn('"Disk Utility row"', code[first_click:first_click + 120])
+
+    def test_disk_utility_replacing_the_menu_is_waited_for(self):
+        body = self.source()
+        start = body.index("def disk_utility")
+        end = body.index("def select_and_erase")
+        utility = body[start:end]
+        self.assertIn("wait_until_drawn", utility,
+                      "nothing confirmed Disk Utility finished opening")
+
+    def test_settling_needs_no_brightness_threshold(self):
+        """Stability, not a grey level: the licence pane is dark on purpose.
+
+        A "screen is bright enough" test would have to be tuned against this guest's
+        rendering and would reject a pane that is legitimately dark.
+        """
+        body = self.source()
+        start = body.index("def wait_until_drawn")
+        end = body.index("def wait_for_change")
+        settle = body[start:end]
+        self.assertIn("fingerprint", settle)
+        self.assertNotIn("DARK_LEVEL", settle)
+
+    def test_the_menu_order_is_recorded(self):
+        """Row 1 is Reinstall and row 3 is Disk Utility - the reverse of a guess.
+
+        The menu, read off a frame at 1920x1080:
+
+            y=240  Restore from Time Machine
+            y=333  Reinstall macOS Sequoia
+            y=425  Safari
+            y=514  Disk Utility
+
+        ROW_Y[1] for reinstall and ROW_Y[3] for Disk Utility follow from that, and a
+        mis-indexed row is the same failure as a click that arrives too early.
+        """
+        self.assertEqual(install.ROW_Y[1], 333)
+        self.assertEqual(install.ROW_Y[3], 514)
