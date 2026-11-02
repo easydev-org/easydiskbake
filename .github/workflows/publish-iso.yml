@@ -118,4 +118,4 @@ jobs:
           interval: "10"
           command: |
             set -euo pipefail
-            python3 lib/ci.py tags --prefix iso- || true
+            python3 lib/ci.py tags --prefix iso-

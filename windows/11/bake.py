@@ -96,44 +96,53 @@ class Baker:
             log(f"{dest} already present, size matches the pin")
             return dest
 
-        # Pull from this repository's package first. The publish-iso workflow put it
-        # there and verified it against the same pin; doing the 7.2 GiB download here
-        # again would make every bake pay for a step that is already done.
+        # ONE SOURCE: this repository's package, and nothing else.
+        #
+        # There is no fallback to Microsoft's URL. A fallback sounds helpful and is not:
+        # when the image is missing from the package the cause is that publish-iso.yml
+        # was never run or failed, and the useful outcome is a message saying so at
+        # second ten instead of a 7.2 GiB download that hides the real problem - and
+        # then fails later, in the bake, on a different step.
+        #
+        # The pin is verified on both sides. publish_iso.py checks it against the vendor
+        # before pushing; lib/iso.py checks the layer size when pulling.
+        log(f"pulling {tag} from ghcr")
         try:
-            log(f"pulling {tag} from ghcr")
             return iso.fetch_iso(self.args.image, dest)
         except iso.IsoError as exc:
-            # Falling back is deliberate here and wrong in lib/iso.py's own use: a
-            # Linux ISO that is missing from the cache means publish-iso.yml never
-            # ran, and a mirror is a dependency nobody measured. A Windows ISO is
-            # different - it has no mirror, only the vendor, and the pin is verified
-            # either way. Failing hard would make a first run impossible.
-            log(f"not in the package ({exc}); falling back to the vendor")
-            log(f"image {self.args.image}: {pin['size']} bytes, sha256 {pin['sha256']}")
-            return iso.fetch_url(pin["url"], dest, sha256=pin["sha256"], size=pin["size"])
+            raise SystemExit(
+                f"{tag} is not in this repository's ghcr package: {exc}\n\n"
+                f"Run publish-iso.yml for {tag} first:\n"
+                f"    gh workflow run publish-iso.yml -f which={tag}\n"
+                f"This bake does not download from the vendor. A second source would\n"
+                f"be a second thing to verify, and the failure it hides is exactly the\n"
+                f"one worth seeing."
+            ) from exc
 
-    def fetch_virtio(self) -> str | None:
+    def fetch_virtio(self) -> str:
+        """The driver CD, from ghcr. Not optional, and not from the vendor.
+
+        Setup cannot see a virtio disk without these drivers, so a missing CD is not a
+        warning - without it the install stops at a pane listing no disks, which the
+        answer file's WillShowUI=OnError renders as a dialog nobody is watching.
+        """
         dest = os.path.join(self.work, "virtio-win.iso")
+        tag = images.tag("virtio-win")
+
         if os.path.exists(dest):
             log("virtio-win.iso already present")
             return dest
 
+        log(f"pulling {tag} from ghcr")
         try:
-            log("pulling virtio-win from ghcr")
             return iso.fetch_iso("virtio-win", dest)
         except iso.IsoError as exc:
-            log(f"not in the package ({exc}); falling back to the vendor")
-
-        try:
-            log("fetching virtio-win drivers")
-            # No hash: the URL is a tagged release and the file is not large. The
-            # failure this protects against - a different ISO than intended - is
-            # caught by setup itself, which finds no disk.
-            return iso.fetch_url(images.VIRTIO["virtio-win"]["url"], dest)
-        except Exception as exc:  # noqa: BLE001 - a missing driver CD is not fatal
-            log(f"WARNING: could not fetch virtio-win: {exc}")
-            log("setup may not see the disk; continuing without the driver CD")
-            return None
+            raise SystemExit(
+                f"{tag} is not in this repository's ghcr package: {exc}\n\n"
+                f"Run publish-iso.yml for {tag} first:\n"
+                f"    gh workflow run publish-iso.yml -f which={tag}\n"
+                f"Without the driver CD setup cannot see the disk it is installing to."
+            ) from exc
 
     def build_answer_iso(self) -> str:
         """Build the small ISO that carries Autounattend.xml.
@@ -279,9 +288,10 @@ class Baker:
             "-drive", f"file={clean},media=cdrom,readonly=on",
             "-drive", f"file={answer},media=cdrom,readonly=on",
             "-drive", f"file={self.disk},if=virtio,format=qcow2",
+            # Unconditional now: fetch_virtio() either returns a path or exits, because
+            # setup cannot see the disk without these drivers.
+            "-drive", f"file={virtio},media=cdrom,readonly=on",
         ]
-        if virtio:
-            drives += ["-drive", f"file={virtio},media=cdrom,readonly=on"]
 
         console = os.path.join(self.work, "console.log")
         guest = vm.Guest(self.work, extra=drives, shape=shape, stdout=console).start()

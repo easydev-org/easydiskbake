@@ -263,12 +263,12 @@ def parse_urls(body: str) -> tuple[str, str, str]:
 
 
 def _fetch(url: str, token: str, part: str) -> subprocess.CompletedProcess:
-    """Download with aria2c when present, curl otherwise.
+    """Download with aria2c. There is no other path.
 
-    WHY aria2c
+    WHY aria2c AND NOT curl
 
-    An 847 MiB transfer from oscd.apple.com through anything resembling a proxy gets
-    cut short: measured here, curl reported
+    An 847 MiB transfer from oscd.apple.com gets cut short with one connection. Measured
+    here, curl reported
 
         curl: (18) end of response with 887566699 bytes missing
         ... 20971520 bytes
@@ -277,53 +277,48 @@ def _fetch(url: str, token: str, part: str) -> subprocess.CompletedProcess:
     is not a token problem and not a rate limit - it is one long-lived connection being
     reset, which is what a segmented downloader exists to survive.
 
-    aria2c splits the file into segments, resumes each, and reconnects per segment. It
-    is also what dockur-macos uses (it cleans up `$dest.aria2`, aria2's control file),
-    so this is the same approach that project settled on for the same CDN.
+    aria2c splits the file, resumes each segment and reconnects per segment. It is also
+    what dockur-macos uses (it cleans up `$dest.aria2`, aria2's control file), so this
+    is the same approach that project settled on for the same CDN.
 
-    The Cookie header and Host are passed to both, because the token is a cookie rather
-    than a query parameter and the CDN checks the Host.
+    THIS USED TO FALL BACK TO CURL. The fallback was removed: the case it covered -
+    aria2c absent - is a broken image, and the fallback turned that into a download that
+    looks like it is working and then stops at twenty megabytes with a message about a
+    missing token. `aria2` is in the Containerfile; a host running this script needs it.
+
+    The Cookie header and Host are the load-bearing part: the token is a cookie rather
+    than a query parameter, and the CDN checks the Host.
     """
-    headers = [f"Cookie: AssetToken={token}", "Connection: close"]
+    if not shutil.which("aria2c"):
+        raise RecoveryError(
+            "aria2c is not installed, and this download has no other path.\n"
+            "It is in the bake image (see Containerfile); a host running this needs\n"
+            "`apt-get install aria2`. A single-connection download is cut short by this\n"
+            "CDN around twenty megabytes, which is why curl is not an alternative."
+        )
 
-    if shutil.which("aria2c"):
-        args = [
-            "aria2c",
-            "--max-connection-per-server=8",
-            "--split=8",
-            "--min-split-size=8M",
-            "--max-tries=10",
-            "--retry-wait=5",
-            "--timeout=120",
-            "--connect-timeout=30",
-            "--continue=true",
-            "--auto-file-renaming=false",
-            "--allow-overwrite=true",
-            "--file-allocation=none",
-            "--summary-interval=30",
-            "--console-log-level=warn",
-            "--user-agent", UA,
-        ]
-        for header in headers:
-            args += ["--header", header]
-        args += ["--dir", os.path.dirname(part) or ".",
-                 "--out", os.path.basename(part),
-                 url]
-        return subprocess.run(args, capture_output=True, text=True)
-
-    log("aria2c not installed; falling back to curl (a long transfer may be cut short)")
     args = [
-        "curl", "--disable", "--silent", "--show-error", "--location",
-        "--max-time", "3600",
-        "--retry", "10", "--retry-delay", "5", "--retry-all-errors",
-        # NO --speed-time/--speed-limit: they abort during Apple's pre-first-byte hold.
-        "--continue-at", "-",
-        "--header", "Host: oscdn.apple.com",
+        "aria2c",
+        "--max-connection-per-server=8",
+        "--split=8",
+        "--min-split-size=8M",
+        "--max-tries=10",
+        "--retry-wait=5",
+        "--timeout=120",
+        "--connect-timeout=30",
+        "--continue=true",
+        "--auto-file-renaming=false",
+        "--allow-overwrite=true",
+        "--file-allocation=none",
+        "--summary-interval=30",
+        "--console-log-level=warn",
         "--user-agent", UA,
+        "--header", f"Cookie: AssetToken={token}",
+        "--header", "Connection: close",
+        "--dir", os.path.dirname(part) or ".",
+        "--out", os.path.basename(part),
+        url,
     ]
-    for header in headers:
-        args += ["--header", header]
-    args += ["--output", part, url]
     return subprocess.run(args, capture_output=True, text=True)
 
 

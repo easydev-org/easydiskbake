@@ -184,4 +184,7 @@ jobs:
           interval: "10"
           command: |
             set -euo pipefail
-            python3 lib/ci.py tags --prefix windows-base- || true
+            # A listing, not a step that produces anything. If it fails the job fails
+            # and says why - the previous `|| true` made a broken lookup look like an
+            # empty package.
+            python3 lib/ci.py tags --prefix windows-base-

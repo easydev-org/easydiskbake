@@ -33,6 +33,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 
 ORAS_VERSION = "1.2.2"
@@ -349,6 +350,13 @@ def tags_in_package(registry: str, repo: str, prefix: str) -> list[str]:
 
     Anonymous pull token: the package may be public, and reading tags does not need
     the workflow's write token.
+
+    A failure is raised, not swallowed. This used to return [] on any error, which made
+    "the package does not exist" and "the request failed" look identical - and the
+    caller prints the result, so a broken lookup was reported as "no tags".
+
+    An empty package is not a failure: ghcr answers a package with no tags with
+    {"tags": null}, which is a successful response with no tags in it.
     """
     token_url = (
         f"https://{registry}/token?scope=repository:{repo}:pull&service={registry}"
@@ -361,9 +369,13 @@ def tags_in_package(registry: str, repo: str, prefix: str) -> list[str]:
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             tags = json.load(resp).get("tags") or []
-    except Exception as exc:  # noqa: BLE001 - an empty package is not an error
-        log(f"could not list tags: {exc}")
-        return []
+    except urllib.error.HTTPError as exc:
+        raise Failed(
+            f"could not list the tags of {repo} in {registry}: HTTP {exc.code}"
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise Failed(f"could not reach {registry}: {exc.reason}") from exc
+
     return sorted((t for t in tags if t.startswith(prefix)), reverse=True)
 
 
