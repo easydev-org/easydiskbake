@@ -34,6 +34,11 @@ FROM qemux/qemu:7.50
 #                     transfer from Apple's CDN gets reset around 20 MiB with one
 #                     connection; aria2c splits and resumes it. dockur-macos relies on
 #                     the same tool (it cleans up aria2's control file).
+#   samba             smbd, for qemu's `-netdev user,smb=<dir>`. That option makes qemu
+#                     fork its own smbd with a generated config, which is how a guest
+#                     gets a shared folder without the host opening a port. qemu checks
+#                     for the binary at startup and refuses the netdev if it is absent -
+#                     the check is CONFIG_SMBD_COMMAND, normally /usr/sbin/smbd.
 #
 # (Comments cannot sit inside a line-continued RUN, so they sit above it.)
 RUN set -eux; \
@@ -48,6 +53,7 @@ RUN set -eux; \
         swtpm \
         ovmf \
         aria2 \
+        samba \
         ; \
     rm -rf /var/lib/apt/lists/*
 
@@ -66,6 +72,7 @@ RUN set -eux; \
     wimlib-imagex --version | head -1; \
     swtpm --version; \
     aria2c --version | head -1; \
+    smbd --version | head -1; \
     ls -l /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_VARS_4M.fd; \
     command -v debugfs genisoimage mkfifo timeout setsid jq curl
 

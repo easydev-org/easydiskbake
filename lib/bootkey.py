@@ -63,6 +63,27 @@ def log(msg: str) -> None:
 # variants ("Press any key to boot from CD/DVD...") and the trailing dots both hit.
 PROMPT = "Press any key to boot from"
 
+# THE FIRMWARE'S OWN MARKER, WHICH COMES FIRST.
+#
+# The boot prompt is printed by the El Torito image, and it is on screen for about five
+# seconds. Waiting to *see* it on the serial console is unreliable: several Windows
+# versions never emit it there at all, and the ones that do can take long enough that a
+# first attempt sees nothing.
+#
+# dockur/windows solves it by watching for the firmware's own line instead - the moment
+# OVMF lists the DVD device - and pressing one poll later:
+#
+#     elif bootKeyReady; then
+#         (( keyWait += 1 ))
+#         elif (( keyWait >= 1 )); then
+#             sendKey ret 0 100 6 0.25
+#
+# bootKeyReady() greps for "UEFI QEMU .*DVD-ROM". That appears seconds before the
+# prompt, in every UEFI boot, so it is the trigger that can be relied on.
+FIRMWARE_DVD_MARKER = "UEFI QEMU"
+DVD_MARKER = "DVD-ROM"
+LEGACY_DVD_MARKER = "Booting from DVD/CD"
+
 # Sent after the prompt is seen. dockur uses Return; a space also works and is less
 # likely to be interpreted as "select the highlighted entry" if a boot menu is up.
 BOOT_KEY = "ret"
@@ -72,25 +93,52 @@ BOOT_KEY = "ret"
 REPEATS = 6
 INTERVAL = 0.25
 
+# dockur polls its PTY every 250ms (`sleep 0.25` at the end of waitForBoot). Matching
+# it matters: the gap between the DVD marker and the end of the prompt is a few
+# seconds, and a one-second poll can land on the wrong side of it.
+POLL = 0.25
+
 
 def wait_for_boot_prompt(console: str, qmp_path: str, *, timeout: int = 180,
                          blind_after: int = 60) -> bool:
-    """Watch the console and press a key when the boot prompt appears.
+    """Press a key when the firmware is about to hand off to the DVD.
 
-    Returns True if a key was sent. A False return is not fatal by itself - some media
-    boot without a prompt - so the caller decides what it means.
+    Returns True if a key was sent. False is not fatal by itself - some media boot
+    without a prompt - so the caller decides what it means.
 
-    BLIND FALLBACK: after `blind_after` seconds with no prompt in the console, the keys
-    are sent anyway. dockur reached the same design for the same reason - some Windows
-    versions do not emit the prompt to the serial console until much later, and waiting
-    for it there would deadlock. Pressing Return at a guest that is not listening is
-    harmless; not pressing it at one that is costs the whole run.
+    THE TIMING IS dockur's, COPIED RATHER THAN GUESSED
 
-    The QMP socket may not exist yet when this is called, so connecting is retried.
+    Its loop is:
+
+        while isAlive "$pid"; do
+            if (( ! keySent )) && needsBootKey; then
+                if grep -Fq "Press any key to boot from" "$QEMU_PTY"; then
+                    sendKey ret 0 500
+                elif bootKeyReady; then
+                    (( keyWait += 1 ))
+                    elif (( keyWait >= 1 )); then
+                        sendKey ret 0 100 6 0.25
+            ...
+            sleep 0.25        <- the poll is 250ms, not a second
+        done
+
+    and bootKeyReady() greps for `UEFI QEMU .*DVD-ROM`. So the sequence is: poll four
+    times a second, notice the DVD listing, press one poll later.
+
+    THE FIRST ATTEMPT FAILED ON EXACTLY THIS
+
+    It waited for the prompt string alone and fell back to a blind press at 60 seconds.
+    The prompt is on screen for about five seconds; by 60 the guest had fallen through
+    to PXE and the run was over. The firmware's DVD line comes seconds earlier and is
+    present in every UEFI boot, which is why dockur triggers on it.
+
+    `blind_after` remains as the last resort, for a guest that prints neither marker.
+    Once the firmware marker is seen the blind timer is irrelevant - the press happens
+    in that first quarter-second poll after it appears.
     """
     started = time.time()
     deadline = started + timeout
-    pressed = False
+    marker_seen_at: float | None = None
 
     while time.time() < deadline:
         text = ""
@@ -100,24 +148,41 @@ def wait_for_boot_prompt(console: str, qmp_path: str, *, timeout: int = 180,
         except OSError:
             pass
 
-        prompted = PROMPT in text
         elapsed = time.time() - started
-        blind = elapsed >= blind_after
 
-        if prompted or blind:
-            if prompted:
-                log(f"boot prompt seen after {elapsed:.0f}s")
-            else:
-                log(f"no prompt after {elapsed:.0f}s; pressing blind (dockur does the same)")
+        prompted = PROMPT in text
+        firmware_dvd = (FIRMWARE_DVD_MARKER in text and DVD_MARKER in text) \
+            or LEGACY_DVD_MARKER in text
 
+        if prompted:
+            log(f"boot prompt seen after {elapsed:.1f}s")
             if press(qmp_path):
                 return True
-
-            log("could not send the key yet; retrying")
-            time.sleep(2)
+            log("QMP not ready yet; retrying")
+            time.sleep(POLL)
             continue
 
-        time.sleep(1)
+        if firmware_dvd:
+            if marker_seen_at is None:
+                marker_seen_at = time.time()
+                log(f"firmware listed the DVD after {elapsed:.1f}s")
+            # One more poll, as dockur does: the marker appears before the handoff has
+            # moved far enough for a keypress to be swallowed.
+            if time.time() - marker_seen_at >= POLL:
+                if press(qmp_path):
+                    return True
+                log("QMP not ready yet; retrying")
+            time.sleep(POLL)
+            continue
+
+        if elapsed >= blind_after:
+            log(f"no marker after {elapsed:.0f}s; pressing blind (dockur keeps the same "
+                f"fallback)")
+            if press(qmp_path):
+                return True
+            log("QMP not ready yet; retrying")
+
+        time.sleep(POLL)
 
     log(f"gave up after {timeout}s")
     return False

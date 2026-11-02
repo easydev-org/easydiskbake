@@ -78,6 +78,10 @@ class Shape:
     vnc_display: int = 0
     ssh_port: int = 2222
     rdp_port: int = 3389
+    # A host directory to expose over SMB. Empty means no share, and the netdev is
+    # exactly what it was before this field existed - see lib/share.py for why SMB
+    # rather than virtiofs or 9p.
+    share_path: str = ""
 
     @classmethod
     def from_env(cls) -> "Shape":
@@ -94,6 +98,7 @@ class Shape:
             vnc_display=int(env.get("VNC_DISPLAY", 0)),
             ssh_port=int(env.get("SSH_PORT", 2222)),
             rdp_port=int(env.get("RDP_PORT", 3389)),
+            share_path=env.get("VM_SHARE_PATH", ""),
         )
 
 
@@ -142,10 +147,25 @@ def build_args(work: str, extra: list[str] | None = None,
         "-monitor", f"unix:{paths.monitor},server=on,wait=off",
         "-qmp", f"unix:{paths.drive},server=on,wait=off",
         "-qmp", f"unix:{paths.record},server=on,wait=off",
-        "-netdev", f"user,id=n0,hostfwd=tcp::{shape.ssh_port}-:22,hostfwd=tcp::{shape.rdp_port}-:3389",
-        "-device", "virtio-net-pci,netdev=n0",
         "-serial", "mon:stdio",
     ]
+
+    # Networking, with or without a share. A share adds `smb=<dir>` to the same
+    # user-mode netdev, which makes qemu fork its own smbd; the guest reaches it at
+    # 10.0.2.4. See lib/share.py.
+    if shape.share_path:
+        from share import Share
+
+        share = Share(shape.share_path)
+        args += share.netdev_args(
+            ssh_port=shape.ssh_port, rdp_port=shape.rdp_port,
+        )
+    else:
+        args += [
+            "-netdev", f"user,id=n0,hostfwd=tcp::{shape.ssh_port}-:22,"
+                       f"hostfwd=tcp::{shape.rdp_port}-:3389",
+            "-device", "virtio-net-pci,netdev=n0",
+        ]
 
     if shape.machine:
         args += ["-machine", shape.machine]

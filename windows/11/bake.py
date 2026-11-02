@@ -347,9 +347,18 @@ class Baker:
         # stdout and stderr go to a file, not DEVNULL. The first run's recording was
         # missing entirely and there was no way to tell why: snapshots.py says "no QMP
         # socket" on stderr and a discarded stderr is a silent failure.
+        #
+        # THE PATH NEEDS THREE dirnames: windows/11/bake.py -> windows/11 -> windows ->
+        # the repository root, where lib/ lives. Two got `windows/lib/snapshots.py`,
+        # which does not exist - and the first version of this check is what reported
+        # it, in the only line that said the recording was broken.
+        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        snapscript = os.path.join(repo_root, "lib", "snapshots.py")
+        if not os.path.exists(snapscript):  # fail loudly rather than record nothing
+            raise SystemExit(f"snapshots.py is not at {snapscript}; the repository layout changed")
+
         snap = subprocess.Popen(
-            [sys.executable, os.path.join(os.path.dirname(os.path.dirname(
-                os.path.abspath(__file__))), "lib", "snapshots.py"),
+            [sys.executable, snapscript,
              guest.paths.record, shots,
              os.environ.get("SNAPSHOT_INTERVAL", "5"), "2000"],
             stdout=open(snap_log, "wb"), stderr=subprocess.STDOUT,

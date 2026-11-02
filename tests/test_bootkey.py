@@ -63,6 +63,76 @@ class Prompt(unittest.TestCase):
         self.assertFalse(ok)
         press.assert_not_called()
 
+    def test_it_presses_when_the_firmware_lists_the_dvd(self):
+        # THE BUG THIS FIXES. The prompt is on screen for about five seconds, and
+        # waiting to see it on the serial console meant pressing at 60s - long after
+        # the window had closed. The firmware's own DVD line appears seconds earlier
+        # and in every UEFI boot, so it is the trigger to rely on.
+        import tempfile
+        tmp = tempfile.mkdtemp()
+        console = os.path.join(tmp, "console.log")
+        with open(console, "w") as fh:
+            fh.write(
+                'BdsDxe: loading Boot0001 "UEFI QEMU DVD-ROM QM00001" from PciRoot(0x0)\n'
+            )
+
+        with mock.patch.object(bootkey, "press", return_value=True) as press:
+            # blind_after far in the future: only the firmware marker can trigger this.
+            ok = bootkey.wait_for_boot_prompt(console, "/x.sock", timeout=5, blind_after=300)
+
+        self.assertTrue(ok)
+        press.assert_called_once()
+
+    def test_the_poll_interval_matches_dockur(self):
+        # Its loop ends with `sleep 0.25`. The window between the DVD marker and the
+        # end of the prompt is a few seconds; a one-second poll can straddle it, which
+        # is what the first attempt did - and it pressed at 60s, after the guest had
+        # already fallen through to PXE.
+        self.assertAlmostEqual(bootkey.POLL, 0.25, places=3)
+
+    def test_it_presses_soon_after_the_marker_not_at_the_blind_deadline(self):
+        """The timing that failed: marker at t=0, press at t=60.
+
+        This drives the loop with a console that gains the marker immediately and
+        asserts the press happens within a couple of polls, not at blind_after.
+        """
+        import tempfile
+        import time as _time
+
+        tmp = tempfile.mkdtemp()
+        console = os.path.join(tmp, "console.log")
+        with open(console, "w") as fh:
+            fh.write('BdsDxe: loading Boot0001 "UEFI QEMU DVD-ROM QM00001"\n')
+
+        pressed_at = {}
+
+        def fake_press(_path):
+            pressed_at["t"] = _time.time()
+            return True
+
+        started = _time.time()
+        with mock.patch.object(bootkey, "press", side_effect=fake_press):
+            ok = bootkey.wait_for_boot_prompt(
+                console, "/x.sock", timeout=30, blind_after=300,
+            )
+
+        self.assertTrue(ok)
+        elapsed = pressed_at["t"] - started
+        # Two polls is 0.5s; allow generous slack for a loaded machine but stay far
+        # below the old blind deadline.
+        self.assertLess(elapsed, 5.0, f"pressed after {elapsed:.1f}s")
+
+    def test_the_firmware_marker_is_checked(self):
+        # Both halves: "UEFI QEMU" alone is a firmware version banner, and "DVD-ROM"
+        # alone could be anything. Together they are the device listing.
+        self.assertIn("UEFI QEMU", bootkey.FIRMWARE_DVD_MARKER)
+        self.assertIn("DVD-ROM", bootkey.DVD_MARKER)
+
+    def test_the_legacy_marker_is_recognised(self):
+        # SeaBIOS prints "Booting from DVD/CD". A bake that only handled UEFI would
+        # never press on a legacy guest.
+        self.assertIn("DVD/CD", bootkey.LEGACY_DVD_MARKER)
+
     def test_it_presses_blind_when_the_prompt_never_arrives(self):
         # Some Windows versions do not emit the prompt to the serial console until much
         # later. dockur waits for the marker and falls back to blind timing for exactly
