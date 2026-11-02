@@ -1,0 +1,129 @@
+name: launch-android
+
+# Start the published AVD on a real KVM machine and take pictures of it.
+#
+# WHAT THIS ANSWERS
+#
+#     does the artifact in ghcr actually boot, or is it only a file that looks right
+#
+# publish-android builds an AVD, boots it once so its disk images exist, packs it and
+# pushes it. Every one of those steps can pass while the result is unusable: run
+# 41480233705 had a guest that reported sys.boot_completed after 30s and was still
+# rejected by pack(). A boot here starts from the PUBLISHED bytes, which is the only
+# thing a consumer of this package will ever see.
+#
+# WHY IT IS SEPARATE FROM publish-android
+#
+# That job builds. This one verifies, and it has to be runnable against an image
+# somebody else published - a week-old tag, a tag from another branch. Mixing the two
+# would mean a broken verify forces a rebuild.
+#
+# MANUAL ONLY, like every other workflow here.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The AVD to launch (a tag in this package)"
+        default: "sysimg-android-15-aosp"
+      boot_timeout:
+        description: "Seconds to wait for sys.boot_completed"
+        default: "900"
+      settle:
+        description: "Seconds to let the launcher settle before the screenshots"
+        default: "20"
+      wipe_data:
+        description: "Wipe /data before booting (false proves the published state is used)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: launch-android-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  launch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: read
+      checks: write
+
+    # THE BUILDER IMAGE, NOT THE BAKE IMAGE, because this job starts an emulator and
+    # that needs the emulator package, platform-tools and /dev/kvm. The bake image does
+    # not carry cmdline-tools and this job does not need them: the AVD arrives complete,
+    # with its own config.ini and userdata-qemu.img.
+    container:
+      image: ghcr.io/${{ github.repository }}:android-builder
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: android-launch-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            python3 lib/ci.py free-disk --need 20
+            python3 lib/ci.py tags --prefix sysimg-
+            emulator -version 2>&1 | head -2
+
+      # THE PUBLISHED BYTES, AND NOTHING ELSE. lib/launch_android.py pulls the tag,
+      # checks it against the manifest, unpacks it, starts the emulator on it, waits for
+      # the framework, and photographs the screen. It refuses an AVD that will not start
+      # rather than reporting a bare exit code.
+      - name: launch it and photograph the screen
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: android-launch
+          interval: "20"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            WIPE=""
+            if [ "${{ inputs.wipe_data }}" = "true" ]; then WIPE="--wipe-data"; fi
+            python3 lib/launch_android.py \
+              --tag "${{ inputs.tag }}" \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --settle "${{ inputs.settle || '20' }}" \
+              --artifacts out \
+              $WIPE
+
+      # THE PICTURES ARE THE RESULT. A launch that reports success and shows nothing has
+      # not demonstrated anything - the same rule the macOS bake learned the hard way,
+      # where seventeen clicks were reported as successful against a blank display.
+      - name: keep the screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-launch-screenshots
+          path: |
+            out/screen.png
+            out/screen-before.png
+            out/emulator.log
+            out/launch.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: what is in the package
+        if: always()
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: android-launch-tags
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py tags --prefix sysimg-
