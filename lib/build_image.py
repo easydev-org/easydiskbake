@@ -58,6 +58,7 @@ BAKE_CHECKS = [
     # Actions are Node programs the runner executes inside this container. Without
     # node, `uses: actions/checkout@v4` fails before any code in this repository runs.
     ["node", "--version"],
+    ["git", "--version"],
     ["qemu-system-x86_64", "--version"],
     ["qemu-img", "--version"],
     ["xorriso", "-version"],

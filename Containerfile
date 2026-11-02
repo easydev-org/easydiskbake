@@ -39,15 +39,16 @@ FROM qemux/qemu:7.50
 #                     gets a shared folder without the host opening a port. qemu checks
 #                     for the binary at startup and refuses the netdev if it is absent -
 #                     the check is CONFIG_SMBD_COMMAND, normally /usr/sbin/smbd.
-#   nodejs            for GitHub/Forgejo actions that are written in JavaScript. An
-#                     action like actions/checkout@v4 is a Node program the runner has
-#                     to execute inside this container:
+#   nodejs, git       for actions and for the workflow itself. `actions/checkout@v4`
+#                     is a Node program the runner executes inside this container, and
+#                     the step that follows it runs `git` to report what it cloned:
 #
-#                         OCI runtime exec failed: exec: "node": executable file not
-#                         found in $PATH
+#                         exec: "node": executable file not found in $PATH
+#                         git: command not found
 #
-#                     That is what a job container without node looks like, and it
-#                     fails before any of this repository's code runs.
+#                     Both failed before any of this repository's code ran. The image
+#                     was written for the bake, which needs neither - GitHub's runner VM
+#                     supplies them, and a container job does not get that for free.
 #
 # (Comments cannot sit inside a line-continued RUN, so they sit above it.)
 RUN set -eux; \
@@ -64,6 +65,7 @@ RUN set -eux; \
         aria2 \
         samba \
         nodejs \
+        git \
         ; \
     rm -rf /var/lib/apt/lists/*
 
@@ -84,6 +86,7 @@ RUN set -eux; \
     aria2c --version | head -1; \
     smbd --version | head -1; \
     node --version; \
+    git --version; \
     ls -l /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_VARS_4M.fd; \
     command -v debugfs genisoimage mkfifo timeout setsid jq curl
 
