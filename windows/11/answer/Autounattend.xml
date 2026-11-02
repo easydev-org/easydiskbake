@@ -10,9 +10,9 @@
   What is deliberately NOT here:
     - Product key. A retail key would be embedded, and an eval ISO installs without
       one. Adding /ipk with a placeholder breaks setup rather than helping it.
-    - TPM/SecureBoot bypass. The VM has a real TPM 2.0 and real UEFI, so the checks
-      pass. LabConfig bypasses are only for guests without them, and using them when
-      not needed hides a broken firmware configuration.
+    - Lives without the LabConfig bypass. It has them, and the reason is below: the
+      firmware is UEFI but not Secure Boot, which is a different thing and one the
+      installer checks for.
     - Anything dockur-specific (OEM wallpaper, dockur URLs, Z: drive mapping to a
       samba host). This bakes a sandbox disk, not a desktop-for-Docker product.
 
@@ -137,6 +137,56 @@
           <WillShowUI>Never</WillShowUI>
         </ProductKey>
       </UserData>
+
+      <!-- WHY THESE FOUR BYPASSES ARE HERE, HAVING ONCE BEEN LEFT OUT
+
+           The reasoning for omitting them was "the VM has a real TPM 2.0 and real
+           UEFI, so the checks pass". The first half is true and the second is not
+           relevant: Windows 11 checks for SECURE BOOT, and plain UEFI is not that.
+
+           OVMF_CODE_4M.fd is firmware without Microsoft's Secure Boot keys. Booting it
+           gives a guest where TPM is present, UEFI is present, and Secure Boot reports
+           disabled - so setup stops with "The PC must support Secure Boot". That is the
+           dialog the second full run sat on: a purple background and a white panel
+           with four lines of text.
+
+           The alternative is OVMF_CODE_4M.secboot.fd plus OVMF_VARS_4M.ms.fd, which is
+           more faithful and has a longer list of ways to go wrong (a vars template
+           that does not match the code file leaves the guest unbootable, and the
+           failure looks like a corrupt disk). dockur/windows takes the same route as
+           this file for the same reason.
+
+           These run in windowsPE, before the edition is chosen, which is why they work
+           here and not in a later pass. -->
+      <RunSynchronous>
+        <!-- TPM check. A real TPM 2.0 is attached, so this is belt and braces; it
+             costs nothing and removes a class of failure. -->
+        <RunSynchronousCommand wcm:action="add">
+          <Order>1</Order>
+          <Path>reg.exe add "HKLM\SYSTEM\Setup\LabConfig" /v BypassTPMCheck /t REG_DWORD /d 1 /f</Path>
+          <Description>Do not stop on the TPM check</Description>
+        </RunSynchronousCommand>
+        <!-- THE ONE THAT MATTERS: the firmware has no Secure Boot keys. -->
+        <RunSynchronousCommand wcm:action="add">
+          <Order>2</Order>
+          <Path>reg.exe add "HKLM\SYSTEM\Setup\LabConfig" /v BypassSecureBootCheck /t REG_DWORD /d 1 /f</Path>
+          <Description>Do not stop on the Secure Boot check</Description>
+        </RunSynchronousCommand>
+        <!-- RAM. 8 GiB is configured, above the 4 GiB floor, but a smaller bake would
+             otherwise fail on a check nobody was looking at. -->
+        <RunSynchronousCommand wcm:action="add">
+          <Order>3</Order>
+          <Path>reg.exe add "HKLM\SYSTEM\Setup\LabConfig" /v BypassRAMCheck /t REG_DWORD /d 1 /f</Path>
+          <Description>Do not stop on the RAM check</Description>
+        </RunSynchronousCommand>
+        <!-- Upgrades from unsupported CPUs. The guest CPU is `-cpu host`, so this is
+             relevant only on a host whose model Windows does not list. -->
+        <RunSynchronousCommand wcm:action="add">
+          <Order>4</Order>
+          <Path>reg.exe add "HKLM\SYSTEM\Setup\MoSetup" /v AllowUpgradesWithUnsupportedTPMOrCPU /t REG_DWORD /d 1 /f</Path>
+          <Description>Allow an unlisted CPU model</Description>
+        </RunSynchronousCommand>
+      </RunSynchronous>
     </component>
   </settings>
 

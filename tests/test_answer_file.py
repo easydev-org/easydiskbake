@@ -64,6 +64,48 @@ class Placeholders(unittest.TestCase):
         self.assertIn("__WINDOWS_IMAGE_INDEX__", text)
 
 
+class SecureBootBypass(unittest.TestCase):
+    """Plain UEFI is not Secure Boot, and the installer checks for the latter.
+
+    OVMF_CODE_4M.fd has no Microsoft Secure Boot keys, so a guest booted with it reports
+    Secure Boot disabled and setup stops at "The PC must support Secure Boot". That is
+    the dialog the second full run sat on.
+
+    dockur/windows bypasses the check in windowsPE rather than switching to
+    OVMF_CODE_4M.secboot.fd, and this file does the same: the secboot firmware needs a
+    matching vars template, and a mismatch leaves a guest that looks like a corrupt disk.
+    """
+
+    def test_the_secure_boot_bypass_is_present(self):
+        # The one that matters. Without it setup shows the dialog and waits.
+        self.assertIn("BypassSecureBootCheck", read())
+
+    def test_all_four_bypasses_from_dockur_are_present(self):
+        text = read()
+        for key in ("BypassTPMCheck", "BypassSecureBootCheck",
+                    "BypassRAMCheck", "AllowUpgradesWithUnsupportedTPMOrCPU"):
+            with self.subTest(key=key):
+                self.assertIn(key, text)
+
+    def test_they_run_in_windowspe_before_the_edition_is_chosen(self):
+        # In specialize or oobeSystem they arrive too late: the check that stops setup
+        # happens during windowsPE, before install.wim is selected.
+        text = read()
+        pe = text.split('pass="windowsPE"')[1].split("</settings>")[0]
+        self.assertIn("BypassSecureBootCheck", pe)
+        self.assertIn("RunSynchronous", pe)
+
+    def test_they_belong_to_the_setup_component(self):
+        # Put RunSynchronous in the wrong component and it silently never runs.
+        import xml.etree.ElementTree as ET
+        NS = "{urn:schemas-microsoft-com:unattend}"
+        root = ET.parse(ANSWER).getroot()
+        pe = [s for s in root.findall(f"{NS}settings") if s.get("pass") == "windowsPE"][0]
+        setup = [c for c in pe.findall(f"{NS}component")
+                 if c.get("name") == "Microsoft-Windows-Setup"][0]
+        self.assertIsNotNone(setup.find(f"{NS}RunSynchronous"))
+
+
 class Structure(unittest.TestCase):
 
     def test_all_four_passes_are_present(self):
