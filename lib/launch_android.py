@@ -25,6 +25,18 @@ WHAT IT DELIBERATELY DOES NOT DO
 It does not create an AVD, patch a config, or install an app. Those belong to the bake,
 and a verify that quietly fixes what it is checking is not checking anything.
 
+THE ONE THING IT DOES INSTALL IS AN INPUT, NOT A FIX. The AVD archive carries the disk
+images the first boot produced, but not system.img: that file is 1.7 GB, read-only, and
+shared by every AVD of the same Android version, so pack() leaves it out correctly. The
+AVD's own config.ini names it, and without it the emulator refuses to start:
+
+    WARNING | .../system-images/android-35/default/x86_64/ is not a valid directory.
+    FATAL   | Broken AVD system path. Check your ANDROID_SDK_ROOT value
+
+So it is installed from the same pin in lib/images.py that publish-android used. A
+version with no pin raises rather than substituting a different image, because a launch
+against a system image the bake never used proves nothing about the bake.
+
     --wipe-data boots with -wipe-data. The default is NOT to wipe, because the state in
     /data is the thing being verified: a wipe would make the published AVD
     indistinguishable from a fresh one, and "it boots" would be a claim about Android
@@ -123,6 +135,24 @@ def main(argv: list[str]) -> int:
     # measured while launching the published tag by hand on 2026-11-02. It is written
     # here rather than fixed in pack(), because an AVD directory is what pack() is given
     # and its caller owns where it lives.
+    # THE SYSTEM IMAGE IS NOT IN THE ARCHIVE, AND IT HAS TO BE THERE.
+    #
+    # config.ini's image.sysdir.1 names a directory under ANDROID_SDK_ROOT, and the AVD
+    # archive deliberately does not carry it: system.img is 1.7 GB, read-only, and shared
+    # by every AVD that uses that Android version. publish-android installs it before
+    # creating the AVD; a launch that only unpacks the archive does not, and the emulator
+    # says so and stops:
+    #
+    #     WARNING | /opt/android-sdk/system-images/android-35/default/x86_64/ is not a
+    #               valid directory.
+    #     FATAL   | Broken AVD system path. Check your ANDROID_SDK_ROOT value
+    #
+    # measured on run 41493183039. So it is installed here, from the same pin in
+    # lib/images.py that the publisher uses - the artifact and its system image have to
+    # be the same pair, and taking the version from the AVD's own config.ini is what
+    # keeps them that way.
+    ensure_system_image(home, name, note)
+
     ini = os.path.join(home, f"{name}.ini")
     if not os.path.isfile(ini):
         with open(ini, "w", encoding="utf-8") as fh:
@@ -196,6 +226,106 @@ def main(argv: list[str]) -> int:
 
     note("OK: the published AVD started and reached its launcher")
     return finish(0)
+
+
+def ensure_system_image(home: str, name: str, note) -> None:
+    """Install the system image the AVD's config.ini asks for, if it is not there.
+
+    The pin comes from lib/images.py, which is the same table publish-android unpacks
+    from, so the system image and the AVD are always the pair that was published
+    together. Anything unrecognised raises rather than guessing a version: a launch
+    against a system image the bake never used proves nothing about the bake.
+    """
+    import images
+
+    config = os.path.join(home, name, "config.ini")
+    wanted = ""
+    try:
+        with open(config, encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("image.sysdir.1"):
+                    wanted = line.split("=", 1)[1].strip().rstrip("/")
+                    break
+    except OSError as exc:
+        note(f"  could not read {config}: {exc}")
+        return
+
+    if not wanted:
+        note("  the AVD names no system image; the emulator will say so if it needs one")
+        return
+
+    target = os.path.join(avd.sdk_root(), wanted)
+    if os.path.isfile(os.path.join(target, "system.img")):
+        note(f"system image already installed at {target}")
+        return
+
+    note(f"installing the system image the AVD asks for: {wanted}")
+    match = None
+    for key, pin in images.all_images().items():
+        if not key.startswith("sysimg"):
+            continue
+        expected = f"system-images/android-{pin['api']}/{pin['flavour']}/{pin['abi']}"
+        if expected == wanted:
+            match = (key, pin)
+            break
+    if match is None:
+        raise SystemExit(
+            f"the AVD wants {wanted}, which is not a pin in lib/images.py. "
+            f"Refusing to substitute a different system image: the launch would be "
+            f"testing a disk the bake never produced."
+        )
+
+    key, pin = match
+    note(f"  using the pin for {key}")
+    zip_path = os.path.join(home, "sysimg.zip")
+    iso_fetch_vendor(zip_path, pin, note)
+    avd.install_system_image(zip_path, api=pin["api"], flavour=pin["flavour"],
+                             abi=pin["abi"])
+
+
+def iso_fetch_vendor(dest: str, pin: dict, note) -> None:
+    """Download Google's system image zip and check it against its sha1.
+
+    iso.fetch_iso does this for the vendor images, but it prefixes the tag and looks in
+    the package first; a system image is a plain vendor download with a hash and no
+    registry entry of its own.
+    """
+    import hashlib
+    import urllib.request
+
+    if os.path.isfile(dest) and pin.get("sha1"):
+        with open(dest, "rb") as fh:
+            if hashlib.sha1(fh.read()).hexdigest() == pin["sha1"]:
+                note(f"  {os.path.basename(dest)} already present and verified")
+                return
+        note("  the cached zip does not match its sha1; downloading again")
+        os.unlink(dest)
+
+    note(f"  downloading {pin['url']}")
+    with urllib.request.urlopen(pin["url"], timeout=300) as resp, \
+            open(dest + ".part", "wb") as fh:
+        total = int(resp.headers.get("Content-Length") or 0)
+        got = 0
+        while True:
+            chunk = resp.read(1 << 20)
+            if not chunk:
+                break
+            fh.write(chunk)
+            got += len(chunk)
+            if total and got % (128 << 20) < len(chunk):
+                note(f"    {got >> 20} MiB / {total >> 20} MiB")
+    os.replace(dest + ".part", dest)
+
+    if pin.get("sha1"):
+        with open(dest, "rb") as fh:
+            actual = hashlib.sha1(fh.read()).hexdigest()
+        if actual != pin["sha1"]:
+            os.unlink(dest)
+            raise SystemExit(
+                f"sha1 mismatch for {pin['url']}: expected {pin['sha1']}, got {actual}. "
+                f"Google has probably published a new r-number; update lib/images.py."
+            )
+        note("  sha1 verified")
 
 
 def take_screenshot(guest: "emulator.Emulator", dest: str, note) -> bool:

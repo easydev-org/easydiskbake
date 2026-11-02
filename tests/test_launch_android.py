@@ -134,11 +134,42 @@ class TheScript(unittest.TestCase):
         # finish() is called on every exit path, including the failures.
         self.assertGreaterEqual(body.count("return finish("), 4, body.count("return finish("))
 
-    def test_it_does_not_build_or_patch_anything(self):
-        """A verify that quietly fixes what it is checking is not checking anything."""
+    def test_it_does_not_build_or_patch_the_avd(self):
+        """A verify that quietly fixes what it is checking is not checking anything.
+
+        The published AVD must be used as it arrives: no avdmanager, no config edits, no
+        app installs. Those are the bake's job, and doing them here would make "it boots"
+        a claim about a disk this script built rather than about the artifact.
+        """
         body = self.source()
-        for forbidden in ("create_avd(", "install_system_image("):
+        for forbidden in ("create_avd(", "config.put(", "adb('install'"):
             self.assertNotIn(forbidden, body, forbidden)
+
+    def test_the_system_image_is_installed_because_it_is_an_input(self):
+        """The system image is not IN the archive, and the emulator refuses to start
+        without it.
+
+        MEASURED ON RUN 41493183039:
+
+            WARNING | /opt/android-sdk/system-images/android-35/default/x86_64/ is not
+                      a valid directory.
+            FATAL   | Broken AVD system path. Check your ANDROID_SDK_ROOT value
+
+        system.img is 1.7 GB, read-only, and shared by every AVD of that Android version,
+        so pack() leaves it out - correctly. publish-android installs it from the pin in
+        lib/images.py before creating the AVD; a launch that only unpacks does not.
+
+        Installing it is not "fixing what is being checked": it is providing an input the
+        artifact names in its own config.ini. The version comes from that file and is
+        matched against lib/images.py, so the AVD and its system image are the pair that
+        was published together - an unrecognised version raises rather than substituting.
+        """
+        body = self.source()
+        self.assertIn("ensure_system_image(", body)
+        self.assertIn("image.sysdir.1", body)
+        self.assertIn("lib/images.py", body)
+        # And it must refuse a version it has no pin for.
+        self.assertIn("Refusing to substitute", body)
 
 
 if __name__ == "__main__":
