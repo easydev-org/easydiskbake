@@ -65,6 +65,32 @@ class MeasuredPositions(unittest.TestCase):
         # y=578..595, x=1115..1169.
         self.assertEqual(install.CONTINUE_MENU, (1142, 586))
 
+    def test_the_licence_buttons_are_on_the_button_row(self):
+        """Measured with `tesseract --psm 6` on the pane the probe stopped at.
+
+            Disagree   x=889..942,  y=707..720
+            Agree      x=987..1023, y=707..720
+
+        The previous value (604, 810) was the wizard's three-button layout: 400px left
+        and 100px below anything on the licence pane.
+
+        WHY psm 6 AND NOT psm 11: the default segmentation also returns the word
+        "agree" at y=451, in the middle of "you must agree to the terms". A driver
+        reading that would click the prose, which is the class of mistake this whole
+        file exists to prevent.
+        """
+        self.assertEqual(install.AGREE, (1005, 713))
+        self.assertEqual(install.DISAGREE, (915, 713))
+        # On the button row, not in the body text.
+        self.assertGreater(install.AGREE[1], 690)
+        # And to the right of Disagree, which is the order the pane shows them in.
+        self.assertGreater(install.AGREE[0], install.DISAGREE[0])
+
+    def test_agree_is_not_the_word_in_the_sentence(self):
+        # The prose "you must agree to the terms" is centred around y=451. A coordinate
+        # near it is the prose, not the control.
+        self.assertGreater(abs(install.AGREE[1] - 451), 200)
+
     def test_the_installer_continue_is_not_the_wizards(self):
         """THE ONE THAT COST A RUN.
 

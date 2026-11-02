@@ -115,13 +115,35 @@ SIDEBAR_CLICK_X = 540
 # The toolbar's Erase is at y=332 as well, so the y is what tells them apart.
 ERASE_CONFIRM = (1146, 639)
 
-# The installer's own panes put Agree at the lower left. It is NOT the same position as
-# NOT_NOW: a licence pane's buttons sit on the ordinary button row, and the earlier
-# value here was copied from the wizard's three-button layout, which put the click
-# below the window entirely.
-AGREE = (604, 810)
+# THE LICENCE BUTTONS, MEASURED ON A FRAME OF THIS BAKE.
+#
+# macos/15/probe.py walked the installer and stopped here, on the third pane:
+#
+#     To continue installing the software, you must agree to the terms of the
+#     software license agreement.
+#     ... ENGLISH | APPLE INC. | SOFTWARE LICENSE AGREEMENT FOR macOS Sequoia ...
+#
+# with these controls along the bottom, read with `tesseract --psm 6` (psm 11 returns
+# "ree," for the Agree button, which is how a plausible-looking position gets missed):
+#
+#     Disagree   x=889..942,  y=707..720   centre (915, 713)
+#     Agree      x=987..1023, y=707..720   centre (1005, 713)
+#
+# The previous value was (604, 810): the wizard's three-button layout, 400px left and
+# 100px below anything on this pane.
+#
+# NOTE ON WHAT OCR FINDS FIRST. `--psm 11` also returns the word "agree" at y=451, which
+# is the middle of a sentence: "you must agree to the terms". A driver that clicked the
+# word would click the prose. The buttons are at the bottom, and only psm 6 puts them
+# there.
+AGREE = (1005, 713)
 
-# The sheet that follows the licence pane agrees on the right-hand side.
+# Disagree, kept because a pane that offers both is telling you where the boundary is.
+DISAGREE = (915, 713)
+
+# The sheet that follows the licence pane agrees on the right-hand side. NOT MEASURED -
+# no frame of it exists yet; probe.py stops at the licence. One click through the
+# licence pane will produce the frame that fixes this.
 AGREE_SHEET = (1026, 634)
 
 # THE INSTALLER'S CONTINUE IS NOT THE WIZARD'S CONTINUE, AND THAT COST A RUN.
