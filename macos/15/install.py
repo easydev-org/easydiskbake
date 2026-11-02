@@ -90,7 +90,12 @@ CONTINUE_MENU = (1142, 586)
 # The Erase toolbar button. Its LABEL's box is only 8px tall at y=332-340; the control
 # itself is the icon ABOVE the label, which is why clicking the label's centre does
 # nothing and y=306 is what opens the sheet.
-ERASE_BUTTON = (1290, 306)
+#
+# 306 -> 296, ten pixels up. Measured on run 41506477596: the click was delivered and
+# the sheet never opened, and the recording shows the pointer arriving just BELOW the
+# glyph. The toolbar row is 22px tall here and the icon sits in its upper half, so 296
+# is still inside the control and 306 was at the lower edge of its hit area.
+ERASE_BUTTON = (1290, 296)
 
 # Sidebar rows under "Internal", 28px apart, x=540 inside the labels. Five rows because
 # the count differs between Show Only Volumes (one) and Show All Devices (four), and a
