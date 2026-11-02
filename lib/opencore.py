@@ -69,11 +69,42 @@ import iso  # noqa: E402
 # the firmware is Apple's.
 OSK = ("ourhardworkbythesewordsguardedpleasedontsteal(c)AppleComputerInc")
 
-# The disk geometry of boot.img, measured from a working dockur build: a 200 MiB
-# image with one FAT partition for the 512-byte sector count mtools is told about.
-BOOT_IMG_MB = 200
+# THE DISK GEOMETRY, COPIED FROM dockur/macos RATHER THAN CHOSEN.
+#
+# These are the five numbers in its buildOpenCoreImage(), and the two that matter are
+# not round: 256 MiB and a 4-sector cluster.
+#
+# WHY THE PAIR MATTERS. FAT32 stops being FAT32 below 65,525 clusters - that is the
+# only thing separating it from FAT16, and the specification says so. Cluster count is
+# (data sectors / sectors per cluster), so both numbers move it:
+#
+#     dockur   256 MiB, -c 4   ->  ~130,000 clusters   valid
+#     mine     200 MiB, -c 8   ->      50,836 clusters  INVALID
+#
+# mtools wrote the invalid one anyway and read it back, so mdir and every check on this
+# side passed. OVMF's EDK II FAT driver validates the format and refused to mount the
+# partition. The console said:
+#
+#     BdsDxe: failed to load Boot0001 "UEFI Misc Device" from
+#             PciRoot(0x0)/Pci(0x4,0x0): Not Found
+#
+# while the same firmware's mapping table listed that disk with its partition intact:
+#
+#     BLK1:Alias(s): PciRoot(0x0)/Pci(0x4,0x0)/HD(1,GPT,...,0x800,0x637DF)
+#
+# GPT read, filesystem not. Five runs went into the qemu arguments before the console
+# log was read, and the numbers here were in dockur's source the whole time.
+BOOT_IMG_MB = 256
 BOOT_IMG_SECTOR = 512
 BOOT_IMG_SECTORS = (BOOT_IMG_MB * 1024 * 1024) // BOOT_IMG_SECTOR
+
+# dockur's cluster_size, in sectors. 4 sectors = 2 KiB clusters.
+ESP_SECTORS_PER_CLUSTER = 4
+
+# The GPT layout constants, also from dockur: the first usable LBA is 34, and the
+# partition ends 34 sectors before the end of the disk, leaving room for the backup.
+ESP_FIRST_USABLE_LBA = 34
+FAT32_MIN_CLUSTERS = 65525
 
 # The boot image is a GPT disk with one partition, and these are the constants of that
 # layout. They were parameters of nothing before, which is how the partition table came
@@ -628,7 +659,7 @@ def build_boot_image(efi: str, dest: str) -> str:
     geometry = [
         "-F",                       # a full filesystem, not a partition image
         "-i", partition,
-        "-c", "8",                  # 8 sectors per cluster: small enough for many files
+        "-c", str(ESP_SECTORS_PER_CLUSTER),
         "-T", str(esp_sectors),
         "-v", "EFI",
     ]
@@ -641,6 +672,7 @@ def build_boot_image(efi: str, dest: str) -> str:
     # to be readable and the ESP entry has to be there. This is the check the first
     # version lacked - it asked mtools, which never looks at a partition table.
     check_gpt(dest, esp_first)
+    check_esp_filesystem(dest, esp_first)
 
     listing = subprocess.run(["mdir", "-i", partition, "-/", "::/"],
                              capture_output=True, text=True)
@@ -739,6 +771,76 @@ def write_gpt(path: str, esp_first: int, esp_last: int) -> None:
 
         fh.seek(backup_header_lba * SECTOR_SIZE)
         fh.write(header(backup_header_lba, primary_header_lba, backup_entries_lba))
+
+
+def check_esp_filesystem(path: str, esp_first: int) -> None:
+    """Is the filesystem inside the ESP a VALID FAT32 volume?
+
+    THIS IS THE CHECK THAT FIVE RUNS NEEDED. Every other check on this side read the
+    partition table or asked mtools, and mtools accepts a FAT32 volume that its own
+    specification disallows. EDK II does not.
+
+    The rule: FAT32 has at least 65,525 clusters. Cluster count comes from the BIOS
+    Parameter Block, so this is arithmetic on the boot sector rather than an opinion:
+
+        total_sectors  = BPB_TotSec32 (or BPB_TotSec16 when the former is zero)
+        non_data       = reserved + fats * sectors_per_fat
+        clusters       = (total_sectors - non_data) / sectors_per_cluster
+
+    A volume below the floor is rejected with the two numbers, because the fix is
+    always to change one of them and never to argue.
+    """
+    with open(path, "rb") as fh:
+        fh.seek(esp_first * SECTOR_SIZE)
+        boot = fh.read(512)
+    if len(boot) < 512:
+        raise OpenCoreError(f"{path}: the ESP boot sector is truncated")
+
+    if boot[510:512] != b"\x55\xAA":
+        raise OpenCoreError(
+            f"{path}: the ESP at LBA {esp_first} has no 0x55AA boot signature"
+        )
+
+    bytes_per_sector = struct.unpack_from("<H", boot, 11)[0]
+    sectors_per_cluster = boot[13]
+    reserved = struct.unpack_from("<H", boot, 14)[0]
+    fats = boot[16]
+    total16 = struct.unpack_from("<H", boot, 19)[0]
+    total32 = struct.unpack_from("<I", boot, 32)[0]
+    sectors_per_fat = struct.unpack_from("<I", boot, 36)[0]
+    label = boot[82:90]
+
+    total = total32 or total16
+    if not (bytes_per_sector and sectors_per_cluster and total and sectors_per_fat):
+        raise OpenCoreError(
+            f"{path}: the ESP boot sector is missing FAT geometry "
+            f"(sector={bytes_per_sector} cluster={sectors_per_cluster} "
+            f"total={total} fat={sectors_per_fat})"
+        )
+
+    if label.rstrip() != b"FAT32":
+        raise OpenCoreError(
+            f"{path}: the ESP is labelled {label!r}, not FAT32. The whole point of an "
+            f"ESP is a FAT32 volume the firmware can mount."
+        )
+
+    non_data = reserved + fats * sectors_per_fat
+    clusters = (total - non_data) // sectors_per_cluster
+    log(f"ESP: {clusters} clusters of {sectors_per_cluster} sectors "
+        f"({bytes_per_sector} bytes/sector, label FAT32)")
+
+    if clusters < FAT32_MIN_CLUSTERS:
+        raise OpenCoreError(
+            f"{path}: the ESP holds {clusters} clusters but FAT32 requires at least "
+            f"{FAT32_MIN_CLUSTERS}.\n"
+            f"This volume is invalid by its own specification. mtools writes it and "
+            f"reads it back, so nothing here notices - OVMF's FAT driver does not, and "
+            f"the firmware reports\n"
+            f"    failed to load Boot0001 ... : Not Found\n"
+            f"while listing the disk's GPT partition correctly.\n"
+            f"Fix by enlarging the image (BOOT_IMG_MB) or lowering "
+            f"ESP_SECTORS_PER_CLUSTER; both raise the cluster count."
+        )
 
 
 def check_gpt(path: str, esp_first: int) -> None:

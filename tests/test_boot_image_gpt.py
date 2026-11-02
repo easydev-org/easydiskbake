@@ -199,3 +199,104 @@ class GptCheck(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EspFilesystem(unittest.TestCase):
+    """The ESP must be a LEGAL FAT32 volume, not merely a readable one.
+
+    THE BUG THIS EXISTS FOR. build_boot_image used a 200 MiB image and -c 8, which
+    gives 50,836 clusters. FAT32 is defined as 65,525 or more; below that the volume is
+    invalid. mtools writes it and reads it back, so mdir passed and every check on this
+    side passed. OVMF's EDK II FAT driver validated it, refused to mount, and the
+    firmware reported
+
+        BdsDxe: failed to load Boot0001 "UEFI Misc Device" ... : Not Found
+
+    while listing that same disk's partition in its own mapping table. Five runs went
+    into the qemu arguments before the console log was read.
+
+    dockur/macos had 256 MiB and -c 4 in buildOpenCoreImage() the whole time.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="esp-fat-")
+        self.path = os.path.join(self.tmp, "boot.img")
+
+    def tearDown(self):
+        subprocess.run(["rm", "-rf", self.tmp], check=False)
+
+    def build(self, size_mb, sectors_per_cluster):
+        """A GPT disk with an ESP of the given geometry, without mtools."""
+        old_mb = opencore.BOOT_IMG_MB
+        old_cluster = opencore.ESP_SECTORS_PER_CLUSTER
+        opencore.BOOT_IMG_MB = size_mb
+        opencore.ESP_SECTORS_PER_CLUSTER = sectors_per_cluster
+        try:
+            total_sectors = size_mb * 1024 * 1024 // SECTOR
+            esp_first = opencore.ESP_START_SECTOR
+            esp_last = total_sectors - 34
+            with open(self.path, "wb") as fh:
+                fh.truncate(size_mb * 1024 * 1024)
+            opencore.write_gpt(self.path, esp_first, esp_last)
+            self.write_fat_boot_sector(esp_first, esp_last, sectors_per_cluster)
+            return esp_first
+        finally:
+            opencore.BOOT_IMG_MB = old_mb
+            opencore.ESP_SECTORS_PER_CLUSTER = old_cluster
+
+    def write_fat_boot_sector(self, esp_first, esp_last, sectors_per_cluster):
+        total = esp_last - esp_first + 1
+        reserved, fats = 32, 2
+        sectors_per_fat = 1016
+        boot = bytearray(512)
+        boot[0:3] = b"\xeb\x58\x90"
+        boot[3:11] = b"MTOO4048"
+        struct.pack_into("<H", boot, 11, SECTOR)
+        boot[13] = sectors_per_cluster
+        struct.pack_into("<H", boot, 14, reserved)
+        boot[16] = fats
+        struct.pack_into("<I", boot, 32, total)
+        struct.pack_into("<I", boot, 36, sectors_per_fat)
+        boot[82:90] = b"FAT32   "
+        boot[510:512] = b"\x55\xAA"
+        with open(self.path, "r+b") as fh:
+            fh.seek(esp_first * SECTOR)
+            fh.write(boot)
+
+    def test_dockur_geometry_is_accepted(self):
+        # 256 MiB with 4-sector clusters: what buildOpenCoreImage() uses.
+        esp = self.build(256, 4)
+        opencore.check_esp_filesystem(self.path, esp)
+
+    def test_the_old_geometry_is_rejected_with_both_numbers(self):
+        # 200 MiB with 8-sector clusters: what this repository used, and it is invalid.
+        esp = self.build(200, 8)
+        with self.assertRaises(opencore.OpenCoreError) as ctx:
+            opencore.check_esp_filesystem(self.path, esp)
+        message = str(ctx.exception)
+        self.assertIn("65525", message)
+        self.assertIn(str(opencore.FAT32_MIN_CLUSTERS), message)
+        # The message has to point at the fix, not just the symptom.
+        self.assertIn("BOOT_IMG_MB", message)
+        self.assertIn("ESP_SECTORS_PER_CLUSTER", message)
+
+    def test_the_constants_stay_on_the_legal_side(self):
+        """The real geometry, not a fixture: 256 MiB and 4 sectors per cluster."""
+        self.assertEqual(opencore.BOOT_IMG_MB, 256)
+        self.assertEqual(opencore.ESP_SECTORS_PER_CLUSTER, 4)
+
+        total_sectors = opencore.BOOT_IMG_MB * 1024 * 1024 // SECTOR
+        esp_sectors = (total_sectors - 34) - opencore.ESP_START_SECTOR + 1
+        # reserved 32 + 2 FATs is what mformat uses; the FAT itself is ~1016 sectors at
+        # this size, so the bound below is generous on purpose - the point is the floor.
+        clusters = (esp_sectors - 32 - 2 * 1016) // opencore.ESP_SECTORS_PER_CLUSTER
+        self.assertGreaterEqual(clusters, opencore.FAT32_MIN_CLUSTERS, clusters)
+
+    def test_a_volume_labelled_fat16_is_rejected(self):
+        esp = self.build(256, 4)
+        with open(self.path, "r+b") as fh:
+            fh.seek(esp * SECTOR + 82)
+            fh.write(b"FAT16   ")
+        with self.assertRaises(opencore.OpenCoreError) as ctx:
+            opencore.check_esp_filesystem(self.path, esp)
+        self.assertIn("FAT32", str(ctx.exception))
