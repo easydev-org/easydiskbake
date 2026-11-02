@@ -339,3 +339,73 @@ class MachineIsShared(unittest.TestCase):
                          "bootindex=0", "bootindex=1", "virtio-vga",
                          "ICH9-LPC.disable_s3=1", "base=utc", "type=2"):
             self.assertIn(required, source, required)
+
+
+class TheInstallerPanesAreWaited(unittest.TestCase):
+    """Each installer pane is waited for, not assumed after a fixed sleep.
+
+    THE FAILURE THIS EXISTS FOR, MEASURED ON RUN 41477776580
+
+    The log and the recording disagree, and the recording is right:
+
+        16:10:04  #15 click welcome Continue
+        16:10:14  wait 10s - the licence pane draws
+        16:10:20  #16 click Agree
+        16:10:25  #17 click Agree in the sheet
+
+    but the frame at 16:10:37, seventeen seconds after the welcome click, still reads
+
+        "To set up the installation of macOS Sequoia, click Continue."
+
+    The click had not taken effect when the driver moved on. Three clicks aimed at the
+    licence pane landed on the welcome pane, every pane after that was one behind, and
+    the destination Continue was pressed on a pane that was not the destination pane.
+    The disk stayed at 0 MiB for the whole run.
+
+    Disk Utility can be driven on fixed waits because it paints in a bounded time. The
+    installer panes hand off between processes and are not bounded that way.
+    """
+
+    def source(self):
+        with open(os.path.join(MACOS15, "install.py"), encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_every_installer_pane_change_is_waited_for(self):
+        body = self.source()
+        start = body.index("def installer_panes")
+        end = body.index("def main(")
+        panes = body[start:end]
+
+        # The welcome pane, the licence pane, and the destination pane each arrive by a
+        # screen change, and each is a wait_for_change() in the sequence.
+        self.assertGreaterEqual(panes.count("wait_for_change"), 3, panes)
+
+    def test_the_licence_clicks_come_after_a_pane_change(self):
+        body = self.source()
+        # The welcome Continue, then a wait, then Agree - never the reverse.
+        welcome = body.index('"welcome Continue"')
+        agree = body.index('log("licence: Agree")')
+        between = body[welcome:agree]
+        self.assertIn("wait_for_change", between,
+                      "nothing confirmed the licence pane arrived before Agree")
+
+    def test_the_destination_clicks_come_after_a_pane_change(self):
+        body = self.source()
+        sheet = body.index('"Agree in the sheet"')
+        card = body.index('"the main disk card"')
+        between = body[sheet:card]
+        self.assertIn("wait_for_change", between,
+                      "nothing confirmed the destination pane arrived before the card")
+
+    def test_the_fingerprint_is_stable_and_ignores_unreadable_screens(self):
+        """fingerprint() hashes a sample of the screen; None when it cannot be read."""
+        with open(os.path.join(os.path.dirname(MACOS15), "15", "install.py"),
+                  encoding="utf-8") as fh:
+            body = fh.read()
+        self.assertIn("def capture", body)
+        self.assertIn("def fingerprint", body)
+        # One implementation of "read the screen", so brightness() and fingerprint()
+        # cannot drift into sampling different bytes.
+        self.assertEqual(body.count("def capture"), 1)
+        self.assertLess(body.index("def capture"), body.index("def brightness"))
+        self.assertLess(body.index("def capture"), body.index("def fingerprint"))

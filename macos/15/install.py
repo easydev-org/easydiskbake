@@ -301,11 +301,12 @@ class Recovery:
         except (OSError, RuntimeError) as exc:
             log(f"screendump failed at {label}: {exc}")
 
-    def brightness(self) -> int | None:
-        """The mean grey level of a fresh screendump, or None if it cannot be read.
+    def capture(self) -> bytes | None:
+        """One screendump, returned as its raw pixel bytes. None if it cannot be read.
 
         A screendump goes to a file the emulator wrote, so this is one capture and one
         pass over its pixels - no OCR, no template, no interpretation of what is drawn.
+        Both brightness() and wait_for_change() are built on it.
         """
         if not self.frames:
             return None
@@ -323,9 +324,13 @@ class Recovery:
                     line = fh.readline()
                 width, height = (int(v) for v in line.split())
                 fh.readline()
-                pixels = fh.read(width * height * 3)
+                return fh.read(width * height * 3) or None
         except (OSError, ValueError):
             return None
+
+    def brightness(self) -> int | None:
+        """The mean grey level of a fresh screendump, or None if it cannot be read."""
+        pixels = self.capture()
         if not pixels:
             return None
         # Every 97th pixel: a fixed stride larger than any text run, cheap, and it gives
@@ -336,6 +341,69 @@ class Recovery:
             total += pixels[index] + pixels[index + 1] + pixels[index + 2]
             count += 3
         return (total // count) if count else None
+
+    def fingerprint(self) -> int | None:
+        """A coarse hash of the screen, for "did this pane change at all".
+
+        SAMPLED, NOT COMPLETE. Every 401st pixel, which is far coarser than the text on
+        these panes and far finer than "the whole screen scrolled". The question it
+        answers is only ever "is this a different pane than the one before", and for
+        that a sample is both sufficient and cheap.
+        """
+        pixels = self.capture()
+        if not pixels:
+            return None
+        # Python's own hash is randomised per process; this needs to be stable within
+        # one, which is all it is used for, but an explicit mixer keeps it honest.
+        digest = 0
+        for index in range(0, len(pixels), 401 * 3):
+            digest = (digest * 131 + pixels[index]) & 0xFFFFFFFF
+        return digest
+
+    def wait_for_change(self, timeout: float = 60.0, settle: float = 5.0,
+                        why: str = "") -> bool:
+        """Wait until the screen looks different from how it looked a moment ago.
+
+        WHY THE INSTALLER PANES NEED THIS AND THE DISK UTILITY DOES NOT
+
+        A fixed sleep is right when the thing being waited for is bounded: Disk Utility
+        paints in fifteen seconds, so fifteen seconds is a wait that works. The installer
+        panes are not bounded the same way - they are separate windows handed off by a
+        process that has just restarted, and any one of them can take a second or a
+        minute. Run 41477776580 shows what a fixed sleep costs there:
+
+            16:10:04  click welcome Continue
+            16:10:14  wait for the licence pane (ten seconds, as written)
+            16:10:20  click Agree
+            ...
+            the frame at 16:10:37 still shows "To set up the installation of macOS
+            Sequoia, click Continue."
+
+        The click had not taken effect when the driver moved on, so three clicks aimed
+        at the licence pane landed on the welcome pane, and every pane after that was one
+        behind. The installation never started and the disk stayed at zero.
+
+        NOT OCR, and not a reading of what the pane says. This is the same evidence the
+        rest of the file uses: the screen changed, so the pane changed. What it says is
+        still somebody else's question.
+        """
+        before = self.fingerprint()
+        if before is None:
+            # No way to see the screen: the caller's fixed sleep is all there is.
+            return True
+
+        started = time.time()
+        deadline = started + timeout
+        while time.time() < deadline:
+            time.sleep(settle)
+            now = self.fingerprint()
+            if now is not None and now != before:
+                log(f"  the pane changed after {time.time() - started:.0f}s"
+                    + (f" - {why}" if why else ""))
+                return True
+        log(f"  the pane did not change in {timeout:.0f}s"
+            + (f" - {why}" if why else ""))
+        return False
 
     def click(self, xy: tuple[int, int], why: str = "", settle: float = 5.0) -> None:
         """Click, then wait five seconds before anything else happens.
@@ -616,9 +684,14 @@ def installer_panes(d: Recovery, seconds: int = 4 * 3600) -> bool:
     # The order is the sequence; none of these is a retry. A pane that does not advance
     # therefore ends the run rather than being clicked at again, which is what the
     # unchanged-screen check below is for.
-    d.wait(25, "the welcome pane draws")
+    # EACH PANE IS WAITED FOR, NOT ASSUMED AFTER A SLEEP. See wait_for_change(): run
+    # 41477776580 clicked welcome Continue, slept ten seconds, clicked Agree, and the
+    # screen was still the welcome pane at 16:10:37 - three clicks later.
+    d.wait(25, "the installer window opens")
+    d.wait_for_change(timeout=90, why="the welcome pane has to be drawn")
+
     d.click(INSTALLER_CONTINUE, "welcome Continue", settle=5)
-    d.wait(10, "the licence pane draws")
+    d.wait_for_change(timeout=90, why="the licence pane has to replace the welcome pane")
 
     log("licence: Agree")
     d.click(AGREE, "Agree", settle=5)
@@ -627,6 +700,8 @@ def installer_panes(d: Recovery, seconds: int = 4 * 3600) -> bool:
     # one that matters - the pane's Agree disabled itself when it raised the sheet.
     log("licence sheet: Agree")
     d.click(AGREE_SHEET, "Agree in the sheet", settle=5)
+    d.wait_for_change(timeout=90,
+                      why="the destination pane has to replace the licence")
 
     # THE DESTINATION PANE, AND THE CLICK THAT HAS TO BE PROVEN.
     #
@@ -646,7 +721,6 @@ def installer_panes(d: Recovery, seconds: int = 4 * 3600) -> bool:
     # saying so in twenty seconds is the difference between reading a failure and reading
     # ninety minutes of one.
     log("destination: select the card, then Continue")
-    d.wait(20, "the disk list draws and populates")
 
     before = d.disk_allocated()
     d.click(DISK_CARD, "the main disk card", settle=5)
