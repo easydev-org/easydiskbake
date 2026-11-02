@@ -93,6 +93,24 @@ class Keyboard:
     """
 
     def __init__(self, qmp_path: str, shots: str):
+        # THE QMP SOCKET IS CREATED BY QEMU, ASYNCHRONOUSLY, AFTER IT IS STARTED.
+        #
+        # vm.Guest.start() returns as soon as the process exists; qemu then takes a moment
+        # to bind the sockets. Connecting immediately raises
+        #
+        #     FileNotFoundError: [Errno 2] No such file or directory
+        #     self.sock.connect(path)
+        #
+        # which is what the first CI run of this stage did. lib/snapshots.py has the same
+        # wait for the same reason; this is that wait, with the message a bake needs.
+        deadline = time.time() + 120
+        while not os.path.exists(qmp_path):
+            if time.time() > deadline:
+                raise SystemExit(
+                    f"no QMP socket at {qmp_path} after 120s; qemu either failed to start "
+                    f"or was given a different work directory"
+                )
+            time.sleep(1)
         self.q = qmpmod.QMP(qmp_path)
         self.shots = shots
         self.n = 0
@@ -432,7 +450,16 @@ def wait_for_desktop(guest: vm.Guest, shots: str, timeout: int) -> bool:
 
 
 def take_shot(guest: vm.Guest, shots: str, label: str = "boot") -> str | None:
+    """One frame from the recorder socket, or None.
+
+    The socket may not exist yet on the first call - qemu binds it a moment after the
+    process starts - and a screendump that fails is not fatal here: the caller is polling
+    for a desktop and will ask again. Returning None rather than raising keeps a slow
+    start from ending a ten-minute stage.
+    """
     path = os.path.join(shots, f"{label}-{int(time.time())}.ppm")
+    if not os.path.exists(guest.paths.record):
+        return None
     try:
         q = qmpmod.QMP(guest.paths.record)
         q.execute("screendump", filename=path)

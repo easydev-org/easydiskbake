@@ -423,3 +423,47 @@ class DevArgNames(unittest.TestCase):
             source = fh.read()
         self.assertIn('add_argument("--gold"', source)
         self.assertNotIn("args.ssh", source)
+
+
+class QmpSocketIsNotInstant(unittest.TestCase):
+    """qemu binds its QMP sockets after the process starts, not before.
+
+    THE FAILURE, ON THE FIRST CI RUN OF THE SSH STAGE
+
+        File "windows/11/ssh.py", line 371, in main
+            kb = Keyboard(guest.paths.drive, shots)
+        File "/.../lib/qmp.py", line 50, in __init__
+            self.sock.connect(path)
+        FileNotFoundError: [Errno 2] No such file or directory
+
+    vm.Guest.start() returns when the process exists. qemu then spends a moment creating
+    the sockets, and connecting before that is a FileNotFoundError from inside a
+    library - which reads as "the socket path is wrong" rather than "not yet".
+    """
+
+    def test_the_keyboard_waits_for_the_socket(self):
+        with open(os.path.join(WINDOWS11, "ssh.py"), encoding="utf-8") as fh:
+            source = fh.read()
+        start = source.index("class Keyboard")
+        end = source.index("def qcode_for")
+        body = source[start:end]
+        # The wait is a bounded loop over os.path.exists, not a sleep.
+        self.assertIn("os.path.exists(qmp_path)", body)
+        self.assertIn("deadline", body)
+
+    def test_the_socket_appearing_late_is_not_fatal_for_a_screenshot(self):
+        # take_shot is called by a polling loop; a frame that cannot be taken yet is a
+        # reason to ask again, not to end the stage.
+        with open(os.path.join(WINDOWS11, "ssh.py"), encoding="utf-8") as fh:
+            source = fh.read()
+        start = source.index("def take_shot")
+        end = source.index("def wait_for_ssh")
+        body = source[start:end]
+        self.assertIn("os.path.exists(guest.paths.record)", body)
+        self.assertIn("return None", body)
+
+    def test_a_missing_socket_names_the_likely_cause(self):
+        """The message has to say what to check: qemu failed, or the work dir differs."""
+        with open(os.path.join(WINDOWS11, "ssh.py"), encoding="utf-8") as fh:
+            source = fh.read()
+        self.assertIn("no QMP socket at", source)
