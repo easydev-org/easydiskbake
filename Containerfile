@@ -69,6 +69,58 @@ RUN set -eux; \
     ls -l /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_VARS_4M.fd; \
     command -v debugfs genisoimage mkfifo timeout setsid jq curl
 
+# ---------------------------------------------------------------------------
+# The Android emulator and adb.
+#
+# WHY THEY ARE HERE AND cmdline-tools IS NOT
+#
+# A bake pulls a finished AVD from ghcr and starts the emulator on it. It never calls
+# avdmanager, so it never needs the JDK or cmdline-tools - those live in the separate
+# android-builder image (android/15/Containerfile.builder), which one workflow uses
+# once and discards.
+#
+# What it does need is `/opt/android-sdk/emulator` and `/opt/android-sdk/platform-tools`,
+# because that is where the emulator looks for its system images and where adb comes
+# from. Both are fetched with the SDK's own package manager here rather than by
+# copying binaries, so the licences are accepted in the image and no workflow has to
+# answer a prompt.
+ARG CMDLINE_TOOLS=commandlinetools-linux-16111833_latest.zip
+
+RUN set -eux; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        unzip \
+        openjdk-21-jre-headless \
+        libx11-6 libx11-xcb1 libxcb1 libxau6 libxdmcp6 libbsd0 \
+        libpulse0 libasound2t64 libnss3 libnspr4 \
+        libgl1 libglx-mesa0 libegl1 libgles2 \
+        libgtk-3-0t64 libxcb-render0 libxcb-shape0 libxcb-xfixes0 libxcb-randr0 \
+        ; \
+    rm -rf /var/lib/apt/lists/*
+
+ENV ANDROID_SDK_ROOT=/opt/android-sdk \
+    ANDROID_HOME=/opt/android-sdk \
+    ANDROID_AVD_HOME=/opt/android-avd
+
+RUN set -eux; \
+    mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools" "$ANDROID_AVD_HOME"; \
+    curl -fsSL -o /tmp/cmdtools.zip \
+        "https://dl.google.com/android/repository/${CMDLINE_TOOLS}"; \
+    unzip -q /tmp/cmdtools.zip -d "$ANDROID_SDK_ROOT/cmdline-tools"; \
+    rm -f /tmp/cmdtools.zip; \
+    mv "$ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools" \
+       "$ANDROID_SDK_ROOT/cmdline-tools/latest"; \
+    yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true; \
+    "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
+        "platform-tools" "emulator" >/dev/null; \
+    rm -rf "$ANDROID_SDK_ROOT/cmdline-tools" /root/.android/cache
+
+ENV PATH="$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/emulator:$PATH"
+
+RUN set -eux; \
+    adb version | head -1; \
+    emulator -version 2>&1 | head -1
+
 # GitHub Actions runs a container job as `docker run <image> <entrypoint>`; this base's
 # entrypoint starts a VM, which is not what a job wants.
 ENTRYPOINT []

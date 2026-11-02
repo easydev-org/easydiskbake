@@ -1,0 +1,111 @@
+name: publish-android
+
+# Build an AVD from Google's AOSP system image and publish it.
+#
+#     ghcr.io/easydev-org/easydiskbake:sysimg-android-15-aosp
+#
+# WHAT IT IS
+#
+# A tar.zst of an AVD directory: config.ini plus system.img, vendor.img, userdata.img
+# and the kernel/ramdisk the emulator boots them with. The bake pulls this and starts
+# the emulator; it never talks to Google.
+#
+# WHY THIS IS A SEPARATE WORKFLOW
+#
+# Same two reasons as publish-iso.yml, plus one specific to Android:
+#
+#   the bake stops downloading 746 MB from dl.google.com on its critical path;
+#   when Google reissues an r-number, this fails and says so, rather than a bake
+#   failing later with a guest that does not boot;
+#   creating an AVD needs cmdline-tools and answers a licence prompt - doing it once
+#   here means the bake image does not carry cmdline-tools at all.
+#
+# WHICH IMAGE
+#
+#   system-images;android-35;default;x86_64     API 35 = Android 15, AOSP, no GMS
+#
+# That is the AOSP build. The gms variant is a different package and is not published
+# here; adding it is one entry in lib/images.py, not a change to this file.
+#
+# WHEN THE PIN EXPIRES
+#
+#     [android] FAILED: sha1 mismatch:
+#       expected 2d857d170c0d1b827149565da34b3383e5306f7f
+#       actual   <something else>
+#     Google has probably published a new r-number; update lib/images.py.
+#
+# The sha1 comes from Google's own sys-img2-3.xml.
+#
+# MANUAL ONLY: 746 MB, and the AVD it produces is what every Android bake depends on.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: publish-android-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+      checks: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: android-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py free-disk --need 20
+            python3 lib/ci.py install-oras
+            python3 lib/ci.py login --registry ghcr.io
+            # The pin this job will verify against, before the work starts.
+            python3 lib/android_pin.py
+
+      # The AVD is created here rather than in the bake image: avdmanager needs
+      # cmdline-tools, and shipping the SDK into the runtime image to use it once
+      # would be 1.5 GB of JDK and sdkmanager for a single call.
+      - name: build the AVD and publish it
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: android-avd
+          interval: "20"
+          command: |
+            set -euo pipefail
+
+            # The build container has the SDK and nothing else needs it.
+            docker run --rm \
+              --volume "$PWD:/repo:ro" \
+              --volume "$PWD/out:/out" \
+              --workdir /out \
+              --env GITHUB_TOKEN="${{ github.token }}" \
+              --env GITHUB_ACTOR="${{ github.actor }}" \
+              --env GITHUB_REPOSITORY="${{ github.repository }}" \
+              ghcr.io/easydev-org/easydiskbake:android-builder \
+              python3 /repo/lib/publish_android.py \
+                --image sysimg:android-15-aosp \
+                --repository "${{ github.repository }}"
+
+      - name: what is in the package
+        if: always()
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: android-tags
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py tags --prefix sysimg-

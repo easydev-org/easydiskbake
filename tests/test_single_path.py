@@ -108,9 +108,18 @@ class OnlyThePublisherTalksToVendors(unittest.TestCase):
                 if calls > defines:
                     callers.append(os.path.relpath(path, REPO))
 
-        # lib/iso.py defines it and has a __main__ branch; publish_iso.py uses it.
-        # Nothing else may.
-        self.assertEqual(sorted(callers), ["lib/iso.py", "lib/publish_iso.py"], callers)
+        # The publishers are the only things allowed to talk to a vendor:
+        #
+        #   lib/iso.py            defines it, and its __main__ branch calls it
+        #   lib/publish_iso.py    Windows/Linux ISOs
+        #   lib/publish_android.py  Google's system image zip
+        #
+        # A bake must not appear here. That is the property being tested.
+        self.assertEqual(
+            sorted(callers),
+            ["lib/iso.py", "lib/publish_android.py", "lib/publish_iso.py"],
+            callers,
+        )
 
 
 class TagsLookupIsNotSwallowed(unittest.TestCase):

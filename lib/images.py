@@ -41,7 +41,20 @@ from __future__ import annotations
 
 
 def tag(name: str) -> str:
-    """The ghcr tag an image is published under, in this repository's package."""
+    """The ghcr tag an image is published under, in this repository's package.
+
+    The prefix says what kind of artifact it is, because the tag namespace is shared:
+
+        iso-<name>          an installer image (Windows, Linux)
+        sysimg-<name>       an Android system image
+        macos-recovery-<n>  a macOS recovery image
+        <nothing>           the bake image itself, at :latest
+
+    A caller can pass a full tag with a colon, which is how the non-iso kinds are
+    published without every name needing to be classified here.
+    """
+    if ":" in name:
+        return name
     return f"iso-{name}"
 
 
@@ -132,10 +145,39 @@ LINUX = {
 MACOS_RELEASES = ["14", "15", "26"]
 
 
+# Android system images. Not an installer and not an ISO: Google ships a zip whose
+# contents are the disks themselves (system.img, vendor.img, userdata.img) plus the
+# kernel and ramdisk the emulator boots them with.
+#
+# WHY THIS IS IN THE TABLE AT ALL
+#
+# The system image is the only input an Android bake has. Fetching it from
+# dl.google.com at bake time would be the same mistake the Windows ISO had: an
+# unpinned dependency fetched on the critical path, where an upstream change surfaces
+# as a guest that does not boot rather than as a version that changed.
+#
+# The sha1 is Google's own, from sys-img2-3.xml. It is a 32-bit hash and weaker than
+# the sha256 used for Windows; it is what the publisher provides, and it still catches
+# a truncated or replaced download, which is what the check is for.
+ANDROID = {
+    "sysimg:android-15-aosp": {
+        "url": "https://dl.google.com/android/repository/sys-img/android/"
+               "x86_64-35_r02.zip",
+        "sha1": "2d857d170c0d1b827149565da34b3383e5306f7f",
+        "sha256": None,
+        "size": 782_336_000,
+        # api-level, not marketing version: 35 is Android 15.
+        "api": 35,
+        "abi": "x86_64",
+        "flavour": "default",
+    },
+}
+
+
 def all_images() -> dict:
     """Every pinned image, keyed by the tag it is published under."""
     merged = {}
-    for table in (WINDOWS, VIRTIO, LINUX):
+    for table in (WINDOWS, VIRTIO, LINUX, ANDROID):
         for name, pin in table.items():
             merged[tag(name)] = pin
     return merged

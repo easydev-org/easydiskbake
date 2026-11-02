@@ -1,0 +1,228 @@
+"""Run the Android emulator with the arguments a sandbox needs.
+
+    from emulator import Emulator
+    emu = Emulator(avd="sandbox", work="/tmp/run").start()
+    emu.wait_for_boot()
+    emu.stop()
+
+WHY THIS EXISTS AND WHAT IT DOES NOT REPLACE
+
+Android does not have an installer that writes a disk. Google ships a system image
+whose contents *are* the disks - system.img, vendor.img, userdata.img - and a kernel
+and ramdisk that boot them. So there is no bake step in the sense the other platforms
+have: no installer to drive, no partition table to create, no progress to watch for
+half an hour.
+
+What there IS, and what this module drives, is the emulator: the process that turns
+those images into a running device.
+
+WHY THE EMULATOR AND NOT lib/vm.py
+
+`lib/vm.py` builds a qemu command line for a `q35` machine. The Android system image is
+built for Google's `ranchu` machine and its `goldfish` device family - framebuffer,
+pipe, audio, battery - which upstream qemu does not implement. Booting a ranchu image
+on q35 stops in the kernel because there is no display device and no goldfish_pipe.
+
+So the launcher differs. Everything downstream of it does not: the emulator speaks QMP
+on a socket, so lib/qmp.py, lib/ocr.py and lib/snapshots.py drive it exactly as they
+drive a qemu guest.
+
+WHAT IS SHARED WITH THE OTHER PLATFORMS
+
+    lib/images.py       the system image is pinned there like every other input
+    lib/publish_iso.py  publishes it to this repository's package
+    lib/qmp.py          QMP client: screendump, input, keys
+    lib/snapshots.py    frame capture, unchanged
+    lib/vm.py           record_many() to encode the frames
+    lib/ci.py           kvm check, oras, login
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import time
+
+QEMU_SOCKET = "emulator-qmp.sock"
+
+
+def log(msg: str) -> None:
+    print(f"[emulator] {msg}", flush=True)
+
+
+class EmulatorError(RuntimeError):
+    pass
+
+
+def build_args(avd: str, work: str, *, api: int = 35, abi: str = "x86_64",
+               memory_mb: int = 4096, cores: int = 4,
+               gpu: str = "swiftshader_indirect", login: bool = False) -> list[str]:
+    """The emulator argv. Pure, so it can be asserted without running it.
+
+    Taken from easysandbox-android/entrypoint.sh, which is the version of this that
+    has been run against real guests. The flags that matter and why:
+
+        -no-window              headless; the screen is captured over QMP, not shown
+        -no-audio               no audio device; nothing consumes it
+        -no-boot-anim           the boot animation is 20 seconds of the same frame
+        -no-snapshot            never resume a saved state: a bake must start cold,
+                                and a snapshot would hide a broken system image
+        -accel on               KVM. Without it an Android boot is tens of minutes.
+        -gpu swiftshader_indirect   software rendering. The alternative needs a host
+                                GPU, and a CI runner has none.
+        -wipe-data              always a clean device, so the disk is reproducible
+
+    -wipe-data is deliberately NOT conditional here. easysandbox-android makes it a
+    variable because a sandbox pod may want to keep state; a bake never does.
+    """
+    if not shutil.which("emulator"):
+        raise EmulatorError(
+            "the emulator is not on PATH.\n"
+            "It is in the bake image at /opt/android-sdk/emulator; a host running\n"
+            "this needs `sdkmanager emulator platform-tools`."
+        )
+
+    qmp = os.path.join(work, QEMU_SOCKET)
+
+    return [
+        "emulator", "-avd", avd,
+        "-no-window", "-no-audio", "-no-boot-anim", "-no-snapshot",
+        "-wipe-data",
+        "-gpu", gpu,
+        "-accel", "on",
+        "-memory", str(memory_mb),
+        "-cores", str(cores),
+        "-port", "5554",
+        # QMP is what makes this reusable: lib/qmp.py screenshots and clicks through
+        # it, and lib/snapshots.py records frames from the same socket.
+        "-qmp", f"unix:{qmp},server=on,wait=off",
+        # -no-metrics and -no-keys keep the emulator from making network calls of its
+        # own; a bake should not depend on Google's telemetry endpoints being up.
+        "-no-metrics",
+        "-no-keys",
+    ]
+
+
+class Emulator:
+    """A running emulator, with the paths that belong to it."""
+
+    def __init__(self, avd: str, work: str, **shape):
+        self.avd = avd
+        self.work = os.path.abspath(work)
+        self.shape = shape
+        self.log_path = os.path.join(self.work, "emulator.log")
+        self.qmp = os.path.join(self.work, QEMU_SOCKET)
+        self.proc: subprocess.Popen | None = None
+
+    def start(self) -> "Emulator":
+        os.makedirs(self.work, exist_ok=True)
+        try:
+            os.unlink(self.qmp)
+        except FileNotFoundError:
+            pass
+
+        args = build_args(self.avd, self.work, **self.shape)
+        log(f"avd {self.avd}, gpu {self.shape.get('gpu', 'swiftshader_indirect')}")
+        log(f"qmp {self.qmp}")
+
+        # The emulator writes a lot to stdout and it is the only place a boot failure
+        # explains itself, so it goes to a file that is kept with the recording.
+        self.proc = subprocess.Popen(
+            args,
+            stdout=open(self.log_path, "ab"),
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            env={**os.environ, "ANDROID_AVD_HOME": os.environ.get("ANDROID_AVD_HOME", "/opt/android-avd")},
+        )
+        log(f"pid {self.proc.pid}")
+
+        deadline = time.time() + 120
+        while time.time() < deadline:
+            if os.path.exists(self.qmp):
+                log("qmp socket is up")
+                return self
+            if self.proc.poll() is not None:
+                raise EmulatorError(
+                    f"the emulator exited with {self.proc.returncode} before opening "
+                    f"QMP.\nLast lines of {self.log_path}:\n{self._tail()}"
+                )
+            time.sleep(2)
+
+        raise EmulatorError(
+            f"no QMP socket at {self.qmp} after 120s.\n{self._tail()}"
+        )
+
+    def alive(self) -> bool:
+        return self.proc is not None and self.proc.poll() is None
+
+    def adb(self, *args: str, timeout: int = 30) -> str:
+        """Run adb against this emulator and return its output, stripped."""
+        result = subprocess.run(
+            ["adb", "-s", "emulator-5554", *args],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        return (result.stdout or "").strip()
+
+    def wait_for_boot(self, seconds: int = 900) -> bool:
+        """Poll sys.boot_completed. This is the whole arrival check.
+
+        Android has no serial login prompt and no desktop to photograph: the boot
+        animation runs whether or not the system works, and the launcher appears on a
+        device that is half broken. sys.boot_completed is the property the framework
+        sets when it has started, and it is what easysandbox-android waits on too.
+
+        adb can answer before the device is listed, so the first calls fail with
+        "device not found"; that is expected and not logged.
+        """
+        started = time.time()
+        deadline = started + seconds
+        last_report = started
+
+        while time.time() < deadline:
+            if not self.alive():
+                log("the emulator exited while waiting for boot")
+                return False
+
+            try:
+                state = self.adb("getprop", "sys.boot_completed")
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                state = ""
+
+            if state == "1":
+                log(f"sys.boot_completed after {time.time() - started:.0f}s")
+                return True
+
+            if time.time() - last_report >= 60:
+                last_report = time.time()
+                log(f"waiting {time.time() - started:.0f}s: boot_completed={state or '-'}")
+
+            time.sleep(5)
+
+        log(f"never booted within {seconds}s")
+        return False
+
+    def stop(self) -> None:
+        if self.proc is None:
+            return
+        try:
+            os.killpg(os.getpgid(self.proc.pid), 15)
+        except ProcessLookupError:
+            return
+        try:
+            self.proc.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(os.getpgid(self.proc.pid), 9)
+            except ProcessLookupError:
+                pass
+            self.proc.wait(timeout=10)
+        log("stopped")
+
+    def _tail(self, lines: int = 25) -> str:
+        try:
+            with open(self.log_path, "rb") as fh:
+                text = fh.read().decode("utf-8", "replace")
+        except OSError:
+            return "(no log)"
+        return "\n".join(text.splitlines()[-lines:])

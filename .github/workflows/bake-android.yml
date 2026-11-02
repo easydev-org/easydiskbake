@@ -1,0 +1,150 @@
+name: bake-android
+
+# Bake an Android 15 (AOSP) sandbox disk and publish it.
+#
+#     ghcr.io/easydev-org/easydiskbake:android-15-aosp
+#
+# WHY THIS IS SHORT COMPARED TO THE OTHER BAKES
+#
+# Windows, macOS and Linux run an installer for twenty to ninety minutes: partition a
+# disk, write a system, wait for two reboots, prove it starts. Android does not have
+# that step. Google ships a system image whose contents are the disks, and the
+# emulator boots them directly.
+#
+# So this job is: pull the AVD, start the emulator, record it, wait for
+# sys.boot_completed, pack it, publish.
+#
+# WHY THE EMULATOR AND NOT lib/vm.py
+#
+# The system image is built for Google's `ranchu` machine and its `goldfish` device
+# family, which upstream qemu does not implement. Booting it on q35 stops in the
+# kernel. Everything downstream of the launcher is shared with the other platforms
+# though - the emulator speaks QMP, so lib/qmp.py drives it and lib/snapshots.py
+# records it with the same code.
+#
+# EVERY STEP RUNS THROUGH LOG-STREAM, and the job runs inside the bake image, like
+# every other bake here.
+#
+# MANUAL ONLY: a boot is a few minutes of a 4-core KVM runner, and the AVD it produces
+# depends on a system image that changes only when Google publishes a new r-number.
+
+on:
+  workflow_dispatch:
+    inputs:
+      boot_timeout:
+        description: "Seconds to wait for sys.boot_completed"
+        default: "900"
+      memory_mb:
+        description: "Guest memory"
+        default: "4096"
+      publish:
+        description: "Push the AVD to ghcr"
+        type: boolean
+        default: true
+
+concurrency:
+  group: bake-android-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bake:
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: android-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            python3 lib/ci.py free-disk --need 20
+            # The emulator and adb are in the image; this says so before anything
+            # waits on them.
+            command -v emulator adb
+
+      - name: bake
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: android-bake
+          interval: "15"
+          command: |
+            set -euo pipefail
+            mkdir -p out
+            export GITHUB_TOKEN="${{ github.token }}"
+            export SNAPSHOT_INTERVAL=5
+            export RECORD_FPS=1
+            python3 android/15/bake.py \
+              --out out/android15.tar.zst \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --memory-mb "${{ inputs.memory_mb || '4096' }}"
+
+      - name: keep the recording
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-recording
+          path: |
+            out/install.mp4
+            out/emulator.log
+            out/frames/shots/frames.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: keep raw frames as a fallback
+        if: always() && hashFiles('out/install.mp4') == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-frames
+          path: out/frames/shots/*.ppm
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: upload the AVD
+        uses: actions/upload-artifact@v4
+        with:
+          name: android15-avd
+          path: out/android15.tar.zst
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0   # already zstd
+
+      - name: push the AVD
+        if: ${{ inputs.publish == true || inputs.publish == null }}
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: android-publish
+          interval: "15"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py install-oras
+            python3 lib/ci.py login --registry ghcr.io
+            python3 lib/publish_disk.py out/android15.tar.zst --kind android-15-aosp
+
+      - name: what is in the package
+        if: always()
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: android-tags
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py tags --prefix android-
