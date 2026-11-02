@@ -91,11 +91,23 @@ CONTINUE_MENU = (1142, 586)
 # itself is the icon ABOVE the label, which is why clicking the label's centre does
 # nothing and y=306 is what opens the sheet.
 #
-# 306 -> 296, ten pixels up. Measured on run 41506477596: the click was delivered and
-# the sheet never opened, and the recording shows the pointer arriving just BELOW the
-# glyph. The toolbar row is 22px tall here and the icon sits in its upper half, so 296
-# is still inside the control and 306 was at the lower edge of its hit area.
-ERASE_BUTTON = (1290, 296)
+# MEASURED FROM A FRAME, NOT GUESSED. Three runs tried three values:
+#
+#   run 41506477596 @ 306   no sheet
+#   run 41511491789 @ 296   no sheet
+#   (this one)      @ 301   no sheet
+#
+# So the recording of run 41511491789 was measured instead. At x=1289 the vertical
+# profile is:
+#
+#     y=294..297   the glyph's top edge
+#     y=306..321   the glyph itself, peaking at 56/255 around y=311
+#     y=334..339   the "Erase" LABEL, which is a separate thing 20px below
+#
+# The old note in this file was right that the label is at y=332-340 and wrong about
+# where the control is: y=306 sits on the glyph's lower shoulder and y=296 above its top.
+# The centre of the drawn glyph is 311.
+ERASE_BUTTON = (1290, 311)
 
 # Sidebar rows under "Internal", 28px apart, x=540 inside the labels. Five rows because
 # the count differs between Show Only Volumes (one) and Show All Devices (four), and a
