@@ -95,6 +95,25 @@ jobs:
               --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
               --memory-mb "${{ inputs.memory_mb || '4096' }}"
 
+      - name: validate the gold disk
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: android-validate
+          interval: "15"
+          command: |
+            set -euo pipefail
+            # A SEPARATE PROCESS, AND A SEPARATE BOOT, WITHOUT -wipe-data.
+            #
+            # The bake already saw sys.boot_completed on the machine it built. This
+            # unpacks the archive it produced, starts a guest on that /data, and reads
+            # back the marker the bake wrote. Without this step the artifact is "a
+            # system image we booted once"; with it, it is "this disk, which boots".
+            python3 android/15/validate.py \
+              --avd out/android15.tar.zst \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --memory-mb "${{ inputs.memory_mb || '4096' }}"
+
       - name: keep the recording
         if: always()
         uses: actions/upload-artifact@v4

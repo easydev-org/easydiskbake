@@ -43,6 +43,7 @@ import argparse
 import os
 import subprocess
 import sys
+import time
 
 # android/15/bake.py -> the repository root
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -50,6 +51,22 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from lib import avd, ci, emulator, iso, vm  # noqa: E402
 
 IMAGE = "sysimg:android-15-aosp"
+
+# The marker a gold disk carries, and the file it lives in. A token rather than a fixed
+# string so two bakes cannot be confused for one another.
+GOLD_MARK = "/data/local/tmp/bake-gold"
+
+
+def gold_token() -> str:
+    """The identity this bake writes into the gold disk's /data.
+
+    A run id, a timestamp and four random hex digits. All three, because each one
+    covers a way two tokens could collide: the run id repeats across re-runs of the
+    same workflow, a second-resolution timestamp repeats within one run, and the random
+    tail covers a local bake where there is no run id at all.
+    """
+    return (f"gold-{os.environ.get('GITHUB_RUN_ID', 'local')}-"
+            f"{int(time.time())}-{os.urandom(2).hex()}")
 
 
 def log(msg: str) -> None:
@@ -137,7 +154,14 @@ def main(argv: list[str]) -> int:
 
     try:
         booted = emu.wait_for_boot(args.boot_timeout)
+
+        # The gold marker goes in AFTER the boot completed, so it proves the guest
+        # reached the framework and not merely the kernel. See Emulator.mark().
+        marked = emu.mark(gold_token()) if booted else False
     finally:
+        # acpi_first is not available here - the emulator has no ACPI power button - so
+        # stop() asks it to shut down through adb and only then signals. That is what
+        # flushes userdata-qemu.img, which is the file this bake exists to publish.
         emu.stop()
         snap.terminate()
         try:
@@ -166,21 +190,45 @@ def main(argv: list[str]) -> int:
         return 1
 
     log("the guest booted")
+    if not marked:
+        # Not fatal to the disk, but fatal to the claim: without the marker nothing can
+        # prove a later boot read the same /data, so the artifact would be a copy of the
+        # input and the verify step would be testing the wrong thing.
+        log("=== THE GOLD MARKER COULD NOT BE WRITTEN ===")
+        return 1
+    log("the gold marker is on /data")
 
-    # --- what the disk says, before publishing it ---------------------------
+    # --- what the AVD contains, before publishing it -----------------------
     #
-    # smoke.check_disk() reads an MBR and an ext superblock, which an AVD does not
-    # have: it is a directory of Android images, not a partitioned disk. So the check
-    # here is the one that applies - the files the emulator needs are present and not
-    # empty. A zero-length userdata.img is what a failed first boot leaves behind, and
-    # it produces an AVD that starts and then reports a corrupt data partition.
+    # smoke.check_disk() reads an MBR and an ext superblock, which an AVD does not have:
+    # it is a directory of Android images, not a partitioned disk. So the check here is
+    # the one that applies - the files the emulator needs are present and not empty.
+    #
+    # THE NAMES ARE THE ONES THE EMULATOR ACTUALLY WRITES, and the first version had
+    # them wrong in two ways:
+    #
+    #     config.ini       lives in the AVD directory, but it is created by avdmanager
+    #                      from the system image's own config - so checking it proves the
+    #                      AVD exists, not that anything booted
+    #     userdata.img     does not exist. The emulator creates userdata-qemu.img on the
+    #                      first boot; userdata.img is an input that is not shipped
+    #
+    # A zero-length userdata-qemu.img is what a failed first boot leaves behind, and a
+    # device without it starts and then reports a corrupt data partition. That is the
+    # failure worth catching, so that is the file checked.
+    avd_dir = os.path.join(home, f"{name}.avd")
     ok = True
-    for required in ("config.ini", "userdata.img", "system.img"):
-        path = os.path.join(home, f"{name}.avd", required)
+    required = {
+        "config.ini": 1,            # bytes; any non-empty config
+        "system.img": 1,            # the read-only system, a hard link or a copy
+        "userdata-qemu.img": 1,     # the data partition, created by the first boot
+    }
+    for filename, minimum in required.items():
+        path = os.path.join(avd_dir, filename)
         size = os.path.getsize(path) if os.path.exists(path) else -1
-        log(f"  {required}: {size} bytes")
-        if size <= 0:
-            log(f"  MISSING or EMPTY: {required}")
+        log(f"  {filename}: {size} bytes")
+        if size < minimum:
+            log(f"  MISSING or EMPTY: {filename}")
             ok = False
 
     if not ok:

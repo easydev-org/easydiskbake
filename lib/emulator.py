@@ -176,12 +176,45 @@ class Emulator:
         return self.proc is not None and self.proc.poll() is None
 
     def adb(self, *args: str, timeout: int = 30) -> str:
-        """Run adb against this emulator and return its output, stripped."""
+        """Run adb against this emulator and return its output, stripped.
+
+        A non-zero exit is returned as "FAILED:<stderr>" rather than raised, because
+        most callers are polling and a command that fails before the framework is up is
+        expected rather than exceptional.
+        """
         result = subprocess.run(
             ["adb", "-s", "emulator-5554", *args],
             capture_output=True, text=True, timeout=timeout,
         )
+        if result.returncode != 0:
+            return f"FAILED:{(result.stderr or result.stdout or '').strip()}"
         return (result.stdout or "").strip()
+
+    def mark(self, token: str) -> bool:
+        """Write a token into the guest's /data, where it survives a shutdown.
+
+        THIS IS WHAT MAKES THE ARTIFACT PROVABLY NOT A COPY OF ITS INPUT. /data lives in
+        userdata-qemu.img, which the emulator creates on the first boot and which the
+        bake publishes. A verify run without -wipe-data reads the token back; a disk
+        that had been re-wiped would not have it, and a disk that was never written
+        would not either. The value is the bake's own timestamp, so two runs cannot be
+        confused for each other.
+        """
+        result = self.adb("shell", "sh", "-c",
+                          f"echo '{token}' > /data/local/tmp/bake-gold && "
+                          f"sync && cat /data/local/tmp/bake-gold")
+        if result == f"FAILED:" or not result.endswith(token):
+            log(f"could not write the gold marker: {result[:200]}")
+            return False
+        log(f"gold marker written: {token}")
+        return True
+
+    def read_mark(self) -> str:
+        """Read the token back, or "" when it is not there."""
+        result = self.adb("shell", "cat", "/data/local/tmp/bake-gold")
+        if result.startswith("FAILED:"):
+            return ""
+        return result.strip()
 
     def wait_for_boot(self, seconds: int = 900) -> bool:
         """Poll sys.boot_completed. This is the whole arrival check.

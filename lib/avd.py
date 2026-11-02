@@ -104,7 +104,13 @@ def install_system_image(zip_path: str, *, api: int = 35, flavour: str = "defaul
     root = sdk_root()
     target = os.path.join(root, "system-images", f"android-{api}", flavour, abi)
 
-    if os.path.isdir(target) and os.listdir(target):
+    # "exists and is not empty" is not the same as "is installed". The first version
+    # returned early on the former, so a directory left behind by an interrupted unpack
+    # - or by an earlier version of this function that wrote the wrong layout - was
+    # treated as a finished system image and every later step failed somewhere else.
+    # The file that decides it is system.img, the one thing the emulator cannot start
+    # without.
+    if os.path.isfile(os.path.join(target, "system.img")):
         log(f"system image already installed at {target}")
         return target
 
@@ -126,14 +132,23 @@ def install_system_image(zip_path: str, *, api: int = 35, flavour: str = "defaul
             shutil.move(os.path.join(nested, entry), os.path.join(target, entry))
         os.rmdir(nested)
 
-    for required in ("system.img", "userdata.img"):
+    for required in ("system.img", "vendor.img"):
         if not os.path.exists(os.path.join(target, required)):
-            # vendor.img is separate in newer releases and is not always present.
             raise AvdError(
                 f"{required} is missing from {target}; the zip did not contain a "
                 f"system image"
             )
 
+    # userdata.img IS NOT IN THE ZIP AND MUST NOT BE REQUIRED.
+    #
+    # The first version listed it and every publish failed on a zip that had downloaded
+    # and sha1-verified correctly:
+    #
+    #     FAILED: userdata.img is missing from .../android-35/default/x86_64
+    #
+    # Google ships an empty /data template instead (data/empty_data_disk), and the
+    # emulator creates userdata-qemu.img from it on first boot. Requiring the file here
+    # made a correct zip look corrupt.
     log(f"installed: {', '.join(sorted(os.listdir(target))[:6])}...")
     return target
 
