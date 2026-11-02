@@ -114,6 +114,8 @@ class ConfiguredIdentity(unittest.TestCase):
                 "csr-active-config": b"\x00\x00\x00\x00",
             }}},
             "Misc": {"Boot": {"ShowPicker": True, "Timeout": 2}},
+            "UEFI": {"Output": {"Resolution": "", "ForceResolution": False,
+                                "ProvideConsoleGop": True}},
             "DeviceProperties": {"Add": {
                 "PciRoot(0x0)/Pci(0x2,0x0)": {"framebuffer-patch-enable": 1},
             }},
@@ -516,3 +518,101 @@ class MacosMachine(unittest.TestCase):
         import vm
         plain = vm.build_args("/tmp/other", [], vm.Shape(cpus=4))
         self.assertEqual(plain[plain.index("-smp") + 1], "4")
+
+
+class GuestResolution(unittest.TestCase):
+    """The screen size is what every driver coordinate is expressed in.
+
+    THE BUG THIS EXISTS FOR. UEFI/Output/Resolution shipped EMPTY in the template and
+    write_config did not set it, so the guest ran at vmware-svga's default, 1280x800.
+    Every position in macos/15/install.py was measured at 1920x1080, and the licence
+    pane's Agree in a sheet at y=810 was below the bottom of an 800-pixel screen.
+
+    The frames of run 41443447642 show it: 1280x800, a Recovery menu whose rows sit at
+    y=149, 238, 333, 425 and whose button is at y=511 - and twenty-seven clicks aimed
+    at none of them.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="resolution-")
+        self.efi = os.path.join(self.tmp, "opencore")
+        self.template = os.path.join(self.tmp, "template")
+        for base in (self.efi, self.template):
+            for sub in ("OC/Kexts", "OC/Drivers", "OC/Resources", "OC/ACPI", "BOOT"):
+                os.makedirs(os.path.join(base, sub), exist_ok=True)
+
+        # The template's own Output block, with an empty Resolution - which is what the
+        # real LongQT 0.7 template contains.
+        config = {
+            "PlatformInfo": {"Generic": {
+                "SystemProductName": "iMac19,1",
+                "SystemSerialNumber": "TEMPLATE0000",
+                "MLB": "TEMPLATEBOARD00",
+                "SystemUUID": "00000000-0000-0000-0000-000000000000",
+                "ROM": b"\x00" * 6}},
+            "NVRAM": {"Add": {"7C436110-AB2A-4BBB-A880-FE41995C9F82": {
+                "csr-active-config": b"\x00\x00\x00\x00"}}},
+            "Misc": {"Boot": {"ShowPicker": True, "Timeout": 2}},
+            "UEFI": {"Output": {"Resolution": "", "ForceResolution": False,
+                                "ProvideConsoleGop": True}},
+            "Kernel": {"Add": []},
+        }
+        with open(os.path.join(self.template, "OC", "config.plist"), "wb") as fh:
+            plistlib.dump(config, fh, fmt=plistlib.FMT_XML)
+
+        self.ident = {"serial": "C02TEST12345", "board_serial": "C0299999999999999",
+                      "uuid": "11111111-2222-3333-4444-555555555555",
+                      "mac": "00:16:CB:AA:BB:CC"}
+
+    def tearDown(self):
+        subprocess.run(["rm", "-rf", self.tmp], check=False)
+
+    def written(self):
+        opencore.write_config(self.efi, self.template, self.ident, "15")
+        with open(os.path.join(self.efi, "OC", "config.plist"), "rb") as fh:
+            return plistlib.load(fh)
+
+    def test_the_resolution_is_set_at_all(self):
+        # The template ships it empty; an empty string means "whatever the firmware
+        # already has", which is how the guest ended up at 1280x800.
+        output = self.written()["UEFI"]["Output"]
+        self.assertNotEqual(output["Resolution"], "")
+
+    def test_it_is_the_size_the_drivers_measure_in(self):
+        self.assertEqual(self.written()["UEFI"]["Output"]["Resolution"],
+                         "1920x1080@32")
+
+    def test_force_resolution_is_left_as_the_template_had_it(self):
+        """dockur writes Resolution and nothing else in this block.
+
+        configureOpenCorePlist() sets exactly one field there; the template's
+        ForceResolution=false stays. Setting it true asks OpenCore to impose a mode
+        rather than accept one the firmware already has, and the pinned
+        OVMF_VARS-1920x1080.fd already carries the matching GOP mode.
+        """
+        self.assertFalse(self.written()["UEFI"]["Output"]["ForceResolution"])
+
+    def test_it_matches_the_ovmf_vars_template(self):
+        """The GOP mode is baked into the vars file, and the image pins only one.
+
+        Setting a resolution the pinned template cannot produce is the same failure
+        with an extra step, so the two numbers come from one place.
+        """
+        self.assertEqual((opencore.GUEST_WIDTH, opencore.GUEST_HEIGHT), (1920, 1080))
+        pin = images.MACOS_ASSETS["ovmf-vars-1920x1080"]
+        self.assertIn("1920x1080", pin["url"])
+
+    def test_the_driver_coordinates_fit_inside_it(self):
+        """Every position in install.py must be on a 1920x1080 screen.
+
+        Agree in the sheet was (604, 810) for a 1080-pixel screen and the guest was
+        800 pixels tall; nothing noticed because nothing compared the two.
+        """
+        source = open(os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "macos", "15", "install.py"), encoding="utf-8").read()
+
+        import re
+        for name, x, y in re.findall(r"^([A-Z_]+) = \((\d+), (\d+)\)$", source, re.M):
+            self.assertLess(int(x), opencore.GUEST_WIDTH, f"{name} x")
+            self.assertLess(int(y), opencore.GUEST_HEIGHT, f"{name} y")

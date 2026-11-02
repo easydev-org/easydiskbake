@@ -104,6 +104,13 @@ ESP_SECTORS_PER_CLUSTER = 4
 # The GPT layout constants, also from dockur: the first usable LBA is 34, and the
 # partition ends 34 sectors before the end of the disk, leaving room for the backup.
 ESP_FIRST_USABLE_LBA = 34
+
+# THE GUEST'S SCREEN, and it is a contract rather than a preference: the drivers in
+# macos/*/install.py and macos/*/drive.py hold positions measured at this size. It also
+# has to match the OVMF_VARS template, whose GOP mode is baked in - lib/images.py pins
+# OVMF_VARS-1920x1080.fd and nothing else.
+GUEST_WIDTH = 1920
+GUEST_HEIGHT = 1080
 FAT32_MIN_CLUSTERS = 65525
 
 # The boot image is a GPT disk with one partition, and these are the constants of that
@@ -438,6 +445,35 @@ def write_config(efi: str, template_efi: str, ident: dict, release: str) -> str:
     boot = config["Misc"]["Boot"]
     boot["ShowPicker"] = False
     boot["Timeout"] = 0
+
+    # THE SCREEN SIZE IS NOT DECORATION - EVERY COORDINATE IN A DRIVER DEPENDS ON IT.
+    #
+    # dockur sets UEFI/Output/Resolution to "${WIDTH}x${HEIGHT}@32" in
+    # configureOpenCorePlist(), and the template ships it EMPTY. That empty string is
+    # why six runs clicked at coordinates that were never on screen: the guest ran at
+    # 1280x800 while macos/15/install.py's positions were measured at 1920x1080, and
+    # the licence pane's Agree at y=810 was below the bottom of an 800-pixel screen.
+    #
+    # The frames of run 41443447642 show it directly: 1280x800, a Recovery menu with
+    # its rows at y=149, 238, 333, 425 and its button at y=511 - none of which any of
+    # the clicks were aimed at.
+    #
+    # 1920x1080 is also the resolution the OVMF_VARS template was built for
+    # (lib/images.py pins OVMF_VARS-1920x1080.fd, and the GOP mode is baked into it),
+    # so this is the pair, not one setting.
+    # Resolution ONLY - ForceResolution IS LEFT ALONE, which is what dockur does.
+    #
+    # configureOpenCorePlist() in dockur/macos writes exactly one field here:
+    #
+    #     resolution="${WIDTH}x${HEIGHT}@32"
+    #     xmlstarlet ... -u "$output/key[.='Resolution']/..." -v "$resolution"
+    #
+    # and the template's ForceResolution=false stays. Setting it true asks OpenCore to
+    # impose a mode rather than use one the firmware already has, and there is no
+    # reason to take that risk when the pinned OVMF_VARS-1920x1080.fd carries the
+    # matching GOP mode already.
+    output = config["UEFI"]["Output"]
+    output["Resolution"] = f"{GUEST_WIDTH}x{GUEST_HEIGHT}@32"
 
     os.makedirs(os.path.dirname(target), exist_ok=True)
     with open(target, "wb") as fh:
