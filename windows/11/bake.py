@@ -47,7 +47,7 @@ import time
 # windows/11/bake.py -> the repository root
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from lib import bootkey, images, iso, smoke, vm, wim, winiso  # noqa: E402
+from lib import bootkey, desktop, images, iso, smoke, vm, wim, winiso  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ANSWER = os.path.join(HERE, "answer")
@@ -470,125 +470,80 @@ class Baker:
         return True
 
     def wait_for_arrival(self, console: str, guest: vm.Guest) -> bool:
-        """Wait until the guest is a running Windows, using only host-side signals.
+        """Wait until the guest shows a Windows desktop.
 
-        THE THREE SIGNALS, AND WHY THESE
+        WHY THE SCREEN, AND NOT RDP
 
-        A screenshot cannot answer this. A guest that finished setup and one that
-        went interactive and is sitting at a pane both eventually draw a desktop,
-        and telling them apart by eye is exactly the judgement a bake exists to
-        remove.
+        The check used to be "is port 3389 answering". It depends on the guest's NIC
+        having a driver in the installed system, and the NIC is virtio-net: NetKVM
+        reaches windowsPE through $WinPEDriver$ but nothing installs it into the
+        finished disk. So a perfect install could wait forever for an RDP listener that
+        was never going to start, and the bake would report a timeout on a good disk.
 
-          reboots >= 2        setup restarts the guest itself. A guest stuck on a
-                              pane never restarts, so this alone rules out the most
-                              common failure.
-          booted from disk    SeaBIOS/OVMF says "Booting from Hard Disk" once the
-                              installer has handed over. Before that it boots the
-                              CD.
-          port 3389 accepts   the strongest one. RDP is only listening after OOBE
-                              has completed, which is after every pass of the answer
-                              file has been consumed.
+        A desktop is on screen the moment OOBE finishes, and the screen is being
+        captured for the recording already. The check costs nothing extra and depends on
+        nothing that can be misconfigured.
 
-        The third is the only one that proves setup finished; the first two say it
-        got moving. All three are read without the guest doing anything, which is
-        what lets the answer file be the whole guest-side contract.
+        lib/desktop.py explains what it looks for and why colour matching alone does
+        not work: the installer is also blue.
+
+        THE CONSOLE IS STILL READ, FOR DIAGNOSIS ONLY
+
+        The firmware's own words are what explain a failure - "No bootable option", a
+        PXE attempt, a boot loop through Boot0001..0007. They no longer decide
+        anything: the desktop does.
         """
         import time
 
         deadline = time.time() + self.args.timeout
         started = time.time()
         last_report = started
-        seen: set[str] = set()
-        reboots = 0
-        last_boot_marker = ""
-
-        # A floor under the arrival time, because the cheapest way for this check to
-        # be wrong is to be too eager.
-        #
-        # The first run declared success six seconds after `qemu-img create`, on an
-        # RDP forward that accepted a connection because qemu had started - nothing
-        # had booted. rdp_serving() fixes that specific cause, but a floor is a guard
-        # against the next one: no Windows install reaches a desktop faster than this,
-        # and a check that says otherwise is measuring the wrong thing.
-        minimum = int(os.environ.get("MIN_INSTALL_SECONDS", "600"))
+        shots = os.path.join(self.frames, "shots")
 
         while time.time() < deadline:
             if not guest.alive():
                 log("qemu exited before the guest came up")
+                self.tail(console)
                 return False
 
-            # --- the console: reboots and what the firmware booted ---------------
+            # --- the screen: the only signal that means what it says -------------
+            #
+            # reached_desktop looks at the last few frames rather than the newest,
+            # because a capture can land mid-repaint or while the screen has blanked.
+            if desktop.reached_desktop(shots):
+                elapsed = time.time() - started
+                log(f"a Windows desktop is on screen ({elapsed:.0f}s)")
+                return True
+
+            # --- the console: for the record, and for the failure message --------
             try:
                 with open(console, "rb") as fh:
                     text = fh.read().decode("utf-8", "replace")
             except OSError:
                 text = ""
 
-            # Each "Booting from Hard Disk" is one completed handover from the
-            # installer to the installed system. Counting distinct positions rather
-            # than occurrences keeps an append-only log from inflating the count.
-            marker = text.count("Booting from Hard Disk")
-            if marker > reboots:
-                reboots = marker
-                log(f"booted from hard disk {reboots} time(s)")
-            last_boot_marker = text
-
-            # --- the port: the only signal that proves OOBE finished -------------
-            #
-            # rdp_serving, not port_open: see its docstring. The forward accepts a
-            # connection from the moment qemu starts, so a bare TCP check declares
-            # success in seconds and ships an empty disk.
-            if vm.rdp_serving(self.args.rdp_port):
-                elapsed = time.time() - started
-                if elapsed < minimum:
-                    log(f"RDP answered after {elapsed:.0f}s, which is before any Windows "
-                        f"install can finish (floor is {minimum}s) - ignoring it")
-                    log("this means something other than the guest is answering; "
-                        "check that the forward is not colliding with a host service")
-                else:
-                    log(f"3389 is serving RDP: the guest is a running Windows "
-                        f"({elapsed:.0f}s)")
-                    return True
-
-            if reboots == 0:
-                seen.add("no hard-disk boot yet")
-
-            # --- a heartbeat, because silence is not evidence of progress --------
-            #
-            # The first run of this sat for eleven minutes with no output after
-            # "[vm] qemu pid 68" and there was no way to tell a slow install from a
-            # guest that never started: the only log lines were state changes, and
-            # nothing had changed. One line a minute with the numbers that decide the
-            # outcome costs nothing and answers that immediately.
             # --- a heartbeat that can tell progress from a hang ------------------
             #
-            # Console byte count alone is not enough: Windows setup writes nothing to
-            # the serial console, so a healthy install and a frozen one both show a
-            # constant size. The frames are the signal - snapshots.py writes one every
-            # N seconds, and comparing the newest two says whether the screen changed.
-            #
-            # This is the difference between "wait 90 minutes and find out" and "know
-            # at minute five".
+            # Console byte count alone cannot: Windows setup writes nothing to the
+            # serial console, so a healthy install and a frozen one both show a
+            # constant size. The frames can - see frame_progress.
             if time.time() - last_report >= 60:
                 last_report = time.time()
                 elapsed = time.time() - started
-                frames, changed = frame_progress(os.path.join(self.frames, "shots"))
-                log(f"waiting {elapsed:.0f}s: {reboots} disk boot(s), "
-                    f"console {len(text)} bytes, {frames} frames, "
-                    f"screen {'CHANGING' if changed else 'static'}, "
-                    f"rdp not answering yet")
-                if frames and not changed and elapsed > 600:
-                    log("the screen has not changed in a minute; if this persists the "
-                        "installer is waiting for something")
+                frames, changed = frame_progress(shots)
+                log(f"waiting {elapsed:.0f}s: {frames} frames, "
+                    f"screen {'changing' if changed else 'static'}, "
+                    f"console {len(text)} bytes")
+                if frames == 0:
+                    log("no frames are being captured at all; check snapshots.log")
+                elif not changed and elapsed > 900:
+                    log("the screen has not changed for a while - if this continues, "
+                        "the installer is waiting for something (see install.mp4)")
 
             time.sleep(5)
 
         log(f"timed out after {self.args.timeout}s")
-        if reboots == 0:
-            log("the guest never booted from its hard disk: setup did not get that far")
-        else:
-            log(f"the guest booted from disk {reboots} time(s) but 3389 never opened:")
-            log("setup probably went interactive (a bad pass in the answer file)")
+        self.tail(console)
         return False
 
     def tail(self, path: str, lines: int = 30) -> None:
