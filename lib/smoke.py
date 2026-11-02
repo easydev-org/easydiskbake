@@ -124,12 +124,28 @@ def qemu_io_read(disk: str, offset: int, length: int) -> bytes:
     # unbootable disk. The check exists to catch a bad disk; it was rejecting a good one.
     data = bytearray()
     for line in result.stdout.splitlines():
-        m = re.match(r"^([0-9a-f]{8,16}):?\s+((?:[0-9a-f]{2,4}\s*)+)", line)
+        # THE ASCII COLUMN IS PART OF THE OUTPUT AND MUST NOT BE PARSED.
+        #
+        # qemu-io -v prints
+        #
+        #     00000000:  55 aa 00 00 00 00 00 00 00 00 00 00 00 00 00 00  U...............
+        #
+        # and a greedy hex run at the end of the line swallows the ASCII when the bytes
+        # happen to be hex digits. Reading 64 MiB of a partition rather than 512 bytes of
+        # a header made that certain, and run 41492587109 failed the whole bake with
+        #
+        #     ValueError: non-hexadecimal number found in fromhex() arg at position 3
+        #
+        # The fix is to bound the hex run by the column width: 16 bytes per line, so at
+        # most 16 tokens of two hex digits, and stop at the double space that separates
+        # them from the ASCII.
+        m = re.match(r"^([0-9a-f]{8,16}):\s+([0-9a-f ]+?)\s{2,}", line + "  ")
         if not m:
             continue
-        for token in m.group(2).split():
-            # -v may group into 4-byte words on some builds; split those out.
+        tokens = [t for t in m.group(2).split() if re.fullmatch(r"[0-9a-f]{2,8}", t)]
+        for token in tokens:
             if len(token) == 8:
+                # -v may group into 4-byte words on some builds; split those out.
                 data += bytes.fromhex(token)[::-1]
             else:
                 data += bytes.fromhex(token)
@@ -241,7 +257,10 @@ def check_efi_bootloader(disk: str) -> bool:
     espimg = os.path.join(tmpdir, "esp.img")
     try:
         with open(os.path.join(tmpdir, "esp.bin"), "wb") as fh:
-            fh.write(qemu_io_read(disk, offset, min(size, 64 << 20)))
+            # 8 MiB IS ENOUGH FOR A FAT32 BOOT SECTOR AND ITS ROOT DIRECTORY, and
+            # copying 64 MiB through qemu-io's text output for every Windows bake is
+            # both slow and a much larger surface for the parser above.
+            fh.write(qemu_io_read(disk, offset, min(size, 8 << 20)))
         shutil.copyfile(os.path.join(tmpdir, "esp.bin"), espimg)
         result = subprocess.run(
             ["mdir", "-i", espimg, "-/", "-b", "::/EFI/Microsoft/Boot"],

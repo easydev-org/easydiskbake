@@ -158,3 +158,72 @@ class TheMessage(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheQemuIoParser(unittest.TestCase):
+    """qemu-io's -v output has an ASCII column, and it must not be read as hex.
+
+    MEASURED ON RUN 41492587109, which failed the whole bake:
+
+        File "lib/smoke.py", line 135, in qemu_io_read
+            data += bytes.fromhex(token)
+        ValueError: non-hexadecimal number found in fromhex() arg at position 3
+
+    qemu-io -v prints sixteen bytes, two spaces, then the same bytes as ASCII:
+
+        00000000:  55 aa 00 00 ...  U...............
+
+    A greedy hex run at the end of the line swallows that ASCII whenever the text
+    happens to look like hex digits. Reading 512 bytes of a header never hit it; reading
+    a 64 MiB partition did, which is what the EFI check asks for.
+    """
+
+    def parse(self, text):
+        import re
+
+        data = bytearray()
+        for line in text.splitlines():
+            m = re.match(r"^([0-9a-f]{8,16}):\s+([0-9a-f ]+?)\s{2,}", line + "  ")
+            if not m:
+                continue
+            tokens = [t for t in m.group(2).split()
+                      if re.fullmatch(r"[0-9a-f]{2,8}", t)]
+            for token in tokens:
+                if len(token) == 8:
+                    data += bytes.fromhex(token)[::-1]
+                else:
+                    data += bytes.fromhex(token)
+        return bytes(data)
+
+    def test_an_ascii_column_that_looks_like_hex_is_ignored(self):
+        line = "00000000:  55 aa 00 00 00 00 00 00 00 00 00 00 00 00 00 00  badc0ffee"
+        self.assertEqual(self.parse(line)[:2], bytes([0x55, 0xAA]))
+        self.assertEqual(len(self.parse(line)), 16)
+
+    def test_a_normal_line_round_trips(self):
+        line = ("00000000:  eb 58 90 6d 6b 66 73 2e  66 61 74 00 00 00 00 00  "
+                ".X.mkfs.fat......")
+        self.assertEqual(self.parse(line)[:4], bytes.fromhex("eb58906d"))
+
+    def test_the_final_summary_line_is_not_data(self):
+        summary = "read 1048576/1048576 bytes at offset 1048576\\n1048576 bytes, 1 ops"
+        self.assertEqual(self.parse(summary), b"")
+
+    def test_it_reads_a_real_partition(self):
+        """The check has to survive the size the EFI check actually asks for."""
+        if not have_tools():
+            self.skipTest("needs the image tools")
+        tmp = tempfile.mkdtemp(prefix="qio-")
+        try:
+            raw = os.path.join(tmp, "d.raw")
+            with open(raw, "wb") as fh:
+                fh.truncate(16 << 20)
+            subprocess.run(["sgdisk", "-n", "1:2048:+8M", "-t", "1:EF00", "-mbrtogpt",
+                            raw], check=True, capture_output=True)
+            q = os.path.join(tmp, "d.qcow2")
+            subprocess.run(["qemu-img", "convert", "-O", "qcow2", raw, q],
+                           check=True, capture_output=True)
+            data = smoke.qemu_io_read(q, 2048 * 512, 8 << 20)
+            self.assertEqual(len(data), 8 << 20)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
