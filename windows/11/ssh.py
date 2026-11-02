@@ -602,22 +602,78 @@ def wait_for_ssh(port: int = 2222, timeout: int = 120) -> bool:
 
 def start_swtpm(work: str) -> str:
     """Windows 11 will not boot without a TPM, and the disk remembers the one it was
-    installed against, so this has to be a TPM that persists across the two stages."""
+    installed against, so this has to be a TPM that persists across the two stages.
+
+    NO --daemon, AND THE OUTPUT IS KEPT.
+
+    With --daemon, swtpm forks and the parent's exit status says only that the fork
+    worked. If the state directory cannot be loaded, the CHILD prints the reason and
+    dies - and the caller sees nothing until qemu fails to talk to it:
+
+        qemu-system-x86_64: tpm-emulator: TPM result for CMD_INIT: 0x9 operation failed
+        qemu exited during the boot
+        0 frames captured over 12s
+
+    which is what launch-windows report on runs 41501928264, 41503681324 and 41516552206.
+    Running it in the foreground with its log captured means a bad state is reported as a
+    bad state, by swtpm, in its own words.
+
+    The socket is waited for rather than assumed: swtpm creates it when it is ready to
+    serve, and qemu connecting a moment early is the same failure seen from the other
+    side.
+    """
     state = os.path.join(work, "tpm")
     os.makedirs(state, exist_ok=True)
     sock = os.path.join(state, "swtpm.sock")
     if not shutil.which("swtpm"):
         raise SystemExit("swtpm is not installed; Windows 11 will not boot without a TPM")
-    subprocess.run(
+
+    log_path = os.path.join(work, "swtpm.log")
+    handle = open(log_path, "wb")
+    proc = subprocess.Popen(
         ["swtpm", "socket", "--tpmstate", f"dir={state}",
-         "--ctrl", f"type=unixio,path={sock}", "--tpm2", "--daemon"],
-        check=True,
+         "--ctrl", f"type=unixio,path={sock}", "--tpm2",
+         "--log", "level=5"],
+        stdout=handle, stderr=subprocess.STDOUT,
     )
-    return sock
+
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            break
+        if os.path.exists(sock):
+            return sock
+        time.sleep(0.2)
+
+    handle.close()
+    try:
+        with open(log_path, "rb") as fh:
+            tail = fh.read().decode("utf-8", "replace").splitlines()[-10:]
+    except OSError:
+        tail = []
+    if proc.poll() is not None:
+        raise SystemExit(
+            "swtpm exited before its socket appeared (exit %s).\n  %s"
+            % (proc.returncode, "\n  ".join(tail))
+        )
+    raise SystemExit("swtpm did not create its socket in 30s.\n  " + "\n  ".join(tail))
 
 
 def stop_swtpm(work: str) -> None:
-    subprocess.run(["pkill", "-f", os.path.join(work, "tpm")], check=False)
+    """Stop swtpm on this work directory so its state reaches the disk.
+
+    pkill on the state directory, then wait: swtpm flushes tpm2-00.permall on SIGTERM,
+    and a state file read before that flush is a state file that fails to initialise on
+    the next start. Silently doing nothing when there is no TPM is right - this is called
+    on paths where one never started.
+    """
+    marker = os.path.join(work, "tpm")
+    subprocess.run(["pkill", "-f", marker], check=False)
+    for _ in range(40):
+        time.sleep(0.25)
+        check = subprocess.run(["pgrep", "-f", marker], capture_output=True, text=True)
+        if not check.stdout.strip():
+            return
 
 
 if __name__ == "__main__":

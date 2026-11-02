@@ -139,6 +139,15 @@ jobs:
       # bootstate.adopt() moves it to the working disk's name. Passing the rename on the
       # command line skipped the move.
 
+      - name: keep the swtpm log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ssh-swtpm
+          path: out/ssh-work/swtpm.log
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: keep the recording
         if: always()
         uses: actions/upload-artifact@v4

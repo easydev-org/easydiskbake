@@ -121,5 +121,6 @@ jobs:
             out/screen.png
             out/launch.txt
             out/launch-work/console.log
+            out/launch-work/swtpm.log
           if-no-files-found: warn
           retention-days: 14
