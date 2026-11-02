@@ -320,3 +320,106 @@ class PublishedDiskCannotBeABackingFile(unittest.TestCase):
         """
         for name, source in self.stages():
             self.assertIn("could not copy the disk", source, name)
+
+
+class EveryStageParses(unittest.TestCase):
+    """A name used before it is assigned is caught by a run, and a run costs ten minutes.
+
+    THE FAILURE
+
+        File "windows/11/ssh.py", line 347, in main
+            log(f"copying {args.gold} -> {disk}")
+        NameError: name 'disk' is not defined
+
+    A refactor replaced the block that built the disk path with the block that copies to
+    it, and the assignment went with the old text. Python only notices when the line
+    executes, which is after a 12 GiB download.
+
+    These tests read the source with ast, so they run in milliseconds.
+    """
+
+    def files(self):
+        """The two stage modules, not bake.py.
+
+        bake.py's main() calls Baker and parse, which are module-level functions - a
+        different question from the one this class asks, and one that a compile already
+        answers.
+        """
+        # pull.py unpacks a tuple (tag, dest = argv), which this coarse scan cannot
+        # see through - and it is four lines that a compile already covers.
+        for name in ("ssh.py", "devtools.py"):
+            path = os.path.join(WINDOWS11, name)
+            if os.path.isfile(path):
+                yield name, path
+
+    def test_every_module_compiles(self):
+        import py_compile
+        import tempfile
+        for name, path in self.files():
+            with tempfile.NamedTemporaryFile(suffix=".pyc", delete=True) as out:
+                try:
+                    py_compile.compile(path, cfile=out.name, doraise=True)
+                except py_compile.PyCompileError as exc:
+                    self.fail(f"{name} does not compile: {exc}")
+
+    def test_main_defines_what_it_uses(self):
+        """Locals that main() reads must be assigned somewhere in main().
+
+        Coarse on purpose: it catches the case above - a name whose assignment was removed
+        while its use stayed - without needing to model control flow.
+        """
+        import ast
+        import builtins
+
+        known = set(dir(builtins)) | {
+            "args", "log", "vm", "qmpmod", "time", "shutil", "subprocess", "os", "sys",
+            "re", "ssh_run", "ssh_base", "scp_to", "wait_for_ssh", "start_swtpm",
+            "stop_swtpm", "verify", "clean", "install_package", "installed_packages",
+            "wait_for_desktop", "take_shot", "open_powershell", "install", "ocr",
+            "configure_sshd", "type_text", "qcode_for", "Keyboard", "PACKAGES",
+            "WINGET_INSTALL", "SSH_PORT", "SSH_USER", "SSH_PASSWORD", "INSTALL_TIMEOUT",
+            "GUEST_SSH_PORT", "HOST_SSH_PORT", "DISK_NAME", "WINGET_TIMEOUT",
+            "GUEST_USER", "GUEST_PASSWORD", "SHIFTED", "NAMED", "HERE", "REPO",
+            "main", "argv", "AttributeError", "ValueError", "SystemExit", "Exception",
+            "argparse", "numpy", "json", "socket", "tempfile", "importlib", "plistlib",
+        }
+
+        for name, path in self.files():
+            with open(path, encoding="utf-8") as fh:
+                tree = ast.parse(fh.read())
+            for fn in ast.walk(tree):
+                if not isinstance(fn, ast.FunctionDef) or fn.name != "main":
+                    continue
+                assigned = {t.id for n in ast.walk(fn) if isinstance(n, ast.Assign)
+                            for t in n.targets if isinstance(t, ast.Name)}
+                assigned |= {a.arg for a in fn.args.args}
+                for node in ast.walk(fn):
+                    if isinstance(node, (ast.For,)):
+                        assigned |= {t.id for t in ast.walk(node.target)
+                                     if isinstance(t, ast.Name)}
+                    if isinstance(node, ast.withitem) and node.optional_vars:
+                        assigned |= {t.id for t in ast.walk(node.optional_vars)
+                                     if isinstance(t, ast.Name)}
+                used = {n.id for n in ast.walk(fn)
+                        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
+                missing = used - assigned - known
+                self.assertEqual(missing, set(),
+                                 f"{name}: main() reads {sorted(missing)} without "
+                                 f"assigning them")
+
+
+class DevArgNames(unittest.TestCase):
+    """devtools.py takes --ssh; ssh.py takes --gold. They are different stages."""
+
+    def test_devtools_reads_its_own_argument(self):
+        with open(os.path.join(WINDOWS11, "devtools.py"), encoding="utf-8") as fh:
+            source = fh.read()
+        self.assertIn('add_argument("--ssh"', source)
+        # A leftover --gold in devtools would be an input that is always empty.
+        self.assertNotIn("args.gold", source)
+
+    def test_ssh_reads_its_own_argument(self):
+        with open(os.path.join(WINDOWS11, "ssh.py"), encoding="utf-8") as fh:
+            source = fh.read()
+        self.assertIn('add_argument("--gold"', source)
+        self.assertNotIn("args.ssh", source)

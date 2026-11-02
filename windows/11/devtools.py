@@ -359,8 +359,9 @@ def main(argv: list[str]) -> int:
     # `cp --reflink=auto` asks the filesystem for copy-on-write (btrfs, xfs with reflink)
     # and falls back to a byte copy where it cannot. On a CI overlay filesystem that is the
     # latter, which is why the free-space check in the workflow asks for the disk twice.
-    log(f"copying {args.gold} -> {disk}")
-    copied = subprocess.run(["cp", "--reflink=auto", args.gold, disk],
+    disk = os.path.join(work, "disk.qcow2")
+    log(f"copying {args.ssh} -> {disk}")
+    copied = subprocess.run(["cp", "--reflink=auto", args.ssh, disk],
                             capture_output=True, text=True)
     if copied.returncode != 0:
         raise SystemExit(
