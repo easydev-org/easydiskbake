@@ -130,21 +130,74 @@ class Brightness(unittest.TestCase):
 
 
 class InstallerPatience(unittest.TestCase):
-    """The constants that decide how long a dark screen is tolerable."""
+    """What decides that a dark screen means a stopped guest.
 
-    def test_dark_patience_covers_a_real_installation(self):
-        # dockur-macos's runs spend 40-70 minutes copying and rebooting. Anything
-        # shorter than that would call a working install a failure.
-        self.assertGreaterEqual(install.DARK_PATIENCE, 60 * 60)
+    NOT a duration. The first version used a flat 90 minutes with a comment about how
+    long a copy takes - a number with no measurement behind it, since no run of this
+    bake had ever reached an installation. A duration cannot tell slow from stopped
+    anyway, which is why the check moved to the disk.
+    """
 
-    def test_dark_patience_fits_inside_the_job_timeout(self):
-        # The bake's own --timeout defaults to 5400 and the workflow allows 240 minutes;
-        # a patience longer than the job would only ever be reported by the job being
-        # cancelled, which says nothing about the guest.
-        self.assertLess(install.DARK_PATIENCE, 240 * 60)
+    def test_a_disk_stall_is_measured_not_guessed(self):
+        self.assertTrue(hasattr(install, "DISK_STALL_SECONDS"))
+
+    def test_the_stall_window_is_longer_than_a_slow_write(self):
+        # An installer flushing a large buffer can pause for a minute. Five minutes of
+        # literally no allocation is not a slow write.
+        self.assertGreaterEqual(install.DISK_STALL_SECONDS, 3 * 60)
+
+    def test_the_stall_window_is_short_enough_to_be_useful(self):
+        # A run that hangs should fail while somebody is still watching, not after the
+        # job timeout has already cancelled it.
+        self.assertLess(install.DISK_STALL_SECONDS, 20 * 60)
+
+    def test_the_backstop_covers_a_real_installation(self):
+        # For the paths where the disk is not available, or the screen never goes dark.
+        self.assertGreaterEqual(install.INSTALL_PATIENCE, 60 * 60)
+
+    def test_the_backstop_fits_inside_the_job_timeout(self):
+        self.assertLess(install.INSTALL_PATIENCE, 240 * 60)
 
     def test_the_forward_control_is_not_pressed_faster_than_a_pane_draws(self):
         self.assertGreaterEqual(install.CLICK_INTERVAL, 8)
+
+
+class DiskGrowth(unittest.TestCase):
+    """disk_allocated() reads st_blocks, which is what grows on a sparse qcow2."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="install-disk-")
+        self.path = os.path.join(self.tmp, "disk.qcow2")
+
+    def tearDown(self):
+        subprocess.run(["rm", "-rf", self.tmp], check=False)
+
+    def recovery(self, disk_path):
+        recovery = install.Recovery.__new__(install.Recovery)
+        recovery.disk_path = disk_path
+        return recovery
+
+    def test_a_sparse_file_reports_what_it_allocated(self):
+        # The apparent size is the virtual disk size from creation and never changes;
+        # st_blocks is what an installation moves.
+        with open(self.path, "wb") as fh:
+            fh.truncate(64 * 1024 * 1024)
+        before = self.recovery(self.path).disk_allocated()
+        with open(self.path, "r+b") as fh:
+            fh.seek(2 * 1024 * 1024)
+            fh.write(b"\xAA" * (8 * 1024 * 1024))
+        after = self.recovery(self.path).disk_allocated()
+        self.assertIsNotNone(before)
+        self.assertGreater(after, before)
+
+    def test_a_missing_disk_reports_nothing(self):
+        self.assertIsNone(self.recovery(os.path.join(self.tmp, "nope.qcow2"))
+                          .disk_allocated())
+
+    def test_no_disk_path_reports_nothing(self):
+        # The driver still works without one; it just cannot answer this question, and
+        # says so rather than inventing an answer.
+        self.assertIsNone(self.recovery(None).disk_allocated())
 
 
 if __name__ == "__main__":

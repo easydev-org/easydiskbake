@@ -167,6 +167,32 @@ class ArtifactChecks(unittest.TestCase):
         self.assertNotIn('"userdata.img"', checks)
 
 
+class BuilderImage(unittest.TestCase):
+    """avdmanager refuses to create an AVD without the emulator package."""
+
+    def test_the_builder_installs_the_emulator_package(self):
+        """The second failure of publish-android, recorded.
+
+            [avd] creating AVD sandbox from system-images;android-35;default;x86_64
+            [android] FAILED: avdmanager failed: Error: "emulator" package must be
+                                  installed!
+
+        avdmanager writes an AVD that the emulator opens, so it validates for the
+        package first. The builder image had left it out on the reasoning that building
+        an AVD boots nothing - which is true and not what avdmanager checks.
+        """
+        path = os.path.join(HERE, "android", "15", "Containerfile.builder")
+        source = open(path, encoding="utf-8").read()
+        self.assertIn('sdkmanager" "emulator"', source)
+
+    def test_the_builder_still_has_no_kvm_dependency(self):
+        # The reason the emulator package was left out in the first place is still
+        # true: nothing in this image boots a guest.
+        source = open(os.path.join(HERE, "android", "15",
+                                   "Containerfile.builder"), encoding="utf-8").read()
+        self.assertIn("No qemu, no KVM", source)
+
+
 class ValidateWithoutWipe(unittest.TestCase):
     """validate.py must construct its Emulator with wipe_data=False."""
 

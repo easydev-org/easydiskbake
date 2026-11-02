@@ -126,11 +126,30 @@ INSTALLER_CONTINUE = (1306, 810)
 # dark wallpaper cannot trip it and a dim pane cannot fail to.
 DARK_LEVEL = 24
 
-# How long a dark screen may last before it is called a failure. The install copies a
-# 12 GB system image and reboots twice; dockur-macos's own runs spend 40-70 minutes in
-# this phase. An hour and a half is generous for the copy and short enough that a hung
-# guest does not outlive the job's own timeout.
-DARK_PATIENCE = 90 * 60
+# HOW LONG A DARK SCREEN MAY LAST IS NOT DECIDED BY A CLOCK. It is decided by whether
+# the target disk is growing, and the clock is only a backstop for the case where it is
+# neither growing nor dark any more.
+#
+# The first version used a flat 90 minutes with a note about how long the copy takes.
+# That note was a guess - no run of this bake has ever completed an installation, so
+# there was nothing to measure - and a guess is the wrong shape for this anyway: a hung
+# guest and a copying guest are indistinguishable on a screen that is black. The disk is
+# not: an installer writes gigabytes, a stopped one writes nothing.
+#
+# The numbers below are about the observation, not the installation:
+#
+#     DISK_STALL_SECONDS   how long the disk may show no growth before "it stopped"
+#     DISK_SAMPLE_SECONDS  how often to look; qcow2 allocation moves by MBs per minute
+#
+# A copy of the recovery's 3.2 GB payload into a fresh APFS container moves the qcow2
+# file by gigabytes, so 5 minutes of no change at all is not a slow write.
+DISK_STALL_SECONDS = 5 * 60
+DISK_SAMPLE_SECONDS = 30
+
+# The backstop, for a guest that never goes dark and never finishes: an installer that
+# has not rebooted in this long is not going to. dockur-macos's runs take 40-70 minutes
+# end to end, and this is deliberately well past that.
+INSTALL_PATIENCE = 150 * 60
 
 # The forward control is pressed no faster than a pane can redraw: the installer takes
 # several seconds per pane and a click arriving during a redraw is lost.
@@ -150,11 +169,32 @@ class Recovery:
     clicking coordinates at a screen that was not there.
     """
 
-    def __init__(self, qmp_path: str, frames_dir: str | None = None):
+    def __init__(self, qmp_path: str, frames_dir: str | None = None,
+                 disk_path: str | None = None):
         self.q = qmpmod.QMP(qmp_path)
         self.frames = frames_dir
+        # The target qcow2, when the caller knows it. An installer writes gigabytes into
+        # it; a stopped guest writes nothing. That is the difference between "copying"
+        # and "hung", and a black screen cannot show it. Without a path, this class can
+        # only report the screen.
+        self.disk_path = disk_path
         self.n = 0
         self.shots = 0
+
+    def disk_allocated(self) -> int | None:
+        """How many bytes the qcow2 has actually allocated, or None.
+
+        st_blocks, not st_size: a qcow2 is sparse, so its apparent size is the virtual
+        disk size from the moment it is created and never changes. The allocated blocks
+        are what grow as the guest writes.
+        """
+        if not self.disk_path:
+            return None
+        try:
+            info = os.stat(self.disk_path)
+        except OSError:
+            return None
+        return info.st_blocks * 512
 
     def wait(self, seconds: float, why: str = "") -> None:
         log(f"wait {seconds:g}s" + (f" - {why}" if why else ""))
@@ -317,21 +357,30 @@ def installer_panes(d: Recovery, seconds: int = 3600) -> bool:
         the sequence ENDS on evidence - the installer reboots when it starts copying -
         rather than after a count
 
-    WHY DARK MEANS "THE INSTALLER IS WORKING"
+    WHY A DARK SCREEN IS NOT THE QUESTION
 
     The installer's own transition is: agree to the licence, choose the disk, and then
-    the screen goes black while it copies and reboots into the new system. A dark screen
-    is therefore not a failure by itself. What separates the two is duration: copying
-    takes tens of minutes, a crash stays dark for ever and qemu eventually exits. So a
-    dark screen is reported and waited on, and only a dark screen with an exceeded
-    deadline is a failure.
+    the screen goes black while it copies and reboots. So a dark screen is not a failure
+    by itself - and, more importantly, a dark screen cannot distinguish the two cases,
+    because a hung guest looks exactly like a copying one when nothing is drawn.
 
-    Returns True when the guest stopped answering - which on this path is the reboot
-    into the installed system.
+    THE DISK CAN. An installation writes gigabytes into the target qcow2; a guest that
+    has stopped writes nothing. disk_allocated() reads st_blocks, which is what grows on
+    a sparse file, and a stall of DISK_STALL_SECONDS with no change is the answer.
+
+    The previous version waited a flat 90 minutes with a comment about how long the copy
+    takes. That number was invented - no run of this bake had ever reached an
+    installation, so there was nothing to measure it from - and it is the wrong shape
+    anyway: a guess about duration cannot tell slow from stopped.
+
+    Returns True when the screen comes back, which on this path is the reboot into the
+    installed system.
     """
     deadline = time.time() + seconds
     dark_since: float | None = None
     last_click = 0.0
+    last_size: int | None = None
+    grew_at: float | None = None
 
     # The licence pane is the first thing after the recovery menu. It is agreed to
     # twice: once on the pane and once in the sheet that follows it.
@@ -344,26 +393,47 @@ def installer_panes(d: Recovery, seconds: int = 3600) -> bool:
 
         if level is None:
             log("the screen could not be read; waiting")
-            time.sleep(15)
+            time.sleep(DISK_SAMPLE_SECONDS)
             continue
 
         if level < DARK_LEVEL:
-            # Dark: either copying, or gone. Record when it started and keep waiting.
             if dark_since is None:
                 dark_since = time.time()
-                log(f"the screen is dark (mean grey {level}); the installer is "
-                    f"copying or the guest has stopped - waiting")
-            waited = time.time() - dark_since
-            if waited > DARK_PATIENCE:
-                log(f"the screen has been dark for {waited / 60:.0f} minutes")
-                return False
-            time.sleep(20)
+                last_size = d.disk_allocated()
+                grew_at = time.time()
+                log(f"the screen is dark (mean grey {level}); watching the disk, "
+                    f"not the screen")
+
+            size = d.disk_allocated()
+            now = time.time()
+
+            if size is None:
+                # No disk path: fall back to the backstop rather than pretending to know.
+                if now - dark_since > INSTALL_PATIENCE:
+                    log(f"the screen has been dark for "
+                        f"{(now - dark_since) / 60:.0f} minutes and this driver was "
+                        f"given no disk to watch")
+                    return False
+            else:
+                if last_size is not None and size > last_size:
+                    grew_by = (size - last_size) >> 20
+                    if grew_by:
+                        log(f"  the disk grew by {grew_by} MiB "
+                            f"({size >> 20} MiB allocated in total)")
+                    grew_at = now
+                    last_size = size
+                stalled = now - (grew_at or dark_since)
+                if stalled > DISK_STALL_SECONDS:
+                    log(f"=== THE DISK HAS NOT GROWN IN {stalled / 60:.0f} MINUTES ===")
+                    log(f"  allocated: {size >> 20} MiB, unchanged")
+                    log("  a guest that is copying writes gigabytes; this one is not "
+                        "doing anything")
+                    return False
+
+            time.sleep(DISK_SAMPLE_SECONDS)
             continue
 
         if dark_since is not None:
-            # It came back. That is the reboot into the installed system, or the
-            # installer redrew a pane - both are progress, and the caller decides
-            # which by waiting for a desktop.
             log("the screen came back after "
                 f"{(time.time() - dark_since) / 60:.1f} minutes")
             return True
@@ -373,19 +443,21 @@ def installer_panes(d: Recovery, seconds: int = 3600) -> bool:
         if time.time() - last_click >= CLICK_INTERVAL:
             d.click(INSTALLER_CONTINUE, "installer Continue", settle=3)
             last_click = time.time()
+        time.sleep(2)
 
     log(f"the installer did not finish within {seconds / 60:.0f} minutes")
     return False
 
 
-def run_installation(qmp_path: str, frames_dir: str | None) -> int:
+def run_installation(qmp_path: str, frames_dir: str | None,
+                     disk_path: str | None = None) -> int:
     """Drive Recovery to a finished installation. Returns a process exit code.
 
     A non-zero code is what tells bake.py not to start the Setup Assistant driver: on a
     black screen that driver would click coordinates at nothing for an hour, which is
     exactly what the first version did.
     """
-    d = Recovery(qmp_path, frames_dir)
+    d = Recovery(qmp_path, frames_dir, disk_path)
     log("connected; coordinates for the clicks, a brightness probe for the state")
     try:
         disk_utility(d)
@@ -406,9 +478,12 @@ def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--qmp", required=True, help="the drive QMP socket")
     p.add_argument("--frames", default=None, help="where to save a frame after each action")
+    p.add_argument("--disk", default=None,
+                   help="the target qcow2; without it a dark screen can only be "
+                        "timed, not measured")
     args = p.parse_args(argv)
 
-    return run_installation(args.qmp, args.frames)
+    return run_installation(args.qmp, args.frames, args.disk)
 
 
 if __name__ == "__main__":

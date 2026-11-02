@@ -10,9 +10,18 @@
 #
 # So this image exists for one workflow, publish-android.yml, and is discarded after.
 #
-# WHAT IT DOES NOT CONTAIN
+# WHAT IT CONTAINS, AND WHY THE EMULATOR IS ONE OF THEM
 #
-# No emulator, no qemu, no KVM. Building an AVD does not boot anything.
+# No qemu, no KVM: building an AVD does not boot anything.
+#
+# It DOES contain the `emulator` SDK package, which is not the same thing. The first
+# version left it out on the reasoning above, and `avdmanager create avd` then refused:
+#
+#     Error: "emulator" package must be installed!
+#
+# avdmanager writes an AVD that the emulator will open, so it checks for the package
+# before creating one. The package is a few megabytes of tools and a launcher script;
+# the runtime it needs (qemu, KVM) is still absent, and nothing here starts a guest.
 #
 # TWO SOURCES, BOTH PINNED BY URL
 #
@@ -62,7 +71,10 @@ RUN set -eux; \
     # Accepting the licence here means no workflow has to pipe `yes` into it. The
     # SDK licence is accepted by using the SDK; this is the same acceptance the
     # build would otherwise prompt for.
-    yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+    yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true; \
+    # avdmanager validates the SDK before it writes an AVD and names this package when
+    # it is missing. --no_https is not needed; dl.google.com is https.
+    "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "emulator" >/dev/null
 
 ENV PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH"
 
@@ -74,7 +86,9 @@ RUN set -eux; \
     zstd --version; \
     java -version 2>&1 | head -1; \
     sdkmanager --version; \
-    avdmanager --help 2>&1 | head -3
+    avdmanager --help 2>&1 | head -3; \
+    test -d "$ANDROID_SDK_ROOT/emulator"; \
+    test -x "$ANDROID_SDK_ROOT/emulator/emulator"
 
 ENTRYPOINT []
 CMD ["/bin/bash"]

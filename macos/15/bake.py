@@ -284,7 +284,10 @@ class Baker:
             try:
                 subprocess.run(
                     [sys.executable, script,
-                     "--qmp", guest.paths.drive, "--frames", self.frames],
+                     "--qmp", guest.paths.drive, "--frames", self.frames,
+                     # The disk is what tells "copying" from "hung" while the screen is
+                     # black. Passed here because only the baker knows the path.
+                     "--disk", self.disk],
                     check=True,
                 )
                 result["ok"] = True
