@@ -1,0 +1,128 @@
+name: publish-macos-assets
+
+# Fetch the four pinned macOS boot assets, verify them, and push each to this
+# repository's own ghcr package.
+#
+#     ghcr.io/easydev-org/easydiskbake:macos-asset-opencore
+#     ghcr.io/easydev-org/easydiskbake:macos-asset-opencore-template
+#     ghcr.io/easydev-org/easydiskbake:macos-asset-ovmf-code
+#     ghcr.io/easydev-org/easydiskbake:macos-asset-ovmf-vars-1920x1080
+#
+# WHY THIS IS A SEPARATE WORKFLOW FROM publish-macos-recovery
+#
+# Two different kinds of thing, with two different guarantees:
+#
+#   the recovery image    Apple issues one per request. There is no URL to pin and
+#                         nothing to verify ahead of time, so that job's job is to
+#                         drive the exchange and store whatever came back.
+#
+#   these four            fixed, versioned URLs with sha256 pins. A build of them that
+#                         differs from the pin is a build that must not be used, and
+#                         the check is the point.
+#
+# Folding them together would mean one job whose failure message has to guess which of
+# the two it is talking about.
+#
+# WHAT EACH ONE IS, AND WHY THE BAKE NEEDS FOUR
+#
+#   opencore            the bootloader: BOOTx64.efi and OpenCore.efi, plus
+#                       Utilities/macserial/macserial.linux which generates the
+#                       serial and board serial macOS checksums.
+#   opencore-template   everything OpenCore's archive does not have: Lilu,
+#                       VirtualSMC, WhateverGreen, the VoodooPS2 input drivers, the
+#                       ACPI tables and the config.plist that actually boots macOS.
+#   ovmf-code           the UEFI firmware, read-only pflash.
+#   ovmf-vars-1920x1080 the guest's NVRAM template, with the 1920x1080 GOP mode baked
+#                       in - which is the resolution every coordinate in
+#                       macos/15/drive.py was measured at.
+#
+# WHEN A PIN EXPIRES
+#
+#     [publish-macos] FAILED macos-asset-opencore: sha256 mismatch:
+#       expected 2ffab6e...
+#       actual   <something else>
+#     The upstream release has probably moved; update lib/images.py.
+#
+# Re-derive the pin from the URL deliberately, then run this again. Do not paste a hash
+# that was not derived from a download that passed the format check.
+#
+# MANUAL ONLY: four small downloads, but they overwrite tags that every macOS bake
+# depends on.
+
+on:
+  workflow_dispatch:
+    inputs:
+      which:
+        description: "Which asset(s) to publish"
+        type: choice
+        options:
+          - macos-asset-opencore
+          - macos-asset-opencore-template
+          - macos-asset-ovmf-code
+          - macos-asset-ovmf-vars-1920x1080
+          - all
+        # All four by default is right here, unlike publish-iso: the whole set is
+        # 27 MiB and they are only useful together.
+        default: all
+
+concurrency:
+  group: publish-macos-assets-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    # In the image: it carries oras, 7z and the rest of what a publish uses, and a
+    # publish that runs somewhere else is one more difference to explain later.
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      checks: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare the runner
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: publish-macos-assets-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            # 27 MiB of assets plus oras; the check is a guard, not a cleanup.
+            python3 lib/ci.py free-disk --need 2
+            python3 lib/ci.py install-oras
+            python3 lib/ci.py login --registry ghcr.io
+            python3 lib/publish_macos_assets.py --list
+
+      - name: publish
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: publish-macos-assets
+          interval: "20"
+          command: |
+            set -euo pipefail
+            export PUBLISH_WHICH="${{ inputs.which || 'all' }}"
+            python3 lib/publish_macos_assets.py --repository "${{ github.repository }}"
+
+      - name: what is in the package
+        if: always()
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: publish-macos-assets-tags
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py tags --prefix macos-asset-

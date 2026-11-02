@@ -110,14 +110,16 @@ class OnlyThePublisherTalksToVendors(unittest.TestCase):
 
         # The publishers are the only things allowed to talk to a vendor:
         #
-        #   lib/iso.py            defines it, and its __main__ branch calls it
-        #   lib/publish_iso.py    Windows/Linux ISOs
+        #   lib/iso.py              defines it, and its __main__ branch calls it
+        #   lib/publish_iso.py      Windows/Linux ISOs
         #   lib/publish_android.py  Google's system image zip
+        #   lib/publish_macos_assets.py  OpenCore, its template, and the OVMF pair
         #
         # A bake must not appear here. That is the property being tested.
         self.assertEqual(
             sorted(callers),
-            ["lib/iso.py", "lib/publish_android.py", "lib/publish_iso.py"],
+            ["lib/iso.py", "lib/publish_android.py", "lib/publish_iso.py",
+             "lib/publish_macos_assets.py"],
             callers,
         )
 

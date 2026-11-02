@@ -235,12 +235,28 @@ def fetch_iso(name: str, dest: str) -> str:
     says what kind of thing it is (`iso-`, `windows-base-`, or no prefix for the
     bake image itself), and there is exactly one place to look for all of them.
     """
+    return fetch_tag(f"iso-{name}", dest)
+
+
+def fetch_tag(tag: str, dest: str) -> str:
+    """Pull whatever is published under an exact tag into dest.
+
+    This is fetch_iso without the `iso-` prefix, and it exists because not every
+    artifact here is an installer image. A macOS boot asset is a zip, an ISO9660
+    template and two firmware blobs; a recovery image is a DMG. They share the
+    package, the tag style and the three-call pull, and the only thing that differed
+    was a prefix that fetch_iso used to add unconditionally - so the caller with a
+    different prefix had no way in.
+
+    The caller passes the whole tag: "iso-alpine", "macos-asset-opencore",
+    "macos-recovery-sequoia". Anything that has to guess a prefix is a second place
+    that can disagree with the publisher.
+    """
     if os.path.exists(dest) and os.path.getsize(dest) > 0:
         log(f"{dest} already present ({os.path.getsize(dest)} bytes)")
         return dest
 
     repo = f"{OWNER}/{REPO}"
-    tag = f"iso-{name}"
     log(f"fetching {tag} from {REGISTRY}/{repo}")
 
     manifest = _manifest(repo, tag)

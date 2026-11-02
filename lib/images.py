@@ -145,6 +145,84 @@ LINUX = {
 MACOS_RELEASES = ["14", "15", "26"]
 
 
+# The macOS boot assets. Four files, no recovery image, and the distinction matters:
+#
+#     the recovery image   Apple issues one per request. No fixed URL, no pin, and
+#                          lib/macos_recovery.py drives the exchange. Published as
+#                          :macos-recovery-<name> by its own workflow.
+#
+#     these four           fixed, versioned URLs. They are the files that make the
+#                          firmware and OpenCore able to boot ANY macOS; the recovery
+#                          image is what they boot. Pinned by sha256 like the Windows
+#                          ISO, and for the same reason: a silent upgrade here is a
+#                          disk that boots today and stops booting when OpenCore
+#                          changes its plist schema or OVMF changes its GOP mode.
+#
+# WHY THEY ARE FOUR AND NOT ONE
+#
+# OpenCore's own release archive is the bootloader and nothing else: BOOTx64.efi and
+# OpenCore.efi, with no kexts, no drivers and no config. A Mac has no such problem
+# because the firmware is Apple's; here the missing half is Lilu, VirtualSMC,
+# WhateverGreen, the VoodooPS2 input drivers and the device properties that were
+# arrived at by somebody else's runs. Those live in LongQT-sea's template ISO, which
+# is a bootable image rather than an archive - lib/opencore.py extracts it with 7z,
+# which walks both its ISO9660 filesystem and the Apple partition map inside it.
+#
+# OVMF is the third thing and it is TWO files: the code, which is immutable, and the
+# variable store, which is not. The variables template carries the GOP resolution
+# baked into it, so a disk installed against the 1920x1080 template does not boot
+# against the 1024x768 one. They come from kholia/OSX-KVM at a commit, not from the
+# distribution's `ovmf` package, because that package's OVMF_VARS is a generic one
+# whose default mode is whatever the build chose - and this bake's coordinates are
+# measured at 1920x1080.
+#
+# WHAT IS DELIBERATELY NOT HERE
+#
+# apfs.efi. OpenCore's archive has no APFS driver and neither does the template, so a
+# freshly installed disk is not readable by the firmware that installed it. macOS drops
+# one into the installed system's EFI partition while installing - so the fix is to
+# copy it out of the finished disk and into boot.img, which is a step of the bake and
+# not an input to it. dockur-macos/scripts/fix-opencore-apfs.sh documents the same
+# finding: "EnableJumpstart does not supply a driver, it hooks one that the firmware is
+# expected to already have. OVMF has none."
+MACOS_ASSETS = {
+    # The bootloader. Also carries Utilities/macserial/macserial.linux, which
+    # generates the serial and board serial - a hand-rolled one fails Apple's
+    # checksum and macOS stops booting when the NVRAM remembers it.
+    "opencore": {
+        "url": "https://github.com/acidanthera/OpenCorePkg/releases/download/1.0.7/"
+               "OpenCore-1.0.7-RELEASE.zip",
+        "sha256": "2ffab6ebf58c7aefb0bcb3a1a385d207746823d6dd87d44bd666e1286939943e",
+        "size": 10437696,
+        "kind": "zip",
+    },
+    # The other half: kexts, drivers, resources and the config.plist the guest boots.
+    "opencore-template": {
+        "url": "https://github.com/LongQT-sea/OpenCore-ISO/releases/download/v0.7/"
+               "LongQT-OpenCore-v0.7.iso",
+        "sha256": "287328995d4198f1b05166f087d85bf7ef66bedafe150d17ad112ac8de60051d",
+        "size": 15884288,
+        "kind": "iso9660",
+    },
+    # UEFI. OVMF_CODE.fd is read-only pflash; OVMF_VARS is the guest's NVRAM and is
+    # copied per work directory before anything writes to it.
+    "ovmf-code": {
+        "url": "https://raw.githubusercontent.com/kholia/OSX-KVM/"
+               "326053dd61f49375d5dfb28ee715d38b04b5cd8e/OVMF_CODE.fd",
+        "sha256": "52a625db5a45329bf8005232db33e94781787d92ae8d088f2f73332dd4ded3a9",
+        "size": 1966080,
+        "kind": "firmware",
+    },
+    "ovmf-vars-1920x1080": {
+        "url": "https://raw.githubusercontent.com/kholia/OSX-KVM/"
+               "326053dd61f49375d5dfb28ee715d38b04b5cd8e/OVMF_VARS-1920x1080.fd",
+        "sha256": "6ed987af3a3c155be71665f510eae3e007eda9b8b94afd59d45e91c4a11565cc",
+        "size": 131072,
+        "kind": "firmware",
+    },
+}
+
+
 # Android system images. Not an installer and not an ISO: Google ships a zip whose
 # contents are the disks themselves (system.img, vendor.img, userdata.img) plus the
 # kernel and ramdisk the emulator boots them with.
@@ -181,6 +259,22 @@ def all_images() -> dict:
         for name, pin in table.items():
             merged[tag(name)] = pin
     return merged
+
+
+def all_macos_assets() -> dict:
+    """Every pinned macOS boot asset, keyed by the tag it is published under."""
+    return {macos_asset_tag(name): pin for name, pin in MACOS_ASSETS.items()}
+
+
+def macos_asset_tag(name: str) -> str:
+    """The ghcr tag a macOS boot asset is published under.
+
+    `macos-asset-<name>`, alongside `macos-recovery-<name>` and `iso-<name>`. One
+    package, one namespace, and the prefix says which of the three kinds it is - so a
+    reader who sees `macos-asset-ovmf-code` in a package listing knows both what it is
+    and that it is not a recovery image.
+    """
+    return f"macos-asset-{name}"
 
 
 def pin_for_bake(image: str) -> dict:

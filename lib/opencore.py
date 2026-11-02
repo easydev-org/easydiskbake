@@ -11,9 +11,9 @@
 WHY THIS IS NOT COPIED WHOLESALE
 
 dockur/macos builds all of this at container start: it unpacks OpenCore, extracts a
-template image, generates a serial with macserial, rewrites config.plist with
-xmlstarlet, and lays down a FAT image with mtools. Every step of that is a decision
-this repository would otherwise inherit silently, and three of them are worth stating:
+template image, generates a serial with macserial, rewrites config.plist in place, and
+lays down a FAT image with mtools. Every step of that is a decision this repository
+would otherwise inherit silently, and three of them are worth stating:
 
     the SMC key            a fixed, well-known literal. Not a secret and not per
                            guest; it is what makes macOS believe it is on Apple
@@ -37,8 +37,8 @@ verifies structurally instead.
 
 WHY THE RESULT IS BUILT EVERY TIME AND CACHED BY HASH
 
-Building it needs `unzip`, `mtools` and `xmlstarlet` - all present in the bake image -
-and takes about two seconds. The alternative is committing a 300 MiB binary to the
+Building it needs `unzip`, `7z` and `mtools` - all present in the bake image - and
+takes about two seconds. The alternative is committing a 300 MiB binary to the
 repository, which is the thing this project exists to avoid: the disk is the artifact,
 and everything else is derived. A cache keyed by the pins is enough to keep a re-run
 fast without pretending the assets are inputs.
@@ -49,15 +49,16 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import plistlib
 import shutil
 import subprocess
 import sys
 import time
-import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import images  # noqa: E402
+import iso  # noqa: E402
 
 # The SMC key. Every hackintosh since 2009 has used this string; it is in
 # OSX-KVM, in dockur/macos and in Apple's own diagnostic tooling. It is not a
@@ -97,11 +98,22 @@ def _sha256(path: str) -> str:
 
 
 def fetch_pinned(name: str, dest: str) -> str:
-    """Download one pinned asset, or reuse it, and verify the sha256 either way.
+    """Pull one pinned asset from this repository's package, or reuse it, and verify
+    the sha256 either way.
 
-    A mismatch is fatal and says which pin moved. That direction matters: an OpenCore
-    or an OVMF that silently upgraded would produce a disk that boots today and stops
-    booting when the firmware changes its GOP mode or its variable layout.
+    FROM ghcr, NOT FROM THE VENDOR. The URLs in images.MACOS_ASSETS are real and were
+    used once, to derive the pins - but a bake that fetches them at run time is a bake
+    whose first step is a transfer from GitHub's release CDN with the job clock
+    running, which is the thing publish-iso.yml exists to avoid for every other image
+    here. lib/publish_macos_assets.py puts the four files in the package once; this
+    pulls them back with the same three registry calls as an ISO.
+
+    THE PIN IS STILL CHECKED. The registry guarantees the bytes it stored, not that
+    they are the bytes this code expects: a tag can be overwritten, and
+    `macos-asset-opencore` is not a timestamped tag. A mismatch says which pin moved,
+    which is the only useful thing to know. It is fatal rather than a warning -
+    an OpenCore or an OVMF that silently upgraded would produce a disk that boots
+    today and stops booting when the firmware changes its GOP mode.
     """
     pin = images.MACOS_ASSETS.get(name)
     if pin is None:
@@ -119,24 +131,28 @@ def fetch_pinned(name: str, dest: str) -> str:
         os.unlink(dest)
 
     os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
-    log(f"{name}: fetching {pin['url']}")
-    tmp = dest + ".part"
-    # urllib rather than curl: this is one plain HTTPS GET of a static file, and
-    # lib/iso.py already explains why the *recovery* endpoint needed curl (a
-    # self-signed chain). Nothing here does.
-    with urllib.request.urlopen(pin["url"], timeout=120) as response, \
-            open(tmp, "wb") as fh:
-        shutil.copyfileobj(response, fh, length=1 << 20)
+    tag = images.macos_asset_tag(name)
+    log(f"{name}: pulling {tag} from ghcr")
+    try:
+        iso.fetch_tag(tag, dest)
+    except iso.IsoError as exc:
+        raise OpenCoreError(
+            f"{tag} is not in this repository's ghcr package: {exc}\n\n"
+            f"Run publish-macos-assets.yml for {tag} first:\n"
+            f"    gh workflow run publish-macos-assets.yml -f which={tag}\n"
+            f"This bake does not download from the vendor. A second source would be a\n"
+            f"second thing to verify, and the failure it hides is exactly the one worth\n"
+            f"seeing: an OpenCore archive that changed under a tag."
+        ) from exc
 
-    got = _sha256(tmp)
+    got = _sha256(dest)
     if got != pin["sha256"]:
-        os.unlink(tmp)
+        os.unlink(dest)
         raise OpenCoreError(
             f"{name}: sha256 {got} but the pin says {pin['sha256']}.\n"
-            f"Either the URL now serves a different build or the pin is stale.\n"
+            f"Either {tag} was overwritten or the pin is stale.\n"
             f"Re-derive it from {pin['url']} deliberately - do not paste it in."
         )
-    os.replace(tmp, dest)
     log(f"{name}: {os.path.getsize(dest) >> 20} MiB, sha256 verified")
     return dest
 
@@ -148,8 +164,17 @@ def unpack_opencore(archive: str, work: str) -> str:
     """The EFI tree inside OpenCore's release zip, as a directory.
 
     The archive holds X64/EFI/ and IA32/EFI/; only X64 is used, and only the EFI tree -
-    the sample configs and the documentation sit beside it and would go into the boot
-    image otherwise.
+    the documentation sits beside it and would go into the boot image otherwise.
+
+    TWO THINGS THIS TREE DOES NOT HAVE, AND BOTH ARE DELIBERATE:
+
+        Config.plist    OpenCore ships it under Docs/Sample.plist, not in X64/EFI. The
+                        config that actually boots macOS comes from the template and is
+                        edited by write_config(), so requiring one here would reject a
+                        correct archive. (The first version of this function did, and
+                        would have failed on every run against the real 1.0.7 release.)
+        kexts/drivers   the archive is the bootloader and nothing else. The template
+                        supplies the rest; _merge_template() is what combines them.
     """
     out = os.path.join(work, "opencore")
     if os.path.isdir(out):
@@ -160,7 +185,7 @@ def unpack_opencore(archive: str, work: str) -> str:
         check=True,
     )
     efi = os.path.join(out, "X64", "EFI")
-    for required in ("BOOT/BOOTx64.efi", "OC/OpenCore.efi", "OC/Config.plist"):
+    for required in ("BOOT/BOOTx64.efi", "OC/OpenCore.efi"):
         if not os.path.exists(os.path.join(efi, required)):
             raise OpenCoreError(f"{archive} holds no {required}; the archive layout changed")
     return efi
@@ -171,11 +196,21 @@ def extract_template_boot(template_iso: str, dest: str) -> str:
 
     WHY THIS EXISTS AT ALL. OpenCore's own archive is the bootloader and nothing else:
     it has no kexts, no drivers and no config that boots macOS. The template supplies
-    the parts specific to this job - Lilu, VirtualSMC, WhateverGreen, the APFS driver,
-    the SMC and GPU device properties, the boot-args - and upstream's config.plist.
+    the parts specific to this job - Lilu, VirtualSMC, WhateverGreen, the VoodooPS2
+    input drivers, the ACPI tables - and upstream's config.plist. (It has no APFS
+    driver either; see the note in lib/images.py about where that comes from.)
 
-    The image is read with 7z, which walks both the ISO9660 filesystem and the Apple
-    partition map inside it, and which is in the bake image for the Windows ISO work.
+    WHY 7z AND NOT AN ISO READER. The image carries two name tables. The ISO9660 one
+    is 8.3 uppercase with a ";1" version suffix - `CONFIG.PLIST;1`, `SSDT_EC.AML` -
+    and the Joliet one has the names the config refers to: `config.plist`,
+    `SSDT-EC.aml`, `Lilu.kext`. Extracting through the 9660 table produces a tree
+    whose file names match nothing that OpenCore looks for, and the guest then stops
+    at a prohibited sign with an empty log. 7z reads the Joliet layer, which is why it
+    is in the bake image.
+
+    THE RESULT IS THE `EFI` DIRECTORY, not the `OC` one and not the extraction root:
+    the caller merges this tree's contents over OpenCore's, so BOOT/ and OC/ must sit
+    at its top level.
     """
     out = os.path.join(dest, "template")
     if os.path.isdir(out):
@@ -183,18 +218,39 @@ def extract_template_boot(template_iso: str, dest: str) -> str:
     os.makedirs(out, exist_ok=True)
     subprocess.run(["7z", "x", "-y", f"-o{out}", template_iso], check=True,
                    stdout=subprocess.DEVNULL)
-    # The tree arrives under a directory whose name comes from the volume label, so it
-    # is found rather than assumed.
-    for root, dirs, _files in os.walk(out):
-        if "OpenCore.efi" in _files:
-            return root
-        if os.path.basename(root).lower() == "oc" and "EFI" in os.path.basename(
-                os.path.dirname(root)):
-            return os.path.dirname(os.path.dirname(root))
-    raise OpenCoreError(
-        f"{template_iso} holds no OpenCore.efi; the template layout changed. "
-        f"Looked under {out}."
-    )
+
+    # The archive holds EFI_RELEASE and EFI_DEBUG. Both are complete trees, and the
+    # release one is what a bake boots: the debug build is slower and writes a log to
+    # the ESP that nothing here reads. It is chosen by name rather than by taking the
+    # first match, because os.walk's order is whatever the filesystem returns.
+    candidates = []
+    for root, _dirs, files in os.walk(out):
+        if "OpenCore.efi" not in files:
+            continue
+        if os.path.basename(root).lower() != "oc":
+            continue
+        efi = os.path.dirname(root)
+        if os.path.basename(efi).lower() != "efi":
+            continue
+        candidates.append(efi)
+
+    release = [c for c in candidates if "EFI_RELEASE" in c.upper()]
+    chosen = release[0] if release else (candidates[0] if candidates else None)
+    if chosen is None:
+        raise OpenCoreError(
+            f"{template_iso} holds no EFI/OC/OpenCore.efi; the template layout "
+            f"changed. Looked under {out}."
+        )
+
+    for required in ("OC/ACPI", "OC/Kexts", "OC/Drivers", "OC/Resources",
+                     "OC/config.plist"):
+        if not os.path.exists(os.path.join(chosen, required)):
+            raise OpenCoreError(
+                f"{template_iso} has no {required} under {chosen}; the guest would "
+                f"boot to a prohibited sign with nothing in any log to explain it"
+            )
+    log(f"template: {chosen}")
+    return chosen
 
 
 def identity(release: str, work: str, model: str = "iMacPro1,1") -> dict:
@@ -275,69 +331,97 @@ def write_config(efi: str, template_efi: str, ident: dict, release: str) -> str:
     WHY A MERGE AND NOT A TEMPLATE OF OUR OWN. The template's config carries device
     properties and kext lists that were arrived at by somebody else's runs - the GPU
     and SMC device properties in particular are not guessable. Replacing the file
-    would throw those away; only the identity fields and the two settings this bake
+    would throw those away; only the identity fields and the settings this bake
     depends on are changed:
 
         SystemSerialNumber, MLB, ROM, SystemUUID   the machine identity
         csr-active-config = 0x7f                   SIP off, which the sandbox image
                                                    needs for its TCC and xcode work
-        boot-args                                 keeps the serial console visible
+        Boot/ShowPicker = False                    boot straight into the installer
+        Boot/Timeout = 0
 
-    The edit is done with xmlstarlet rather than a plist library: plists are XML here,
-    xmlstarlet is in the bake image, and a text rewrite of a binary plist is the kind
-    of thing that appears to work until the file is 200 bytes shorter than it should be.
+    WHY plistlib AND NOT xmlstarlet.
+
+    The previous version edited the XML in place with a positional XPath:
+    `key[1]/following-sibling::*[1]/key[3]/...`. A plist dict is a flat list of
+    key/value pairs, so that indexing is correct only while every dict's key order is
+    exactly what it was when the expression was written. Reorder one dict upstream -
+    which a release bump does - and the edit lands on a neighbouring key and succeeds,
+    reporting success. There is nothing in the output that says which key was written.
+
+    plistlib addresses the file the way OpenCore reads it: by name. `d["PlatformInfo"]
+    ["Generic"]["MLB"] = ...` either writes the key it names or raises KeyError. The
+    round trip is byte-identical in content (verified against the real 0.7 template:
+    load, dump, load again, compare) and the file stays XML, which is what OpenCore
+    parses.
     """
-    source = os.path.join(template_efi, "OC", "Config.plist")
-    target = os.path.join(efi, "OC", "Config.plist")
-    if not os.path.exists(source):
-        raise OpenCoreError(f"the template has no config at {source}")
-
-    # ROM is six raw bytes of the MAC, as <data>, not as a string of hex digits.
-    rom_hex = ident["mac"].replace(":", "")
-    rom_b64 = __import__("base64").b64encode(bytes.fromhex(rom_hex)).decode()
-
-    edits = [
-        # (path in the plist, value, is_data)
-        ("PlatformInfo/Generic/SystemSerialNumber", ident["serial"], False),
-        ("PlatformInfo/Generic/MLB", ident["board_serial"], False),
-        ("PlatformInfo/Generic/SystemUUID", ident["uuid"], False),
-        ("PlatformInfo/Generic/ROM", rom_b64, True),
-        ("NVRAM/Add/7C436110-AB2A-4BBB-A880-FE41995C9F82/csr-active-config",
-         "fwAAAE8=", True),   # 0x7f000000 little-endian: SIP off
-    ]
-
-    shutil.copyfile(source, target)
-    for path, value, is_data in edits:
-        result = subprocess.run(
-            ["xmlstarlet", "ed", "-L",
-             "-u", f"/plist/dict/{_plist_path(path)}",
-             "-v", value, target],
-            capture_output=True, text=True,
+    source = _find_file(os.path.join(template_efi, "OC"), "config.plist")
+    if source is None:
+        raise OpenCoreError(
+            f"the template has no config.plist under {template_efi}/OC. Looked for "
+            f"config.plist, Config.plist and CONFIG.PLIST; the layout changed."
         )
-        if result.returncode != 0:
-            raise OpenCoreError(
-                f"xmlstarlet could not set {path} in {target}:\n"
-                f"{result.stderr.strip()[:400]}"
-            )
-    log(f"config written: serial, board serial, UUID, ROM, SIP off ({release})")
+    target = os.path.join(efi, "OC", "config.plist")
+
+    with open(source, "rb") as fh:
+        config = plistlib.load(fh)
+
+    # The identity. ROM is six raw bytes of the MAC as <data>, not a hex string -
+    # OpenCore hands those bytes to macOS as the primary network interface's address.
+    generic = config["PlatformInfo"]["Generic"]
+    generic["SystemSerialNumber"] = ident["serial"]
+    generic["MLB"] = ident["board_serial"]
+    generic["SystemUUID"] = ident["uuid"]
+    generic["ROM"] = bytes.fromhex(ident["mac"].replace(":", ""))
+
+    # SIP off. The value is a 4-byte little-endian bitmask; 0x7f disables every
+    # protection, which the sandbox image needs for its TCC and xcode work.
+    nvram = config["NVRAM"]["Add"]["7C436110-AB2A-4BBB-A880-FE41995C9F82"]
+    nvram["csr-active-config"] = b"\x7f\x00\x00\x00"
+
+    # NO PICKER. A bake boots one thing: the installer. OpenCore's picker with a
+    # two-second timeout shows a menu that has to time out before anything happens,
+    # and if a key arrives from lib/bootkey.py while it is up it stops there instead.
+    # The template ships ShowPicker=true, which is right for a person and wrong here.
+    boot = config["Misc"]["Boot"]
+    boot["ShowPicker"] = False
+    boot["Timeout"] = 0
+
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    with open(target, "wb") as fh:
+        plistlib.dump(config, fh, fmt=plistlib.FMT_XML, sort_keys=False)
+
+    # Read back rather than trusting the write: this file is the whole difference
+    # between a guest that boots and one that stops at a prohibited sign.
+    with open(target, "rb") as fh:
+        check = plistlib.load(fh)
+    if check["PlatformInfo"]["Generic"]["SystemSerialNumber"] != ident["serial"]:
+        raise OpenCoreError(
+            f"{target} does not hold the serial after writing; the identity did not "
+            f"land and the guest would boot with another machine's."
+        )
+    log(f"config written: serial, board serial, UUID, ROM, SIP off, no picker ({release})")
     return target
 
 
-def _plist_path(path: str) -> str:
-    """`A/B/C` -> the plist key chain xmlstarlet wants.
+def _find_file(directory: str, wanted: str) -> str | None:
+    """Find `wanted` in `directory`, ignoring case, or None.
 
-    A plist dict is a flat list of <key>/<value> pairs, so the nth key is the (2n+1)th
-    child. The translation is mechanical and worth doing in one place rather than
-    spelling out key[1]/key[3]/key[5] at five call sites.
+    The template image's names come from an ISO9660/Joliet tree and the two layers
+    disagree about case; 7z resolves that when it extracts, but the result still
+    depends on which layer it preferred. Comparing case-insensitively makes this
+    independent of that, which matters because "config.plist" and "Config.plist" are
+    the same file to OpenCore and different strings to Python.
     """
-    parts = path.split("/")
-    steps = []
-    for index in range(len(parts)):
-        steps.append(f"key[{index * 2 + 1}]")
-        steps.append(f"following-sibling::*[{1}]")
-    # The last "sibling" step lands on the value, so the chain is the keys interleaved
-    # with the hops between them.
-    return "/".join(steps[:-1])
+    try:
+        entries = os.listdir(directory)
+    except OSError:
+        return None
+    lower = wanted.lower()
+    for entry in entries:
+        if entry.lower() == lower:
+            return os.path.join(directory, entry)
+    return None
 
 
 # --- the disk the firmware boots ---------------------------------------------
@@ -471,12 +555,37 @@ def _merge_template(efi: str, template_efi: str) -> str:
         with open(os.path.join(efi, relative), "wb") as fh:
             fh.write(payload)
 
+    # THE CHECK IS ON THE TEMPLATE, NOT ON THE RESULT.
+    #
+    # It used to look at `efi`, which is the destination - and OpenCore's own archive
+    # ships empty OC/Kexts, OC/Drivers and OC/Resources directories. So the test passed
+    # whenever the extraction happened at all, and a template that supplied nothing
+    # would produce an image with an empty kext list and a guest that stops at a
+    # prohibited sign. Non-empty matters as much as present: an empty directory is the
+    # same failure with a file listing that looks right.
     for required in ("OC/Kexts", "OC/Drivers", "OC/Resources"):
-        if not os.path.isdir(os.path.join(efi, required)):
+        source = os.path.join(template_efi, required)
+        if not os.path.isdir(source):
             raise OpenCoreError(
                 f"the template supplied no {required}; the guest would boot to a "
                 f"prohibited sign with nothing in any log to explain it"
             )
+        if not os.listdir(source):
+            raise OpenCoreError(
+                f"the template's {required} is empty; the guest would boot to a "
+                f"prohibited sign with nothing in any log to explain it"
+            )
+
+    # And the result must be able to boot: one loader the firmware can start and one
+    # OpenCore the loader hands over to.
+    for required in (("BOOT", "BOOTx64.efi"), ("OC", "OpenCore.efi")):
+        path = os.path.join(efi, *required)
+        if not os.path.isfile(path) or os.path.getsize(path) == 0:
+            raise OpenCoreError(
+                f"{path} is missing or empty after the merge; the firmware has "
+                f"nothing to start"
+            )
+
     log("merged: template kexts/drivers/config + OpenCore's own bootloader")
     return efi
 
