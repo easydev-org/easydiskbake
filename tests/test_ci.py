@@ -29,6 +29,40 @@ class Kvm(unittest.TestCase):
         self.assertIn("/dev/kvm", str(ctx.exception))
         self.assertIn("impossible", str(ctx.exception))
 
+    def test_unopenable_kvm_is_a_failure(self):
+        # The device exists but the process cannot open it: the container was given the
+        # node without access. This is what a runner without --device /dev/kvm looks
+        # like from inside.
+        fake_stat = type("S", (), {"st_mode": 0o660, "st_rdev": 0})()
+
+        def fake_major(_): return 10
+        def fake_minor(_): return 232
+
+        with mock.patch("os.path.exists", return_value=True), \
+             mock.patch("os.stat", return_value=fake_stat), \
+             mock.patch("os.major", fake_major), mock.patch("os.minor", fake_minor), \
+             mock.patch("builtins.open", side_effect=PermissionError(13, "denied")):
+            with self.assertRaises(ci.Failed) as ctx:
+                ci.check_kvm()
+        self.assertIn("read-write", str(ctx.exception))
+        self.assertIn("--device /dev/kvm", str(ctx.exception))
+
+    def test_permission_is_decided_by_opening_not_by_os_access(self):
+        # os.access() checks the real uid, not the group membership qemu will have, and
+        # reported "no write permission" on a runner where KVM worked. This asserts the
+        # behaviour rather than the source text: os.access is made to lie, and the
+        # function must still succeed because the open succeeds.
+        fake_stat = type("S", (), {"st_mode": 0o660, "st_rdev": 0})()
+
+        with mock.patch("os.path.exists", return_value=True), \
+             mock.patch("os.stat", return_value=fake_stat), \
+             mock.patch("os.major", lambda _: 10), mock.patch("os.minor", lambda _: 232), \
+             mock.patch("builtins.open", mock.mock_open()):
+            # No assertion after the call: reaching this line is the assertion. If
+            # check_kvm trusted os.access, it would have raised Failed above - which is
+            # exactly what happened on a runner where KVM worked.
+            ci.check_kvm()
+
 
 class FreeDisk(unittest.TestCase):
     """It checks, and refuses early. It does not delete.

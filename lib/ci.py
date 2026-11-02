@@ -50,12 +50,24 @@ class Failed(RuntimeError):
 
 
 def check_kvm() -> None:
-    """A bake needs /dev/kvm and there is no software fallback worth pretending about.
+    """A bake needs /dev/kvm, and there is no software fallback worth pretending about.
 
     qemu's TCG works, and a Windows install that takes 40 minutes on KVM takes the
-    better part of a day on it - which is past every timeout any of these workflows
-    sets. So this fails here, where the message is one line, rather than in the bake
-    as "timed out after 5400s".
+    better part of a day on it - past every timeout any of these workflows sets. So
+    this fails here, where the message is one line, rather than in the bake as
+    "timed out after 5400s".
+
+    THE ACCESS CHECK IS AN OPEN, NOT os.access.
+
+    /dev/kvm is 0o660 and owned by a group; on a GitHub runner the job's uid is not the
+    owner and os.access() reports no write permission even though the process is in
+    that group. The first version of this failed every bake on a runner where KVM
+    worked perfectly:
+
+        /dev/kvm: mode 0o660, char device 10:232
+        FAILED: /dev/kvm is not readable and writable by uid 1001
+
+    Opening it R/W is the only check that reflects what qemu will do.
     """
     path = "/dev/kvm"
     if not os.path.exists(path):
@@ -63,11 +75,21 @@ def check_kvm() -> None:
             f"{path} does not exist on this runner.\n"
             f"A bake without KVM is not slower, it is impossible within these timeouts."
         )
+
     info = os.stat(path)
     log(f"{path}: mode {oct(info.st_mode & 0o777)}, "
         f"char device {os.major(info.st_rdev)}:{os.minor(info.st_rdev)}")
-    if not os.access(path, os.R_OK | os.W_OK):
-        raise Failed(f"{path} is not readable and writable by uid {os.getuid()}")
+
+    try:
+        with open(path, "r+b"):
+            pass
+    except OSError as exc:
+        raise Failed(
+            f"{path} cannot be opened read-write by uid {os.getuid()}: {exc}\n"
+            f"The runner's container needs --device /dev/kvm; a job that only has the\n"
+            f"device node without write access will fail at qemu startup instead."
+        ) from exc
+
     log("kvm: usable")
 
 
