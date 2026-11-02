@@ -121,27 +121,31 @@ def push(path: str, tag: str, repository: str, registry: str = "ghcr.io") -> Non
     with three raw registry calls, so the bake image does not need oras at run time.
     """
     repo = repository.lower()
-    log(f"pushing {os.path.basename(path)} -> {registry}/{repo}:{tag}")
+
+    # PUSH FROM THE FILE'S OWN DIRECTORY, WITH A BARE FILENAME.
+    #
+    # oras validates the path in a `file:media:type` reference and rejects an absolute
+    # one. The flag it suggests is --disable-path-validation, which turns off ALL of its
+    # path checks: absolute paths, "..", symlinks, and anything outside the working
+    # directory. Those exist so a mistyped variable cannot push ~/.ssh/id_rsa to a public
+    # package, and turning them all off to satisfy one of them is the wrong trade.
+    #
+    # A bare filename in the file's own directory satisfies the check instead.
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    filename = os.path.basename(path)
+
+    log(f"pushing {filename} -> {registry}/{repo}:{tag}")
     result = subprocess.run(
         [
             "oras", "push", f"{registry}/{repo}:{tag}",
             "--artifact-type", "application/vnd.easydev.iso",
-            # oras rejects an absolute path in a file:media:type reference:
-            #
-            #   Error: absolute file path detected. If it's intentional, use
-            #   --disable-path-validation flag to skip this check
-            #
-            # The path is a tempfile, so it is always absolute, and we know what it is -
-            # it was downloaded and verified two steps ago. Disabling the check is the
-            # honest fix; rewriting to a relative path would mean changing the process
-            # cwd, which leaks into every later call.
-            "--disable-path-validation",
-            f"{path}:application/vnd.oci.image.layer.v1.tar",
+            f"{filename}:application/vnd.oci.image.layer.v1.tar",
             "--annotation", f"org.opencontainers.image.source={os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{repository}",
             "--annotation", f"org.opencontainers.image.revision={os.environ.get('GITHUB_SHA', 'local')}",
             "--annotation", f"org.opencontainers.image.created={time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}",
         ],
         capture_output=True, text=True,
+        cwd=directory,
     )
     for line in result.stdout.splitlines():
         log(f"  {line}")

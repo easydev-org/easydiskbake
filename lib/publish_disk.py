@@ -66,20 +66,32 @@ def push(path: str, tag: str, repository: str, *, kind: str,
         "--annotation", f"dev.easydev.kind={kind}",
     ]
 
+    # PUSH FROM THE FILE'S OWN DIRECTORY, WITH A BARE FILENAME.
+    #
+    # oras validates the path in a `file:media:type` reference and rejects an absolute
+    # one. The flag it suggests is --disable-path-validation, which turns off ALL of its
+    # path checks: absolute paths, "..", symlinks, and anything outside the working
+    # directory. Those checks exist so a mistyped variable cannot push ~/.ssh/id_rsa to
+    # a public package.
+    #
+    # A bare filename in the file's own directory satisfies the check instead of
+    # disabling it. The reference is then exactly what it looks like, and symlinks are
+    # still refused - which matters here because the bake writes into a work directory
+    # the caller chooses.
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    filename = os.path.basename(path)
+
     reference = f"{registry}/{repository}:{tag}"
     log(f"pushing -> {reference}")
     result = subprocess.run(
         [
             "oras", "push", reference,
             "--artifact-type", media_type,
-            # oras rejects an absolute path in a file:media:type reference, and the
-            # disk path is always absolute. See publish_iso.py for the same flag and
-            # the same reasoning.
-            "--disable-path-validation",
-            f"{path}:{media_type}+zstd",
+            f"{filename}:{media_type}+zstd",
             *annotations,
         ],
         capture_output=True, text=True,
+        cwd=directory,
     )
     for line in result.stdout.splitlines():
         log(f"  {line}")

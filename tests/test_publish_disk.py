@@ -86,15 +86,25 @@ class Arguments(unittest.TestCase):
         self.assertEqual(artifact_type, "application/vnd.easydev.disk.qcow2")
         self.assertTrue(any(a.endswith("+zstd") for a in argv))
 
-    def test_absolute_paths_are_allowed_explicitly(self):
-        # oras refuses an absolute path unless told otherwise:
-        #   Error: absolute file path detected. If it's intentional, use
-        #   --disable-path-validation
-        # The disk path is always absolute, and the file was just produced by the bake.
-        with mock.patch("subprocess.run", side_effect=self._capture), \
+    def test_push_uses_a_bare_filename_from_the_file_directory(self):
+        # oras rejects an absolute path in a file:media:type reference. The flag it
+        # suggests, --disable-path-validation, also turns off the "..", symlink and
+        # outside-cwd checks - which exist so a typo cannot publish ~/.ssh/id_rsa.
+        #
+        # A bare filename with cwd set to the file's directory satisfies the check
+        # instead of disabling it.
+        with mock.patch("subprocess.run", side_effect=self._capture) as run, \
              mock.patch.dict(os.environ, {"GITHUB_REPOSITORY": "o/r"}):
             publish_disk.push(self.disk, "t", "o/r", kind="windows-base")
-        self.assertIn("--disable-path-validation", self.captured)
+
+        argv = self.captured
+        self.assertNotIn("--disable-path-validation", argv)
+        self.assertTrue(any(a.startswith("disk.qcow2:") for a in argv), argv)
+        self.assertFalse(any(a.startswith("/") and ":application" in a for a in argv))
+
+        # The directory is passed as cwd rather than changed globally, so it cannot
+        # leak into a later call.
+        self.assertEqual(run.call_args.kwargs.get("cwd"), self.tmp)
 
     def test_the_kind_is_recorded_as_an_annotation(self):
         with mock.patch("subprocess.run", side_effect=self._capture), \
