@@ -1,0 +1,146 @@
+name: bake-windows-ssh
+
+# Take the published gold disk and give it an SSH server.
+#
+# WHAT IT DOES
+#
+#     pulls :windows-base-<stamp> (or a tag given as input)
+#     boots it, waits for the desktop
+#     opens PowerShell through the keyboard (Esc, Win+R) and runs:
+#         winget install Microsoft.OpenSSH.Preview
+#         sshd on port 22, password auth, firewall rule
+#     proves sshd answers - a real TCP connect and an SSH banner, not a screenshot
+#     shuts the guest down through ACPI and publishes :windows-ssh-<stamp>
+#
+# WHY THIS IS A SEPARATE WORKFLOW FROM bake-windows
+#
+# The bake is 25 minutes and fails for reasons about installation: an answer file, a
+# driver, an ISO. This is 10 minutes and fails for reasons about a package: a winget id
+# that moved, a firewall rule, a config line. One job doing both reports "failed" for
+# either, and the interesting part is which.
+#
+# It also starts from a disk that is already known good, so when only this half changes a
+# re-run costs minutes instead of half an hour.
+#
+# WHY THE INPUT IS A TAG AND NOT AN UPLOAD
+#
+# The gold disk is 10 GiB. An artifact round-trip of that is slower than pulling it from
+# the same registry the bake pushed it to, and artifacts expire.
+#
+# MANUAL ONLY, like every other workflow here.
+
+on:
+  workflow_dispatch:
+    inputs:
+      gold_tag:
+        description: "The gold disk to build on (a tag in this package)"
+        default: "windows-base-20261102-140018"
+      publish_tag:
+        description: "Tag to publish under, or empty for windows-ssh-<stamp>"
+        default: ""
+      boot_timeout:
+        description: "Seconds to wait for the guest's desktop"
+        default: "900"
+
+concurrency:
+  group: bake-windows-ssh-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ssh:
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: ssh-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            # 10 GiB in, 10 GiB out, and a compressed copy.
+            python3 lib/ci.py free-disk --need 30
+            python3 lib/ci.py tags --prefix windows-base-
+
+      - name: pull the gold disk
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: ssh-pull
+          interval: "15"
+          command: |
+            set -euo pipefail
+            mkdir -p out
+            export GITHUB_TOKEN="${{ github.token }}"
+            python3 windows/11/pull.py "${{ inputs.gold_tag }}" out/windows11-gold.qcow2
+
+      - name: install ssh
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: ssh-install
+          interval: "15"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            export WINDOWS_ADMIN_PASSWORD=docker
+            python3 windows/11/ssh.py \
+              --gold out/windows11-gold.qcow2 \
+              --out out/windows11-ssh.qcow2 \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}"
+
+      - name: keep the recording
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ssh-recording
+          path: |
+            out/ssh-work/shots/*.ppm
+            out/ssh-work/console.log
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 0
+
+      - name: publish
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: ssh-publish
+          interval: "15"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py install-oras
+            python3 lib/ci.py login --registry ghcr.io
+            TAG="${{ inputs.publish_tag }}"
+            if [ -z "$TAG" ]; then
+              python3 lib/publish_disk.py out/windows11-ssh.qcow2 --kind windows-ssh
+            else
+              python3 lib/publish_disk.py out/windows11-ssh.qcow2 \
+                --kind windows-ssh --tag "$TAG"
+            fi
+
+      - name: what is in the package
+        if: always()
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: ssh-tags
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py tags --prefix windows-
