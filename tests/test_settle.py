@@ -80,13 +80,20 @@ class SettleEnvironment(unittest.TestCase):
 
 
 class SettleRechecks(unittest.TestCase):
-    """After waiting, the desktop is confirmed again.
+    """After waiting, only the machine dying invalidates the result.
 
-    Waiting and then stopping regardless would be a sleep, not a check: a guest that
-    restarted or crashed during those thirty seconds would still have its disk kept.
+    The first version re-checked the SCREEN and refused to keep the disk when the
+    desktop was gone. It threw away a Windows install that had already booted from its
+    own disk, because Windows blanks the display after a minute of no input and this
+    guest gets no input:
+
+        #210  a dark desktop
+        #218  a uniform pale screen       <- the lock screen, not a crash
+
+    A guest that really restarted is caught by the process being gone.
     """
 
-    def test_the_source_rechecks_the_desktop(self):
+    def test_the_source_rechecks_the_process_not_the_wallpaper(self):
         import inspect
         import importlib.util
 
@@ -97,14 +104,19 @@ class SettleRechecks(unittest.TestCase):
         spec.loader.exec_module(bake)
 
         source = inspect.getsource(bake.Baker.wait_for_arrival)
-        # Both guards have to be there, in the settle block.
         self.assertIn("DESKTOP_SETTLE_SECONDS", source)
-        self.assertIn("not guest.alive()", source)
-        self.assertIn("reached_desktop", source)
-        # And the recheck has to be after the sleep, not before it.
-        sleep_at = source.index("time.sleep(settle)")
-        recheck_at = source.index("not desktop.reached_desktop(shots)", sleep_at)
-        self.assertGreater(recheck_at, sleep_at)
+
+        # The process check has to be after the sleep.
+        settle_at = source.index("time.sleep(settle)")
+        alive_at = source.index("not guest.alive()", settle_at)
+        self.assertGreater(alive_at, settle_at)
+
+        # And the screen must NOT be re-checked after an already-confirmed desktop:
+        # that check is what discarded a good disk.
+        tail = source[settle_at:]
+        self.assertNotIn("reached_desktop", tail,
+                         "the settle block must not re-judge the screen; "
+                         "a lock screen is not a crash")
 
 
 if __name__ == "__main__":

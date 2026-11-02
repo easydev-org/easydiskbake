@@ -84,13 +84,25 @@ FIRMWARE_DVD_MARKER = "UEFI QEMU"
 DVD_MARKER = "DVD-ROM"
 LEGACY_DVD_MARKER = "Booting from DVD/CD"
 
-# Sent after the prompt is seen. dockur uses Return; a space also works and is less
-# likely to be interpreted as "select the highlighted entry" if a boot menu is up.
-BOOT_KEY = "ret"
+# ESC, NOT RETURN.
+#
+# The El Torito boot loader accepts any key, so the choice is about what the key does
+# if the guest is NOT at the prompt when it arrives.
+#
+# Return is destructive there. The first version sent six of them 250ms apart, all
+# within the two seconds the prompt is up - the loader consumed one and the rest were
+# still in the QMP keyboard queue when Windows reached its desktop, where Return opens
+# the Start menu. The run that did this looks like a bake that failed at the end: a
+# desktop, then a screen full of menu.
+#
+# ESC does nothing at the prompt (any key works) and closes things elsewhere. It cannot
+# open a menu, submit a dialog or type into a field.
+BOOT_KEY = "esc"
 
-# The prompt appears once per boot attempt and the guest needs a moment after the first
-# press, so a few are sent rather than one.
-REPEATS = 6
+# Three, not six. The window is about five seconds and the poll is 250ms; three presses
+# over half a second covers a loader that is already listening, and three stray ESC
+# presses are harmless where three stray Returns are not.
+REPEATS = 3
 INTERVAL = 0.25
 
 # dockur polls its PTY every 250ms (`sleep 0.25` at the end of waitForBoot). Matching

@@ -42,11 +42,22 @@ import urllib.error
 import urllib.request
 
 REGISTRY = os.environ.get("ISO_REGISTRY", "ghcr.io")
+
+# http or https. ghcr.io is https; a registry on the cluster network is often plain
+# http, and forcing https against one fails with a TLS error that says nothing about
+# the actual mistake.
+SCHEME = os.environ.get("ISO_SCHEME", "https")
 # Everything this repository publishes lives in its own package: the bake image
 # (image.yml), the ISOs (publish-iso.yml) and the baked disks (bake-*). The default
 # matches the repository, so a fork publishes to its own name without a change.
 OWNER = os.environ.get("ISO_OWNER", "easydev-org")
 REPO = os.environ.get("ISO_REPO", "easydiskbake")
+
+# Credentials for a registry that does not hand out anonymous tokens. Forgejo's
+# registry issues no /token endpoint at all - a request to it answers 404 - and
+# expects Basic auth on every call instead.
+ISO_USER = os.environ.get("ISO_USER", "")
+ISO_PASSWORD = os.environ.get("ISO_PASSWORD", "")
 
 # The blob download is the only long operation. It aborts when the rate stays
 # under 20 KB/s for two minutes, which is what caught the SourceForge hang: the
@@ -65,64 +76,102 @@ class IsoError(RuntimeError):
     pass
 
 
-def _token(scope: str) -> str:
-    """A pull token for one repository.
+class Auth:
+    """How to prove identity to this registry.
 
-    ANONYMOUS FIRST, CREDENTIALS SECOND.
+    TWO SHAPES, AND THEY ARE NOT INTERCHANGEABLE:
 
-    The package this repository publishes is public, so ghcr hands out a pull token to
-    anyone who asks:
+        a token registry (ghcr.io)   GET /token, then Bearer on every request
+        a basic registry (Forgejo)   NO /token endpoint; Basic auth on every request
 
-        https://ghcr.io/token?scope=repository:...:pull&service=ghcr.io
+    The first version only knew the token shape. Pointed at Forgejo it asked /token,
+    received a 404, and treated that as "the package is private" - which is a
+    completely different problem, and the bake stopped before downloading anything.
 
-    The first version required GITHUB_TOKEN unconditionally and sent Basic auth with it.
-    That is correct for a private package and fatal for a public one on any runner that
-    does not set GITHUB_TOKEN - which is every runner except GitHub's:
-
-        urllib.error.HTTPError: HTTP Error 403: Forbidden
-        File "lib/iso.py", line 89, in _token
-
-    Sending credentials where none are needed is also the wrong shape for a public
-    artifact: it makes the push/prod distinction invisible and it fails closed.
+    Which one to use is decided by asking: if /token answers 404, the registry does not
+    use tokens.
     """
-    url = (
-        f"https://{REGISTRY}/token"
-        f"?scope=repository:{scope}:pull&service={REGISTRY}"
-    )
 
-    # Anonymous. Works for a public package and costs one request.
-    try:
-        with urllib.request.urlopen(urllib.request.Request(url), timeout=60) as resp:
-            return json.load(resp)["token"]
-    except urllib.error.HTTPError as exc:
-        if exc.code not in (401, 403):
+    def __init__(self) -> None:
+        self._token: str | None = None
+        self._mode: str | None = None   # "token" | "basic"
+
+    def headers(self, scope: str) -> dict[str, str]:
+        if self._mode is None:
+            self._mode = self._detect(scope)
+        if self._mode == "token":
+            if self._token is None:
+                self._token = self._fetch_token(scope)
+            return {"Authorization": f"Bearer {self._token}"}
+        return self._basic_header()
+
+    @staticmethod
+    def _basic_header() -> dict[str, str]:
+        # Read at call time, not at import: a workflow sets ISO_USER/ISO_PASSWORD in the
+        # step's environment, after this module has already been imported.
+        user = os.environ.get("ISO_USER", "")
+        if not user:
+            return {}
+        import base64
+
+        password = os.environ.get("ISO_PASSWORD", "")
+        raw = f"{user}:{password}".encode()
+        return {"Authorization": "Basic " + base64.b64encode(raw).decode()}
+
+    def _detect(self, scope: str) -> str:
+        url = f"{SCHEME}://{REGISTRY}/token?scope=repository:{scope}:pull&service={REGISTRY}"
+        try:
+            with urllib.request.urlopen(
+                urllib.request.Request(url, headers=self._basic_header()), timeout=30
+            ) as resp:
+                # ghcr answers 200 with a JSON token; callers use _fetch_token to read
+                # it, so this branch only decides the mode.
+                resp.read()
+            return "token"
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                log(f"{REGISTRY} has no /token endpoint; using basic auth")
+                return "basic"
+            if exc.code in (401, 403):
+                return "token"     # ghcr-shaped, just not authorised yet
             raise
-        anonymous_error = exc
+        except urllib.error.URLError:
+            # A registry on the cluster network may answer nothing here and still serve
+            # the API; treat it as basic and let the real request decide.
+            return "basic"
 
-    token = os.environ.get("GITHUB_TOKEN")
-    if not token:
-        raise IsoError(
-            f"{scope} needs credentials and GITHUB_TOKEN is not set.\n"
-            f"The package is not public, or this runner is not logged in to "
-            f"{REGISTRY}.\nFrom {anonymous_error}"
-        )
+    def _fetch_token(self, scope: str) -> str:
+        url = f"{SCHEME}://{REGISTRY}/token?scope=repository:{scope}:pull&service={REGISTRY}"
+        headers = self._basic_header()
 
-    import base64
+        # Anonymous first: this repository's packages are public and ghcr serves them
+        # to anyone. Credentials are needed only for a private package.
+        request = urllib.request.Request(url)
+        for key, value in headers.items():
+            request.add_header(key, value)
+        try:
+            with urllib.request.urlopen(request, timeout=60) as resp:
+                return json.load(resp)["token"]
+        except urllib.error.HTTPError as exc:
+            if exc.code not in (401, 403) or not headers:
+                raise IsoError(
+                    f"{REGISTRY} refused a pull token for {scope}: HTTP {exc.code}"
+                ) from exc
 
-    user = os.environ.get("GITHUB_ACTOR") or "x"
+        with urllib.request.urlopen(
+            urllib.request.Request(url, headers=headers), timeout=60
+        ) as resp:
+            return json.load(resp)["token"]
+
+
+_AUTH = Auth()
+
+
+def _manifest(repo: str, tag: str) -> dict:
+    url = f"{SCHEME}://{REGISTRY}/v2/{repo}/manifests/{tag}"
     req = urllib.request.Request(url)
-    req.add_header(
-        "Authorization",
-        "Basic " + base64.b64encode(f"{user}:{token}".encode()).decode(),
-    )
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        return json.load(resp)["token"]
-
-
-def _manifest(repo: str, tag: str, token: str) -> dict:
-    url = f"https://{REGISTRY}/v2/{repo}/manifests/{tag}"
-    req = urllib.request.Request(url)
-    req.add_header("Authorization", f"Bearer {token}")
+    for key, value in _AUTH.headers(repo).items():
+        req.add_header(key, value)
     req.add_header("Accept", "application/vnd.oci.image.manifest.v1+json")
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
@@ -137,7 +186,7 @@ def _manifest(repo: str, tag: str, token: str) -> dict:
         raise
 
 
-def _download(url: str, dest: str, *, token: str | None, expected_size: int | None) -> None:
+def _download(url: str, dest: str, *, scope: str, expected_size: int | None) -> None:
     """Stream one blob to dest.part, then move it into place.
 
     The partial file is what makes a failure resumable-by-retry rather than
@@ -146,8 +195,10 @@ def _download(url: str, dest: str, *, token: str | None, expected_size: int | No
     """
     part = dest + ".part"
     req = urllib.request.Request(url)
-    if token:
-        req.add_header("Authorization", f"Bearer {token}")
+    # scope="" means a vendor URL, not this registry: no credentials go with it.
+    if scope:
+        for key, value in _AUTH.headers(scope).items():
+            req.add_header(key, value)
 
     got = 0
     with urllib.request.urlopen(req, timeout=BLOB_SPEED_WINDOW) as resp, open(part, "wb") as fh:
@@ -192,8 +243,7 @@ def fetch_iso(name: str, dest: str) -> str:
     tag = f"iso-{name}"
     log(f"fetching {tag} from {REGISTRY}/{repo}")
 
-    token = _token(repo)
-    manifest = _manifest(repo, tag, token)
+    manifest = _manifest(repo, tag)
     layers = manifest.get("layers") or []
     if not layers:
         raise IsoError(f"manifest for {tag!r} has no layers")
@@ -203,9 +253,9 @@ def fetch_iso(name: str, dest: str) -> str:
     log(f"layer {digest}, {size} bytes")
 
     _download(
-        f"https://{REGISTRY}/v2/{repo}/blobs/{digest}",
+        f"{SCHEME}://{REGISTRY}/v2/{repo}/blobs/{digest}",
         dest,
-        token=token,
+        scope=repo,
         expected_size=size,
     )
     log(f"{dest} is {os.path.getsize(dest)} bytes")
@@ -244,7 +294,7 @@ def fetch_url(
             return dest
 
     log(f"downloading {url}")
-    _download(url, dest, token=None, expected_size=size)
+    _download(url, dest, scope="", expected_size=size)
 
     if sha256:
         actual = _sha256(dest)

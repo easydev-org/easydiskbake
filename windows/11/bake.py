@@ -557,16 +557,29 @@ class Baker:
                 log(f"letting the guest settle for {settle}s before stopping it")
                 time.sleep(settle)
 
+                # THE ONLY THING THAT INVALIDATES THE DESKTOP IS THE MACHINE DYING.
+                #
+                # The first version also re-checked the screen here and refused to keep
+                # the disk when the desktop was gone. It threw away a Windows install
+                # that had already booted from its own disk:
+                #
+                #     BdsDxe: starting Boot000A "Windows Boot Manager" from HD(1,GPT,...)
+                #     [bake] a Windows desktop is on screen (1044s)
+                #     [bake] the desktop is no longer on screen after settling
+                #
+                # What had happened was a lock screen. Windows blanks the display after a
+                # minute of no input, and this guest gets no input - so the common case,
+                # not the failure case, was being read as a crash. The frames confirm it:
+                # #210 is a dark desktop, #218 is a uniform pale screen, and neither is a
+                # boot loop or an error.
+                #
+                # A guest that really did restart is caught by the process being gone, or
+                # by the boot counter on the console - not by the wallpaper.
                 if not guest.alive():
                     log("the guest exited while settling - not keeping the disk")
                     return False
 
-                if not desktop.reached_desktop(shots):
-                    log("the desktop is no longer on screen after settling - "
-                        "the guest restarted or crashed; not keeping the disk")
-                    return False
-
-                log("still at a desktop after settling")
+                log("still running after settling; keeping the disk")
                 return True
 
             # --- the console: for the record, and for the failure message --------

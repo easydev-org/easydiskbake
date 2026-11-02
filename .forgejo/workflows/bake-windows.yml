@@ -44,14 +44,32 @@ on:
         default: "5"
 
 env:
-  BAKE_IMAGE: ghcr.io/easydev-org/easydiskbake:latest
-  DISK_REPO: forgejo.develop.fenjin.org/fenjin/easydisk-windows
+  # PULLED FROM THE CLUSTER'S OWN REGISTRY.
+  #
+  # ghcr.io is reachable from here and takes about 40 KB/s through the proxy: the first
+  # attempt downloaded 5 MB of a 7.4 GB image in five minutes. The same bytes are on
+  # forgejo.develop.fenjin.org, on the cluster network, copied there once with crane.
+  # THE CLUSTER'S OWN NAMES MUST NOT GO THROUGH THE PROXY.
+  #
+  # Every job gets HTTP_PROXY from the runner's container.envs, and forgejo.* is an
+  # in-cluster name: the proxy answers 502 for it, and a copy through crane failed with
+  # "tls: bad record MAC" on an http:// URL, which is the proxy mangling a connection it
+  # should never have seen.
+  NO_PROXY: localhost,127.0.0.1,.svc.cluster.local,.svc,172.16.0.0/12,10.0.0.0/8,forgejo.develop.fenjin.org,forgejo.develop.svc.cluster.local
+  no_proxy: localhost,127.0.0.1,.svc.cluster.local,.svc,172.16.0.0/12,10.0.0.0/8,forgejo.develop.fenjin.org,forgejo.develop.svc.cluster.local
+  REGISTRY_HOST: forgejo.develop.svc.cluster.local
+  IMAGE_REPO: fenjin/easydiskbake
+  BAKE_IMAGE: forgejo.develop.svc.cluster.local/fenjin/easydiskbake:latest
+  DISK_REPO: forgejo.develop.svc.cluster.local/fenjin/easydisk-windows
 
 jobs:
   base:
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/easydev-org/easydiskbake:latest
+      image: forgejo.develop.svc.cluster.local/fenjin/easydiskbake:latest
+      credentials:
+        username: fenjin
+        password: ${{ secrets.FORGEJOTOKEN }}
       options: --device /dev/kvm
     timeout-minutes: 180
 
@@ -65,6 +83,15 @@ jobs:
           python3 lib/ci.py free-disk --need 45
 
       - name: bake
+        env:
+          # lib/iso.py reads these: the ISO lives in the same local package, and this
+          # registry speaks plain http and has no /token endpoint.
+          ISO_REGISTRY: forgejo.develop.svc.cluster.local
+          ISO_SCHEME: http
+          ISO_OWNER: fenjin
+          ISO_REPO: easydiskbake
+          ISO_USER: fenjin
+          ISO_PASSWORD: ${{ secrets.FORGEJOTOKEN }}
         run: |
           set -euo pipefail
           mkdir -p out

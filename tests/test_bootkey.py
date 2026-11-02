@@ -182,10 +182,21 @@ class Press(unittest.TestCase):
         self.assertEqual(len(sent), 4)
         self.assertTrue(all(k == bootkey.BOOT_KEY for k in sent))
 
-    def test_the_key_is_return(self):
-        # dockur sends `ret`; the boot image accepts any key, and Return is the one
-        # that is safe if a boot menu happens to be up.
-        self.assertEqual(bootkey.BOOT_KEY, "ret")
+    def test_the_key_is_escape_not_return(self):
+        """Return is destructive when it arrives somewhere other than the prompt.
+
+        The boot loader accepts any key, so the choice is about the case where the key
+        lands on the desktop instead: Return opens the Start menu, which is what turned
+        a finished bake into a screenshot full of menu. ESC closes things and opens
+        nothing.
+        """
+        self.assertEqual(bootkey.BOOT_KEY, "esc")
+
+    def test_the_sequence_is_short(self):
+        # Six presses at 250ms all land inside the five-second prompt window; the ones
+        # the loader does not consume stay queued. Three is enough to cover a loader
+        # that is already listening.
+        self.assertEqual(bootkey.REPEATS, 3)
 
 
 if __name__ == "__main__":

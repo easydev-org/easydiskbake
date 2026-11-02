@@ -1,12 +1,13 @@
-"""The registry token: anonymous first, credentials only if asked for.
+"""How lib/iso.py proves identity to a registry.
 
-The package this repository publishes is public, so ghcr hands out a pull token to
-anyone. The first version of _token() required GITHUB_TOKEN unconditionally and sent
-Basic auth - correct for a private package, fatal on any runner that does not set that
-variable. Forgejo is one:
+Two registries, two shapes, and getting this wrong stops a bake before it downloads
+anything:
 
-    urllib.error.HTTPError: HTTP Error 403: Forbidden
-    File "lib/iso.py", line 89, in _token
+    ghcr.io      GET /token, then Bearer on every request; the package is public
+    Forgejo      no /token endpoint at all - 404 - and Basic auth on every request
+
+The first version only knew the first shape. Pointed at Forgejo it asked /token, took
+the 404 as "the package is private", and refused to continue.
 """
 
 import json
@@ -32,58 +33,116 @@ class FakeResponse:
         return False
 
     def read(self):
-        return json.dumps(self._payload).encode()
+        return json.dumps(self._payload).encode() if not isinstance(self._payload, bytes) \
+            else self._payload
 
 
-class Token(unittest.TestCase):
+class TokenRegistry(unittest.TestCase):
+    """ghcr.io: a token endpoint that answers with a JSON token."""
 
-    def test_anonymous_when_no_credentials_are_set(self):
-        # The case that failed: a runner with no GITHUB_TOKEN and a public package.
-        env = {k: v for k, v in os.environ.items()
-               if k not in ("GITHUB_TOKEN", "GITHUB_ACTOR")}
-        with mock.patch.dict(os.environ, env, clear=True), \
-             mock.patch("urllib.request.urlopen",
-                        return_value=FakeResponse({"token": "anon-token"})) as open_:
-            self.assertEqual(iso._token("easydev-org/easydiskbake"), "anon-token")
+    def setUp(self):
+        self.auth = iso.Auth()
+        self.env = mock.patch.dict(os.environ, {"ISO_USER": "", "ISO_PASSWORD": ""})
+        self.env.start()
 
-        # No Authorization header on the anonymous attempt.
-        request = open_.call_args[0][0]
-        self.assertIsNone(request.get_header("Authorization"))
+    def tearDown(self):
+        self.env.stop()
 
-    def test_credentials_are_used_when_anonymous_is_refused(self):
-        # A private package: the first request gets 401, the second carries Basic auth.
+    def test_anonymous_token_is_used(self):
+        # Public package: no credentials, and the request must not carry any.
+        def fake_open(req, timeout=60):
+            return FakeResponse({"token": "anon"})
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_open):
+            headers = self.auth.headers("easydev-org/easydiskbake")
+
+        self.assertEqual(headers["Authorization"], "Bearer anon")
+
+    def test_it_asks_for_scope_pull(self):
+        seen = []
+
+        def fake_open(req, timeout=60):
+            seen.append(req.full_url)
+            return FakeResponse({"token": "t"})
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_open):
+            self.auth.headers("owner/repo")
+
+        self.assertTrue(any("scope=repository:owner/repo:pull" in u for u in seen), seen)
+
+
+class BasicRegistry(unittest.TestCase):
+    """Forgejo: /token is 404, and Basic auth goes on every request."""
+
+    def setUp(self):
+        self.auth = iso.Auth()
+        self.env = mock.patch.dict(
+            os.environ, {"ISO_USER": "fenjin", "ISO_PASSWORD": "secret"})
+        self.env.start()
+
+    def tearDown(self):
+        self.env.stop()
+
+    def test_a_404_means_basic_auth(self):
+        def fake_open(req, timeout=60):
+            raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_open):
+            headers = self.auth.headers("fenjin/easydiskbake")
+
+        self.assertTrue(headers["Authorization"].startswith("Basic "))
+
+    def test_it_decides_once(self):
+        # Detecting on every request would double the calls to a registry that is
+        # local but still not free.
         calls = []
 
         def fake_open(req, timeout=60):
-            calls.append(req)
-            if len(calls) == 1:
-                raise urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {}, None)
-            return FakeResponse({"token": "private-token"})
+            calls.append(req.full_url)
+            raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
 
-        with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_x", "GITHUB_ACTOR": "me"}), \
-             mock.patch("urllib.request.urlopen", side_effect=fake_open):
-            self.assertEqual(iso._token("easydev-org/easydiskbake"), "private-token")
+        with mock.patch("urllib.request.urlopen", side_effect=fake_open):
+            self.auth.headers("fenjin/easydiskbake")
+            first = len(calls)
+            self.auth.headers("fenjin/easydiskbake")
 
-        self.assertEqual(len(calls), 2)
-        auth = calls[1].get_header("Authorization")
-        self.assertTrue(auth.startswith("Basic "))
+        self.assertEqual(len(calls), first)
 
-    def test_a_private_package_without_credentials_says_so(self):
-        env = {k: v for k, v in os.environ.items() if k != "GITHUB_TOKEN"}
-        with mock.patch.dict(os.environ, env, clear=True), \
+    def test_no_credentials_means_no_header(self):
+        # A registry that allows anonymous pushes still works.
+        with mock.patch.dict(os.environ, {"ISO_USER": "", "ISO_PASSWORD": ""}):
+            auth = iso.Auth()
+            with mock.patch("urllib.request.urlopen",
+                            side_effect=urllib.error.HTTPError("u", 404, "x", {}, None)):
+                headers = auth.headers("fenjin/easydiskbake")
+        self.assertEqual(headers, {})
+
+
+class VendorUrls(unittest.TestCase):
+    """A vendor URL is not this registry and must not carry its credentials."""
+
+    def test_no_auth_header_is_added(self):
+        added = []
+
+        class FakeReq:
+            def __init__(self, url, method=None, data=None):
+                self.full_url = url
+                added.append(self)
+
+            def add_header(self, key, value):
+                self.__dict__.setdefault("headers", {})[key] = value
+
+        with mock.patch("urllib.request.Request", FakeReq), \
              mock.patch("urllib.request.urlopen",
-                        side_effect=urllib.error.HTTPError("u", 401, "x", {}, None)):
-            with self.assertRaises(iso.IsoError) as ctx:
-                iso._token("easydev-org/easydiskbake")
-        self.assertIn("needs credentials", str(ctx.exception))
+                        side_effect=urllib.error.URLError("stop here")):
+            try:
+                iso._download("https://github.com/x/y.iso", "/tmp/x.iso",
+                              scope="", expected_size=None)
+            except Exception:
+                pass
 
-    def test_a_non_auth_error_is_not_retried_with_credentials(self):
-        # A 500 is not a permissions problem; falling through to a second request would
-        # just make the same failure twice.
-        with mock.patch("urllib.request.urlopen",
-                        side_effect=urllib.error.HTTPError("u", 500, "boom", {}, None)):
-            with self.assertRaises(urllib.error.HTTPError):
-                iso._token("easydev-org/easydiskbake")
+        self.assertTrue(added)
+        self.assertNotIn("Authorization", getattr(added[0], "headers", {}))
 
 
 if __name__ == "__main__":

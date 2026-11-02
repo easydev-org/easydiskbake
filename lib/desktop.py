@@ -64,13 +64,32 @@ from __future__ import annotations
 import os
 import sys
 
-# Bands, as fractions of the image height. The top is above any taskbar and the bottom
-# contains it.
+# LIGHT TOP, DARK BUSY BOTTOM.
+#
+# Measured on a real Windows 11 desktop at 1280x800:
+#
+#     top half   avg (143,183,212)  sat 0.33  var  1409
+#     bottom     avg ( 67,116,195)  sat 0.66  var 13812
+#
+#     brightness falls 53, variance rises 9.8x, saturation rises 0.33
+#
+# The thresholds ask for roughly a third of that, so a different wallpaper with the
+# same shape still passes.
+#
+# A TASKBAR-BASED CHECK WAS TRIED AND IS NOT HERE. It looked for a uniform strip at the
+# bottom with icons along its edge, which is true of some desktops and false of the two
+# reference screenshots in this repository: both have pure wallpaper all the way down
+# (variance 4000-5600 at every row below 84%, no uniform strip anywhere). A check that
+# rejects the pictures it was built from is not a check.
+#
+# WHAT THIS DEPENDS ON: the guest must be at its desktop, not its Start menu. A run that
+# left six Return presses queued opened the Start menu the moment the desktop appeared,
+# and the resulting screen failed all three tests - correctly, because it was not the
+# desktop any more. The fix for that is the key press (lib/bootkey.py now sends three
+# ESCs, which cannot open a menu), not a wider judgement here.
 TOP_BAND = (0.00, 0.20)
 BOTTOM_BAND = (0.80, 1.00)
 
-# Measured on a real desktop: -53, 9.8x, +0.33. The thresholds ask for a third of that,
-# so a different wallpaper with the same shape still passes.
 MIN_BRIGHTNESS_DROP = 15.0     # top mean minus bottom mean, per channel average
 MIN_VARIANCE_RATIO = 2.0       # bottom variance / top variance
 MIN_SATURATION_RISE = 0.10     # bottom saturation - top saturation
@@ -174,6 +193,44 @@ def saturation(colour: tuple[float, float, float]) -> float:
     return (mx - min(colour)) / mx
 
 
+def _band_stats(width: int, height: int, pixels: bytes,
+                top: float, bottom: float, step: int = 4) -> tuple[tuple[float, float, float], float]:
+    """Mean colour and variance over a horizontal band.
+
+    `step` subsamples horizontally: a 1280-wide band is 1280 pixels per row and this
+    runs on every frame, so 4 is a 16x saving and changes none of these statistics
+    meaningfully.
+    """
+    y0 = int(height * top)
+    y1 = max(y0 + 1, int(height * bottom))
+
+    total = 0
+    sums = [0, 0, 0]
+    for y in range(y0, y1):
+        base = y * width * 3
+        for x in range(0, width, step):
+            off = base + x * 3
+            sums[0] += pixels[off]
+            sums[1] += pixels[off + 1]
+            sums[2] += pixels[off + 2]
+            total += 1
+
+    if total == 0:
+        return (0.0, 0.0, 0.0), 0.0
+
+    mean = (sums[0] / total, sums[1] / total, sums[2] / total)
+
+    var = 0.0
+    for y in range(y0, y1):
+        base = y * width * 3
+        for x in range(0, width, step):
+            off = base + x * 3
+            var += (pixels[off] - mean[0]) ** 2
+            var += (pixels[off + 1] - mean[1]) ** 2
+            var += (pixels[off + 2] - mean[2]) ** 2
+    return mean, var / (total * 3)
+
+
 def analyse(path: str) -> dict | None:
     """The numbers is_desktop() decides on. Useful in a log, and testable on its own."""
     parsed = read_ppm(path)
@@ -195,8 +252,7 @@ def analyse(path: str) -> dict | None:
         "brightness_drop": (sum(top_mean) - sum(bot_mean)) / 3.0,
         # A flat band has variance 0 and the ratio is infinite, which is a correct
         # answer and a useless log line. Both are floored at 1.0, so the ratio reads as
-        # a large finite number: a uniform image gives bottom_var/1, and no caller has
-        # to handle inf.
+        # a large finite number and no caller has to handle inf.
         "variance_ratio": (bot_var / max(top_var, 1.0)),
         "saturation_rise": saturation(bot_mean) - saturation(top_mean),
     }
@@ -205,7 +261,7 @@ def analyse(path: str) -> dict | None:
 def is_desktop(path: str, *, explain: bool = False) -> bool:
     """Is this frame a Windows desktop?
 
-    All three tests must pass. See the module docstring for why each one is there and
+    All three tests must pass. See the constants above for why each one is there and
     why the thresholds are loose.
     """
     stats = analyse(path)
