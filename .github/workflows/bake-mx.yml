@@ -63,7 +63,7 @@ jobs:
             export SNAPSHOT_INTERVAL="${{ github.event.inputs.snapshot_interval }}"
             export GITHUB_TOKEN="${{ github.token }}"
             export OUT="$PWD/out/mx.qcow2"
-            bash mx/bake.sh
+            python3 linux/mx/bake.py
 
       # The disk, if the install landed.
       - uses: actions/upload-artifact@v4

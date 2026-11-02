@@ -38,40 +38,11 @@ jobs:
           interval: "10"
           command: |
             set -euo pipefail
-            . lib/vm.sh
-            . lib/iso.sh
-
             mkdir -p out && cd out
+            # The capture steps live in lib/capture.py so they can be run
+            # locally, not only inside a workflow.
+            GITHUB_TOKEN="${{ github.token }}" python3 ../lib/capture.py frames
 
-            echo "=== a guest, booting and then idling ==="
-            GITHUB_TOKEN="${{ github.token }}" bake_fetch_iso alpine alpine.iso
-            rm -rf x && mkdir -p x
-            7z x -y -o"x" alpine.iso boot/vmlinuz-virt boot/initramfs-virt > /dev/null
-            K="$(find "$PWD/x" -name 'vmlinuz*' | head -1)"
-            I="$(find "$PWD/x" -name 'initramfs*' | head -1)"
-            qemu-img create -f qcow2 disk.qcow2 1G
-
-            VM_STDOUT="$PWD/console.log" VM_STDIN=/dev/null \
-              bake_vm_start "$PWD" \
-                -kernel "$K" -initrd "$I" \
-                -append "console=ttyS0,115200n8" \
-                -drive "file=$PWD/disk.qcow2,if=virtio,format=qcow2" \
-                -no-reboot
-
-            # 40 frames at 1/s: the first half is a kernel scrolling, the second half is
-            # a shell sitting still. That mix is what an install looks like - busy then
-            # quiet - and it is what makes the size estimate honest.
-            echo "=== 40 frames, one per second ==="
-            python3 ../lib/snapshots.py "$QMP_RECORD" "$PWD/frames" 1 40
-
-            bake_vm_stop
-
-            ls frames/frame-*.ppm | wc -l | sed 's/^/frames captured: /'
-            du -sh frames | sed 's/^/raw size: /'
-            echo "SIZE_$(stat -c%s frames/frame-0000.ppm)_BYTES_PER_FRAME"
-
-            # Both snapshots.py and bake_vm_stop change directory, so come back to the
-            # output directory by absolute path rather than relying on where we are.
             cd "$GITHUB_WORKSPACE/out"
             echo "now in $(pwd)"
             ls -d frames

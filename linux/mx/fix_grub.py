@@ -41,7 +41,7 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-LIB = os.path.join(HERE, "..", "lib")
+LIB = os.path.join(HERE, "..", "..", "lib")
 sys.path.insert(0, LIB)
 
 W, H = 1280, 800

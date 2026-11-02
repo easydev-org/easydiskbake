@@ -41,7 +41,7 @@ import os
 import sys
 import time
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "lib"))
 from ocr import Screen           # noqa: E402
 from keys import type_text      # noqa: E402
 

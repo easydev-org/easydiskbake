@@ -1,19 +1,46 @@
 # lib/
 
-The parts that are the same for every distribution.
+The parts that are the same for every distribution and every platform.
 
 | file | what | why it is not per-distribution |
 |---|---|---|
 | `qmp.py` | QMP client: absolute pointer, key events, screendump | every guest is driven the same way |
 | `keys.py` | characters to QKeyCodes | QMP has no "send a string" |
 | `ocr.py` | screendump -> tesseract -> click a control | needed by any installer with no unattended mode |
+| `panefp.py` | a pane fingerprint: identify a screen without OCR | any installer can be learned this way |
 | `snapshots.py` | one frame every N seconds, for the whole run | watching a run is not installer-specific |
-| `iso.sh` | fetch an ISO from ghcr | every bake starts with an image |
+| `iso.py` | fetch an ISO from ghcr, or a pinned vendor URL | every bake starts with an image |
+| `vm.py` | the qemu command line, as a pure function, plus a `Guest` | every guest is a qemu with the same four channels |
+| `smoke.py` | is the disk bootable; boot it and watch | proving a disk works is the same for all of them |
+| `winiso.py` | put an answer file at an ISO's root, keeping El Torito | Windows-only in practice, but it is an ISO operation |
+| `wim.py` | read a Windows WIM's edition table | verifies the image index before boot |
 | `mkpasswd.py` | SHA-512 crypt, for installers that take a hash | the format is fixed and published |
+| `hexdump.py` | parse a `qemu-io read -v` dump | used by `smoke.py` |
 
 Nothing here knows what distribution it is working on. That is the point: the
 differences between installers live in their own configuration files, and the
 differences in *how they are reached* live in the per-distribution driver.
+
+## Everything here is a module, not a sourced script
+
+The shell versions could not be tested. `bake_vm_start()` built an argv and forked
+qemu in the same function, so the only way to find out what command line it produced
+was to run a VM - and on a machine without `/dev/kvm` that was impossible.
+
+`vm.build_args()` is now pure: no process, no filesystem writes, no environment reads
+beyond an explicit `Shape`. That is what makes `tests/` possible, and the tests are
+the reason the UEFI parameters could be added without being able to boot a Windows
+guest on the machine they were written on.
+
+Two functions in was-shell files were rewritten rather than ported, because the shell
+version's failure mode was the reason the file existed:
+
+- `smoke.py` read a disk by shelling out to `qemu-io`, capturing a hexdump to a temp
+  file, shelling out to `hexdump.py` to parse it, and grepping the result for
+  `"55aa"`. Four processes for a two-byte comparison, and the offset was wrong for
+  three runs.
+- `winiso.py` built the path `$OEM$/$$/Setup/Scripts/` with two escaped dollars inside
+  a double-quoted string inside a function. In Python it is a literal.
 
 ## Where this came from
 
@@ -46,6 +73,20 @@ indistinguishable in a serial log and obvious in a picture. This is what finally
 that an installer's button row is invisible to tesseract: the diagnostic printed every
 word OCR found with its position, and the lowest one was 64 pixels above the buttons.
 
-**`iso.sh`** - no fallback to a mirror, deliberately. A function that quietly falls back
+**`iso.py`** - no fallback to a mirror, deliberately. A function that quietly falls back
 is a function whose failures are invisible: the run succeeds, slowly, from a host nobody
 chose, and nobody notices the cache is broken.
+
+**`vm.py`** - the firmware parameters (`machine`, `firmware_code`, `firmware_vars`,
+`tpm_socket`) are not Windows- or macOS-specific enough to live in those directories.
+A guest that needs UEFI needs the same three things done the same way, and the defaults
+are exactly what MX used before this existed, so nothing that worked changed.
+
+**`smoke.py`** - the ext superblock check is opt-in per caller (`root_fs="gpt"` for
+Windows and macOS) because those disks have no ext magic at 1 MiB and the check only
+ever produced false alarms there.
+
+**`wim.py`** - exists because of a specific mistake that is otherwise invisible: an
+answer file's image index off by one installs "Windows 11 Pro N" instead of "Windows 11
+Pro", and the two are identical on screen. Reading the WIM catches it before a guest
+exists.

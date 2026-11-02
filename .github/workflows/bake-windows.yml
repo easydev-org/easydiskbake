@@ -1,0 +1,278 @@
+name: bake-windows
+
+# Bake a Windows 11 disk in CI and publish it to ghcr.
+#
+# WHAT IS PUBLISHED
+#
+#   base           the disk setup produced, with the answer file as the only
+#                  guest-side contract
+#   dev-<stamp>    the same bytes, tagged with when they were built, so a
+#                  regression can be bisected by pulling an older one
+#
+# There is deliberately no "ssh" tag yet. It used to be a stage here, derived from
+# base by a script staged into the guest, and that was wrong twice over:
+#
+#   - a stage that changes the disk belongs against an ALREADY PUBLISHED disk, so a
+#     broken second stage cannot invalidate a base that was otherwise finished;
+#   - the work it did (enable OpenSSH, verify it listens) is better expressed as a
+#     second boot driven from the host, the way dockur-macos does its stage 3.
+#
+# Neither is implemented. When ssh is added it gets its own job that downloads the
+# published base and derives from it, and this comment is removed.
+#
+# WHY THE BAKE RUNS IN THE IMAGE
+#
+# Everything the bake needs (qemu, xorriso, swtpm, ffmpeg, 7z, wimlib, python3) is
+# in ghcr.io/easydev-org/easydiskbake, pinned by the Containerfile. The runner
+# supplies /dev/kvm and nothing else, so the difference between "works locally" and
+# "works in CI" is one flag.
+#
+# WHY log-stream
+#
+# GitHub serves a running job's Actions log from an internal store and the public
+# endpoints answer 404 until the job ends, so a 90-minute bake is invisible while it
+# runs. A check run's output.text has no such restriction.
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: "Windows image to install"
+        type: choice
+        options:
+          - win11x64
+          - win11x64-enterprise-eval
+        default: win11x64
+      disk_size:
+        description: "Guest disk size"
+        default: "64G"
+      publish:
+        description: "Push to ghcr"
+        type: boolean
+        default: true
+      reuse_iso:
+        description: "Reuse the cached Windows ISO (skip the download)"
+        type: boolean
+        default: true
+
+  # A monthly rebuild catches two things a pinned ISO cannot: a Microsoft URL that
+  # stopped serving, and a setup behaviour that changed. Both are worth knowing
+  # about before a release needs them.
+  schedule:
+    - cron: "0 3 1 * *"
+
+concurrency:
+  group: bake-windows-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_REPO: ${{ github.repository_owner }}/easydisk-windows
+  BAKE_IMAGE: ghcr.io/easydev-org/easydiskbake:latest
+
+jobs:
+  base:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: KVM
+        run: |
+          set -euo pipefail
+          test -c /dev/kvm || { echo "No /dev/kvm on this runner."; exit 1; }
+          ls -l /dev/kvm
+
+      # The Windows ISO is 7.2 GiB and the disk is 64 GiB sparse. A stock runner has
+      # ~14 GB free after the preinstalled toolchains; dockur measured the same and
+      # prunes the same list.
+      - name: Free disk space
+        run: |
+          set -euo pipefail
+          sudo rm -rf \
+            /usr/local/.ghcup /usr/local/lib/android /usr/local/lib/node_modules \
+            /usr/local/share/boost /usr/local/share/chromium /usr/local/share/powershell \
+            /usr/share/dotnet /usr/share/swift /opt/az /opt/ghc /opt/google \
+            /opt/hostedtoolcache /opt/microsoft /opt/pipx
+          sudo apt-get clean
+          sudo rm -rf /var/cache/apt/* /var/lib/apt/lists/*
+          docker system prune --all --force --volumes >/dev/null || true
+          available_gb=$(( $(df --output=avail / | tail -1) / 1024 / 1024 ))
+          echo "available: ${available_gb} GB"
+          # 7.2 GiB ISO + 64 GiB sparse qcow2 + a compressed copy, with headroom.
+          if (( available_gb < 45 )); then
+            echo "At least 45 GB is required."; exit 1
+          fi
+
+      # The ISO is verified by sha256 inside the bake, so a stale cache is caught
+      # rather than silently installed. The cache only has to avoid re-downloading
+      # seven gigabytes on every run.
+      - name: cache the Windows ISO
+        if: ${{ inputs.reuse_iso != false }}
+        uses: actions/cache@v4
+        with:
+          path: out/${{ inputs.image || 'win11x64' }}.iso
+          key: windows-iso-${{ inputs.image || 'win11x64' }}
+
+      - name: bake
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: bake-windows
+          interval: "15"
+          command: |
+            set -euo pipefail
+            mkdir -p out
+            IMAGE="${{ inputs.image || 'win11x64' }}"
+
+            # Pass the cached ISO through if it is there; the bake's sha256 check
+            # decides whether it is still the right one.
+            ISO_ARG=""
+            if [ -f "out/${IMAGE}.iso" ]; then ISO_ARG="--iso out/${IMAGE}.iso"; fi
+
+            docker run --rm \
+              --device /dev/kvm \
+              --volume "$PWD/out:/work" \
+              --volume "$PWD:/repo:ro" \
+              --workdir /work \
+              --env GITHUB_TOKEN="${{ github.token }}" \
+              --env SNAPSHOT_INTERVAL=5 \
+              "$BAKE_IMAGE" \
+              python3 /repo/windows/11/bake.py \
+                --out /work/windows11.qcow2 \
+                --answer /repo/windows/11/answer \
+                --image "$IMAGE" \
+                --disk-size "${{ inputs.disk_size || '64G' }}" \
+                --timeout 5400 \
+                $ISO_ARG
+
+      # A second, independent boot of the disk. The bake already checked it, but the
+      # bake also had the ISO attached and a live installer in memory: this is the
+      # boot that says the disk alone starts.
+      - name: verify, from scratch
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: verify-windows
+          interval: "15"
+          command: |
+            set -euo pipefail
+            docker run --rm \
+              --device /dev/kvm \
+              --volume "$PWD/out:/work" \
+              --volume "$PWD:/repo:ro" \
+              --workdir /work \
+              "$BAKE_IMAGE" \
+              python3 -c '
+import sys
+sys.path.insert(0, "/repo/lib")
+import smoke
+ok = smoke.check_disk("/work/windows11.qcow2", root_fs="gpt")
+print("disk checks:", "PASS" if ok else "FAIL")
+sys.exit(0 if ok else 1)
+'
+
+      - name: record what was built
+        if: always()
+        run: |
+          set -euo pipefail
+          {
+            echo "## Windows base bake"
+            echo
+            echo "- image: ${{ inputs.image || 'win11x64' }}"
+            echo "- commit: $(git rev-parse --short HEAD)"
+            echo "- when: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            if [ -f out/windows11.qcow2 ]; then
+              echo "- disk: $(du -h out/windows11.qcow2 | cut -f1)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The recording is what explains a failure: a setup pane waiting for a click
+      # and a hung kernel look identical in a log, and this is the only artifact
+      # that shows which one it was.
+      - name: keep the recording
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-recording
+          path: |
+            out/frames/shots/*.ppm
+            out/console.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: upload disk
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows11-qcow2
+          path: out/windows11.qcow2
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0   # qcow2 is already zstd-compressed
+
+  publish:
+    needs: base
+    if: ${{ inputs.publish == true || inputs.publish == null }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows11-qcow2
+          path: out
+
+      - name: log in to ghcr
+        run: |
+          set -euo pipefail
+          echo "${{ github.token }}" | \
+            docker login "$REGISTRY" --username "${{ github.actor }}" --password-stdin
+
+      # The disk is a bare qcow2, not a container image, so it is pushed with oras
+      # rather than docker push - the same choice dockur-macos made in
+      # publish-golden.yml, and for the same reason: oras stores arbitrary files as
+      # OCI artifacts without inventing a Dockerfile for them.
+      - name: install oras
+        run: |
+          set -euo pipefail
+          version=1.2.2
+          curl -fsSL "https://github.com/oras-project/oras/releases/download/v${version}/oras_${version}_linux_amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin oras
+
+      - name: push base and the dev tag
+        run: |
+          set -euo pipefail
+          stamp="$(date -u +%Y%m%d-%H%M%S)"
+
+          push() {
+            local tag="$1"
+            echo "==> $REGISTRY/$IMAGE_REPO:$tag"
+            oras push "$REGISTRY/$IMAGE_REPO:$tag" \
+              --artifact-type application/vnd.easydev.disk.qcow2 \
+              "out/windows11.qcow2:application/vnd.easydev.disk.qcow2+zstd" \
+              --annotation "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
+              --annotation "org.opencontainers.image.revision=${{ github.sha }}" \
+              --annotation "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+
+          push base
+          push "dev-${stamp}"
+          echo "published: base, dev-${stamp}"
+
+      - name: what was published
+        if: always()
+        run: |
+          {
+            echo "## Published"
+            echo
+            echo '```'
+            oras repo tags "$REGISTRY/$IMAGE_REPO" 2>/dev/null || echo "(none)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

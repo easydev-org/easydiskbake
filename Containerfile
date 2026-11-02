@@ -18,7 +18,15 @@ FROM qemux/qemu:7.50
 #                     zero and reads nothing, which looks exactly like a blank screen.
 #   e2fsprogs         debugfs: read a file out of a finished ext4 disk.
 #   genisoimage       rebuild an ISO with an answer file at its root, the way
-#                     dockur/windows does for Autounattend.xml.
+#                     dockur/windows does for Autounattend.xml. Kept for the legacy
+#                     media path; xorriso (already present) handles modern ones.
+#   wimtools          wimlib-imagex: read a Windows ISO's install.wim metadata
+#                     without Windows. This is what verifies that the image index in
+#                     Autounattend.xml resolves to the edition it claims to - the
+#                     check a guest-side script otherwise has to do after the fact.
+#   swtpm             a software TPM 2.0 for Windows 11, which refuses to install
+#                     without one. tpm2-tools is not needed: qemu speaks the
+#                     chardev protocol directly.
 #
 # (Comments cannot sit inside a line-continued RUN, so they sit above it.)
 RUN set -eux; \
@@ -29,6 +37,8 @@ RUN set -eux; \
         tesseract-ocr-eng \
         e2fsprogs \
         genisoimage \
+        wimtools \
+        swtpm \
         ; \
     rm -rf /var/lib/apt/lists/*
 
@@ -44,6 +54,8 @@ RUN set -eux; \
     ffmpeg -version 2>&1 | head -1; \
     tesseract --version 2>&1 | head -1; \
     tesseract --list-langs 2>&1 | head -5; \
+    wimlib-imagex --version | head -1; \
+    swtpm --version; \
     command -v debugfs genisoimage mkfifo timeout setsid jq curl
 
 # GitHub Actions runs a container job as `docker run <image> <entrypoint>`; this base's

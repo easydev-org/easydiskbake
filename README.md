@@ -17,6 +17,24 @@ booting an ISO, watching it, recording it, reaching it over VNC and SSH, and dec
 whether the disk that came out is bootable - and each distribution keeps only what is
 genuinely its own.
 
+## Layout
+
+```
+lib/        the shared half: qmp, keys, ocr, panefp, snapshots, iso, vm, smoke
+linux/      one directory per distribution; mx/ is the worked example
+macos/      14/, 15/, 26/ - one per release, because the pane sequence differs
+windows/    11/ - one directory for every Windows, because one XML covers them all
+android/    placeholder: an emulator image is not an installer, see its README
+bsd/        placeholder: same shape as linux, three assumptions in lib/ differ
+```
+
+A platform directory supplies the installer step and the "did it arrive" pattern. It
+does not supply the VM, the recording, the disk checks or the compression - those are
+`lib/`, and they are the same for every platform.
+
+See `linux/README.md`, `macos/README.md`, `windows/README.md`, `android/README.md` and
+`bsd/README.md` for what each one has to provide and what is still missing in it.
+
 ## The pipeline
 
 ```

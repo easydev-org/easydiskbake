@@ -1,0 +1,21 @@
+# Python
+
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# Bake working directories
+out/
+frames/
+shots/
+shots-*/
+smoke/
+*.qcow2
+*.iso
+*.img
+*.ppm
+*.mp4
+
+# Never commit a disk, an ISO or a recording.
+# The whole point of bake/ is to produce these, and they are gigabytes.
