@@ -69,6 +69,7 @@ RUN set -eux; \
         libpulse0 libasound2t64 libnss3 libnspr4 \
         libgl1 libglx-mesa0 libegl1 libgles2 \
         libgtk-3-0t64 libxcb-render0 libxcb-shape0 libxcb-xfixes0 libxcb-randr0 \
+        libxkbfile1 libxkbcommon0 \
         ; \
     rm -rf /var/lib/apt/lists/*
 

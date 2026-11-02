@@ -77,7 +77,17 @@ jobs:
             python3 lib/ci.py kvm
             python3 lib/ci.py free-disk --need 20
             python3 lib/ci.py tags --prefix sysimg-
-            emulator -version 2>&1 | head -2
+            # A VERSION LINE IS NOT A PRECONDITION. This used to be the last command in
+            # the step, and run 41491560179 failed HERE:
+            #
+            #     qemu-system-x86_64: error while loading shared libraries:
+            #       libxkbfile.so.1: cannot open shared object file
+            #
+            # The launch itself never ran. The missing library is fixed in the image,
+            # but printing a version must never be able to stop a job: the emulator's
+            # own start is what tests whether it works, and it says so with a traceback
+            # in emulator.log rather than an exit code from `head -2`.
+            emulator -version 2>&1 | head -2 || true
 
       # THE PUBLISHED BYTES, AND NOTHING ELSE. lib/launch_android.py pulls the tag,
       # checks it against the manifest, unpacks it, starts the emulator on it, waits for
