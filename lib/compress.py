@@ -112,6 +112,12 @@ def supports_zstd() -> bool:
         # `-o help` prints the format's options and exits without converting. It is
         # supported by 2.12 as well (this is how that version was identified), so it is
         # a fair question to ask of any version.
+        #
+        # ONE CAVEAT, MEASURED: qemu 11.1.0 does NOT list compression_type in this
+        # output - only the options a format driver declares, and compression_type is
+        # handled elsewhere - yet the option works. So a probe that returns False is
+        # followed by the real test in compress(), which is the conversion itself: a
+        # refusal there is unambiguous.
         result = subprocess.run(
             [qemu_img(), "convert", "-O", "qcow2", "-c", "-o", "help", source, target],
             capture_output=True, text=True, timeout=120,
@@ -153,6 +159,12 @@ def compress(source: str, dest: str) -> str:
             f"shadows it on PATH - the Android SDK ships one that reports the same "
             f"version string and has no compression_type."
         )
+    # DEFAULT COMPRESSION STRENGTH: compression_type only, no compression_level.
+    #
+    # zstd's own default (level 3) is what gets used. qemu 11.1.0 rejects
+    # compression_level outright - "Invalid parameter 'compression_level'" - so naming a
+    # level is not an option here even if one were wanted, and adding a knob that only
+    # works on some builds is how a bake becomes non-reproducible.
     options = ["-o", "compression_type=zstd"]
     log(f"compressing with zstd ({binary}, {version()})")
 

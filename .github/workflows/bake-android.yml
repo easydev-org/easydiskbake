@@ -126,14 +126,6 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      - name: keep raw frames as a fallback
-        if: always() && hashFiles('out/install.mp4') == ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-frames
-          path: out/frames/shots/*.ppm
-          if-no-files-found: warn
-          retention-days: 7
 
       - name: upload the AVD
         uses: actions/upload-artifact@v4
