@@ -86,19 +86,6 @@ ROW_X = 837
 # so the centre is (1142, 586).
 CONTINUE_MENU = (1142, 586)
 
-# Disk Utility's View menu, measured from a frame captured with the menu open:
-#
-#   Show Only Volumes    centre (354,  41)
-#   Show All Devices     centre (345,  63)   <- the target
-#   Show APFS Snapshots  centre (362,  96)
-SHOW_ALL_DEVICES = (345, 63)
-
-# The View control is a button in the window toolbar, at about (710, 336). tesseract
-# reads it as "iew" at x=700 because it drops the capital V. The menu bar at the top of
-# the screen also contains the word View on some window states and clicking there does
-# nothing - (309,11) was that mistake and it left Show Only Volumes in force.
-VIEW_BUTTON = (710, 336)
-
 # The Erase toolbar button. Its LABEL's box is only 8px tall at y=332-340; the control
 # itself is the icon ABOVE the label, which is why clicking the label's centre does
 # nothing and y=306 is what opens the sheet.
@@ -431,24 +418,32 @@ def disk_utility(d: Recovery) -> None:
     d.wait(60, "the recovery menu draws")
     d.click((ROW_X, ROW_Y[3]), "Disk Utility row", settle=5)
     d.click(CONTINUE_MENU, "recovery Continue", settle=20)
-    d.wait(5, "Disk Utility finishes opening")
 
-
-def show_all_devices(d: Recovery) -> None:
-    """The switch that makes the target disk exist at all.
-
-    Without it the sidebar holds one volume row and every later click selects the
-    read-only recovery volume - so this is not a nicety, it is the prerequisite.
-    """
-    d.wait(15, "Disk Utility finishes drawing")
-    d.click(VIEW_BUTTON, "View button", settle=5)
-    d.click(SHOW_ALL_DEVICES, "Show All Devices", settle=5)
+    # DISK UTILITY HAS TO BE FULLY DRAWN BEFORE THE SIDEBAR IS TOUCHED, because the
+    # NEXT thing the sequence does is press Up twice and the sidebar's selection is what
+    # those presses move. Fifteen seconds, not five: this window paints its source list
+    # in stages on an unaccelerated guest, and an Up arriving early moves a selection
+    # that is not the one the two-press count assumes.
+    d.wait(15, "Disk Utility finishes drawing its sidebar")
 
 
 def select_and_erase(d: Recovery) -> None:
     """Select the target disk and erase it AS APFS, NAMED main.
 
     THE SEQUENCE, MEASURED BY HAND ON A LIVE GUEST (1920x1080)
+
+    0. THERE IS NO VIEW / SHOW ALL DEVICES STEP. Disk Utility lists both disks the
+       moment it opens: `disk2s1` (2.88 GB, the USB recovery volume, read-only) and
+       `disk0` (68.72 GB, the target). Show All Devices only changes whether the
+       sidebar's *volume* rows are collapsed into their parent devices - it reveals
+       nothing here, because the target is already the second row.
+
+       Worse, it moves the selection. The two Ups below are counted from the recovery
+       volume being selected, which is the state Disk Utility opens in. Selecting the
+       Show All Devices menu item leaves the selection somewhere else, and two Ups from
+       there do not land on disk0 - so Erase would target the wrong row or nothing.
+
+       This step existed for several runs and was wrong every time. It is gone.
 
     1. Disk Utility opens with the recovery volume selected - `disk2s1`, 2.88 GB,
        USB, read-only. The 64 GiB target is already in the list; it is the row ABOVE.
@@ -773,7 +768,6 @@ def run_installation(qmp_path: str, frames_dir: str | None,
     log("connected; coordinates for the clicks, a brightness probe for the state")
     try:
         disk_utility(d)
-        show_all_devices(d)
         select_and_erase(d)
         leave_disk_utility(d)
         reinstall(d)

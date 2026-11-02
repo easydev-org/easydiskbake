@@ -386,14 +386,23 @@ def main(argv: list[str]) -> int:
     # none of them. Started that way the firmware tries Boot0001..Boot0005, fails each,
     # and drops into its own shell - measured on run 41468968378.
     import bootstate
-    restored = bool(args.bootstate) and bootstate.restore(work, args.bootstate)
-    if not restored:
-        # THE DEFAULT: beside the disk, named after it. That is where bake.py puts it and
-        # where the workflow downloads it, so the common case needs no flag.
-        restored = bootstate.restore(work, args.gold)
+    # THE ARCHIVE MOVES WITH THE DISK. This stage copies the published disk to a working
+    # name (out/windows11-gold.qcow2 -> ssh-work/disk.qcow2), and restore() looks for
+    # `ssh-work/disk.qcow2.bootstate.tar.gz` and nothing else. Run 41477859630 failed
+    # with "no bootstate archive was found" while the archive sat in out/ under the
+    # published disk's name - so it is renamed here rather than searched for later.
+    if args.bootstate:
+        source = args.bootstate
+    else:
+        source = bootstate.archive_path(args.gold)
+    if os.path.isfile(source):
+        placed = bootstate.adopt(disk, source)
+        log(f"bootstate {source} -> {placed}")
+    restored = bootstate.restore(work, disk)
     if not restored:
         raise SystemExit(
-            "no bootstate archive was found. The disk alone will not boot: OVMF's "
+            "no bootstate archive at "
+            f"{bootstate.archive_path(disk)}. The disk alone will not boot: OVMF's "
             "variables hold the \"Windows Boot Manager\" entry and the TPM holds the "
             "state Windows sealed against it. Pass --bootstate <disk>.bootstate.tar.gz, "
             "or publish it beside the disk - see lib/bootstate.py."

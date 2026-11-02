@@ -256,7 +256,17 @@ class Emulator:
                 return False
 
             try:
-                state = self.adb("getprop", "sys.boot_completed")
+                # `adb shell getprop`, NOT `adb getprop`.
+                #
+                # `adb getprop` is not a host command. The adb client forwards only a
+                # known set of subcommands (shell, install, emu, ...) and treats anything
+                # else as an error, which is what run 41477751923 printed on every poll:
+                #
+                #     boot_completed=FAILED:adb: unknown command getprop
+                #
+                # This never surfaced before because every earlier run died at
+                # "unknown option: -no-keys" and never reached the boot wait at all.
+                state = self.adb("shell", "getprop", "sys.boot_completed")
             except (subprocess.TimeoutExpired, FileNotFoundError):
                 state = ""
 

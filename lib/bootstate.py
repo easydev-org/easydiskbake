@@ -43,7 +43,6 @@ from __future__ import annotations
 import glob
 import os
 import shutil
-import subprocess
 import tarfile
 
 # The archive is named after the disk so two bakes in one work directory cannot collide.
@@ -100,6 +99,12 @@ def restore(work: str, disk: str) -> bool:
     vm.Shape points: the vars file and the tpm directory are read from the work
     directory by path, and an archive that unpacked itself elsewhere would be silently
     ignored.
+
+    ONE NAME, NO SEARCHING. The archive belongs beside the disk it describes and is
+    named `<disk>.bootstate.tar.gz`; `save()` writes exactly that path and this reads
+    exactly that path. A stage that renames its working copy of the disk renames the
+    archive with it - see adopt() - rather than leaving this function to guess which of
+    several archives in a directory was meant.
     """
     src = archive_path(disk)
     if not os.path.isfile(src):
@@ -113,6 +118,31 @@ def restore(work: str, disk: str) -> bool:
 
     # swtpm wants a directory it created; make sure the state is where it will look.
     return True
+
+
+def adopt(disk: str, archive: str) -> str:
+    """Move `archive` to where `disk` expects it. Returns the destination path.
+
+    WHY THIS IS A MOVE AND NOT A LOOKUP. A stage copies the published disk to a working
+    name before starting it:
+
+        out/windows11-gold.qcow2   ->   ssh-work/disk.qcow2
+
+    and the bootstate has to follow, because restore() looks for
+    `ssh-work/disk.qcow2.bootstate.tar.gz` and nothing else. Run 41477859630 failed with
+    "no bootstate archive was found" while the archive was sitting in `out/` under the
+    published disk's name - one rename away from being found, and not found.
+
+    Falling back to "any *.bootstate.tar.gz in the directory" would fix that run and
+    quietly break the one where two disks are baked side by side, so the rename is
+    explicit: the caller says which archive belongs to which disk.
+    """
+    dest = archive_path(disk)
+    if os.path.abspath(archive) == os.path.abspath(dest):
+        return dest
+    os.makedirs(os.path.dirname(os.path.abspath(dest)), exist_ok=True)
+    shutil.move(archive, dest)
+    return dest
 
 
 def describe(disk: str) -> str:

@@ -117,6 +117,31 @@ class MeasuredPositions(unittest.TestCase):
         self.assertIn('d.key("up"', body)
         self.assertIn("range(2)", body)
 
+    def test_there_is_no_view_or_show_all_devices_step(self):
+        """Both disks are listed when Disk Utility opens; the View menu is a trap.
+
+        It was in the sequence for several runs, and every run that had it failed to
+        erase the target. It reveals nothing - the 68.72 GB disk is already the second
+        row - and it MOVES THE SELECTION, so the two Ups that follow no longer start
+        from the recovery volume and no longer land on disk0.
+
+        Full reasoning is in the docstring on select_and_erase. This test is here
+        because a plausible-looking extra step is easy to add back.
+        """
+        with open(os.path.join(MACOS15, "install.py"), encoding="utf-8") as fh:
+            source = fh.read()
+
+        self.assertNotIn("show_all_devices", source)
+        self.assertNotIn("SHOW_ALL_DEVICES", source)
+        self.assertNotIn("VIEW_BUTTON", source)
+
+        # And the run sequence goes straight from opening the utility to erasing.
+        start = source.index("disk_utility(d)")
+        end = source.index("leave_disk_utility(d)")
+        between = source[start:end]
+        self.assertIn("select_and_erase(d)", between)
+        self.assertNotIn("View", between)
+
     def test_the_licence_buttons_are_on_the_button_row(self):
         """Measured with `tesseract --psm 6` on the pane the probe stopped at.
 

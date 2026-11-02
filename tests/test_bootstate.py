@@ -160,3 +160,93 @@ class TheBakeSavesIt(unittest.TestCase):
         # After the artifact exists: save() is named after the disk, so the disk must.
         self.assertLess(source.index("compress.compress"),
                         source.index("bootstate.save"))
+
+
+class TheArchiveFollowsTheDisk(unittest.TestCase):
+    """A stage that renames its working copy of the disk renames the archive too.
+
+    THE FAILURE THIS EXISTS FOR, MEASURED ON RUN 41477859630
+
+    bake-windows published the disk and its state together:
+
+        out/windows11.qcow2.bootstate.tar.gz
+
+    The ssh stage then copied the disk to a working name and looked for the archive
+    there:
+
+        copying out/windows11-gold.qcow2 -> .../ssh-work/disk.qcow2
+        no bootstate archive was found
+
+    The archive was in the same directory the whole time, under the published disk's
+    name. One rename away from being found, and not found.
+
+    THE FIX IS A RENAME, NOT A SEARCH. Looking for "any *.bootstate.tar.gz nearby"
+    would have rescued that run and picked the wrong archive in the first run that has
+    two disks in one directory. adopt() takes the archive and the disk explicitly.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="bootstate-adopt-")
+        self.work = os.path.join(self.tmp, "work")
+        os.makedirs(self.work)
+
+    def tearDown(self):
+        subprocess.run(["rm", "-rf", self.tmp], check=False)
+
+    def test_adopt_moves_the_archive_to_the_disk_name(self):
+        gold = os.path.join(self.tmp, "windows11.qcow2")
+        open(gold, "wb").write(b"disk")
+        with open(os.path.join(self.work, "windows.vars"), "wb") as fh:
+            fh.write(b"vars" * 50)
+        published = bootstate.save(self.work, gold)
+
+        # The stage's working copy, under a different name.
+        disk = os.path.join(self.work, "disk.qcow2")
+        open(disk, "wb").write(b"disk")
+
+        placed = bootstate.adopt(disk, published)
+        self.assertEqual(placed, disk + ".bootstate.tar.gz")
+        self.assertTrue(os.path.isfile(placed))
+        self.assertFalse(os.path.exists(published))
+
+    def test_restore_finds_it_after_the_adopt(self):
+        gold = os.path.join(self.tmp, "windows11.qcow2")
+        open(gold, "wb").write(b"disk")
+        with open(os.path.join(self.work, "windows.vars"), "wb") as fh:
+            fh.write(b"vars" * 50)
+        published = bootstate.save(self.work, gold)
+
+        disk = os.path.join(self.work, "disk.qcow2")
+        open(disk, "wb").write(b"disk")
+
+        # Before the rename there is nothing at the working disk's name, and restore
+        # says so rather than searching.
+        self.assertFalse(bootstate.restore(self.work, disk))
+        bootstate.adopt(disk, published)
+        self.assertTrue(bootstate.restore(self.work, disk))
+
+    def test_no_searching_beside_the_disk(self):
+        """An archive with a different name is NOT used.
+
+        The lookup is by exact path. A neighbouring archive belongs to a neighbouring
+        disk, and restoring firmware state from the wrong bake produces a machine that
+        boots - into somebody else's Windows.
+        """
+        disk = os.path.join(self.work, "disk.qcow2")
+        open(disk, "wb").write(b"disk")
+        other = os.path.join(self.work, "some-other.qcow2.bootstate.tar.gz")
+        with tarfile.open(other, "w:gz") as tar:
+            stray = os.path.join(self.tmp, "windows.vars")
+            open(stray, "wb").write(b"nope")
+            tar.add(stray, arcname="windows.vars")
+
+        self.assertFalse(bootstate.restore(self.work, disk),
+                         "restore() must not pick up a neighbouring archive")
+
+    def test_adopting_the_same_path_is_a_no_op(self):
+        disk = os.path.join(self.work, "disk.qcow2")
+        open(disk, "wb").write(b"disk")
+        archive = bootstate.archive_path(disk)
+        open(archive, "wb").close()
+        self.assertEqual(bootstate.adopt(disk, archive), archive)
+        self.assertTrue(os.path.isfile(archive))
