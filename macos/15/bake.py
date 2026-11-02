@@ -211,8 +211,26 @@ class Baker:
                 # SMBIOS type 2 is the baseboard record. macOS's platform check reads it
                 # and a guest without one reports an unknown board.
                 "-smbios", "type=2",
-                # The PCIe SVGA device, matching dockur's VGA_ARG.
-                "-device", "vmware-svga",
+                # THE SCREEN HAS TO BE THE SIZE THE COORDINATES ARE IN.
+                #
+                # dockur uses `-device vmware-svga` and relies on OpenCore's
+                # UEFI/Output/Resolution to pick the mode. That works there because
+                # vmware-svga's own framebuffer is already large. Here it is not:
+                #
+                #     -device vmware-svga           no xres/yres property at all
+                #     actual guest screen           1280x800
+                #     every driver coordinate       1920x1080
+                #
+                # so OpenCore was asking for a mode the firmware's list did not contain,
+                # quietly kept 1280x800, and every click in macos/15/install.py landed
+                # somewhere else. The console showed a RECOVERY MENU that was never
+                # touched while thirty-seven clicks went into it.
+                #
+                # virtio-vga takes xres and yres, so the mode exists before OpenCore
+                # asks for it. WhateverGreen - which the LongQT template ships - is the
+                # kext that makes macOS accept a virtio GPU.
+                "-device", f"virtio-vga,xres={opencore.GUEST_WIDTH},"
+                           f"yres={opencore.GUEST_HEIGHT},vgamem_mb=64",
             ],
         )
 

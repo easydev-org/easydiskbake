@@ -438,7 +438,7 @@ class MacosMachine(unittest.TestCase):
                 "-global", "ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off",
                 "-rtc", "base=utc",
                 "-smbios", "type=2",
-                "-device", "vmware-svga",
+                "-device", "virtio-vga,xres=1920,yres=1080,vgamem_mb=64",
             ],
         )
 
@@ -449,15 +449,28 @@ class MacosMachine(unittest.TestCase):
         return vm.build_args("/tmp/macwork", [], self.machine())
 
     def test_no_legacy_vga_option(self):
-        """-vga on q35 creates an ISA VGA device; macOS needs the PCIe one.
-
-        dockur's display.sh maps its "vmware" setting to `-device vmware-svga`, not to
-        `-vga vmware`. Both look like a VMware adapter and only one is on the bus the
-        guest expects.
-        """
+        """-vga on q35 creates an ISA VGA device; macOS needs a PCIe one."""
         argv = self.argv()
         self.assertNotIn("-vga", argv)
-        self.assertIn("vmware-svga", argv)
+        self.assertTrue(any("virtio-vga" in a for a in argv), argv)
+
+    def test_the_gpu_is_told_the_screen_size(self):
+        """The mode has to exist before OpenCore asks for it.
+
+        dockur uses `-device vmware-svga` and lets UEFI/Output/Resolution pick a mode.
+        vmware-svga has no xres/yres property, and on this firmware its framebuffer is
+        1280x800 - so a request for 1920x1080 found nothing it could switch to, the
+        guest stayed where it was, and every coordinate in macos/15/install.py was off
+        the edge of the screen. Thirty-seven clicks went into an untouched Recovery
+        menu.
+
+        virtio-vga takes xres and yres, so the mode is there to be selected.
+        """
+        argv = self.argv()
+        gpu = [a for a in argv if "virtio-vga" in a]
+        self.assertEqual(len(gpu), 1, gpu)
+        self.assertIn(f"xres={opencore.GUEST_WIDTH}", gpu[0])
+        self.assertIn(f"yres={opencore.GUEST_HEIGHT}", gpu[0])
 
     def test_cpu_model_is_the_one_dockur_selects(self):
         # selectAmdCpuModel only fires on AMD hosts, so every Intel runner gets this.
