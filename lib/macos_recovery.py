@@ -399,26 +399,31 @@ def download(url: str, token: str, dest: str) -> str:
 
 
 def verify_dmg(path: str) -> None:
-    """A UDIF image ends with a 512-byte trailer whose last four bytes are "koly".
+    """A UDIF image ends with a 512-byte trailer that STARTS with "koly".
 
-    The check reads the LAST 512 BYTES, not the last four: an earlier version sought to
-    -512 and read four bytes from there, which is the START of the trailer rather than
-    its magic. Every real DMG failed that check, which is the failure mode a test with a
-    synthetic file caught immediately.
+    The magic is the FIRST FOUR BYTES OF THE TRAILER, not of the file and not of its
+    last four bytes. Measured on the real asset:
+
+        first 64 bytes:   78 5e ...           zlib - normal, UDIF chunks are compressed
+        last 512 (first): "koly\\x00\\x00\\x00\\x04"
+        last 512 (last):  \\x00\\x00\\x00\\x00...
+
+    So a file that begins with zlib data is a perfectly good DMG, and a check on the
+    last four bytes of the file rejects every one of them. That mistake cost a run:
+    three valid 800 MB downloads were thrown away.
     """
     with open(path, "rb") as fh:
-        head = fh.read(4)
-        # seek(-512) throws on a file shorter than 512 bytes, which is exactly what a
-        # small error body is. Read from the end with a bounded size instead.
         fh.seek(0, os.SEEK_END)
         size = fh.tell()
-        fh.seek(max(0, size - 512))
+        if size < 512:
+            raise RecoveryError(f"{path} is {size} bytes; too small to be a DMG")
+        fh.seek(size - 512)
         trailer = fh.read(512)
 
-    if len(trailer) < 512 or trailer[-4:] != b"koly":
+    if trailer[:4] != b"koly":
         raise RecoveryError(
-            f"{path} does not look like a UDIF image "
-            f"(head={head!r}, size={size}, trailer magic={trailer[-4:]!r})"
+            f"{path} does not look like a UDIF image: the 512-byte trailer at the end\n"
+            f"begins {trailer[:4]!r}, not b'koly'. size={size}"
         )
     log(f"{size} bytes, DMG trailer present")
 

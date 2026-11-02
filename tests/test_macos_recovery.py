@@ -113,35 +113,58 @@ class Payload(unittest.TestCase):
 
 
 class DmgCheck(unittest.TestCase):
+    """The trailer's layout, measured on a real asset.
 
-    def test_koly_trailer_is_accepted(self):
+    A live BaseSystem.dmg begins with zlib data (78 5e) and ends with a 512-byte
+    trailer whose first four bytes are "koly". An earlier check tested the last four
+    bytes of the file, which rejects every real DMG - and three valid 800 MB downloads
+    were thrown away before the shape was looked at.
+    """
+
+    def setUp(self):
         import tempfile
-        tmp = tempfile.mkdtemp()
-        try:
-            path = os.path.join(tmp, "x.dmg")
-            # A UDIF image ends with a 512-byte trailer; "koly" is the last four bytes
-            # OF THAT TRAILER, not of the file.
-            with open(path, "wb") as fh:
-                fh.write(b"\x00" * 1024)
-                fh.write(b"\x00" * 508)
-                fh.write(b"koly")
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _image(self, *, trailer_magic: bytes, prefix: bytes = b"\x78\x5e"):
+        path = os.path.join(self.tmp, "x.dmg")
+        with open(path, "wb") as fh:
+            fh.write(prefix)                  # zlib, as the real file starts
+            fh.write(b"\x00" * 1024)
+            fh.write(trailer_magic)           # the trailer's first four bytes
+            fh.write(b"\x00" * 508)           # the rest of the 512-byte trailer
+        return path
+
+    def test_koly_at_the_start_of_the_trailer_is_accepted(self):
+        # The real layout: magic first, then the rest of the trailer.
+        mr.verify_dmg(self._image(trailer_magic=b"koly"))
+
+    def test_zlib_prefix_is_not_a_reason_to_reject(self):
+        # Every live DMG starts with 78 5e. A check that reads the head would reject
+        # all of them.
+        mr.verify_dmg(self._image(trailer_magic=b"koly", prefix=b"\x78\x5e"))
+
+    def test_magic_at_the_end_of_the_trailer_is_rejected(self):
+        # The mistake: "koly" as the trailer's LAST four bytes. No real image does
+        # this, and a check written against it passes on nothing.
+        path = os.path.join(self.tmp, "y.dmg")
+        with open(path, "wb") as fh:
+            fh.write(b"\x00" * 1024)
+            fh.write(b"\x00" * 508)
+            fh.write(b"koly")
+        with self.assertRaises(mr.RecoveryError):
             mr.verify_dmg(path)
-        finally:
-            import shutil
-            shutil.rmtree(tmp, ignore_errors=True)
 
-    def test_html_is_rejected(self):
-        import tempfile
-        tmp = tempfile.mkdtemp()
-        try:
-            path = os.path.join(tmp, "x.dmg")
-            with open(path, "wb") as fh:
-                fh.write(b"<!DOCTYPE html><html>403 Forbidden</html>")
-            with self.assertRaises(mr.RecoveryError):
-                mr.verify_dmg(path)
-        finally:
-            import shutil
-            shutil.rmtree(tmp, ignore_errors=True)
+    def test_short_file_is_rejected(self):
+        path = os.path.join(self.tmp, "short.dmg")
+        with open(path, "wb") as fh:
+            fh.write(b"koly")
+        with self.assertRaises(mr.RecoveryError) as ctx:
+            mr.verify_dmg(path)
+        self.assertIn("too small", str(ctx.exception))
 
 
 if __name__ == "__main__":
