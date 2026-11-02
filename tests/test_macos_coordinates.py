@@ -202,6 +202,34 @@ class Probe(unittest.TestCase):
             self.assertLess(x, opencore.GUEST_WIDTH, name)
             self.assertLess(y, opencore.GUEST_HEIGHT, name)
 
+    def test_the_licence_pane_gets_agree_not_continue(self):
+        """The pane the previous probe stopped on.
+
+        Continue is disabled there until Agree is pressed, so a driver that only knows
+        Continue sits on it forever. The words on the pane are what separates them.
+        """
+        text = ("To continue installing the software, you must agree to the terms "
+                "of the software license agreement. ENGLISH APPLE INC.")
+        target, why = self.probe.decide(text)
+        self.assertEqual(target, self.probe.LICENCE_AGREE)
+        self.assertIn("Agree", why)
+
+    def test_the_specific_panes_come_before_the_generic_continue(self):
+        # "continue" appears on the licence pane too ("To continue installing"). If the
+        # generic entry were first, it would win and press a disabled button.
+        self.assertGreater(len(self.probe.PANE_ACTIONS), 1)
+        phrases = [p for p, _t, _w in self.probe.PANE_ACTIONS]
+        generic = phrases.index("continue")
+        for phrase in ("must agree to the terms", "set up the installation"):
+            self.assertLess(phrases.index(phrase), generic, phrase)
+
+    def test_an_unknown_pane_stops_rather_than_clicking(self):
+        # The whole point: a pane nobody has measured is saved and the run ends, so the
+        # next person measures it instead of watching twelve clicks miss.
+        target, why = self.probe.decide("a screen that has never been seen")
+        self.assertIsNone(target)
+        self.assertEqual(why, "")
+
     def test_it_stops_at_a_pane_it_cannot_move(self):
         source = open(os.path.join(MACOS15, "probe.py"), encoding="utf-8").read()
         # Two unchanged frames in a row is the stop condition: one is a repaint, two is

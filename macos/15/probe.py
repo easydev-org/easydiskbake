@@ -69,6 +69,20 @@ CONTINUE = (960, 712)
 # The Recovery menu's own Continue, for opening the entry that was just selected.
 MENU_CONTINUE = (1142, 586)
 
+# THE LICENCE PANE, measured from the frame this probe stopped on (run 41452125052):
+#
+#     Disagree   x=889..942,  y=707..720   centre (915, 713)
+#     Agree      x=987..1023, y=707..720   centre (1005, 713)
+#
+# Continue does nothing on that pane until Agree is pressed, which is why the previous
+# run sat there while twelve clicks went into a button that was disabled.
+#
+# WHERE THESE COME FROM MATTERS. `tesseract --psm 11` also returns the word "agree" at
+# y=451 on the same frame - the middle of "you must agree to the terms". The buttons are
+# on the bottom row and only `--psm 6` puts them there.
+LICENCE_AGREE = (1005, 713)
+LICENCE_DISAGREE = (915, 713)
+
 
 def log(msg: str) -> None:
     print(f"[probe {time.strftime('%H:%M:%S')}] {msg}", flush=True)
@@ -119,6 +133,44 @@ def ocr(path: str) -> str:
         return ""
     lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
     return " | ".join(lines)[:300]
+
+
+# WHAT EACH PANE'S FORWARD CONTROL IS, DECIDED FROM THE WORDS ON IT.
+#
+# The words come from tesseract, which is what makes this a state machine rather than a
+# guess: the panes were unknown when this was written, so the only thing that can be
+# known in advance is how to recognise them. Every entry is a phrase that appears on one
+# pane and nowhere else - "you must agree" is the licence, "set up the installation" is
+# the welcome - and the click is the position measured for that pane.
+#
+# A pane with no entry stops the probe and is saved, which is the point: the list grows
+# by measurement, one run at a time.
+PANE_ACTIONS = [
+    # phrase that identifies the pane            what to click             why
+    ("must agree to the terms",                   LICENCE_AGREE,   "Agree on the licence"),
+    ("agree to the terms",                        LICENCE_AGREE,   "Agree on the licence"),
+    ("software license agreement",                LICENCE_AGREE,   "Agree on the licence"),
+    ("set up the installation",                   CONTINUE,        "installer welcome"),
+    ("select a disk",                             CONTINUE,        "destination pane"),
+    ("select the disk",                           CONTINUE,        "destination pane"),
+    ("how do you want to install",                CONTINUE,        "destination pane"),
+    ("install macos",                             CONTINUE,        "installer pane"),
+    ("continue",                                  CONTINUE,        "generic forward"),
+]
+
+
+def decide(text: str) -> tuple[tuple[int, int] | None, str]:
+    """Which control to press on this pane, and why.
+
+    The first phrase that matches wins, and the list is ordered so that the specific
+    panes come before the generic "continue" - otherwise the licence pane would match
+    the generic entry and press a button that is disabled on it.
+    """
+    low = text.lower()
+    for phrase, target, why in PANE_ACTIONS:
+        if phrase in low:
+            return target, why
+    return None, ""
 
 
 def run(out: str, *, wait_boot: int, clicks: int, interval: float) -> int:
@@ -195,55 +247,78 @@ def run(out: str, *, wait_boot: int, clicks: int, interval: float) -> int:
         qmpmod.click(q, *MENU_CONTINUE)
         time.sleep(25)
 
+        # THE SEQUENCE IS A STATE MACHINE, NOT A FIXED LIST OF CLICKS.
+        #
+        # Each round reads the screen, decides which pane it is on from the words on
+        # it, and clicks that pane's forward control. That is the only way to walk an
+        # installer whose panes nobody has measured: a fixed list of positions knows
+        # only the panes it was written for, and the first unknown one silently eats
+        # every remaining click.
+        #
+        # The OCR result is also what the next round's decision uses, so a pane that
+        # OCR cannot read is recorded and skipped rather than clicked blindly.
         previous = None
         previous_frame = None
         pane = 0
         unchanged = 0
+        seen_panes: set[str] = set()
 
         for i in range(1, clicks + 1):
             shot_path = os.path.join(frames, f"frame-{i:04d}.ppm")
             if not screenshot(q, shot_path):
                 break
             current = fingerprint(shot_path)
+            text = ocr(shot_path)
 
             if current == previous:
-                # The screen did not move. Two in a row means the click is not reaching
-                # anything, and the frame that shows what it was aiming at is the one
-                # worth keeping.
                 unchanged += 1
-                log(f"click {i}: unchanged ({unchanged} in a row)")
+                log(f"round {i}: screen unchanged ({unchanged} in a row)")
                 if unchanged >= 2:
-                    log("the screen has not changed twice; this is the pane it is on")
+                    log("the screen has not changed twice; stopping so the pane can be "
+                        "measured")
                     break
             else:
                 if previous_frame is not None:
-                    # The previous frame is the last one of a pane that is now gone,
-                    # so it is the measurement for that pane.
+                    # previous_frame is the last frame of a pane that is now gone, so it
+                    # is the measurement for that pane.
                     pane += 1
                     keep = os.path.join(panes, f"pane-{pane:04d}.ppm")
                     shutil.copyfile(previous_frame, keep)
-                    text = ocr(keep)
                     index.write(f"{pane}\t{previous_frame}\t"
-                                f"{os.path.getsize(keep)}\t{text}\n")
+                                f"{os.path.getsize(keep)}\t{ocr(keep)}\n")
                     index.flush()
-                    log(f"pane {pane}: {text[:140]}")
                 unchanged = 0
                 previous = current
                 previous_frame = shot_path
 
-            log(f"click {i} at {CONTINUE}")
-            qmpmod.click(q, *CONTINUE)
+            log(f"round {i}: {text[:150] or '(nothing readable)'}")
+
+            target, why = decide(text)
+            if target is None:
+                log(f"round {i}: no known action for this pane; recording it and "
+                    f"stopping")
+                break
+            log(f"round {i}: click {target} - {why}")
+            qmpmod.click(q, *target)
             time.sleep(interval)
+
+            # A pane that keeps coming back is being clicked at and not moving. Record
+            # the words, not the pixels: the pixels differ by a caret.
+            key = " ".join(text.split())[:80]
+            if key and key in seen_panes:
+                log(f"round {i}: this pane has been seen before ({key[:60]}); stopping")
+                break
+            seen_panes.add(key)
 
         # The last screen is still on the guest, and it is the one that stopped the run.
         final = os.path.join(panes, "pane-final.ppm")
         screenshot(q, final)
         pane += 1
         final_text = ocr(final)
-        index.write(f"{pane}\tfinal\t{os.path.getsize(final) if os.path.exists(final) else 0}\t"
-                    f"{final_text}\n")
+        size = os.path.getsize(final) if os.path.exists(final) else 0
+        index.write(f"{pane}\tfinal\t{size}\t{final_text}\n")
         index.close()
-        log(f"final pane: {final_text[:200]}")
+        log(f"final pane: {final_text[:300]}")
     finally:
         guest.stop()
         try:
