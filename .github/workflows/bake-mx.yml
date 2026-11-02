@@ -6,26 +6,34 @@ name: bake-mx
 # log lines, and a log line is a summary of something that already happened - while the
 # questions that actually cost time (is a dialog waiting, did the pane change, is
 # lightdm up) are answered by a picture and by nothing else.
+#
+# Every step runs through log-stream so the run is readable while it happens.
+#
+# MANUAL ONLY: 90 minutes of a KVM runner for a disk that changes only when the
+# distribution does.
 
 on:
   workflow_dispatch:
     inputs:
       mx_version:
         description: "MX release"
-        required: false
         default: "25.3"
       mx_edition:
-        description: "Xfce"
-        required: false
+        description: "MX edition"
         default: "Xfce"
       drive_seconds:
-        description: "How long the OCR driver may work"
-        required: false
+        description: "How long the GUI driver may work"
         default: "1800"
       snapshot_interval:
         description: "Seconds between recorded frames"
-        required: false
         default: "1"
+
+concurrency:
+  group: bake-mx-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  BAKE_IMAGE: ghcr.io/${{ github.repository }}:latest
 
 jobs:
   bake:
@@ -41,26 +49,33 @@ jobs:
       contents: read
       checks: write
       packages: read
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: KVM
-        shell: bash
-        run: ls -l /dev/kvm
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: mx-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
 
       - name: bake
         uses: easydev-org/easyagent-github-ext/actions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: bake-mx
+          name: mx-bake
           interval: "10"
           command: |
             set -euo pipefail
-            mkdir -p out/frames
-            export MX_VERSION="${{ github.event.inputs.mx_version }}"
-            export MX_EDITION="${{ github.event.inputs.mx_edition }}"
-            export DRIVE_SECONDS="${{ github.event.inputs.drive_seconds }}"
-            export SNAPSHOT_INTERVAL="${{ github.event.inputs.snapshot_interval }}"
+            mkdir -p out
+            export MX_VERSION="${{ inputs.mx_version || '25.3' }}"
+            export MX_EDITION="${{ inputs.mx_edition || 'Xfce' }}"
+            export DRIVE_SECONDS="${{ inputs.drive_seconds || '1800' }}"
+            export SNAPSHOT_INTERVAL="${{ inputs.snapshot_interval || '1' }}"
             export GITHUB_TOKEN="${{ github.token }}"
             export OUT="$PWD/out/mx.qcow2"
             python3 linux/mx/bake.py
@@ -75,12 +90,9 @@ jobs:
           retention-days: 7
           compression-level: 0
 
-      # The recording, always - it is what explains a failed run.
-      #
-      # Encoded at the end of the bake from the frames, because this ffmpeg has no
-      # 'vnc' demuxer: Debian builds it without --enable-libvncclient, so
-      # 'ffmpeg -f vnc -i localhost:5900' answers "Unknown input format: 'vnc'" even
-      # though qemu's VNC server is running fine.
+      # The recording, always - it is what explains a failed run. Not the VNC stream:
+      # this ffmpeg has no vnc demuxer, so the frames are captured over QMP and encoded
+      # at the end of the bake.
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -90,8 +102,6 @@ jobs:
             out/frames/bake.log
             out/frames/shots/snapshots.log
             out/console.log
-            out/shots-grubfix/frames.txt
-            out/shots-boot/frames.txt
             out/smoke/smoke.log
           if-no-files-found: warn
           retention-days: 14

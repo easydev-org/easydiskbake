@@ -1,25 +1,20 @@
 name: image
 
-# Build the easydiskbake image and publish it to ghcr.
+# Build the easydiskbake image and publish it to this repository's ghcr package.
 #
-# The build is streamed, not waited on. GitHub serves a running job's Actions log from
-# an internal store and the public endpoints answer 404 until the job ends - but a check
-# run's output.text has no such restriction, and log-stream keeps that current. With no
-# interval it barely moves; with interval and output on stdout it is a live view.
-
-on:
-  workflow_dispatch:
-
+#     ghcr.io/easydev-org/easydiskbake:latest
+#     ghcr.io/easydev-org/easydiskbake:2026.11.03
+#
 # MANUAL ONLY. The image is consumed by every bake through :latest, so rebuilding it
 # changes what every later bake runs against. That is worth being a decision rather
 # than a side effect of editing the Containerfile - and it makes the ordering
 # explicit: build the image, then run the bake.
+#
+# The whole build runs through log-stream, so the apt output for a dozen packages is
+# visible while it happens rather than after a failure that says only "exit code 100".
 
-env:
-  REGISTRY: ghcr.io
-  # The bake image lives in this repository's own package, alongside the disks and
-  # ISOs it produces: ghcr.io/<owner>/<repo>:latest
-  IMAGE: ${{ github.repository }}
+on:
+  workflow_dispatch:
 
 jobs:
   build:
@@ -29,52 +24,19 @@ jobs:
       contents: read
       packages: write
       checks: write
+
     steps:
       - uses: actions/checkout@v4
 
       - uses: docker/setup-buildx-action@v3
 
-      - name: log in to ghcr
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # Built through log-stream so the apt output for sixty packages is visible while
-      # it happens, rather than after a failure that says only "exit code 100".
-      #
-      # --progress=plain, because the default buildkit output redraws a single line with
-      # carriage returns: log-stream stamps every line and caps the total, so a
-      # redrawing progress bar fills the budget and pushes the useful output out.
       - name: build and push
         uses: easydev-org/easyagent-github-ext/actions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: easydiskbake-image
-          interval: "10"
+          name: image
+          interval: "15"
           command: |
             set -euo pipefail
-            echo "base image pull"
-            docker pull qemux/qemu:7.50
-            echo "building"
-            docker build \
-              --progress=plain \
-              -f Containerfile \
-              -t "$REGISTRY/$IMAGE:latest" \
-              -t "$REGISTRY/$IMAGE:$(date -u +%Y.%m.%d)" \
-              .
-            echo "verifying what the image actually carries"
-            docker run --rm --entrypoint /bin/bash "$REGISTRY/$IMAGE:latest" -c '
-              set -x
-              ffmpeg -version | head -1
-              tesseract --version | head -1
-              tesseract --list-langs
-              debugfs -V 2>&1 | head -1
-              genisoimage --version 2>&1 | head -1
-              qemu-system-x86_64 --version | head -1
-            '
-            echo "pushing"
-            docker push "$REGISTRY/$IMAGE:latest"
-            docker push "$REGISTRY/$IMAGE:$(date -u +%Y.%m.%d)"
-            echo "IMAGE_READY"
+            python3 lib/ci.py login --registry ghcr.io
+            python3 lib/build_image.py

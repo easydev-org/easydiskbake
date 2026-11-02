@@ -6,9 +6,8 @@ name: bench-encode
 # entirely on how much of the screen changes, and an installer is mostly a progress bar
 # that does not. So measure, on frames this pipeline actually produces.
 #
-# The source frames are captured the same way the real runs capture them - QMP
-# screendump of a guest - and the encoding matrix covers the settings worth choosing
-# between.
+# Both steps go through log-stream: the capture takes a couple of minutes and the
+# encode matrix takes longer, and neither is worth watching after the fact.
 
 on:
   workflow_dispatch:
@@ -27,6 +26,7 @@ jobs:
       contents: read
       checks: write
       packages: read
+
     steps:
       - uses: actions/checkout@v4
 
@@ -38,59 +38,28 @@ jobs:
           interval: "10"
           command: |
             set -euo pipefail
+            python3 lib/ci.py kvm
             mkdir -p out && cd out
-            # The capture steps live in lib/capture.py so they can be run
-            # locally, not only inside a workflow.
             GITHUB_TOKEN="${{ github.token }}" python3 ../lib/capture.py frames
 
-            cd "$GITHUB_WORKSPACE/out"
-            echo "now in $(pwd)"
-            ls -d frames
+      - name: encode matrix
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: bench-encode
+          interval: "15"
+          command: |
+            set -euo pipefail
+            cd out
+            python3 ../lib/bench_encode.py frames
 
-            N=$(ls frames/frame-*.ppm | wc -l)
-            echo "frames: $N  (each $(stat -c%s frames/frame-0000.ppm) bytes raw)"
-            echo
-            printf "%-8s %-6s %-6s %-12s %-12s %s\n" fps crf preset size_here per_hour note
-
-            bench() {
-              local fps="$1" crf="$2" preset="${3:-ultrafast}"
-              local out="t_${fps}_${crf}_${preset}.mp4"
-              rm -f "$out"
-              # Loop the frames to a nominal hour at this fps, then encode that many
-              # frames by repeating the sequence. Encoding a real hour would take an
-              # hour; encoding N frames and scaling the measurement is exact, because
-              # x264's size is additive per frame at a fixed quality.
-              ffmpeg -hide_banner -loglevel error -nostdin -y \
-                -stream_loop -1 -framerate "$fps" -start_number 0 \
-                -i frames/frame-%04d.ppm \
-                -frames:v $((fps * 60)) \
-                -c:v libx264 -preset "$preset" -crf "$crf" -pix_fmt yuv420p \
-                -movflags +faststart "$out"
-              local bytes per_hour
-              bytes=$(stat -c%s "$out")
-              # 60 seconds encoded; an hour is 60 times that.
-              per_hour=$((bytes * 60))
-              printf "%-8s %-6s %-6s %-12s %-12s %s\n" \
-                "$fps" "$crf" "$preset" \
-                "$(numfmt --to=iec --suffix=B "$bytes")" \
-                "$(numfmt --to=iec --suffix=B "$per_hour")" \
-                "60s sample scaled x60"
-              rm -f "$out"
-            }
-
-            echo "--- ultrafast, the default ---"
-            for fps in 1 5 15; do
-              for crf in 23 26 30; do
-                bench "$fps" "$crf"
-              done
-            done
-
-            echo
-            echo "--- faster presets, same quality target ---"
-            bench 5 26 veryfast
-            bench 5 26 superfast
-
-            echo
-            echo "=== what one still frame costs, as a control ==="
-            ls -la frames/frame-0000.ppm frames/frame-0020.ppm 2>/dev/null || true
-            echo "BENCH_DONE"
+      - name: keep the measurement
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-encode
+          path: |
+            out/t_*.mp4
+            out/frames/frame-0000.ppm
+          if-no-files-found: warn
+          retention-days: 7

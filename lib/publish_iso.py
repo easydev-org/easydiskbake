@@ -178,6 +178,10 @@ def main(argv: list[str]) -> int:
     p.add_argument("--list", action="store_true", help="show the pins and exit")
     p.add_argument("--repository", default=os.environ.get("GITHUB_REPOSITORY", ""),
                    help="owner/repo to push into (default: $GITHUB_REPOSITORY)")
+    # The workflow passes its choice through an environment variable rather than
+    # branching in shell, so the selection lives in one place.
+    p.add_argument("--which", default=os.environ.get("PUBLISH_WHICH"),
+                   help="a tag or 'all'; overrides the positional names")
     args = p.parse_args(argv)
 
     table = images.all_images()
@@ -188,9 +192,14 @@ def main(argv: list[str]) -> int:
             print(f"{tag:34} {size if size else 'unpinned':>16}  {pin['url']}")
         return 0
 
-    wanted = list(table) if args.all else args.names
+    if args.which:
+        wanted = list(table) if args.which == "all" else [args.which]
+    elif args.all:
+        wanted = list(table)
+    else:
+        wanted = args.names
     if not wanted:
-        p.error("no images given; use --all or name some tags")
+        p.error("no images given; use --all, --which, or name some tags")
 
     unknown = [w for w in wanted if w not in table]
     if unknown:
