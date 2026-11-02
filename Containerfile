@@ -27,6 +27,12 @@ FROM qemux/qemu:7.50
 #   swtpm             a software TPM 2.0 for Windows 11, which refuses to install
 #                     without one. tpm2-tools is not needed: qemu speaks the
 #                     chardev protocol directly.
+#   ovmf              the UEFI firmware. Windows 11 will not install on SeaBIOS, and
+#                     a guest with no UEFI boots to "no bootable device" - which looks
+#                     like a broken ISO rather than a missing package.
+#   ovmf + qemu-system-x86 are separate packages on Debian: qemux/qemu is Alpine
+#                     based, so this is the Debian name. The 4M variant is the one
+#                     with enough room for the variable store Windows wants.
 #
 # (Comments cannot sit inside a line-continued RUN, so they sit above it.)
 RUN set -eux; \
@@ -39,6 +45,7 @@ RUN set -eux; \
         genisoimage \
         wimtools \
         swtpm \
+        ovmf \
         ; \
     rm -rf /var/lib/apt/lists/*
 
@@ -56,6 +63,7 @@ RUN set -eux; \
     tesseract --list-langs 2>&1 | head -5; \
     wimlib-imagex --version | head -1; \
     swtpm --version; \
+    ls -l /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_VARS_4M.fd; \
     command -v debugfs genisoimage mkfifo timeout setsid jq curl
 
 # GitHub Actions runs a container job as `docker run <image> <entrypoint>`; this base's

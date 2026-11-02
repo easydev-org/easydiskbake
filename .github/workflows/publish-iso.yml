@@ -71,6 +71,10 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # log-stream creates and patches a check run to publish live output. Without
+      # this it falls back to running the command silently - the permissions are not
+      # implied by packages: write.
+      checks: write
 
     steps:
       - uses: actions/checkout@v4

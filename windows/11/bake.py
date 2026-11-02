@@ -174,42 +174,59 @@ class Baker:
     # -- the machine ----------------------------------------------------------
 
     def firmware(self) -> tuple[str, str]:
-        """OVMF code and a writable vars copy.
+        """OVMF code and a writable vars copy, or a refusal to start.
 
         The vars file is per-guest NVRAM. It is created once per work directory and
-        then reused, because Windows setup reboots twice inside the same VM: a
-        fresh vars file each boot would lose the Secure Boot state the installed
-        system is expected to keep.
+        then reused, because Windows setup reboots twice inside the same VM: a fresh
+        vars file each boot would lose the Secure Boot state the installed system is
+        expected to keep.
+
+        A missing firmware file is fatal, not a warning. Without it qemu starts a
+        SeaBIOS guest, Windows 11 refuses to install on it, and the symptom is a
+        boot loop or "no bootable device" - which reads as a broken ISO. The earlier
+        version logged a WARNING and carried on.
         """
         code = os.environ.get("OVMF_CODE", "/usr/share/OVMF/OVMF_CODE_4M.fd")
         template = os.environ.get("OVMF_VARS_TEMPLATE", "/usr/share/OVMF/OVMF_VARS_4M.fd")
 
         for path in (code, template):
             if not os.path.isfile(path):
-                log(f"WARNING: firmware file not found: {path}")
+                raise SystemExit(
+                    f"UEFI firmware not found: {path}\n"
+                    f"Windows 11 will not install on SeaBIOS, so this is fatal rather\n"
+                    f"than a warning. The bake image installs `ovmf`; a host running\n"
+                    f"this outside the image needs it too. Override with OVMF_CODE and\n"
+                    f"OVMF_VARS_TEMPLATE."
+                )
 
         vars_copy = os.path.join(self.work, "OVMF_VARS.fd")
-        if not os.path.exists(vars_copy) and os.path.isfile(template):
+        if not os.path.exists(vars_copy):
             import shutil
             shutil.copyfile(template, vars_copy)
             log(f"created writable NVRAM copy: {vars_copy}")
         return code, vars_copy
 
-    def swtpm(self) -> str | None:
+    def swtpm(self) -> str:
         """Start swtpm and return its chardev socket.
 
         It is a separate process because it owns state that has to outlive one
         boot; starting it inside vm.py would make stop() the only thing that ever
         cleaned it up, and a bake that fails leaves the state behind for the next
         one to inherit.
+
+        A missing swtpm is fatal. Windows 11 checks for a TPM 2.0 during windowsPE
+        and stops with "This PC can't run Windows 11"; the answer file's bypass keys
+        are deliberately not set, because using them would hide exactly this kind of
+        misconfiguration and install a system nobody can update.
         """
         state = os.path.join(self.work, "tpm")
         os.makedirs(state, exist_ok=True)
         sock = os.path.join(state, "swtpm.sock")
 
         if not __import__("shutil").which("swtpm"):
-            log("WARNING: swtpm not installed; Windows 11 will fail its TPM check")
-            return None
+            raise SystemExit(
+                "swtpm is not installed; Windows 11 will not install without a TPM 2.0."
+            )
 
         subprocess.run(
             ["swtpm", "socket", "--tpmstate", f"dir={state}",
@@ -250,7 +267,7 @@ class Baker:
             machine="q35",
             firmware_code=code,
             firmware_vars=vars_copy,
-            tpm_socket=tpm_sock or "",
+            tpm_socket=tpm_sock,
             vga="std",
             rdp_port=self.args.rdp_port,
         )
