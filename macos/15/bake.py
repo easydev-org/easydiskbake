@@ -286,19 +286,35 @@ class Baker:
         result: dict[str, object] = {}
 
         def drive() -> None:
+            # STDERR IS KEPT, BECAUSE THE EXIT CODE DOES NOT SAY WHY.
+            #
+            # `check=True` on its own records "exit status 1" and nothing else, so a
+            # traceback in the driver - a NameError, a QMP error, a missing import - is
+            # thrown away and the report says only that the script failed. Run 41485902304
+            # was diagnosed from the exception's own text; run 41503359709 was not,
+            # because by then it had been swallowed.
+            # WHAT LANDED IN result["error"] BEFORE THIS
+            #
+            #     the installer driver failed: exit status 1
+            #
+            # and the driver had been fourteen seconds past "the sidebar is drawn".
             try:
-                subprocess.run(
+                completed = subprocess.run(
                     [sys.executable, script,
                      "--qmp", guest.paths.drive, "--frames", self.frames,
                      # The disk is what tells "copying" from "hung" while the screen is
                      # black. Passed here because only the baker knows the path.
                      "--disk", self.disk],
                     check=True,
+                    capture_output=True, text=True,
                 )
                 result["ok"] = True
+                result["stdout"] = completed.stdout
             except subprocess.CalledProcessError as exc:
                 result["ok"] = False
                 result["error"] = f"exit status {exc.returncode}"
+                result["stdout"] = exc.stdout
+                result["stderr"] = exc.stderr
             except OSError as exc:
                 result["ok"] = False
                 result["error"] = str(exc)
@@ -319,6 +335,12 @@ class Baker:
             return False
         if not result.get("ok"):
             log(f"the installer driver failed: {result.get('error')}")
+            passthrough = str(result.get("stdout") or "")
+            for line in passthrough.splitlines()[-20:]:
+                log(f"  [install] {line}")
+            errors = str(result.get("stderr") or "")
+            for line in errors.splitlines()[-20:]:
+                log(f"  [install:stderr] {line}")
             log("the Setup Assistant is NOT started: clicking a screen the installer "
                 "never reached is how the previous run spent an hour on black frames")
             return False
