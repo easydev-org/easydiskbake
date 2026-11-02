@@ -74,6 +74,14 @@ def save(work: str, disk: str) -> str | None:
                 members.append(os.path.basename(found))
                 break
 
+    # THE LOCK IS NOT STATE. swtpm writes tpm/.lock to claim the directory for the
+    # running process, and packing it means the restored copy claims to be in use by a
+    # process that no longer exists - which swtpm answers with
+    #
+    #     TPM result for CMD_INIT: 0x9 operation failed
+    #
+    # and qemu exits. The file is excluded here and deleted again in restore(), because
+    # archives published before this change still carry one.
     tpm = os.path.join(work, "tpm")
     if os.path.isdir(tpm) and os.listdir(tpm):
         members.append("tpm")
@@ -88,7 +96,14 @@ def save(work: str, disk: str) -> str | None:
     dest = archive_path(disk)
     with tarfile.open(dest, "w:gz") as tar:
         for name in members:
-            tar.add(os.path.join(work, name), arcname=name)
+            path = os.path.join(work, name)
+
+            def skip(info):
+                # Exclude the swtpm lock; see the comment above where members is built.
+                parts = info.name.split(os.sep)
+                return None if parts[-2:] == ["tpm", ".lock"] else info
+
+            tar.add(path, arcname=name, filter=skip)
     return dest
 
 
@@ -115,6 +130,23 @@ def restore(work: str, disk: str) -> bool:
         # THE ARCHIVE IS LOCAL AND WRITTEN BY THIS REPOSITORY, but tarfile still refuses
         # absolute paths and ".." by default, and that default is worth keeping.
         tar.extractall(work)
+
+    # THE LOCK FILE MUST NOT COME BACK WITH THE STATE.
+    #
+    # swtpm creates tpm/.lock to mark the directory as in use, and save() packs the whole
+    # tpm/ directory - including that file. Restoring it tells the next swtpm that another
+    # process owns the state, and it refuses to initialise:
+    #
+    #     qemu-system-x86_64: tpm-emulator: TPM result for CMD_INIT: 0x9 operation failed
+    #
+    # and qemu exits twelve seconds after it starts. Measured on launch-windows run
+    # 41501928264, which reported "qemu exited during the boot" with no other detail.
+    #
+    # A lock is about the process that held it, not about the state; it has no meaning
+    # once that process is gone.
+    lock = os.path.join(work, "tpm", ".lock")
+    if os.path.exists(lock):
+        os.unlink(lock)
 
     # swtpm wants a directory it created; make sure the state is where it will look.
     return True

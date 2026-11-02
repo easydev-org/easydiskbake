@@ -206,6 +206,15 @@ INSTALLER_CONTINUE = (960, 712)
 DISK_CARD = (850, 550)
 PANE_CONTINUE = (1005, 712)
 
+# WHAT "NOTHING IS ON SCREEN" MEANS, in mean grey 0-255.
+#
+# Measured on the recordings, not chosen: a boot screen with its logo averages 0-1, a
+# blank framebuffer 0, and every real pane here - the recovery menu, Disk Utility, the
+# licence, the installer's progress sheet - measures 20 or more. 8 is far from both, and
+# it is a floor rather than a brightness test on purpose: the question is whether
+# anything was drawn at all, never whether it is bright enough.
+NOTHING_DRAWN = 8
+
 DISK_SAMPLE_SECONDS = 30
 
 
@@ -405,10 +414,28 @@ class Recovery:
         once the window arrives. It landed on the FIRST row, "Restore from Time Machine",
         and the whole run proceeded through the wrong application.
 
-        WHY NOT "WAIT FOR THE SCREEN TO BE BRIGHT". A threshold has to be tuned against
-        this guest's rendering, and a mostly-dark pane (the installer's licence sheet is
-        dark) would fail it. Stability needs no threshold: two consecutive fingerprints
-        that match mean nothing is being painted.
+        STABILITY ALONE IS NOT ENOUGH - IT PASSES A BLANK SCREEN.
+
+        Run 41501519376 proved that. The recording from t=45 to t=59 has a mean grey of
+        1: the screen was black. The driver said
+
+            18:37:28  the screen settled after 10s - Disk Utility has to replace the
+                      recovery menu
+            18:37:59  the screen settled after 10s - Disk Utility has to finish drawing
+                      its sidebar
+
+        and then clicked Continue, Up, Erase and a disk name at a black screen. A blank
+        frame does not change, so "two samples agree" is true of it from the first
+        second, forever.
+
+        SO NOTHING IS DRAWN MEANS NOTHING IS DRAWN. A frame whose mean grey is at the
+        floor is not a finished pane, whatever the fingerprints say; the wait keeps
+        polling until it either sees a lit frame settle or runs out.
+
+        The threshold is deliberately low - 8 out of 255. It is not "is this bright", it
+        is "is there anything here at all". A legitimately dark pane (the licence sheet
+        is dark grey) measures in the twenties, and the boot screen with its logo
+        measures 1.
 
         Returns False on timeout so the caller can say what it was looking at.
         """
@@ -427,11 +454,19 @@ class Recovery:
             now = self.fingerprint()
             if now is None:
                 continue
+            # A BLACK SCREEN IS NOT A FINISHED PANE. See the docstring: this single test
+            # is what run 41501519376 needed and did not have.
+            level = self.brightness()
+            if level is not None and level < NOTHING_DRAWN:
+                stable = 0
+                last = now
+                continue
             if now == last:
                 stable += 1
                 # Two matches: the last two samples agree, so nothing is moving.
                 if stable >= 2:
                     log(f"  the screen settled after {time.time() - started:.0f}s"
+                        + (f" (mean grey {level})" if level is not None else "")
                         + (f" - {why}" if why else ""))
                     return True
             else:

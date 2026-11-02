@@ -18,6 +18,7 @@ carries the UEFI boot entry (Boot0005 \"Windows Boot Manager\"), and without it 
 firmware falls back to the generic hard-disk entry Boot0002, fails to boot".
 """
 
+import io
 import os
 import subprocess
 import sys
@@ -303,3 +304,70 @@ class EveryStagePublishesWhatItWrote(unittest.TestCase):
         # The tag's name is not the archive's name, and passing it was the bug.
         self.assertNotIn('--bootstate "out/windows11-gold.qcow2', source)
         self.assertNotIn("--bootstate out/windows11-gold.qcow2", source)
+
+
+class TheTpmLockIsNotState(unittest.TestCase):
+    """swtpm's lock file must not travel with the state it locks.
+
+    MEASURED ON LAUNCH-WINDOWS RUN 41501928264
+
+        qemu-system-x86_64: tpm-emulator: TPM result for CMD_INIT: 0x9 operation failed
+
+    and qemu exited twelve seconds after it started, so the launch reported only
+    "qemu exited during the boot" with a black screen and no frames.
+
+    swtpm writes tpm/.lock to claim the directory for the running process, and save()
+    packs the whole tpm/ directory - including that file. A restored lock tells the next
+    swtpm that another process owns the state, and it refuses to initialise.
+
+    A lock is about the process that held it, not about the state; it means nothing once
+    that process is gone.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="bootstate-lock-")
+        self.work = os.path.join(self.tmp, "work")
+        os.makedirs(os.path.join(self.work, "tpm"))
+        with open(os.path.join(self.work, "OVMF_VARS.fd"), "wb") as fh:
+            fh.write(b"vars" * 40)
+        with open(os.path.join(self.work, "tpm", "tpm2-00.permall"), "wb") as fh:
+            fh.write(b"state" * 40)
+        self.disk = os.path.join(self.tmp, "windows11.qcow2")
+        open(self.disk, "wb").write(b"disk")
+
+    def tearDown(self):
+        subprocess.run(["rm", "-rf", self.tmp], check=False)
+
+    def test_a_lock_is_not_packed(self):
+        open(os.path.join(self.work, "tpm", ".lock"), "wb").close()
+        archive = bootstate.save(self.work, self.disk)
+        with tarfile.open(archive) as tar:
+            names = tar.getnames()
+        self.assertNotIn("tpm/.lock", names)
+        # The state itself is still there.
+        self.assertIn("tpm/tpm2-00.permall", names)
+
+    def test_a_lock_already_in_an_archive_is_removed_on_restore(self):
+        """Archives published before this change still carry one."""
+        archive = bootstate.save(self.work, self.disk)
+        # Write a lock into the archive by hand, the way an old one would have it.
+        with tarfile.open(archive, "r:gz") as tar:
+            members = [(m, tar.extractfile(m).read() if m.isfile() else None)
+                       for m in tar.getmembers()]
+        with tarfile.open(archive, "w:gz") as tar:
+            for member, data in members:
+                tar.addfile(member, io.BytesIO(data) if data is not None else None)
+            info = tarfile.TarInfo("tpm/.lock")
+            info.size = 0
+            tar.addfile(info)
+
+        second = os.path.join(self.tmp, "second")
+        os.makedirs(second)
+        disk = os.path.join(second, "disk.qcow2")
+        open(disk, "wb").write(b"disk")
+        subprocess.run(["cp", archive, bootstate.archive_path(disk)], check=True)
+
+        self.assertTrue(bootstate.restore(second, disk))
+        self.assertFalse(os.path.exists(os.path.join(second, "tpm", ".lock")),
+                         "a restored lock makes swtpm refuse to start")
+        self.assertTrue(os.path.isfile(os.path.join(second, "tpm", "tpm2-00.permall")))

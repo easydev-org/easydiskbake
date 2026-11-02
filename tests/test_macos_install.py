@@ -227,3 +227,50 @@ class TheLastFrameIsWritten(unittest.TestCase):
         """
         import lastframe
         self.assertIn("inst-", lastframe.PREFIXES)
+
+
+class ABlankScreenIsNotADrawnPane(unittest.TestCase):
+    """Stability alone passes a black screen, and did.
+
+    MEASURED ON RUN 41501519376. The recording from t=45 to t=59 has a mean grey of 1 -
+    the screen was black - and the driver said
+
+        18:37:28  the screen settled after 10s - Disk Utility has to replace the
+                  recovery menu
+        18:37:59  the screen settled after 10s - Disk Utility has to finish drawing
+                  its sidebar
+
+    then clicked Continue, Up, Erase and a disk name at that black screen.
+
+    A blank frame does not change, so "two samples agree" is true of it from the first
+    second, forever. wait_until_drawn() now also requires that something was drawn.
+    """
+
+    def test_the_threshold_is_a_floor_not_a_brightness_test(self):
+        self.assertTrue(hasattr(install, "NOTHING_DRAWN"))
+        # Above the boot screen (0-1) and below every real pane (20+).
+        self.assertGreater(install.NOTHING_DRAWN, 2)
+        self.assertLess(install.NOTHING_DRAWN, 20)
+
+    def test_the_wait_checks_brightness_as_well_as_stability(self):
+        with open(os.path.join(MACOS15, "install.py"), encoding="utf-8") as fh:
+            source = fh.read()
+        start = source.index("def wait_until_drawn")
+        end = source.index("def wait_for_change")
+        body = source[start:end]
+        self.assertIn("NOTHING_DRAWN", body)
+        self.assertIn("brightness()", body)
+
+    def test_a_blank_frame_does_not_count_towards_stability(self):
+        """The level check has to RESET the stable counter, not merely log.
+
+        If it only skipped the sample, the next comparison would still match the blank
+        frame it was compared against and the wait would pass on the following poll.
+        """
+        with open(os.path.join(MACOS15, "install.py"), encoding="utf-8") as fh:
+            source = fh.read()
+        start = source.index("def wait_until_drawn")
+        end = source.index("def wait_for_change")
+        body = source[start:end]
+        blank = body[body.index("NOTHING_DRAWN"):]
+        self.assertIn("stable = 0", blank[:400])
