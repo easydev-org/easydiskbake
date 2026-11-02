@@ -32,6 +32,10 @@ on:
       ssh_tag:
         description: "The SSH disk to build on (a tag in this package)"
         default: "windows-ssh-latest"
+      bootstate_run:
+        description: "The run that produced ssh_tag; its artifact carries the UEFI
+          variables and TPM state, without which the disk will not boot"
+        default: ""
       publish_tag:
         description: "Tag to publish under, or empty for windows-dev-<stamp>"
         default: ""
@@ -95,6 +99,19 @@ jobs:
             export GITHUB_TOKEN="${{ github.token }}"
             python3 windows/11/pull.py "${{ inputs.ssh_tag }}" out/windows11-ssh.qcow2
 
+      # Same coupling as the ssh stage: the disk will not start without the firmware and
+      # TPM state that were written when it was installed.
+      - name: pull the bootstate
+        if: inputs.bootstate_run != ''
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-ssh-bootstate
+          path: out
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.bootstate_run }}
+
       - name: install the toolchain
         uses: easydev-org/easyagent-github-ext/actions/log-stream@main
         with:
@@ -109,6 +126,7 @@ jobs:
             if [ "${{ inputs.clean }}" = "true" ]; then CLEAN="--clean"; fi
             python3 windows/11/devtools.py \
               --ssh out/windows11-ssh.qcow2 \
+              --bootstate out/windows11-ssh.qcow2.bootstate.tar.gz \
               --out out/windows11-dev.qcow2 \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
               $CLEAN
@@ -122,6 +140,16 @@ jobs:
             out/devtools-work/console.log
           if-no-files-found: warn
           retention-days: 14
+
+      # THE NEXT STAGE NEEDS THIS AS MUCH AS IT NEEDS THE DISK.
+      - name: keep the bootstate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-dev-bootstate
+          path: out/windows11-dev.qcow2.bootstate.tar.gz
+          if-no-files-found: warn
+          retention-days: 30
 
       - name: publish
         uses: easydev-org/easyagent-github-ext/actions/log-stream@main

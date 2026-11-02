@@ -337,6 +337,9 @@ def main(argv: list[str]) -> int:
     p.add_argument("--mem", type=int, default=6144)
     p.add_argument("--cpus", type=int, default=4)
     p.add_argument("--boot-timeout", type=int, default=900)
+    p.add_argument("--bootstate", default=None,
+                   help="the .bootstate.tar.gz published with the disk; "
+                        "without it the firmware has no boot entry")
     args = p.parse_args(argv)
 
     if not os.path.isfile(args.gold):
@@ -376,6 +379,27 @@ def main(argv: list[str]) -> int:
     template = os.environ.get("OVMF_VARS_TEMPLATE", "/usr/share/OVMF/OVMF_VARS_4M.fd")
     if not os.path.exists(firmware_vars):
         shutil.copyfile(template, firmware_vars)
+    # THE FIRMWARE AND TPM STATE HAVE TO COME BACK BEFORE THE MACHINE STARTS.
+    #
+    # A published disk carries a complete Windows 11 and no boot entry: the one that
+    # matters is written into OVMF's variables during setup, and a fresh template has
+    # none of them. Started that way the firmware tries Boot0001..Boot0005, fails each,
+    # and drops into its own shell - measured on run 41468968378.
+    import bootstate
+    restored = bool(args.bootstate) and bootstate.restore(work, args.bootstate)
+    if not restored:
+        # THE DEFAULT: beside the disk, named after it. That is where bake.py puts it and
+        # where the workflow downloads it, so the common case needs no flag.
+        restored = bootstate.restore(work, args.gold)
+    if not restored:
+        raise SystemExit(
+            "no bootstate archive was found. The disk alone will not boot: OVMF's "
+            "variables hold the \"Windows Boot Manager\" entry and the TPM holds the "
+            "state Windows sealed against it. Pass --bootstate <disk>.bootstate.tar.gz, "
+            "or publish it beside the disk - see lib/bootstate.py."
+        )
+    log(f"bootstate restored into {work}")
+
     tpm = start_swtpm(work)
 
     shape = vm.Shape(

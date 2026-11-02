@@ -73,6 +73,22 @@ def log(msg: str) -> None:
     print(f"[bake-android {__import__('time').strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
+def convert_last_frame(shots: str, dest: str) -> None:
+    """Write the newest frame as a PNG, for the workflow's fallback artifact.
+
+    Not fatal when it fails: this runs after the bake has already decided its result, and
+    a missing picture must not turn one failure into two.
+    """
+    try:
+        import lastframe
+        if lastframe.main([shots, dest]) != 0:
+            log("no last-frame.png was written")
+    except (ImportError, OSError) as exc:
+        log(f"could not write the last frame: {exc}")
+
+
+
+
 def parse(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--out", default="out/android15.tar.zst")
@@ -177,6 +193,9 @@ def main(argv: list[str]) -> int:
         log(f"recording: {mp4} ({os.path.getsize(mp4) >> 20} MiB)")
     else:
         log("recording: nothing to encode")
+
+    # ONE PICTURE OF WHERE IT STOPPED - see lib/lastframe.py for why one and not all.
+    convert_last_frame(shots, os.path.join(work, "last-frame.png"))
 
     if not booted:
         log("=== THE GUEST DID NOT REACH sys.boot_completed ===")

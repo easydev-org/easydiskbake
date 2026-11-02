@@ -151,15 +151,24 @@ jobs:
       #
       # Gated on the mp4 being absent, so the usual case uploads nothing extra: a PPM
       # here is 3 MB and there are hundreds of them.
-      - name: keep raw frames as a fallback
+      # WHEN THE ENCODING NEVER RUNS, ONE PICTURE IS STILL WORTH HAVING - BUT ONLY ONE.
+      #
+      # A cancelled or timed-out run never reaches the encoding call, and the earlier
+      # version of this step uploaded every raw frame: run 41468749665 produced 494 MB of
+      # PPM, a hundred files at 6 MiB each, to answer "which pane did it stop on". It
+      # takes six minutes to download that to look at one of them.
+      #
+      # The last frame is the pane the driver stopped on, and lib/lastframe.py converts it
+      # to a 300 KiB PNG. Gated on the mp4 being absent, so a normal run uploads nothing
+      # extra.
+      - name: keep the last frame
         if: always() && hashFiles('out/install.mp4') == ''
         uses: actions/upload-artifact@v4
         with:
-          name: macos-frames
-          path: out/frames/shots/*.ppm
+          name: macos-last-frame
+          path: out/last-frame.png
           if-no-files-found: warn
           retention-days: 7
-          compression-level: 0   # a PPM is already raw; zipping it buys nothing
 
       - name: upload the disk
         uses: actions/upload-artifact@v4

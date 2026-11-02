@@ -1,0 +1,129 @@
+"""The firmware and TPM state a baked Windows disk needs in order to boot.
+
+    from lib import bootstate
+    bootstate.save(work, disk_path)      # after a successful bake
+    bootstate.restore(work, disk_path)   # before a stage that starts from it
+
+WHY A DISK ALONE IS NOT ENOUGH, MEASURED THE HARD WAY
+
+A qcow2 written by this bake contains a complete Windows 11. Started with a fresh
+OVMF_VARS and a fresh swtpm, it does not boot:
+
+    BdsDxe: failed to load Boot0001 "UEFI Misc Device"  ... : Not Found
+    BdsDxe: failed to load Boot0002 "UEFI Misc Device 2" ... : Not Found
+    BdsDxe: failed to load Boot0003 "UEFI HTTPv4 (MAC:...)" : Not Found
+    BdsDxe: failed to load Boot0004 "UEFI HTTPv6 (MAC:...)" : Not Found
+    BdsDxe: loading Boot0005 "EFI Internal Shell"
+    Shell>
+
+The firmware tried every entry it had and fell through to its own shell. The entry that
+matters - "Windows Boot Manager" - was written into the OVMF variables during setup and
+does not exist in the template. The same is true of the TPM: Windows 11 seals state
+against it, and a different one is a different machine.
+
+www.easysandbox-windows reaches the same conclusion, in the comment above its own check:
+
+    windows.vars carries the UEFI boot entry (Boot0005 "Windows Boot Manager"), and
+    without it the firmware falls back to the generic hard-disk entry Boot0002, fails to
+    boot, and dockur gives up with
+        ERROR: Timeout while waiting for QEMU to boot the machine
+
+WHAT IS IN THE ARCHIVE
+
+    windows.vars   OVMF's variable store: the boot order and the boot entries in it
+    tpm/           the swtpm state directory: the PCRs and the sealed secrets
+    identity.json  the serial and MAC the machine was installed with, for the record
+
+Three files, a few hundred KiB. The disk is the gigabyte; this is the part that makes the
+disk start, and publishing one without the other produces an artifact nobody can use.
+"""
+
+from __future__ import annotations
+
+import glob
+import os
+import shutil
+import subprocess
+import tarfile
+
+# The archive is named after the disk so two bakes in one work directory cannot collide.
+SUFFIX = ".bootstate.tar.gz"
+
+
+def archive_path(disk: str) -> str:
+    """Where the bootstate for `disk` lives: beside it, named after it."""
+    return os.path.join(os.path.dirname(os.path.abspath(disk)),
+                        os.path.basename(disk) + SUFFIX)
+
+
+def save(work: str, disk: str) -> str | None:
+    """Collect the firmware and TPM state next to `disk`. Returns the archive, or None.
+
+    NOT FATAL WHEN THERE IS NOTHING TO SAVE. A bake that failed before it ever started a
+    VM has no variables to keep, and turning that into a second failure would hide the
+    first. The caller publishes the archive when it exists and says so when it does not.
+    """
+    members = []
+
+    # OVMF's variable store. bake.py names it OVMF_VARS.fd; a stage may name it
+    # macos.vars or windows.vars. All are looked for rather than assumed, because the
+    # cost of missing it is an artifact that will not boot and says so only at the
+    # firmware.
+    for pattern in ("OVMF_VARS.fd", "windows.vars", "macos.vars", "*.vars"):
+        for found in glob.glob(os.path.join(work, pattern)):
+            if os.path.isfile(found) and os.path.getsize(found) > 0:
+                members.append(os.path.basename(found))
+                break
+
+    tpm = os.path.join(work, "tpm")
+    if os.path.isdir(tpm) and os.listdir(tpm):
+        members.append("tpm")
+
+    identity = os.path.join(work, "identity.json")
+    if os.path.isfile(identity):
+        members.append("identity.json")
+
+    if not members:
+        return None
+
+    dest = archive_path(disk)
+    with tarfile.open(dest, "w:gz") as tar:
+        for name in members:
+            tar.add(os.path.join(work, name), arcname=name)
+    return dest
+
+
+def restore(work: str, disk: str) -> bool:
+    """Put the firmware and TPM state back. Returns False when there is no archive.
+
+    EXTRACTED INTO `work`, NOT BESIDE THE DISK, because that is where the caller's
+    vm.Shape points: the vars file and the tpm directory are read from the work
+    directory by path, and an archive that unpacked itself elsewhere would be silently
+    ignored.
+    """
+    src = archive_path(disk)
+    if not os.path.isfile(src):
+        return False
+
+    os.makedirs(work, exist_ok=True)
+    with tarfile.open(src, "r:gz") as tar:
+        # THE ARCHIVE IS LOCAL AND WRITTEN BY THIS REPOSITORY, but tarfile still refuses
+        # absolute paths and ".." by default, and that default is worth keeping.
+        tar.extractall(work)
+
+    # swtpm wants a directory it created; make sure the state is where it will look.
+    return True
+
+
+def describe(disk: str) -> str:
+    """One line for a log: whether the bootstate exists and what is in it."""
+    src = archive_path(disk)
+    if not os.path.isfile(src):
+        return f"{os.path.basename(disk)}: NO BOOTSTATE - the published disk will not boot"
+    try:
+        with tarfile.open(src, "r:gz") as tar:
+            names = tar.getnames()
+    except (OSError, tarfile.TarError) as exc:
+        return f"{os.path.basename(src)}: unreadable ({exc})"
+    return (f"{os.path.basename(src)}: {os.path.getsize(src) >> 10} KiB, "
+            f"{', '.join(sorted(set(n.split('/')[0] for n in names)))}")

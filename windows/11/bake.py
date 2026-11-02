@@ -57,6 +57,22 @@ def log(msg: str) -> None:
     print(f"[bake] {msg}", flush=True)
 
 
+def convert_last_frame(shots: str, dest: str) -> None:
+    """Write the newest frame as a PNG, for the workflow's fallback artifact.
+
+    Not fatal when it fails: this runs after the bake has already decided its result, and
+    a missing picture must not turn one failure into two.
+    """
+    try:
+        import lastframe
+        if lastframe.main([shots, dest]) != 0:
+            log("no last-frame.png was written")
+    except (ImportError, OSError) as exc:
+        log(f"could not write the last frame: {exc}")
+
+
+
+
 def frame_progress(shots: str, window: int = 3) -> tuple[int, bool]:
     """How many frames exist, and whether the last few differ.
 
@@ -473,6 +489,9 @@ class Baker:
         else:
             log("recording: nothing to encode")
 
+        # ONE PICTURE OF WHERE IT STOPPED - see lib/lastframe.py for why one and not all.
+        convert_last_frame(shots, os.path.join(self.work, "last-frame.png"))
+
         if not arrived:
             log("=== THE GUEST DID NOT REACH A RUNNING SYSTEM ===")
             self.tail(console)
@@ -494,6 +513,18 @@ class Baker:
         compress.compress(self.disk, self.args.out)
         log(f"BAKED windows11 -> {self.args.out} "
             f"({os.path.getsize(self.args.out) >> 20} MiB)")
+
+        # THE DISK IS NOT THE WHOLE ARTIFACT. OVMF's variables carry the "Windows Boot
+        # Manager" entry and the TPM holds the state Windows 11 sealed against it; a
+        # published disk without both is a disk that falls through to the firmware's own
+        # shell. lib/bootstate.py records the four lines of evidence.
+        import bootstate
+        archive = bootstate.save(self.work, self.args.out)
+        if archive:
+            log(f"bootstate: {archive} ({os.path.getsize(archive) >> 10} KiB)")
+        else:
+            log("bootstate: NOTHING SAVED - a consumer of this disk will not be able to "
+                "boot it; the firmware variables were not found in the work directory")
         return True
 
     def wait_for_arrival(self, console: str, guest: vm.Guest) -> bool:

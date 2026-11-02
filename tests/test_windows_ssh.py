@@ -382,6 +382,7 @@ class EveryStageParses(unittest.TestCase):
             "GUEST_USER", "GUEST_PASSWORD", "SHIFTED", "NAMED", "HERE", "REPO",
             "main", "argv", "AttributeError", "ValueError", "SystemExit", "Exception",
             "argparse", "numpy", "json", "socket", "tempfile", "importlib", "plistlib",
+            "bootstate", "lastframe", "desktop",
         }
 
         for name, path in self.files():

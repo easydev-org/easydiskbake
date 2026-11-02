@@ -135,6 +135,14 @@ ERASE_DONE = (1143, 601)
 # and the first attempt typed one and watched the field stay empty.
 DISK_NAME = "main"
 
+# HOW LONG THE INSTALLER MAY TAKE TO WRITE ITS FIRST BYTE after Continue is accepted.
+#
+# The progress pane appears within seconds and the copy starts immediately, so a disk that
+# has not grown in two minutes is a pane that did not accept the click - not a slow start.
+# This is the check the run before last did not make: it claimed to be watching the disk
+# while the screen still showed the disk picker with nothing in it.
+START_EVIDENCE_SECONDS = 120
+
 # THE LICENCE BUTTONS, MEASURED ON A FRAME OF THIS BAKE.
 #
 # macos/15/probe.py walked the installer and stopped here, on the third pane:
@@ -491,6 +499,37 @@ def reinstall(d: Recovery) -> None:
     d.click(CONTINUE_MENU, "recovery Continue", settle=30)
 
 
+def wait_for_install_start(d: Recovery, timeout: int = 120) -> bool:
+    """Wait until the target disk grows, which is the only proof the copy began.
+
+    The screen cannot answer this. The progress pane appears before the first byte is
+    written, and a pane that never accepted Continue looks exactly the same for the first
+    few seconds. The disk does answer: an installation writes hundreds of megabytes
+    immediately, and a pane that did nothing writes none.
+
+    Returns False rather than raising, so the caller can say what it was looking at.
+    """
+    baseline = d.disk_allocated()
+    if baseline is None:
+        # No disk path to watch. The caller was given no way to verify; say so by
+        # returning True and letting the stall rule below be the only judge, rather than
+        # failing a run that might be fine.
+        log("  no disk to measure; the start of the copy cannot be confirmed")
+        return True
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(5)
+        size = d.disk_allocated()
+        if size is None:
+            continue
+        if size > baseline:
+            log(f"  the disk grew by {(size - baseline) >> 20} MiB")
+            return True
+    log(f"  the disk did not grow in {timeout}s (still {baseline >> 20} MiB)")
+    return False
+
+
 def installer_panes(d: Recovery, seconds: int = 4 * 3600) -> bool:
     """Advance the installer until it reboots, or say why it did not.
 
@@ -567,11 +606,36 @@ def installer_panes(d: Recovery, seconds: int = 4 * 3600) -> bool:
     log("licence sheet: Agree")
     d.click(AGREE_SHEET, "Agree in the sheet", settle=10)
 
-    # THE DESTINATION PANE, WHERE THE CARD MUST BE CHOSEN BEFORE CONTINUE WORKS.
+    # THE DESTINATION PANE, AND THE CLICK THAT HAS TO BE PROVEN.
+    #
+    # This is where the previous run failed while reporting success. It clicked the card
+    # and Continue, then went straight into "watching the disk" - and the disk was never
+    # asked whether anything had started. The last frame of run 41468749665 shows the pane
+    # still reading
+    #
+    #     Select the disk where you want to install macOS.
+    #     [Back] [Continue]
+    #
+    # with no disk listed at all, which means the erase-and-reboot path left the installer
+    # without a destination to offer.
+    #
+    # SO THE CLICK IS VERIFIED BEFORE THE WAIT BEGINS. A disk that has not grown in
+    # START_EVIDENCE_SECONDS has not started installing, whatever the screen says - and
+    # saying so in twenty seconds is the difference between reading a failure and reading
+    # ninety minutes of one.
     log("destination: select the card, then Continue")
-    d.wait(15, "the disk list draws")
+    d.wait(20, "the disk list draws and populates")
+
+    before = d.disk_allocated()
     d.click(DISK_CARD, "the main disk card", settle=5)
     d.click(PANE_CONTINUE, "destination Continue", settle=20)
+
+    log("confirming the installation actually started")
+    if not wait_for_install_start(d, timeout=START_EVIDENCE_SECONDS):
+        log("=== THE INSTALLER DID NOT START ===")
+        log("  the destination pane was accepted and nothing was written")
+        log("  the last frame shows what the pane was offering")
+        return False
 
     while time.time() < deadline:
         level = d.brightness()

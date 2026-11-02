@@ -69,6 +69,20 @@ def log(msg: str) -> None:
     print(f"[bake-macos {time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
+def convert_last_frame(shots: str, dest: str) -> None:
+    """Write the newest frame as a PNG, for the workflow's fallback artifact.
+
+    Not fatal when it fails: this runs after the bake has already decided its result, and
+    a missing picture must not turn one failure into two.
+    """
+    try:
+        import lastframe
+        if lastframe.main([shots, dest]) != 0:
+            log("no last-frame.png was written")
+    except (ImportError, OSError) as exc:
+        log(f"could not write the last frame: {exc}")
+
+
 def parse(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Bake a macOS disk.")
     p.add_argument("--out", default="out/macos15.qcow2")
@@ -211,6 +225,12 @@ class Baker:
             log(f"recording: {mp4} ({os.path.getsize(mp4) >> 20} MiB)")
         else:
             log("recording: nothing to encode")
+
+        # ONE PICTURE OF WHERE IT STOPPED. A cancelled run never reaches the encoding
+        # above, and the alternative was uploading every raw frame - 494 MB on run
+        # 41468749665 to answer a question one frame answers. lib/lastframe.py writes
+        # out/last-frame.png, which the workflow uploads when there is no mp4.
+        convert_last_frame(shots, os.path.join(self.work, "last-frame.png"))
 
         if not arrived:
             log("=== THE GUEST DID NOT REACH A DESKTOP ===")

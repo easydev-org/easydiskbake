@@ -35,6 +35,10 @@ on:
       gold_tag:
         description: "The gold disk to build on (a tag in this package)"
         default: "windows-base-20261102-140018"
+      bootstate_run:
+        description: "The bake run that produced gold_tag; its artifact carries the
+          UEFI variables and TPM state, without which the disk will not boot"
+        default: ""
       publish_tag:
         description: "Tag to publish under, or empty for windows-ssh-<stamp>"
         default: ""
@@ -89,6 +93,21 @@ jobs:
             export GITHUB_TOKEN="${{ github.token }}"
             python3 windows/11/pull.py "${{ inputs.gold_tag }}" out/windows11-gold.qcow2
 
+      # THE DISK AND ITS BOOTSTATE COME FROM THE SAME RUN, and that is why this input is a
+      # run id rather than a tag: ghcr holds the qcow2, the artifact store holds the few
+      # hundred KiB that make the qcow2 start, and pulling one without the other produces
+      # a machine that drops into the firmware shell.
+      - name: pull the bootstate
+        if: inputs.bootstate_run != ''
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: windows11-bootstate
+          path: out
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.bootstate_run }}
+
       - name: install ssh
         uses: easydev-org/easyagent-github-ext/actions/log-stream@main
         with:
@@ -102,6 +121,7 @@ jobs:
             python3 windows/11/ssh.py \
               --gold out/windows11-gold.qcow2 \
               --out out/windows11-ssh.qcow2 \
+              --bootstate "out/windows11-gold.qcow2.bootstate.tar.gz" \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}"
 
       - name: keep the recording
@@ -115,6 +135,16 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
           compression-level: 0
+
+      # Passed on to bake-windows-dev, which needs the same firmware state to start it.
+      - name: keep the bootstate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-ssh-bootstate
+          path: out/windows11-ssh.qcow2.bootstate.tar.gz
+          if-no-files-found: warn
+          retention-days: 30
 
       - name: publish
         uses: easydev-org/easyagent-github-ext/actions/log-stream@main
