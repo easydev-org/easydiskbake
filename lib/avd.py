@@ -219,18 +219,49 @@ def pack(avd_home_dir: str, out: str) -> str:
             f"no *.avd directory in {avd_home_dir}; avdmanager did not create one, or "
             f"--avd-home points somewhere else"
         )
+    # WHAT THE FIRST BOOT ACTUALLY WRITES, AND WHY IT IS NOT system.img
+    #
+    # This check used to require system.img and userdata.img in the AVD directory, and
+    # run 41480233705 failed on both even though the emulator had booted:
+    #
+    #     [emulator] sys.boot_completed after 30s
+    #     [emulator] stopped cleanly (adb emu kill)
+    #     FAILED: the AVD holds no disk: sandbox.avd/system.img, sandbox.avd/userdata.img
+    #
+    # Neither file belongs there:
+    #
+    #     system.img    lives in the SYSTEM IMAGE directory
+    #                   ($ANDROID_SDK_ROOT/system-images/android-35/default/x86_64/),
+    #                   is read-only, and is shared by every AVD that uses that image.
+    #                   It is an input to the boot, not something the boot produces.
+    #
+    #     userdata.img  is the read-only template Google ships as
+    #                   data/empty_data_disk. The emulator COPIES it.
+    #
+    # What the first boot produces is the writable pair, both named after emulator's
+    # own defaults for -data and -cache:
+    #
+    #     userdata-qemu.img   the /data partition. This is the disk the bake is about:
+    #                         it is where the gold marker written by Emulator.mark()
+    #                         survives, and what a verify run reads back.
+    #     cache.img           the /cache partition.
+    #
+    # The module already said as much eleven lines above create_sysimg()'s return -
+    # "userdata.img IS NOT IN THE ZIP AND MUST NOT BE REQUIRED ... the emulator creates
+    # userdata-qemu.img from it on first boot" - and pack() then required it anyway.
     missing = []
     for name in avds:
-        for required in ("system.img", "userdata.img"):
+        for required in ("userdata-qemu.img", "cache.img"):
             path = os.path.join(avd_home_dir, name, required)
             if not os.path.isfile(path) or os.path.getsize(path) == 0:
                 missing.append(f"{name}/{required}")
     if missing:
         raise AvdError(
             f"the AVD holds no disk: {', '.join(missing)}.\n"
-            f"avdmanager only writes config.ini; the images are created when the "
-            f"emulator starts the AVD. Start it once (with -wipe-data) before packing, "
-            f"or this archive is a config file and nothing else."
+            f"avdmanager only writes config.ini; userdata-qemu.img and cache.img are "
+            f"created when the emulator first starts the AVD. Boot it once (with "
+            f"-wipe-data) before packing, or this archive is a config file and nothing "
+            f"else."
         )
 
     if os.path.exists(out):

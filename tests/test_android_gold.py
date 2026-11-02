@@ -248,6 +248,38 @@ class ArtifactChecks(unittest.TestCase):
         # looks for the quoted exact name.
         self.assertNotIn('"userdata.img"', checks)
 
+    def test_pack_requires_what_the_first_boot_writes(self):
+        """pack() required two files that never exist in an AVD directory.
+
+        MEASURED ON RUN 41480233705 - the emulator had booted, and pack() still failed:
+
+            [emulator] sys.boot_completed after 30s
+            [emulator] stopped cleanly (adb emu kill)
+            FAILED: the AVD holds no disk: sandbox.avd/system.img, sandbox.avd/userdata.img
+
+        Neither file belongs there:
+
+            system.img    is in the SYSTEM IMAGE directory, read-only, shared by every
+                          AVD that uses that image. An input to the boot.
+            userdata.img  is the template Google ships as data/empty_data_disk. The
+                          emulator copies it.
+
+        What the first boot writes into the AVD directory is userdata-qemu.img (the /data
+        partition - the disk this bake is about, and where Emulator.mark()'s gold marker
+        survives) and cache.img.
+        """
+        body = open(os.path.join(HERE, "lib", "avd.py"), encoding="utf-8").read()
+        start = body.index("def pack(")
+        end = body.index("def ", body.index("log(f\"{os.path.getsize(out) >> 20} MiB\")"))
+        checks = body[start:end]
+
+        self.assertIn('"userdata-qemu.img"', checks)
+        self.assertIn('"cache.img"', checks)
+        # The two that were there before and belong somewhere else.
+        self.assertNotIn('("system.img", "userdata.img")', checks)
+        self.assertNotIn('"userdata.img"', checks,
+                         "userdata.img is a template, not an AVD product")
+
 
 class BuilderImage(unittest.TestCase):
     """avdmanager refuses to create an AVD without the emulator package."""
