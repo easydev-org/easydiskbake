@@ -274,3 +274,56 @@ class ABlankScreenIsNotADrawnPane(unittest.TestCase):
         body = source[start:end]
         blank = body[body.index("NOTHING_DRAWN"):]
         self.assertIn("stable = 0", blank[:400])
+
+
+class EveryPredicateReturns(unittest.TestCase):
+    """A function declared -> bool must return one on every path it can reach.
+
+    MEASURED ON RUN 41504896288
+
+    disk_utility() was declared `-> bool` and ended without a return, so it returned
+    None. The caller read that as failure:
+
+        if not disk_utility(d):
+            return 1
+
+    and the run stopped three lines past its own success message:
+
+        18:59:58  the screen settled after 10s (mean grey 26) - Disk Utility has to
+                  finish drawing its sidebar
+        19:00:11  the installer driver failed: exit status 1
+
+    No traceback, because nothing was raised. The screen was a real Disk Utility window
+    with disk2s1 selected.
+
+    THE GENERAL FORM. This is checked with ast rather than by running the function: the
+    driver cannot be run against a guest in a unit test, and a missing return is exactly
+    the kind of thing a test that does not run the function can still catch.
+    """
+
+    def test_no_predicate_falls_off_its_end(self):
+        import ast
+
+        path = os.path.join(MACOS15, "install.py")
+        with open(path, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+
+        offenders = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            if not (isinstance(node.returns, ast.Name) and node.returns.id == "bool"):
+                continue
+            # A function that raises on its failure path is fine; one that just stops is
+            # not. Look for any Return in the body.
+            has_return = any(isinstance(n, ast.Return) for n in ast.walk(node))
+            if not has_return:
+                offenders.append(node.name)
+
+        self.assertEqual(offenders, [],
+                         f"declared -> bool and never return: {offenders}")
+
+    def test_the_caller_uses_disk_utility_s_answer(self):
+        with open(os.path.join(MACOS15, "install.py"), encoding="utf-8") as fh:
+            source = fh.read()
+        self.assertIn("if not disk_utility(d):", source)

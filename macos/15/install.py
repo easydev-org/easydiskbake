@@ -624,6 +624,12 @@ def disk_utility(d: Recovery) -> bool:
     # moves a selection that is not the one the two-press count assumes.
     d.wait_until_drawn(timeout=120,
                        why="Disk Utility has to finish drawing its sidebar")
+    # THE RETURN IS THE ANSWER TO "DID IT OPEN", and without it this function returned
+    # None, which `if not disk_utility(d)` reads as failure. Every run since that check
+    # was added exited 1 immediately after Disk Utility had opened correctly - run
+    # 41504896288 stopped three lines past its own success message, with no traceback
+    # because nothing was raised.
+    return True
 
 
 def select_and_erase(d: Recovery) -> None:
