@@ -497,18 +497,66 @@ def wait_for_desktop(guest: vm.Guest, shots: str, timeout: int) -> bool:
 
     deadline = time.time() + timeout
     booted = time.time()
+    last_shot: str | None = None
     while time.time() < deadline:
         if not guest.alive():
             log("qemu exited during boot")
             return False
         shot = take_shot(guest, shots)
+        if shot:
+            last_shot = shot
         if shot and desktop.is_desktop(shot):
             log(f"a desktop is on screen ({(time.time() - booted):.0f}s)")
             return True
         if int(time.time() - booted) % 60 < 12:
-            log(f"waiting {(time.time() - booted):.0f}s for a desktop")
+            # SAY WHAT THE SCREEN IS, not only how long it has been watched. A run that
+            # times out here currently reports nothing about what it was looking at, and
+            # "waited 900s" cannot distinguish a guest stuck at the firmware shell from
+            # one sitting on a login screen that the desktop test does not recognise.
+            log(f"waiting {(time.time() - booted):.0f}s for a desktop"
+                + (f" (last frame {os.path.basename(last_shot)}, "
+                   f"{describe_shot(last_shot)})" if last_shot else " (no frames yet)"))
         time.sleep(12)
+
+    log("=== NO DESKTOP WITHIN THE BOOT TIMEOUT ===")
+    if last_shot:
+        log(f"  the last frame is {last_shot} ({describe_shot(last_shot)})")
+        log("  it is kept in the recording artifact; it says what the screen was")
+    else:
+        log("  not one frame could be captured - the recorder socket never answered,")
+        log("  which means qemu was not drawing at all")
     return False
+
+
+def describe_shot(path: str | None) -> str:
+    """One line about a frame: size and mean grey, or why it could not be read.
+
+    Deliberately not a description of what is DRAWN. That is what desktop.is_desktop()
+    is for, and a second opinion about the screen would be a second thing to keep in
+    step - this only reports whether anything was drawn at all.
+    """
+    if not path:
+        return "none"
+    try:
+        with open(path, "rb") as fh:
+            if fh.readline().strip() != b"P6":
+                return "not a PPM"
+            line = fh.readline()
+            while line.startswith(b"#"):
+                line = fh.readline()
+            width, height = (int(v) for v in line.split())
+            fh.readline()
+            pixels = fh.read(width * height * 3)
+    except (OSError, ValueError):
+        return "unreadable"
+    if not pixels:
+        return f"{width}x{height}, empty"
+    total = 0
+    count = 0
+    for i in range(0, len(pixels), 97 * 3):
+        total += pixels[i] + pixels[i + 1] + pixels[i + 2]
+        count += 3
+    return f"{width}x{height}, mean grey {total // count if count else 0}"
 
 
 def take_shot(guest: vm.Guest, shots: str, label: str = "boot") -> str | None:
