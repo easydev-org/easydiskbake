@@ -81,6 +81,11 @@ class Shape:
     # Apple shipped in real hardware (Penryn, Haswell, ...) with the feature flags the
     # kernel expects. Every other guest here is happy with "host" and gets it.
     cpu: str = ""
+    # The -smp value, when a guest needs a topology rather than a count. macOS is the
+    # one that does: dockur/macos describes cores as sockets=1,dies=1,cores=N,threads=1
+    # because the kernel reads the topology and a bare "4" leaves qemu to invent one it
+    # does not expect. Empty means `-smp <cpus>`, which is what every other guest gets.
+    smp_topology: str = ""
     # Extra flags appended to the argument vector, for machines that need a global
     # (macOS needs ICH9-LPC's sleep states disabled, which is not a per-device option).
     extra_args: list[str] = field(default_factory=list)
@@ -105,6 +110,7 @@ class Shape:
             tpm_socket=env.get("VM_TPM", ""),
             vga=env.get("VM_VGA", "std"),
             cpu=env.get("VM_CPU", ""),
+            smp_topology=env.get("VM_SMP", ""),
             vnc_bind=env.get("VNC_BIND", "127.0.0.1"),
             vnc_display=int(env.get("VNC_DISPLAY", 0)),
             ssh_port=int(env.get("SSH_PORT", 2222)),
@@ -150,7 +156,7 @@ def build_args(work: str, extra: list[str] | None = None,
     args: list[str] = [
         QEMU,
         "-enable-kvm", "-cpu", shape.cpu or "host",
-        "-smp", str(shape.cpus), "-m", str(shape.mem_mb),
+        "-smp", shape.smp_topology or str(shape.cpus), "-m", str(shape.mem_mb),
         "-display", "none",
         "-vnc", f"{shape.vnc_bind}:{shape.vnc_display}",
         "-device", "qemu-xhci,id=xhci",

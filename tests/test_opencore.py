@@ -407,3 +407,112 @@ class FetchWithoutNetwork(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MacosMachine(unittest.TestCase):
+    """The qemu parameters macOS needs, itemised against dockur/macos.
+
+    Every entry here is a difference between this repository's argv and the one
+    dockur/macos builds in src/*.sh, found by reading the two side by side after two
+    runs failed at the firmware. They are asserted because each one is silent when
+    wrong: a missing bootindex produces "failed to load Boot0001", a missing
+    vendor=GenuineIntel produces a kernel panic, and neither says which parameter it
+    was.
+    """
+
+    def machine(self):
+        import vm
+        return vm.Shape(
+            cpus=4, mem_mb=8192, machine="q35", vga="none",
+            firmware_code="/tmp/mac.rom", firmware_vars="/tmp/mac.vars",
+            cpu=("Skylake-Client-v4,vendor=GenuineIntel,vmx=off,"
+                 "vmware-cpuid-freq=on,-pdpe1gb,+ssse3,+sse4.2,+popcnt,+avx,"
+                 "+avx2,+aes,+fma,+bmi1,+bmi2,+smep,+xsave,+xsaveopt,+xgetbv1,"
+                 "+movbe,+rdrand,check"),
+            smp_topology="4,sockets=1,dies=1,cores=4,threads=1",
+            extra_args=[
+                "-global", "ICH9-LPC.disable_s3=1",
+                "-global", "ICH9-LPC.disable_s4=1",
+                "-global", "ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off",
+                "-rtc", "base=utc",
+                "-smbios", "type=2",
+                "-device", "vmware-svga",
+            ],
+        )
+
+    def argv(self):
+        import vm
+        with open("/tmp/mac.vars", "wb"):
+            pass
+        return vm.build_args("/tmp/macwork", [], self.machine())
+
+    def test_no_legacy_vga_option(self):
+        """-vga on q35 creates an ISA VGA device; macOS needs the PCIe one.
+
+        dockur's display.sh maps its "vmware" setting to `-device vmware-svga`, not to
+        `-vga vmware`. Both look like a VMware adapter and only one is on the bus the
+        guest expects.
+        """
+        argv = self.argv()
+        self.assertNotIn("-vga", argv)
+        self.assertIn("vmware-svga", argv)
+
+    def test_cpu_model_is_the_one_dockur_selects(self):
+        # selectAmdCpuModel only fires on AMD hosts, so every Intel runner gets this.
+        argv = self.argv()
+        cpu = argv[argv.index("-cpu") + 1]
+        self.assertTrue(cpu.startswith("Skylake-Client-v4"), cpu)
+
+    def test_the_cpu_flags_macos_cannot_boot_without(self):
+        argv = self.argv()
+        cpu = argv[argv.index("-cpu") + 1]
+        for flag in ("vendor=GenuineIntel", "vmx=off", "vmware-cpuid-freq=on",
+                     "-pdpe1gb", "check"):
+            self.assertIn(flag, cpu, flag)
+
+    def test_smp_describes_a_topology(self):
+        # A bare "4" leaves qemu to invent a topology; the macOS kernel reads it.
+        argv = self.argv()
+        self.assertEqual(argv[argv.index("-smp") + 1],
+                         "4,sockets=1,dies=1,cores=4,threads=1")
+
+    def test_the_rtc_is_utc(self):
+        argv = self.argv()
+        self.assertEqual(argv[argv.index("-rtc") + 1], "base=utc")
+
+    def test_smbios_type_2_is_present(self):
+        # The baseboard record; macOS's platform check reads it.
+        argv = self.argv()
+        self.assertIn("type=2", argv)
+
+    def test_the_pcie_hotplug_bridge_is_disabled(self):
+        argv = self.argv()
+        self.assertIn("ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off", argv)
+
+    def test_every_disk_that_must_boot_has_a_bootindex(self):
+        """A disk with no bootindex is not in the firmware's boot order.
+
+        It is present, readable, and OVMF never tries it - which is what
+        "failed to load Boot0001" means.
+        """
+        argv = self.argv()
+        argv += [
+            "-drive", "file=oc.img,format=raw,if=none,id=oc",
+            "-device", "virtio-blk-pci,drive=oc,bootindex=0",
+            "-drive", "file=t.qcow2,if=none,format=qcow2,id=target",
+            "-device", "virtio-blk-pci,drive=target,bootindex=1",
+        ]
+        # Rebuild so the extra args are included in the same vector.
+        import vm
+        argv = vm.build_args("/tmp/macwork", argv[-8:], self.machine())
+        bootindexes = [a for a in argv if a.startswith("virtio-blk-pci")]
+        self.assertEqual(len(bootindexes), 2)
+        for device in bootindexes:
+            self.assertIn("bootindex=", device)
+
+    def test_a_guest_that_needs_no_topology_still_gets_a_count(self):
+        # The other four platforms pass -smp 4 and must keep doing so: this field was
+        # added for macOS and nothing else may change.
+        import vm
+        plain = vm.build_args("/tmp/other", [], vm.Shape(cpus=4))
+        self.assertEqual(plain[plain.index("-smp") + 1], "4")

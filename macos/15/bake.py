@@ -163,25 +163,56 @@ class Baker:
         )
         log(f"disk created: {self.args.disk_size}")
 
+        # THE MACHINE, TAKEN FROM dockur/macos RATHER THAN REASONED OUT.
+        #
+        # Each of these was a difference between this file and src/*.sh in dockur/macos,
+        # found by reading them side by side after two runs failed at the firmware. They
+        # are listed in the order they matter.
         shape = vm.Shape(
             cpus=self.args.cpus,
             mem_mb=self.args.mem,
             machine="q35",
             firmware_code=assets["rom"],
             firmware_vars=assets["vars"],
-            vga="vmware",
-            # macOS reads the CPU's family and model out of CPUID and refuses to boot
-            # on a model it does not recognise, so "host" - which every other guest
-            # here uses - is not an option. Penryn is the oldest model the Sequoia
-            # kernel still runs on, and it is what dockur/macos uses for exactly this.
-            cpu="Penryn,kvm=on,vendor=GenuineIntel,+invtsc,+ssse3,+sse4.2,"
-                "+popcnt,+avx,+aes,+xsave,+xsaveopt,check",
-            # ICH9 emulates suspend-to-RAM and suspend-to-disk, and macOS asks for both
-            # during boot on real hardware. Under this firmware the transitions hang
-            # the guest at a black screen with nothing in the log.
+            # NOT -vga vmware. On q35 -vga creates an ISA VGA device on the legacy bus;
+            # dockur's display.sh maps "vmware" to `-device vmware-svga`, a PCIe device.
+            # OpenCore's graphics output and macOS's driver both expect the latter.
+            vga="none",
+            # Skylake-Client-v4, not Penryn. dockur's cpu.sh selects it for every Intel
+            # host (selectAmdCpuModel only fires on AMD), and the DEFAULT_FLAGS it
+            # composes are not optional decoration:
+            #
+            #     vendor=GenuineIntel      macOS refuses to boot without it
+            #     vmx=off                  nested virtualisation confuses the kernel
+            #     vmware-cpuid-freq=on     the kernel reads the TSC frequency from this
+            #     -pdpe1gb                 1 GB pages are broken under this guest
+            #
+            # plus the instruction set the macOS profile advertises, and `check` so qemu
+            # refuses an unsupportable combination at startup instead of booting a guest
+            # that panics later.
+            cpu=("Skylake-Client-v4,vendor=GenuineIntel,vmx=off,"
+                 "vmware-cpuid-freq=on,-pdpe1gb,"
+                 "+ssse3,+sse4.2,+popcnt,+avx,+avx2,+aes,+fma,+bmi1,+bmi2,+smep,"
+                 "+xsave,+xsaveopt,+xgetbv1,+movbe,+rdrand,check"),
+            # dockur's configureSmp() describes cores as a topology macOS understands
+            # rather than leaving qemu to invent one: sockets=1,dies=1,cores=N,threads=1.
+            smp_topology=f"{self.args.cpus},sockets=1,dies=1,cores={self.args.cpus},threads=1",
             extra_args=[
+                # From boot.sh. The first two stop the guest hanging at a black screen
+                # when macOS asks for a sleep state this firmware cannot perform; the
+                # third is the PCIe hotplug bridge that macOS mishandles on ICH9.
                 "-global", "ICH9-LPC.disable_s3=1",
                 "-global", "ICH9-LPC.disable_s4=1",
+                "-global", "ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off",
+                # macOS reads the clock from the RTC and expects UTC, as Apple hardware
+                # provides. Without this the guest starts at the host's local time
+                # interpreted as UTC and every timestamp in the installer is wrong.
+                "-rtc", "base=utc",
+                # SMBIOS type 2 is the baseboard record. macOS's platform check reads it
+                # and a guest without one reports an unknown board.
+                "-smbios", "type=2",
+                # The PCIe SVGA device, matching dockur's VGA_ARG.
+                "-device", "vmware-svga",
             ],
         )
 
