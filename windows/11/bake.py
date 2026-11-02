@@ -165,12 +165,16 @@ class Baker:
             log("setup may not see the disk; continuing without the driver CD")
             return None
 
-    def build_boot_iso(self, clean: str) -> str:
-        """Rebuild the ISO with the answer file, substituting the placeholders.
+    def build_answer_iso(self) -> str:
+        """Build the small ISO that carries Autounattend.xml.
+
+        The install ISO is NOT touched. Windows setup reads the answer file from the
+        root of any removable drive, so a second CD is enough - see lib/winiso.py for
+        why that beats remastering 7.2 GiB, and for the 448 KB ISO that proved it.
 
         The template carries __ADMIN_PASSWORD__ and __COMPUTER_NAME__ rather than
-        values so that the password is not in the repository and the machine name is
-        not the same in every bake. The substitution happens here, into a copy, so
+        values, so the password is not in the repository and the machine name is not
+        the same in every bake. The substitution happens here, into a copy, so
         windows/11/answer/ stays a template.
         """
         staging = os.path.join(self.work, "answer")
@@ -195,8 +199,7 @@ class Baker:
             with open(os.path.join(staging, entry), "w", encoding="utf-8", newline=newline) as fh:
                 fh.write(text)
 
-        out = os.path.join(self.work, "boot.iso")
-        return winiso.rebuild(clean, staging, out)
+        return winiso.answer_iso(staging, os.path.join(self.work, "answer.iso"))
 
     # -- the machine ----------------------------------------------------------
 
@@ -260,7 +263,7 @@ class Baker:
         log(f"verifying the edition for index {pin['index']}")
         wim.check_iso(clean, pin["index"], pin["edition"], forbid=pin.get("forbid"))
 
-        boot_iso = self.build_boot_iso(clean)
+        answer = self.build_answer_iso()
         virtio = self.fetch_virtio()
 
         if os.path.exists(self.disk):
@@ -282,8 +285,12 @@ class Baker:
             rdp_port=self.args.rdp_port,
         )
 
+        # Three CDs at most, and the order matters only for the boot device: the
+        # install ISO is first so the firmware boots it. The answer CD is small and
+        # its only job is to be a removable drive with Autounattend.xml at the root.
         drives = [
-            "-drive", f"file={boot_iso},media=cdrom,readonly=on",
+            "-drive", f"file={clean},media=cdrom,readonly=on",
+            "-drive", f"file={answer},media=cdrom,readonly=on",
             "-drive", f"file={self.disk},if=virtio,format=qcow2",
         ]
         if virtio:

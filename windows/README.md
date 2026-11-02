@@ -25,6 +25,35 @@ setup itself, in three passes.
 `answer/Autounattend.xml` is the entire guest-side contract. Nothing else runs inside
 the guest - no `SetupComplete.cmd`, no `$OEM$` tree.
 
+## How the answer file reaches setup
+
+**A second CD, not a remastered install ISO.**
+
+Microsoft's documented answer-file search order puts removable read-only media at the
+root of the drive as item 5, and requires only that the file be named
+`Autounattend.xml`:
+
+> | 5 | Removable read-only media in order of drive letter, at the root of the drive. |
+> The name of the answer file must be Autounattend.xml, and must be located at the
+> root of the drive. |
+
+So the bake attaches two CDs: the untouched Windows ISO as the boot device, and a
+few-hundred-kilobyte ISO whose root holds the answer file. `lib/winiso.py` builds the
+second one.
+
+The alternative - dockur's approach - is to put the answer file inside the install
+ISO. Its own source shows what that costs, because it does not actually rewrite the
+install ISO either: `install.sh` keeps the original (`useOriginalImage`) and puts the
+automation on a separate `setup.img`. The comment there says it plainly:
+
+> Bootable ISOs can be reused unchanged with the generated setup image.
+
+An earlier version of this bake tried the full remaster anyway, with
+`xorriso -indev ... -outdev ... -map <one file>`, and produced a **448 KB** ISO: a
+boot record and the answer file, with none of the installer's files. qemu started it,
+found nothing to boot, and the bake sat at the arrival check until it was cancelled.
+That is the failure the second-CD design cannot have.
+
 ## Why there is no script in the guest
 
 Two things used to justify a staged script, and both are cheaper to check from the

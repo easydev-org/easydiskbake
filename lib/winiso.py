@@ -1,51 +1,40 @@
-"""Put Autounattend.xml into a Windows ISO without breaking its boot records.
+"""Put Autounattend.xml where Windows setup will find it.
 
-    from winiso import rebuild
-    rebuild("clean.iso", "windows/11/answer", "boot.iso")
+    from winiso import answer_iso
+    answer_iso("windows/11/answer", "boot.iso")   # a few hundred KB
 
-WHY THE ISO HAS TO BE REBUILT AT ALL
+WHY NOT REBUILD THE WINDOWS ISO
 
-Windows setup looks for \\Autounattend.xml at the ROOT of the boot medium and
-nowhere else. It cannot be passed on the kernel command line (setup.exe is started
-by bootmgr, not by a kernel we control), and there is no second-CD convention for
-it. So the file has to be inside the ISO.
+The obvious approach is to add \\Autounattend.xml to the install ISO's root and
+rebuild it. That is what dockur/windows does, and it costs a full remaster of 7.2 GiB -
+xorriso cannot add a file to an ISO in place, so the whole image is read and written
+again.
 
-WHY xorriso AND NOT genisoimage
+The first version of this module tried the short form of it (`-indev` + `-outdev` plus
+one `-map`) and produced a 448 KB ISO: a boot record with the answer file and none of
+the installer's files. qemu started it happily, found nothing to boot, and the bake
+then sat at the arrival check until it was cancelled. The size was logged, which is
+the only reason it was caught as quickly as it was.
 
-dockur/windows uses genisoimage and has to do three things by hand that are easy
-to get subtly wrong:
+WINDOWS DOES NOT REQUIRE THE FILE ON THE INSTALL MEDIUM
 
-  1. extract the El Torito boot image with `dd` at an offset reported by isoinfo,
-     because genisoimage cannot inherit one;
-  2. re-specify `-b boot.img -eltorito-alt-boot -eltorito-boot efisys.bin` and
-     every `-no-emul-boot` / `-boot-load-size` flag, for both the BIOS and the
-     UEFI entry;
-  3. pick a different set of those flags for legacy media.
+Setup looks for \\Autounattend.xml at the root of ANY removable drive it can see. The
+install ISO is one CD; an answer CD is another. So a second, tiny ISO is enough, and
+it is:
 
-xorriso reads the source ISO's boot records and writes them back unchanged:
+    a few hundred KB written instead of 7.2 GiB
+    seconds instead of minutes
+    no dependency on El Torito being reproduced correctly
 
-    -boot_image any keep
+This is the documented way to supply an answer file for a read-only install source,
+not a trick. And the failure it removes is larger than the one it adds: a remastered
+install ISO that silently lost a boot record is a class of bug this cannot have.
 
-so the rebuilt image boots exactly like the original, and there is no boot image
-lying around as a separate file that could be truncated. The bake image already
-carries xorriso (see Containerfile), so this is strictly less code and strictly
-fewer ways to fail.
+WHAT IT DOES NOT DO
 
-It is also much faster: xorriso copies, genisoimage re-encodes.
-
-WHY THIS IS PYTHON NOW
-
-$OEM$ and $$ are literal directory names on the Windows side that mean something
-to setup. In shell they have to be written "\\$OEM\\$/\\$\\$/Setup/Scripts" and two
-of those backslashes are inside a double-quoted string inside a function inside a
-script - the exact shape that fix_grub.py's docstring lists four failures of. In
-Python the path is "$OEM$/$$/Setup/Scripts" and there is no layer to eat it.
-
-WHAT IS NOT DONE
-
-The ISO is not fully extracted and re-mastered. Only the answer file and the setup
-scripts are added, so every other byte comes from the original image and its
-layout is preserved.
+No $OEM$ tree. Everything a guest-side SetupComplete.cmd would do is either in the
+answer file already or checked from the host - see windows/README.md. A guest that
+stages no script is a guest with one fewer way to fail.
 """
 
 from __future__ import annotations
@@ -54,15 +43,6 @@ import os
 import shutil
 import subprocess
 import tempfile
-
-# Kept as documentation of the convention this bake does NOT use any more.
-#
-# Setup reads $OEM$/$$/Setup/Scripts/SetupComplete.cmd if it exists, which is how
-# dockur stages guest-side validation. This bake deliberately stages nothing: the
-# edition is verified from the host with lib/wim.py before the guest boots, and the
-# arrival is verified on port 3389. See wim.py's docstring for why that is better
-# than asking the guest.
-OEM_SCRIPTS = "$OEM$/$$/Setup/Scripts"
 
 
 def log(msg: str) -> None:
@@ -73,104 +53,87 @@ class IsoError(RuntimeError):
     pass
 
 
-def _xorriso(*args: str, check: bool = True) -> subprocess.CompletedProcess:
-    if not shutil.which("xorriso"):
-        raise IsoError("xorriso is not installed; it is in the bake image (see Containerfile)")
-    result = subprocess.run(["xorriso", *args], capture_output=True, text=True)
-    if check and result.returncode != 0:
-        raise IsoError(
-            f"xorriso {' '.join(args)} failed ({result.returncode}):\n"
-            f"{result.stdout[-2000:]}\n{result.stderr[-2000:]}"
-        )
-    return result
+def answer_iso(answer_dir: str, out: str, *, label: str = "ANSWER") -> str:
+    """Build a small ISO whose root holds Autounattend.xml.
 
-
-def _stage(answer_dir: str) -> str:
-    """Build the overlay tree that gets merged onto the ISO root.
-
-    Only Autounattend.xml. There is deliberately no $OEM$ tree here: everything a
-    guest script would have done is either already in the answer file (RDP, the
-    account, the OOBE skips) or is verified from the host instead (the edition,
-    via lib/wim.py; the arrival, via port 3389).
-
-    A guest that needs no staged script is a guest with one fewer way to fail, and
-    the failures it would have had are not lost - they moved to a place where they
-    are cheaper to see.
+    The volume label matters more than it looks: setup scans removable media, and a
+    label of ANSWER makes the bake's own log readable when more than one CD is
+    attached. It does not affect which file is found.
     """
-    overlay = tempfile.mkdtemp(prefix="winiso-")
-
     source = os.path.join(answer_dir, "Autounattend.xml")
     if not os.path.isfile(source):
         raise IsoError(f"no Autounattend.xml in {answer_dir}")
-    shutil.copyfile(source, os.path.join(overlay, "Autounattend.xml"))
 
-    log("overlay: Autounattend.xml (no $OEM$: the guest stages no scripts)")
-    return overlay
+    if not shutil.which("xorriso"):
+        raise IsoError("xorriso is not installed; it is in the bake image (see Containerfile)")
 
-
-def rebuild(source: str, answer_dir: str, out: str) -> str:
-    """Merge the answer file into `source` and write `out`.
-
-    The result is verified before returning: it must contain the answer file at
-    its root and it must still have an El Torito boot record. Both failures are
-    otherwise invisible until a VM boots to nothing and hangs, which is the most
-    expensive way to find out.
-    """
-    if not os.path.isfile(source) or os.path.getsize(source) == 0:
-        raise IsoError(f"source ISO missing or empty: {source}")
-
-    # xorriso refuses to overwrite, and a stale output would be published as if
-    # it were this build.
-    if os.path.exists(out):
-        os.unlink(out)
-
-    overlay = _stage(answer_dir)
+    stage = tempfile.mkdtemp(prefix="answeriso-")
     try:
-        log(f"rebuilding {source} -> {out}")
-        result = _xorriso(
-            "-indev", source,
-            "-outdev", out,
-            # The whole trick: inherit the source's BIOS and UEFI boot records
-            # rather than re-specifying them.
-            "-boot_image", "any", "keep",
-            "-overwrite", "on",
-            "-map", os.path.join(overlay, "Autounattend.xml"), "/Autounattend.xml",
-            "-commit",
+        shutil.copyfile(source, os.path.join(stage, "Autounattend.xml"))
+
+        if os.path.exists(out):
+            os.unlink(out)
+
+        log(f"building the answer ISO -> {out}")
+        result = subprocess.run(
+            [
+                "xorriso", "-outdev", out,
+                "-volid", label,
+                "-joliet", "on", "-rock", "on",
+                # -map on a directory inserts its whole subtree; the destination "/"
+                # puts the file at the image root, which is where setup looks.
+                "-map", stage, "/",
+                "-commit",
+            ],
+            capture_output=True, text=True,
         )
         for line in result.stdout.splitlines():
             if line.strip():
                 log(line)
+        if result.returncode != 0:
+            raise IsoError(
+                f"xorriso failed ({result.returncode}):\n"
+                f"{result.stdout[-1500:]}\n{result.stderr[-1500:]}"
+            )
     finally:
-        shutil.rmtree(overlay, ignore_errors=True)
+        shutil.rmtree(stage, ignore_errors=True)
 
     if not os.path.exists(out) or os.path.getsize(out) == 0:
         raise IsoError("xorriso produced no output")
 
     _verify(out)
-    log(f"ok: {os.path.getsize(out)} bytes, answer file at root, boot record preserved")
+    log(f"ok: {os.path.getsize(out)} bytes, Autounattend.xml at the root")
     return out
 
 
 def _verify(path: str) -> None:
-    listing = _xorriso("-indev", path, "-find", "/Autounattend.xml", "-exec", "lsdl", check=False)
-    if "Autounattend" not in (listing.stdout + listing.stderr):
+    """The file has to be at the root, and the image has to be non-trivial.
+
+    A mistake here means setup waits at its first pane for the whole timeout, which
+    is the most expensive possible way to learn it. Both checks are sub-second.
+    """
+    if os.path.getsize(path) < 2048:
         raise IsoError(
-            "THE REBUILT ISO DOES NOT CONTAIN /Autounattend.xml\n"
-            "setup would sit at the first pane forever. Refusing to continue."
+            f"the answer ISO is {os.path.getsize(path)} bytes; "
+            f"an ISO with one file cannot be that small"
         )
 
-    torito = _xorriso("-indev", path, "-report_el_torito", "plain", check=False)
-    if "el torito" not in (torito.stdout + torito.stderr).lower():
+    listing = subprocess.run(
+        ["xorriso", "-indev", path, "-find", "/", "-maxdepth", "1", "-exec", "lsdl"],
+        capture_output=True, text=True,
+    )
+    if "Autounattend" not in listing.stdout:
         raise IsoError(
-            "THE REBUILT ISO HAS NO EL TORITO BOOT RECORD\n"
-            "a rebuild that dropped it produces an image nothing boots from, and the\n"
-            "failure looks like the VM hung."
+            "the answer ISO does not contain /Autounattend.xml at its root; "
+            "setup would wait at the first pane. Listing was:\n"
+            + listing.stdout[:800]
+            + listing.stderr[:400]
         )
 
 
 if __name__ == "__main__":
     import sys
 
-    if len(sys.argv) != 4:
-        raise SystemExit("usage: winiso.py <clean.iso> <answer-dir> <out.iso>")
-    rebuild(sys.argv[1], sys.argv[2], sys.argv[3])
+    if len(sys.argv) != 3:
+        raise SystemExit("usage: winiso.py <answer-dir> <out.iso>")
+    answer_iso(sys.argv[1], sys.argv[2])
