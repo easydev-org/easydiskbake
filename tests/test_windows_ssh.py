@@ -113,7 +113,8 @@ class GuestIsTheBakes(unittest.TestCase):
     """This stage boots the disk the bake produced, so it needs the bake's machine."""
 
     def test_it_uses_the_shared_vm_shape(self):
-        source = open(os.path.join(WINDOWS11, "ssh.py"), encoding="utf-8").read()
+        with open(os.path.join(WINDOWS11, "ssh.py"), encoding="utf-8") as fh:
+            source = fh.read()
         self.assertIn("vm.Shape(", source)
         self.assertIn("vm.Guest(", source)
 
@@ -123,7 +124,8 @@ class GuestIsTheBakes(unittest.TestCase):
         A second QMP client would be a second place to fix the atomic key pair, and that
         bug is exactly what made the Windows bake open a Start menu.
         """
-        source = open(os.path.join(WINDOWS11, "ssh.py"), encoding="utf-8").read()
+        with open(os.path.join(WINDOWS11, "ssh.py"), encoding="utf-8") as fh:
+            source = fh.read()
         self.assertIn("import qmp as qmpmod", source)
         self.assertIn("qmpmod.key_combo", source)
 
@@ -133,10 +135,140 @@ class GuestIsTheBakes(unittest.TestCase):
         A run that fails half way leaves a disk with a half-installed OpenSSH; re-running
         from the untouched gold disk is the only cheap recovery.
         """
-        source = open(os.path.join(WINDOWS11, "ssh.py"), encoding="utf-8").read()
+        with open(os.path.join(WINDOWS11, "ssh.py"), encoding="utf-8") as fh:
+            source = fh.read()
         self.assertIn('"-b"', source)
         self.assertIn("work", source)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Devtools(unittest.TestCase):
+    """The third stage: MSVC, the Windows SDK, the .NET SDK.
+
+    easysandbox-windows has run this four times and its workflow publishes the result
+    under the tag `dev`. The choices below are that repository's measurements, and each
+    one replaced something that failed.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location(
+            "windows_devtools", os.path.join(WINDOWS11, "devtools.py"))
+        cls.devtools = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.devtools)
+
+    def package(self, pid):
+        for entry in self.devtools.PACKAGES:
+            if entry[0] == pid:
+                return entry
+        return None
+
+    def test_buildtools_is_pinned_and_carries_the_workload(self):
+        """NOT the evergreen bootstrapper, and NOT whatever winget resolves by default.
+
+        17.9.7, what a stale index returns, caps supported OS at 10.0.22000; this guest is
+        10.0.26200 and every component is marked "not applicable". vs_BuildTools.exe got
+        further - it fetched 17.14 - and then produced an empty extraction directory.
+        winget carries 17.14.44, whose manifest has no such cap.
+        """
+        entry = self.package("Microsoft.VisualStudio.2022.BuildTools")
+        self.assertIsNotNone(entry)
+        _pid, version, override, why = entry
+        self.assertEqual(version, "17.14.44")
+        self.assertIn("Microsoft.VisualStudio.Workload.VCTools", override)
+        self.assertIn("--includeRecommended", override)
+        self.assertIn("manifest", why.lower())
+
+    def test_powershell_is_installed_last(self):
+        """Its MSI can drop the ssh session it is installed over.
+
+        Anything scheduled after it would run over a connection that no longer exists, and
+        the symptom is a later package reported as missing rather than an error here.
+        """
+        ids = [p[0] for p in self.devtools.PACKAGES]
+        self.assertEqual(ids[-1], "Microsoft.PowerShell")
+
+    def test_the_dotnet_sdk_is_installed(self):
+        # VCTools does not bring one, and a job that runs `dotnet build` needs it.
+        ids = [p[0] for p in self.devtools.PACKAGES]
+        self.assertIn("Microsoft.DotNet.SDK.10", ids)
+
+    def test_the_windows_sdk_is_installed(self):
+        ids = [p[0] for p in self.devtools.PACKAGES]
+        self.assertIn("Microsoft.WindowsSDK.10.0.26100", ids)
+
+    def test_verification_compiles_something(self):
+        """An installer's exit code says a program ran, not that a compiler exists.
+
+        The check is a real compile through vcvars64 plus a dotnet version, and both
+        scripts are shipped beside this module rather than embedded.
+        """
+        for name in ("msvc-check.ps1", "clean.ps1"):
+            path = os.path.join(WINDOWS11, name)
+            self.assertTrue(os.path.isfile(path), name)
+
+        with open(os.path.join(WINDOWS11, "msvc-check.ps1"), encoding="utf-8") as fh:
+            source = fh.read()
+        # vswhere is asked for the component, not the product: the product can be present
+        # with no C++ tools.
+        self.assertIn("Microsoft.VisualStudio.Component.VC.Tools.x86.x64", source)
+        self.assertIn("COMPILE_OK", source)
+
+    def test_an_override_goes_through_a_batch_file(self):
+        """The override string cannot survive ssh -> cmd -> winget; the quotes are eaten.
+
+        Same failure the ssh stage records for its own commands, and the same cure: write
+        the line to a file, copy it up, run it by path.
+        """
+        with open(os.path.join(WINDOWS11, "devtools.py"), encoding="utf-8") as fh:
+            source = fh.read()
+        self.assertIn("--override", source)
+        self.assertIn(".bat", source)
+        self.assertIn("scp_to", source)
+
+    def test_cleaning_is_opt_in_and_verifiable(self):
+        """The disk ships whatever this run left on it.
+
+        Silence is not success: clean.ps1 ends with CLEAN_DONE, and without the marker the
+        step failed and the disk still carries its build history.
+        """
+        with open(os.path.join(WINDOWS11, "clean.ps1"), encoding="utf-8") as fh:
+            source = fh.read()
+        self.assertIn("CLEAN_DONE", source)
+        # Zeroing free space is what makes qemu-img convert smaller at all: deleting a file
+        # marks its clusters free and leaves the bytes, and convert only skips zeroes.
+        self.assertIn("zero.fill", source)
+        self.assertIn("Write", source)
+
+    def test_cleaning_keeps_the_vs_payload_cache(self):
+        """A repair or update needs it. Removing it saves space and breaks the product."""
+        with open(os.path.join(WINDOWS11, "clean.ps1"), encoding="utf-8") as fh:
+            source = fh.read()
+        self.assertIn("Visual Studio\\Packages", source)
+
+
+class DevWorkflow(unittest.TestCase):
+    """The workflow is the contract: which disk in, which tag out."""
+
+    def source(self):
+        path = os.path.join(HERE, ".github", "workflows", "bake-windows-dev.yml")
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_it_starts_from_the_ssh_disk(self):
+        source = self.source()
+        self.assertIn("windows11-ssh.qcow2", source)
+        self.assertIn("pull.py", source)
+
+    def test_it_publishes_a_dev_kind(self):
+        # The chain's tags are base, ssh, dev - and the third is what easysandbox calls it.
+        source = self.source()
+        self.assertIn("windows-dev", source)
+
+    def test_it_installs_sshpass(self):
+        # A password prompt cannot be answered in a job, and this stage logs in rather
+        # than looking at a screen.
+        self.assertIn("sshpass", self.source())
