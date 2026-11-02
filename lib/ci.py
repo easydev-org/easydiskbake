@@ -187,7 +187,9 @@ def install_oras() -> None:
     Dockerfile for them.
     """
     if shutil.which("oras"):
-        log(f"oras already installed: {subprocess.run(['oras','version'], capture_output=True, text=True).stdout.splitlines()[0]}")
+        probe = subprocess.run(["oras", "version"], capture_output=True, text=True)
+        first = probe.stdout.splitlines()[0] if probe.stdout else "unknown version"
+        log(f"oras already installed: {first}")
         return
 
     machine = platform.machine().lower()
@@ -245,27 +247,51 @@ def install_oras() -> None:
 
 
 def login(registry: str) -> None:
-    """docker login with the workflow token, without a shell pipe.
+    """Log in to a registry for the tools that will push to it.
 
-    `echo "$TOKEN" | docker login --password-stdin` is the usual incantation and it
-    puts the token on a pipe that any process in the job can read. --password-stdin
-    still takes a pipe, so it is fed from a private temporary file instead.
+    ORAS FIRST, docker SECOND.
+
+    Inside the bake image there is no docker CLI - the image is the environment qemu
+    runs in, not a build host - so `docker login` fails with
+
+        FileNotFoundError: [Errno 2] No such file or directory: 'docker'
+
+    oras carries its own login and writes the same credential store, so it covers the
+    case that matters here: everything this repository pushes is a bare file pushed
+    with oras. docker is tried second for a host runner, where the CLI exists and an
+    image build may need the session.
+
+    The token is fed through stdin rather than a shell pipe: `echo "$TOKEN" | docker
+    login` puts it where any process in the job can read it.
     """
     token = os.environ.get("GITHUB_TOKEN")
     actor = os.environ.get("GITHUB_ACTOR")
     if not token or not actor:
         raise Failed("GITHUB_TOKEN and GITHUB_ACTOR must be set")
 
-    result = subprocess.run(
-        ["docker", "login", registry, "--username", actor, "--password-stdin"],
-        input=token.encode(), capture_output=True,
-    )
-    if result.returncode != 0:
+    attempts = []
+    if shutil.which("oras"):
+        attempts.append((["oras", "login", registry, "--username", actor,
+                          "--password-stdin"], "oras"))
+    if shutil.which("docker"):
+        attempts.append((["docker", "login", registry, "--username", actor,
+                          "--password-stdin"], "docker"))
+
+    if not attempts:
         raise Failed(
-            f"docker login to {registry} failed: "
-            f"{result.stderr.decode('utf-8', 'replace')[:400]}"
+            "neither oras nor docker is installed, so nothing can log in to "
+            f"{registry}.\nThe image carries oras; see scripts/install in lib/ci.py."
         )
-    log(f"logged in to {registry} as {actor}")
+
+    errors = []
+    for argv, name in attempts:
+        result = subprocess.run(argv, input=token.encode(), capture_output=True)
+        if result.returncode == 0:
+            log(f"logged in to {registry} as {actor} (via {name})")
+            return
+        errors.append(f"{name}: {result.stderr.decode('utf-8', 'replace')[:300]}")
+
+    raise Failed(f"could not log in to {registry}:\n" + "\n".join(errors))
 
 
 def lowercase_repository() -> str:

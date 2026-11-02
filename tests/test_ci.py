@@ -140,6 +140,52 @@ class Repository(unittest.TestCase):
                 ci.lowercase_repository()
 
 
+class Login(unittest.TestCase):
+    """oras first, docker second - the image has no docker CLI."""
+
+    def test_uses_oras_when_docker_is_absent(self):
+        with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "t", "GITHUB_ACTOR": "a"}), \
+             mock.patch("shutil.which", side_effect=lambda n: "/usr/bin/oras" if n == "oras" else None), \
+             mock.patch("subprocess.run") as run:
+            run.return_value = mock.Mock(returncode=0, stderr=b"")
+            ci.login("ghcr.io")
+        self.assertEqual(run.call_args[0][0][0], "oras")
+
+    def test_prefers_oras_when_both_exist(self):
+        # oras covers every push this repository makes; docker is the fallback for a
+        # host runner where an image build needs the session.
+        with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "t", "GITHUB_ACTOR": "a"}), \
+             mock.patch("shutil.which", return_value="/usr/bin/x"), \
+             mock.patch("subprocess.run") as run:
+            run.return_value = mock.Mock(returncode=0, stderr=b"")
+            ci.login("ghcr.io")
+        self.assertEqual(run.call_args[0][0][0], "oras")
+
+    def test_falls_back_to_docker(self):
+        with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "t", "GITHUB_ACTOR": "a"}), \
+             mock.patch("shutil.which", side_effect=lambda n: "/usr/bin/docker" if n == "docker" else None), \
+             mock.patch("subprocess.run") as run:
+            run.return_value = mock.Mock(returncode=0, stderr=b"")
+            ci.login("ghcr.io")
+        self.assertEqual(run.call_args[0][0][0], "docker")
+
+    def test_neither_tool_is_a_clear_failure(self):
+        with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "t", "GITHUB_ACTOR": "a"}), \
+             mock.patch("shutil.which", return_value=None):
+            with self.assertRaises(ci.Failed) as ctx:
+                ci.login("ghcr.io")
+        self.assertIn("oras", str(ctx.exception))
+
+    def test_the_token_goes_through_stdin(self):
+        # A shell pipe puts it where any process in the job can read it.
+        with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "secret-token", "GITHUB_ACTOR": "a"}), \
+             mock.patch("shutil.which", return_value="/usr/bin/oras"), \
+             mock.patch("subprocess.run") as run:
+            run.return_value = mock.Mock(returncode=0, stderr=b"")
+            ci.login("ghcr.io")
+        self.assertEqual(run.call_args.kwargs["input"], b"secret-token")
+
+
 class Summary(unittest.TestCase):
 
     def test_appends_to_the_file_when_it_exists(self):
