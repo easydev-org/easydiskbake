@@ -375,6 +375,7 @@ class Baker:
 
         deadline = time.time() + self.args.timeout
         started = time.time()
+        last_report = started
         seen: set[str] = set()
         reboots = 0
         last_boot_marker = ""
@@ -429,6 +430,20 @@ class Baker:
 
             if reboots == 0:
                 seen.add("no hard-disk boot yet")
+
+            # --- a heartbeat, because silence is not evidence of progress --------
+            #
+            # The first run of this sat for eleven minutes with no output after
+            # "[vm] qemu pid 68" and there was no way to tell a slow install from a
+            # guest that never started: the only log lines were state changes, and
+            # nothing had changed. One line a minute with the numbers that decide the
+            # outcome costs nothing and answers that immediately.
+            if time.time() - last_report >= 60:
+                last_report = time.time()
+                elapsed = time.time() - started
+                log(f"waiting {elapsed:.0f}s: {reboots} disk boot(s), "
+                    f"console {len(text)} bytes, rdp not answering yet")
+
             time.sleep(5)
 
         log(f"timed out after {self.args.timeout}s")
