@@ -78,20 +78,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # A plain run: step, not log-stream. This decides whether the leg runs at all,
+      # and a composite action's internal $GITHUB_OUTPUT does not reach the calling
+      # step's outputs without an explicit outputs: mapping - which is why the first
+      # version of this skipped every leg in six seconds and reported success.
+      #
+      # There is no long-running work to stream here: it is a string comparison.
       - name: should this release run
         id: want
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
-        with:
-          token: ${{ github.token }}
-          name: macos-want-${{ matrix.name }}
-          interval: "10"
-          command: |
-            set -euo pipefail
-            python3 lib/ci.py select \
-              --wanted "${{ inputs.releases || '14,15,26' }}" \
-              --release "${{ matrix.release }}" \
-              --name "${{ matrix.name }}" \
-              --output-key run
+        run: |
+          set -euo pipefail
+          python3 lib/ci.py select \
+            --wanted "${{ inputs.releases || '14,15,26' }}" \
+            --release "${{ matrix.release }}" \
+            --name "${{ matrix.name }}" \
+            --output-key run
 
       - name: fetch and publish
         if: steps.want.outputs.run == 'true'
