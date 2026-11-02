@@ -15,6 +15,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib"))
 
@@ -30,6 +31,35 @@ class MissingInput(unittest.TestCase):
                 winiso.answer_iso(empty, os.path.join(empty, "out.iso"))
         finally:
             shutil.rmtree(empty, ignore_errors=True)
+
+
+class WinPeDrivers(unittest.TestCase):
+    """$WinPEDriver$ is what makes the virtio disk visible during windowsPE.
+
+    Without it setup's drive list is empty, and the answer file's WillShowUI=OnError
+    turns that into a dialog nobody clicks. The first full bake stopped exactly there:
+    console output grew to 4273 bytes and then nothing for fifteen minutes.
+    """
+
+    def test_the_directory_name_is_exact(self):
+        # Setup scans for this literal name. `$WinPeDriver$` or `WinPEDriver` is a
+        # directory setup ignores.
+        self.assertEqual(winiso.WINPE_DRIVER_DIR, "$WinPEDriver$")
+
+    def test_viostor_is_among_the_drivers(self):
+        # viostor is the virtio-blk driver; without it the disk is invisible no matter
+        # what else is present.
+        self.assertIn("viostor", winiso.WINPE_DRIVERS)
+
+    def test_missing_is_an_error_not_a_warning(self):
+        listing = "Autounattend.xml"
+        with mock.patch("os.path.getsize", return_value=4096), \
+             mock.patch("subprocess.run") as run:
+            run.return_value = mock.Mock(stdout=listing, stderr="")
+            with self.assertRaises(winiso.IsoError) as ctx:
+                winiso._verify("x.iso", want_drivers=True)
+        self.assertIn("WinPEDriver", str(ctx.exception))
+        self.assertIn("no disks", str(ctx.exception))
 
 
 class BuildArgs(unittest.TestCase):

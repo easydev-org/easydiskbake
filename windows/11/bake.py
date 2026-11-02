@@ -144,7 +144,7 @@ class Baker:
                 f"Without the driver CD setup cannot see the disk it is installing to."
             ) from exc
 
-    def build_answer_iso(self) -> str:
+    def build_answer_iso(self, virtio: str) -> str:
         """Build the small ISO that carries Autounattend.xml.
 
         The install ISO is NOT touched. Windows setup reads the answer file from the
@@ -178,7 +178,11 @@ class Baker:
             with open(os.path.join(staging, entry), "w", encoding="utf-8", newline=newline) as fh:
                 fh.write(text)
 
-        return winiso.answer_iso(staging, os.path.join(self.work, "answer.iso"))
+        # The drivers ride on the answer CD, in $WinPEDriver$, because windowsPE will
+        # not see a virtio disk without them - see lib/winiso.py.
+        return winiso.answer_iso(
+            staging, os.path.join(self.work, "answer.iso"), drivers=virtio,
+        )
 
     # -- the machine ----------------------------------------------------------
 
@@ -259,8 +263,10 @@ class Baker:
         log(f"verifying the edition for index {pin['index']}")
         wim.check_iso(clean, pin["index"], pin["edition"], forbid=pin.get("forbid"))
 
-        answer = self.build_answer_iso()
+        # virtio first: the answer CD carries the drivers, so it cannot be built until
+        # the driver ISO is on disk.
         virtio = self.fetch_virtio()
+        answer = self.build_answer_iso(virtio)
 
         if os.path.exists(self.disk):
             os.unlink(self.disk)
@@ -284,12 +290,27 @@ class Baker:
         # Three CDs at most, and the order matters only for the boot device: the
         # install ISO is first so the firmware boots it. The answer CD is small and
         # its only job is to be a removable drive with Autounattend.xml at the root.
+        # THREE CDS AND ONE VIRTIO DISK - the same shape dockur/windows uses.
+        #
+        # The disk is virtio-blk. windowsPE ships no virtio driver, so setup cannot see
+        # it on its own; the first full run stopped exactly there - console output grew
+        # to 4273 bytes and then nothing for fifteen minutes, because setup's drive
+        # list was empty and WillShowUI=OnError had put a dialog on the screen.
+        #
+        # VirtualBox's answer is not a different controller, it is $WinPEDriver$: setup
+        # scans removable media for that directory and loads what it finds. The drivers
+        # travel on the answer CD, which keeps the virtio disk at index 0 so the answer
+        # file's DiskID stays correct.
+        #
+        # dockur/windows reaches the same place by another route: it builds a FAT32
+        # image, mounts it as disk 0, and numbers the virtio disk 1. Both work; this one
+        # needs no extra disk and no DiskID shift.
         drives = [
             "-drive", f"file={clean},media=cdrom,readonly=on",
             "-drive", f"file={answer},media=cdrom,readonly=on",
             "-drive", f"file={self.disk},if=virtio,format=qcow2",
-            # Unconditional now: fetch_virtio() either returns a path or exits, because
-            # setup cannot see the disk without these drivers.
+            # The same drivers again, for the installed system to pick up network and
+            # ballooning. Setup only reads $WinPEDriver$ during windowsPE.
             "-drive", f"file={virtio},media=cdrom,readonly=on",
         ]
 
