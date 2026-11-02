@@ -49,6 +49,8 @@ class Kvm(unittest.TestCase):
              mock.patch("os.stat", return_value=fake_stat), \
              mock.patch("os.major", lambda _: 10), mock.patch("os.minor", lambda _: 232), \
              mock.patch("builtins.open", side_effect=fake_open), \
+             mock.patch("os.access", return_value=False), \
+             mock.patch("shutil.which", return_value="/usr/bin/sudo"), \
              mock.patch("subprocess.run") as run:
             run.return_value = mock.Mock(returncode=0, stderr="")
             ci.check_kvm()
@@ -63,6 +65,8 @@ class Kvm(unittest.TestCase):
              mock.patch("os.stat", return_value=fake_stat), \
              mock.patch("os.major", lambda _: 10), mock.patch("os.minor", lambda _: 232), \
              mock.patch("builtins.open", side_effect=PermissionError(13, "denied")), \
+             mock.patch("os.access", return_value=False), \
+             mock.patch("shutil.which", return_value="/usr/bin/sudo"), \
              mock.patch("subprocess.run") as run:
             run.return_value = mock.Mock(returncode=1, stderr="chmod: failed")
             with self.assertRaises(ci.Failed) as ctx:

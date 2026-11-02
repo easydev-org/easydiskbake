@@ -92,10 +92,24 @@ def check_kvm() -> None:
         # willing to run, and the job that can reach this code can already run qemu.
         # Refusing instead would make every bake on a stock runner fail in prepare.
         log(f"{path} is not accessible to uid {os.getuid()} ({exc}); granting 0666")
-        result = subprocess.run(
-            ["sudo", "chmod", "0666", path], capture_output=True, text=True,
-        )
-        if result.returncode != 0:
+        # Try a plain chmod first: in a container job the process is root and the
+        # device arrives via --device, so no escalation is needed and sudo may not even
+        # be installed. A host runner is the other way round.
+        if os.access(path, os.W_OK):
+            os.chmod(path, 0o666)
+            result = None
+        elif shutil.which("sudo"):
+            result = subprocess.run(
+                ["sudo", "chmod", "0666", path], capture_output=True, text=True,
+            )
+        else:
+            raise Failed(
+                f"{path} cannot be opened by uid {os.getuid()}, and neither a direct\n"
+                f"chmod nor sudo is available. The runner needs to expose /dev/kvm; on\n"
+                f"a container job that is `options: --device /dev/kvm`."
+            ) from exc
+
+        if result is not None and result.returncode != 0:
             raise Failed(
                 f"{path} cannot be opened by uid {os.getuid()} and could not be "
                 f"made accessible:\n{result.stderr.strip()[:300]}\n"
@@ -199,8 +213,26 @@ def install_oras() -> None:
     log(f"{os.path.getsize(archive)} bytes")
 
     subprocess.run(["tar", "-xzf", archive, "-C", staging, "oras"], check=True)
-    subprocess.run(["sudo", "install", "-m", "0755",
-                    os.path.join(staging, "oras"), "/usr/local/bin/oras"], check=True)
+
+    # In a container job this runs as root and /usr/local/bin is writable directly.
+    # On a host runner it is not, and sudo exists. Detecting that is cheaper than
+    # requiring sudo everywhere - the bake image does not even ship it, which cost
+    # three jobs a FileNotFoundError before the distinction was written down.
+    target = "/usr/local/bin"
+    binary = os.path.join(staging, "oras")
+    if os.access(target, os.W_OK):
+        shutil.copyfile(binary, os.path.join(target, "oras"))
+        os.chmod(os.path.join(target, "oras"), 0o755)
+    else:
+        if not shutil.which("sudo"):
+            raise Failed(
+                f"{target} is not writable and sudo is not available.\n"
+                f"Inside the bake image this step runs as root; on a host runner it\n"
+                f"needs sudo. Neither is true here, which means the job is running as\n"
+                f"an unprivileged user in an image that does not ship sudo."
+            )
+        subprocess.run(["sudo", "install", "-m", "0755", binary, f"{target}/oras"], check=True)
+
     shutil.rmtree(staging, ignore_errors=True)
 
     result = subprocess.run(["oras", "version"], capture_output=True, text=True)
