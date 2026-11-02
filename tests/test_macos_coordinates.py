@@ -65,6 +65,58 @@ class MeasuredPositions(unittest.TestCase):
         # y=578..595, x=1115..1169.
         self.assertEqual(install.CONTINUE_MENU, (1142, 586))
 
+    def test_the_erase_buttons_are_the_measured_centres(self):
+        """Measured with tesseract --psm 11 on the erase sheet.
+
+            Cancel  x=1027..1101  y=626..666   centre (1064, 646)
+            Erase   x=1123..1187  y=626..666   centre (1155, 646)
+            Done    x=1108..1178  y=591..611   centre (1143, 601)
+
+        (1140, 633) was inside Erase's bounding box and did nothing: the label is drawn
+        at the top of the control and the hit area extends below it. Corners of a box are
+        not where a button is.
+        """
+        self.assertEqual(install.ERASE_CONFIRM, (1155, 646))
+        self.assertEqual(install.ERASE_DONE, (1143, 601))
+
+    def test_the_erase_sheet_is_closed_before_leaving(self):
+        """The completion sheet does not close itself.
+
+        It reports "Erase process is complete. Click Done to continue." and waits. A run
+        that skips the Done leaves the sheet up and every later click lands on it.
+        """
+        with open(os.path.join(MACOS15, "install.py"), encoding="utf-8") as fh:
+            source = fh.read()
+        start = source.index("def select_and_erase")
+        end = source.index("def leave_disk_utility")
+        body = source[start:end]
+        self.assertIn("ERASE_DONE", body)
+        # And the Done comes after the confirm, or it would be pressed on the wrong sheet.
+        self.assertLess(body.index("ERASE_CONFIRM"), body.index("ERASE_DONE"))
+
+    def test_the_disk_is_erased_with_a_lowercase_name(self):
+        """An upper-case character is a shift chord, and typing one does nothing here.
+
+        The first attempt named the disk `M` and watched the field stay empty while
+        reporting success.
+        """
+        self.assertEqual(install.DISK_NAME, install.DISK_NAME.lower())
+        self.assertTrue(install.DISK_NAME.isalnum(), install.DISK_NAME)
+
+    def test_the_target_is_two_ups_from_the_default_selection(self):
+        """Disk Utility opens with the recovery volume selected; disk0 is two rows up.
+
+        Measured by hand on a live guest: after two Ups the detail pane reads
+        "Capacity: 68.72 GB / Child count: 0 / Device: disk0".
+        """
+        with open(os.path.join(MACOS15, "install.py"), encoding="utf-8") as fh:
+            source = fh.read()
+        start = source.index("def select_and_erase")
+        end = source.index("def leave_disk_utility")
+        body = source[start:end]
+        self.assertIn('d.key("up"', body)
+        self.assertIn("range(2)", body)
+
     def test_the_licence_buttons_are_on_the_button_row(self):
         """Measured with `tesseract --psm 6` on the pane the probe stopped at.
 

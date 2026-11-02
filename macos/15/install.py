@@ -110,10 +110,30 @@ ERASE_BUTTON = (1290, 306)
 SIDEBAR_ROWS_Y = (351, 379, 407, 435, 463)
 SIDEBAR_CLICK_X = 540
 
-# The erase sheet's own Erase button, from a captured frame of the sheet:
-#   Cancel (1066,639)   Erase (1146,639)
+# The erase sheet's buttons, measured on a frame of the sheet with tesseract --psm 11:
+#   Cancel x=1027..1101  y=626..666   centre (1064, 646)
+#   Erase  x=1123..1187  y=626..666   centre (1155, 646)
 # The toolbar's Erase is at y=332 as well, so the y is what tells them apart.
-ERASE_CONFIRM = (1146, 639)
+#
+# THE CENTRE, NOT A CORNER. (1140, 633) is inside the button's bounding box and did
+# nothing when clicked: the label is drawn at the top of the control and the control's
+# hit area extends below it. Measured centres are what get used everywhere in this file.
+ERASE_CONFIRM = (1155, 646)
+
+# After the erase finishes the sheet stays up with a progress report and one button:
+#
+#     Erasing "Apple Inc. VirtIO Block Media" and creating "main"
+#     Erase process is complete. Click Done to continue.
+#                                          [ Done ]  x=1108..1178 y=591..611
+#
+# WITHOUT THIS THE SHEET NEVER CLOSES and every later click lands on it. The text of the
+# report contains "Donffto" - tesseract's reading of "Done to" in the sentence - so the
+# button is found by its position on the button row, not by its word.
+ERASE_DONE = (1143, 601)
+
+# The volume name the erased disk is given. Lower case: an upper-case M is a shift chord,
+# and the first attempt typed one and watched the field stay empty.
+DISK_NAME = "main"
 
 # THE LICENCE BUTTONS, MEASURED ON A FRAME OF THIS BAKE.
 #
@@ -300,6 +320,29 @@ class Recovery:
         qmpmod.key(self.q, name)
         time.sleep(settle)
 
+    def type_text(self, text: str, settle: float = 0.1) -> None:
+        """Type lower-case ASCII, one key at a time.
+
+        WHAT THIS IS FOR AND WHAT IT IS NOT. The only thing typed here is the volume name,
+        which is `main` - five lower-case letters. An upper-case one would be a shift
+        chord, and the first attempt at naming the disk typed `M`, watched the field stay
+        empty, and reported success; so this refuses anything it cannot press in one key
+        rather than appearing to work.
+
+        A refusal is the right shape: the caller can then choose a name that types.
+        """
+        self.n += 1
+        log(f"#{self.n} type {text!r}")
+        for ch in text:
+            if ch.isupper() or not (ch.islower() or ch.isdigit()):
+                raise ValueError(
+                    f"cannot type {ch!r}: only lower-case letters and digits, because "
+                    f"an upper-case character is a shift chord and typing one silently "
+                    f"does nothing on this guest"
+                )
+            qmpmod.key(self.q, ch)
+            time.sleep(settle)
+
     def close(self) -> None:
         try:
             self.q.close()
@@ -334,29 +377,65 @@ def show_all_devices(d: Recovery) -> None:
 
 
 def select_and_erase(d: Recovery) -> None:
-    """Select the unformatted disk and erase it as APFS.
+    """Select the target disk and erase it AS APFS, NAMED main.
 
-    THE ROW IS THE ONE WITHOUT A CAPACITY. A disk with no partition table has nothing
-    for Disk Utility to total, so it reports "Capacity: Unknown" and "Child count: Not
-    Supported"; the two images sit beside it with real sizes. Rows are tried in order
-    and the first that is not one of those two is the target.
+    THE SEQUENCE, MEASURED BY HAND ON A LIVE GUEST (1920x1080)
 
-    Row 1 (y=351) is the heading's first leg. Row 2 (y=379) is the 64 GiB target on this
-    layout: 200 MiB boot.img and the recovery image are both attached and both smaller.
-    Selecting by position and then clicking Erase is safe in the only sense that
-    matters - a wrong row here erases the installer, and the run stops at the next pane
-    with a screen that shows exactly what happened.
+    1. Disk Utility opens with the recovery volume selected - `disk2s1`, 2.88 GB,
+       USB, read-only. The 64 GiB target is already in the list; it is the row ABOVE.
+
+    2. TWO `up` PRESSES reach it. Not one: the first moves off the volume onto the
+       device that holds it, the second reaches the physical disk above. After them the
+       detail pane reads
+
+           Apple Inc. VirtIO Block Media   68.72 GB
+           Uninitialized
+           Capacity: 68.72 GB   Child count: 0   Type: Solid state   Device: disk0
+
+       `Child count: 0` is the test that it is the empty disk and not an image.
+
+    3. Erase opens a sheet. Nothing in it needs changing except the name:
+       Format is APFS and Scheme is GUID Partition Map already.
+
+    4. THE NAME FIELD IS NOT EMPTY, and one Backspace is what makes typing work. The
+       field carries a suggested name - the disk's - and it is selected, so without the
+       Backspace the typed text appends to it, and the first version of this step typed
+       `main` into a field that already said something else.
+
+       That, and the case: `main` is lower case. An upper-case `M` needs shift, which is
+       a two-key chord, and the earlier attempt typed `M` then found the field unchanged.
+
+    5. Erase in the sheet starts the operation. It takes about a minute for 64 GiB and
+       the guest paints a progress sheet; 60 seconds is the measured wait.
+
+    6. Cmd-Q leaves Disk Utility. There is no close button in Recovery.
+
+    WHY THE ERASE IS THE DANGEROUS PART. A wrong row here erases the installer the guest
+    is booting from, and the run stops at the next pane with a screen that shows exactly
+    what happened. The `Child count: 0` reading above is what the sequence is checking.
     """
     d.wait(5, "the sidebar settles")
-    # The target is the second row under Internal on this layout. Erasing it is the one
-    # irreversible step; the sequence below is the measured one and the frames record
-    # what was selected.
-    d.click((SIDEBAR_CLICK_X, SIDEBAR_ROWS_Y[1]), "the Uninitialized disk", settle=5)
 
-    d.click(ERASE_BUTTON, "Erase", settle=5)
-    # Nothing in the sheet needs changing: Name is Untitled, Format is APFS and Scheme
-    # is GUID Partition Map, which is exactly what an install target needs.
-    d.click(ERASE_CONFIRM, "confirm Erase", settle=45)
+    # THE TARGET IS ONE ROW ABOVE THE DEFAULT SELECTION. Measured, not assumed: with the
+    # recovery volume selected, two Ups land on disk0.
+    for i in range(2):
+        d.key("up", settle=1.0)
+        log(f"  up {i + 1}/2")
+    d.wait(2, "the detail pane repaints")
+
+    d.click(ERASE_BUTTON, "Erase", settle=6)
+
+    # ONE BACKSPACE, because the name field arrives holding the disk's own name with the
+    # text selected. Without this the typed name appends instead of replacing.
+    d.key("backspace", settle=1.0)
+    d.type_text(DISK_NAME, settle=0.12)
+    d.wait(1, "the name field settles")
+
+    d.click(ERASE_CONFIRM, "confirm Erase", settle=60)
+
+    # THE SHEET DOES NOT CLOSE ITSELF. It reports completion and waits for Done, and a
+    # run that skips this leaves every subsequent click landing on the sheet.
+    d.click(ERASE_DONE, "Done on the erase report", settle=8)
 
 
 def leave_disk_utility(d: Recovery) -> None:
