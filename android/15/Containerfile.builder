@@ -74,6 +74,20 @@ RUN set -eux; \
 
 # cmdline-tools: the only piece of the SDK this image needs. The version is Google's
 # release number; a newer one is a one-line change, and nothing else depends on it.
+#
+# TWO SDK PACKAGES ARE INSTALLED BESIDE IT, AND BOTH ARE LOAD-BEARING:
+#
+#   emulator        avdmanager validates the SDK for it before writing an AVD, and
+#                   lib/publish_android.py starts the guest with it. Without it:
+#                       Error: "emulator" package must be installed!
+#
+#   platform-tools  adb. The arrival check is `adb shell getprop sys.boot_completed`,
+#                   and emulator.stop() shuts the guest down through `adb emu kill` so
+#                   userdata-qemu.img is flushed. Without it the image builds and the
+#                   publish fails at the first adb call.
+#
+# Comments cannot sit inside a line-continued RUN - that is what made the previous
+# revision of this file fail to build with exit code 127 - so they live here.
 ARG CMDLINE_TOOLS=commandlinetools-linux-16111833_latest.zip
 
 ENV ANDROID_SDK_ROOT=/opt/android-sdk \
@@ -88,13 +102,9 @@ RUN set -eux; \
     rm -f /tmp/cmdtools.zip; \
     mv "$ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools" \
        "$ANDROID_SDK_ROOT/cmdline-tools/latest"; \
-    # Accepting the licence here means no workflow has to pipe `yes` into it. The
-    # SDK licence is accepted by using the SDK; this is the same acceptance the
-    # build would otherwise prompt for.
     yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true; \
-    # avdmanager validates the SDK before it writes an AVD and names this package when
-    # it is missing. --no_https is not needed; dl.google.com is https.
-    "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "emulator" >/dev/null
+    "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
+        "emulator" "platform-tools" >/dev/null
 
 # The emulator's own directories are on PATH because lib/publish_android.py starts it:
 # sdkmanager installs the binary into $ANDROID_SDK_ROOT/emulator but does not add it

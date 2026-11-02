@@ -183,7 +183,9 @@ class BuilderImage(unittest.TestCase):
         """
         path = os.path.join(HERE, "android", "15", "Containerfile.builder")
         source = open(path, encoding="utf-8").read()
-        self.assertIn('sdkmanager" "emulator"', source)
+        # The packages are named on the continuation line, so the assertion is on the
+        # pair rather than on one line's shape.
+        self.assertIn('"emulator" "platform-tools"', source)
 
     def test_the_builder_boots_a_guest_because_it_has_to(self):
         """The image was built to not boot anything, and that produced a 1.6 KB image.
@@ -204,6 +206,48 @@ class BuilderImage(unittest.TestCase):
         workflow = open(os.path.join(HERE, ".github", "workflows",
                                      "publish-android.yml"), encoding="utf-8").read()
         self.assertIn("--device /dev/kvm", workflow)
+
+
+class BuilderDockerfile(unittest.TestCase):
+    """A comment inside a line-continued RUN is a shell argument, not a comment.
+
+    The build that failed:
+
+        112 |     # that is exactly the failure this image shipped once.
+        113 | >>> RUN set -eux; \
+        ...
+        process did not complete successfully: exit code: 127
+
+    127 is "command not found" and the command was the comment text. Docker's parser
+    joins the continued lines before /bin/sh sees them, so a '#' in the middle is not
+    a comment to anyone.
+    """
+
+    def test_no_comment_inside_a_continued_run(self):
+        path = os.path.join(HERE, "android", "15", "Containerfile.builder")
+        lines = open(path, encoding="utf-8").read().split("\n")
+
+        in_run = False
+        offenders = []
+        for number, line in enumerate(lines, 1):
+            stripped = line.rstrip()
+            if stripped.startswith("RUN "):
+                in_run = stripped.endswith("\\")
+                continue
+            if in_run:
+                if stripped.lstrip().startswith("#"):
+                    offenders.append((number, stripped.strip()))
+                in_run = stripped.endswith("\\")
+
+        self.assertEqual(offenders, [], f"comments inside a RUN: {offenders}")
+
+    def test_both_sdk_packages_are_installed(self):
+        # emulator: avdmanager refuses to create an AVD without it, and the publish
+        #           starts the guest with it.
+        # platform-tools: adb, which is the arrival check and the shutdown.
+        path = os.path.join(HERE, "android", "15", "Containerfile.builder")
+        source = open(path, encoding="utf-8").read()
+        self.assertIn('"emulator" "platform-tools"', source)
 
 
 class ValidateWithoutWipe(unittest.TestCase):
