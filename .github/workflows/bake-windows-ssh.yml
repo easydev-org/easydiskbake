@@ -34,11 +34,11 @@ on:
     inputs:
       gold_tag:
         description: "The gold disk to build on (a tag in this package)"
-        default: "windows-base-20261102-140018"
+        default: "windows-base-20261102-155400"
       bootstate_run:
         description: "The bake run that produced gold_tag; its artifact carries the
           UEFI variables and TPM state, without which the disk will not boot"
-        default: ""
+        default: "41472136224"
       publish_tag:
         description: "Tag to publish under, or empty for windows-ssh-<stamp>"
         default: ""
