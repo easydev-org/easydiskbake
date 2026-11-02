@@ -341,7 +341,7 @@ class Recovery:
 
         A screendump goes to a file the emulator wrote, so this is one capture and one
         pass over its pixels - no OCR, no template, no interpretation of what is drawn.
-        Both brightness() and wait_for_change() are built on it.
+        Both brightness() and fingerprint() are built on it.
         """
         if not self.frames:
             return None
@@ -476,97 +476,6 @@ class Recovery:
         log(f"  the screen never settled in {timeout:.0f}s"
             + (f" - {why}" if why else ""))
         return False
-
-    def wait_for_change(self, timeout: float = 60.0, settle: float = 5.0,
-                        why: str = "") -> bool:
-        """Wait until the screen looks different from how it looked a moment ago.
-
-        Used after a click that is supposed to replace one pane with another. The
-        installer panes are handed off between processes and are not bounded the way
-        Disk Utility's own painting is, so a fixed sleep is a guess that gets worse the
-        slower the guest is. Run 41477776580 shows the cost:
-
-            16:10:04  click welcome Continue
-            16:10:14  wait for the licence pane (ten seconds, as written)
-            16:10:20  click Agree
-            ...
-            the frame at 16:10:37 still shows "To set up the installation of macOS
-            Sequoia, click Continue."
-
-        Three clicks aimed at the licence pane landed on the welcome pane, and every
-        pane after that was one behind.
-
-        NOT OCR, and not a reading of what the pane says. This is the same evidence the
-        rest of the file uses: the screen changed, so the pane changed. What it says is
-        still somebody else's question.
-
-        A change is also followed by wait_until_drawn(), because "different" on the
-        first sample of a repaint is not "finished" - the caller's next click would land
-        mid-draw, which is the same swallowed click by another route.
-        """
-        before = self.fingerprint()
-        if before is None:
-            # No way to see the screen: the caller's fixed sleep is all there is.
-            return True
-
-        started = time.time()
-        deadline = started + timeout
-        while time.time() < deadline:
-            time.sleep(settle)
-            now = self.fingerprint()
-            if now is not None and now != before:
-                log(f"  the pane changed after {time.time() - started:.0f}s"
-                    + (f" - {why}" if why else ""))
-                self.wait_until_drawn(timeout=60, settle=settle,
-                                      why="the new pane has to finish painting")
-                return True
-        log(f"  the pane did not change in {timeout:.0f}s"
-            + (f" - {why}" if why else ""))
-        return False
-
-    def click(self, xy: tuple[int, int], why: str = "", settle: float = 5.0) -> None:
-        """Click, then wait five seconds before anything else happens.
-
-        FIVE SECONDS BETWEEN EVERY ACTION, NOT TWO. This guest draws a pane in about
-        three seconds on an unaccelerated qemu, and a click that arrives during the
-        repaint is swallowed. Run 41472163272 sent seventeen actions in eighty seconds
-        onto a display that had not painted yet; pacing every action at five seconds is
-        the cheapest way to stop that happening again, and it costs a minute per run.
-        """
-        self.n += 1
-        log(f"#{self.n} click {xy} {why}")
-        qmpmod.click(self.q, *xy)
-        time.sleep(settle)
-        self.shot(f"after-{self.n:02d}-{why}")
-
-    def key(self, name: str, settle: float = 5.0) -> None:
-        self.n += 1
-        log(f"#{self.n} key {name}")
-        qmpmod.key(self.q, name)
-        time.sleep(settle)
-
-    def type_text(self, text: str, settle: float = 0.3) -> None:
-        """Type lower-case ASCII, one key at a time.
-
-        WHAT THIS IS FOR AND WHAT IT IS NOT. The only thing typed here is the volume name,
-        which is `main` - five lower-case letters. An upper-case one would be a shift
-        chord, and the first attempt at naming the disk typed `M`, watched the field stay
-        empty, and reported success; so this refuses anything it cannot press in one key
-        rather than appearing to work.
-
-        A refusal is the right shape: the caller can then choose a name that types.
-        """
-        self.n += 1
-        log(f"#{self.n} type {text!r}")
-        for ch in text:
-            if ch.isupper() or not (ch.islower() or ch.isdigit()):
-                raise ValueError(
-                    f"cannot type {ch!r}: only lower-case letters and digits, because "
-                    f"an upper-case character is a shift chord and typing one silently "
-                    f"does nothing on this guest"
-                )
-            qmpmod.key(self.q, ch)
-            time.sleep(settle)
 
     def close(self) -> None:
         try:
@@ -884,14 +793,28 @@ def installer_panes(d: Recovery, seconds: int = 4 * 3600) -> bool:
     # reinstall() already confirmed the installer window replaced the recovery menu, so
     # there is nothing to wait 25 seconds for here. The welcome pane is still given its
     # own wait, because the window painting and the pane painting are separate events.
-    if not d.wait_for_change(timeout=90, why="the welcome pane has to be drawn"):
+    #
+    # AND IT IS A WAIT FOR STABILITY, NOT FOR A CHANGE. Run 41506477596 is the case:
+    #
+    #     19:13:08  the screen settled after 10s (mean grey 28) - the installer window
+    #               has to open and settle
+    #     19:14:40  the pane did not change in 90s - the welcome pane has to be drawn
+    #     19:14:40  === THE WELCOME PANE NEVER APPEARED ===
+    #
+    # and its last frame is the welcome pane, reading
+    #
+    #     macOS Sequoia
+    #     To set up the installation of macOS Sequoia, click Continue.
+    #
+    # The window settled ON the welcome pane, so wait_for_change's baseline was already
+    # the thing it was waiting for. There is nothing to change into.
+    if not d.wait_until_drawn(timeout=90, why="the welcome pane has to be on screen"):
         log("=== THE WELCOME PANE NEVER APPEARED ===")
         log("  the installer window opened but is not showing its first pane")
         return False
 
     d.click(INSTALLER_CONTINUE, "welcome Continue", settle=5)
-    if not d.wait_for_change(timeout=90,
-                             why="the licence pane has to replace the welcome pane"):
+    if not d.wait_until_drawn(timeout=120, why="the licence pane has to be on screen"):
         log("=== THE WELCOME PANE DID NOT ADVANCE ===")
         log("  Continue was clicked and the licence never appeared")
         return False
@@ -905,7 +828,7 @@ def installer_panes(d: Recovery, seconds: int = 4 * 3600) -> bool:
     # Confirmed before clicking it: a click on a sheet that never opened lands on the
     # licence text underneath, which does nothing and looks exactly like the sheet's
     # button being ignored.
-    if not d.wait_for_change(timeout=60, why="the licence sheet has to open"):
+    if not d.wait_until_drawn(timeout=90, why="the licence sheet has to be on screen"):
         log("=== THE LICENCE SHEET DID NOT OPEN ===")
         log("  Agree was clicked and no sheet appeared over the licence")
         return False
@@ -920,8 +843,8 @@ def installer_panes(d: Recovery, seconds: int = 4 * 3600) -> bool:
     # never written, and the failure surfaced two panes later as "the disk did not grow".
     #
     # A wait that is not allowed to fail is not a wait.
-    if not d.wait_for_change(timeout=90,
-                             why="the destination pane has to replace the licence"):
+    if not d.wait_until_drawn(timeout=120,
+                              why="the destination pane has to be on screen"):
         log("=== THE LICENCE SHEET DID NOT ADVANCE ===")
         log("  the sheet's Agree was clicked and the destination pane never appeared")
         log("  the last frame shows what the pane was still showing")

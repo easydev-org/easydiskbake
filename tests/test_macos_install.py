@@ -256,7 +256,7 @@ class ABlankScreenIsNotADrawnPane(unittest.TestCase):
         with open(os.path.join(MACOS15, "install.py"), encoding="utf-8") as fh:
             source = fh.read()
         start = source.index("def wait_until_drawn")
-        end = source.index("def wait_for_change")
+        end = source.index("def close(")
         body = source[start:end]
         self.assertIn("NOTHING_DRAWN", body)
         self.assertIn("brightness()", body)
@@ -270,7 +270,7 @@ class ABlankScreenIsNotADrawnPane(unittest.TestCase):
         with open(os.path.join(MACOS15, "install.py"), encoding="utf-8") as fh:
             source = fh.read()
         start = source.index("def wait_until_drawn")
-        end = source.index("def wait_for_change")
+        end = source.index("def close(")
         body = source[start:end]
         blank = body[body.index("NOTHING_DRAWN"):]
         self.assertIn("stable = 0", blank[:400])

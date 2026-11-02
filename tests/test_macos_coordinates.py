@@ -378,7 +378,7 @@ class TheInstallerPanesAreWaited(unittest.TestCase):
 
         # The welcome pane, the licence pane, and the destination pane each arrive by a
         # screen change, and each is a wait_for_change() in the sequence.
-        self.assertGreaterEqual(panes.count("wait_for_change"), 3, panes)
+        self.assertGreaterEqual(panes.count("wait_until_drawn"), 3, panes)
 
     def test_the_licence_clicks_come_after_a_pane_change(self):
         body = self.source()
@@ -386,7 +386,7 @@ class TheInstallerPanesAreWaited(unittest.TestCase):
         welcome = body.index('"welcome Continue"')
         agree = body.index('log("licence: Agree")')
         between = body[welcome:agree]
-        self.assertIn("wait_for_change", between,
+        self.assertIn("wait_until_drawn", between,
                       "nothing confirmed the licence pane arrived before Agree")
 
     def test_the_destination_clicks_come_after_a_pane_change(self):
@@ -394,7 +394,7 @@ class TheInstallerPanesAreWaited(unittest.TestCase):
         sheet = body.index('"Agree in the sheet"')
         card = body.index('"the main disk card"')
         between = body[sheet:card]
-        self.assertIn("wait_for_change", between,
+        self.assertIn("wait_until_drawn", between,
                       "nothing confirmed the destination pane arrived before the card")
 
     def test_the_fingerprint_is_stable_and_ignores_unreadable_screens(self):
@@ -493,18 +493,26 @@ class TheFirstClickWaitsForTheMenu(unittest.TestCase):
         self.assertIn("wait_until_drawn", utility,
                       "nothing confirmed Disk Utility finished opening")
 
-    def test_settling_needs_no_brightness_threshold(self):
-        """Stability, not a grey level: the licence pane is dark on purpose.
+    def test_settling_requires_something_to_have_been_drawn(self):
+        """Stability alone passes a blank screen, and did.
 
-        A "screen is bright enough" test would have to be tuned against this guest's
-        rendering and would reject a pane that is legitimately dark.
+        The first version of wait_until_drawn() compared fingerprints only, with a note
+        that a brightness threshold "has to be tuned against this guest's rendering".
+        That was wrong in the direction that matters: a blank framebuffer is perfectly
+        stable, so two samples always agree, and run 41501519376 had the driver declare
+        Disk Utility open on a screen that measured 1/255.
+
+        The threshold is a floor, not a brightness test: NOTHING_DRAWN is 8, the boot
+        screen measures 0-1 and every real pane 20 or more.
         """
         body = self.source()
         start = body.index("def wait_until_drawn")
-        end = body.index("def wait_for_change")
+        end = body.index("def close(")
         settle = body[start:end]
         self.assertIn("fingerprint", settle)
-        self.assertNotIn("DARK_LEVEL", settle)
+        self.assertIn("NOTHING_DRAWN", settle)
+        self.assertGreater(install.NOTHING_DRAWN, 2)
+        self.assertLess(install.NOTHING_DRAWN, 20)
 
     def test_the_menu_order_is_recorded(self):
         """Row 1 is Reinstall and row 3 is Disk Utility - the reverse of a guess.
@@ -558,8 +566,8 @@ class AWaitThatFailsEndsTheSequence(unittest.TestCase):
         body = self.body()
         # Three transitions in the sequence: welcome -> licence, licence -> sheet,
         # sheet -> destination. Each is a wait whose answer is used.
-        self.assertGreaterEqual(body.count("if not d.wait_for_change"), 2, body)
-        self.assertGreaterEqual(body.count("wait_for_change"), 3, body)
+        self.assertGreaterEqual(body.count("if not d.wait_until_drawn"), 3, body)
+        self.assertGreaterEqual(body.count("wait_until_drawn"), 3, body)
 
     def test_a_failed_pane_change_returns_false(self):
         body = self.body()
@@ -574,7 +582,7 @@ class AWaitThatFailsEndsTheSequence(unittest.TestCase):
         sheet = body.index('"Agree in the sheet"')
         card = body.index('"the main disk card"')
         between = body[sheet:card]
-        self.assertIn("if not d.wait_for_change", between, between)
+        self.assertIn("if not d.wait_until_drawn", between, between)
 
 
 class ReinstallMustOpenTheWindow(unittest.TestCase):
