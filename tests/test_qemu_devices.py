@@ -74,6 +74,20 @@ class DeviceProperties(unittest.TestCase):
             for prop in properties:
                 self.assertIn(prop, text, f"{device} declares no {prop}")
 
+    def test_the_gpu_declares_xres_and_yres(self):
+        """Measured in the bake image: 1280 and 800 are the defaults.
+
+        That default is the whole story - vmware-svga has no such properties and stayed
+        at 1280x800, while every coordinate in macos/15/install.py is written for
+        1920x1080.
+        """
+        result = qemu("-device", "virtio-vga,help")
+        text = f"{result.stdout}\n{result.stderr}"
+        self.assertIn("xres=", text)
+        self.assertIn("yres=", text)
+        self.assertIn("default: 1280", text)
+        self.assertIn("default: 800", text)
+
     def test_the_gpu_accepts_the_screen_geometry(self):
         """Hand it to qemu. A property absent from the listing may still be accepted -
         xres and yres are - and the only way to know is to try.
@@ -100,11 +114,25 @@ class DeviceProperties(unittest.TestCase):
         """The negative case, so the check above is known to be able to fail.
 
         A test that has never rejected anything is a test nobody has watched work.
-        virtio-vga has no vgamem_mb; qemu says so.
+        virtio-vga has no vgamem_mb and qemu says so - but ONLY when it is asked to
+        build the device. `-device <name>,<bad property>,help` prints the property list
+        and exits before validating anything, which is how the first version of this
+        test passed locally against qemu 2.12 and failed in CI against 11.1:
+
+            AssertionError: 'not found' not found in 'virtio-vga options: ...'
+
+        So this starts a machine with -S and looks at what qemu prints.
         """
-        result = qemu("-device", "virtio-vga,vgamem_mb=64,help")
+        try:
+            result = qemu("-display", "none", "-machine", "q35", "-m", "256",
+                          "-device", "virtio-vga,vgamem_mb=64", "-S",
+                          "-monitor", "none", "-serial", "none", timeout=10)
+        except subprocess.TimeoutExpired:
+            self.fail("qemu accepted vgamem_mb on virtio-vga; the property exists "
+                      "after all and the device string in macos/15/bake.py could "
+                      "carry it")
         text = f"{result.stdout}\n{result.stderr}".lower()
-        self.assertIn("not found", text)
+        self.assertIn("not found", text, text[:400])
 
     def test_the_whole_machine_parses(self):
         """Everything the macOS bake puts on the command line, together.
