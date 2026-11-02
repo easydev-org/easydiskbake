@@ -1,0 +1,147 @@
+name: publish-iso
+
+# Download the pinned installer images once, verify them, and push each to this
+# repository's own ghcr package.
+#
+#     ghcr.io/easydev-org/easydiskbake:iso-windows11
+#     ghcr.io/easydev-org/easydiskbake:iso-windows11-enterprise-eval
+#     ghcr.io/easydev-org/easydiskbake:iso-virtio-win
+#     ghcr.io/easydev-org/easydiskbake:iso-mx
+#     ghcr.io/easydev-org/easydiskbake:iso-alpine
+#
+# One workflow for every platform, because lib/iso.py pulls all of them with the same
+# three registry calls and the same tag scheme. Splitting by platform would mean two
+# places to look when an image is missing.
+#
+# WHY THIS IS ITS OWN WORKFLOW
+#
+# A bake used to download 7.2 GiB from Microsoft as its first step. That made every
+# bake a 90-minute job whose first half was a transfer with its own failure modes,
+# and a re-run paid for it again even when nothing had changed.
+#
+# Here the download is a job with its own messages, and the bake pulls from a CDN.
+# More importantly, when a vendor rotates a build this job fails and says so, and the
+# bake never starts - instead of a bake failing at minute forty with a hash mismatch
+# inside a container.
+#
+# WHY MANUAL ONLY
+#
+# Downloading 7.2 GiB and overwriting a tag that every bake depends on is a decision,
+# not a side effect. There is no schedule here for the same reason: the pin in
+# lib/images.py has to change first, and that is a commit.
+#
+# WHEN A PIN EXPIRES
+#
+# Windows media is replaced without notice. The failure looks like:
+#
+#     [publish] FAILED iso-windows11: sha256 mismatch:
+#       expected d141f60...
+#       actual   <something else>
+#     The vendor has probably published a new build; update lib/images.py.
+#
+# Update the url, sha256, size and wim index in lib/images.py, commit, and run this
+# again. windows/11/bake.py reads the same table, so the two cannot disagree.
+
+on:
+  workflow_dispatch:
+    inputs:
+      which:
+        description: "Which image(s) to publish"
+        type: choice
+        options:
+          - all
+          - iso-windows11
+          - iso-windows11-enterprise-eval
+          - iso-virtio-win
+          - iso-mx
+          - iso-alpine
+        default: all
+
+concurrency:
+  group: publish-iso-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # A 7.2 GiB download plus a 7.2 GiB upload needs the space, and a stock runner
+      # has ~14 GB free after the preinstalled toolchains.
+      - name: free disk space
+        run: |
+          set -euo pipefail
+          sudo rm -rf \
+            /usr/local/.ghcup /usr/local/lib/android /usr/local/lib/node_modules \
+            /usr/local/share/boost /usr/local/share/chromium /usr/local/share/powershell \
+            /usr/share/dotnet /usr/share/swift /opt/az /opt/ghc /opt/google \
+            /opt/hostedtoolcache /opt/microsoft /opt/pipx
+          sudo apt-get clean
+          sudo rm -rf /var/cache/apt/* /var/lib/apt/lists/*
+          docker system prune --all --force --volumes >/dev/null || true
+          available_gb=$(( $(df --output=avail / | tail -1) / 1024 / 1024 ))
+          echo "available: ${available_gb} GB"
+          if (( available_gb < 30 )); then
+            echo "At least 30 GB is required."; exit 1
+          fi
+
+      - name: install oras
+        run: |
+          set -euo pipefail
+          version=1.2.2
+          curl -fsSL "https://github.com/oras-project/oras/releases/download/v${version}/oras_${version}_linux_amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin oras
+          oras version
+
+      - name: log in to ghcr
+        run: |
+          set -euo pipefail
+          echo "${{ github.token }}" | \
+            docker login "$REGISTRY" --username "${{ github.actor }}" --password-stdin
+
+      - name: show the pins
+        run: python3 lib/publish_iso.py --list
+
+      - name: publish
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: publish-iso
+          interval: "20"
+          command: |
+            set -euo pipefail
+
+            which="${{ inputs.which || 'all' }}"
+            if [ "$which" = "all" ]; then
+              args="--all"
+            else
+              args="$which"
+            fi
+
+            # GITHUB_TOKEN is what lib/iso.py uses to authenticate when the bake pulls
+            # the image back; it is not needed to download from the vendor.
+            export GITHUB_TOKEN="${{ github.token }}"
+
+            python3 lib/publish_iso.py $args --repository "${{ github.repository }}"
+
+      - name: what is in the package now
+        if: always()
+        run: |
+          set -euo pipefail
+          repo="$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')"
+          {
+            echo "## Published"
+            echo
+            echo '```'
+            oras repo tags "$REGISTRY/$repo" 2>/dev/null | grep '^iso-' || echo "(none)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

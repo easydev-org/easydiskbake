@@ -45,62 +45,10 @@ import sys
 # windows/11/bake.py -> the repository root
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from lib import iso, smoke, vm, wim, winiso  # noqa: E402
+from lib import images, iso, smoke, vm, wim, winiso  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ANSWER = os.path.join(HERE, "answer")
-
-# The installer images, pinned the way dockur pins them: a fixed Microsoft URL and
-# a fixed sha256 and size. Microsoft rotates these files; when the hash stops
-# matching the bake fails with "the vendor has probably published a new build"
-# rather than installing something silently different.
-#
-#   win11x64          Windows 11 Consumer (25H2), 7.2 GiB
-#   win11x64-enterprise-eval   Windows 11 Enterprise Eval, 6.6 GiB
-#
-# The index is the number in the answer file's /IMAGE/INDEX, and it is verified
-# against the WIM's own metadata before the guest boots - see lib/wim.py for why
-# that beats asking the guest afterwards.
-IMAGES = {
-    "win11x64": {
-        "url": "https://software-static.download.prss.microsoft.com/dbazure/"
-               "888969d5-f34g-4e03-ac9d-1f9786c66749/"
-               "26200.6584.250915-1905.25h2_ge_release_svc_refresh_CLIENT_CONSUMER_x64FRE_en-us.iso",
-        "sha256": "d141f6030fed50f75e2b03e1eb2e53646c4b21e5386047cb860af5223f102a32",
-        "size": 7736125440,
-        "index": 6,
-        "edition": "Windows 11 Pro",
-        # "Pro" is a substring of "Pro N". Without this the check passes on an
-        # index that installs the edition people actually complain about.
-        "forbid": " N",
-    },
-    "win11x64-enterprise-eval": {
-        "url": "https://software-static.download.prss.microsoft.com/dbazure/"
-               "888969d5-f34g-4e03-ac9d-1f9786c66749/"
-               "26200.6584.250915-1905.25h2_ge_release_svc_refresh_CLIENTENTERPRISEEVAL_OEMRET_x64FRE_en-us.iso",
-        "sha256": "a61adeab895ef5a4db436e0a7011c92a2ff17bb0357f58b13bbc4062e535e7b9",
-        "size": 7092807680,
-        "index": 1,
-        "edition": "Windows 11 Enterprise",
-        "forbid": None,
-    },
-}
-
-# The virtio-win drivers. Without a second CD, setup cannot see the virtio disk it
-# is installing to, and the failure is a pane with an empty disk list - which the
-# answer file's WillShowUI=OnError would show as a dialog nobody is watching.
-#
-# The source is qemus/virtiso-whql, which is what dockur/windows uses for the same
-# purpose: it republishes the upstream virtio-win ISO with a stable tag. The first
-# attempt pointed at virtio-win-pkg-scripts/raw/master/drivers/archive-virtio/...,
-# which answers 404 - the archive moved, and a URL built from a guessed path is
-# exactly the kind of dependency that fails at run time.
-VIRTIO_WIN = {
-    "url": "https://github.com/qemus/virtiso-whql/releases/download/v1.9.61-0/"
-           "virtio-win-1.9.61.iso",
-    "sha256": None,  # pinned by the release tag and by setup's own behaviour
-    "size": None,
-}
 
 
 def log(msg: str) -> None:
@@ -110,7 +58,7 @@ def log(msg: str) -> None:
 def parse(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Bake a Windows 11 disk.")
     p.add_argument("--out", default="out/windows11.qcow2")
-    p.add_argument("--image", default="win11x64", choices=sorted(IMAGES))
+    p.add_argument("--image", default="windows11", choices=sorted(images.WINDOWS))
     p.add_argument("--disk-size", default="64G")
     p.add_argument("--mem", type=int, default=8192, help="MB; Windows 11 wants 4 GB minimum")
     p.add_argument("--cpus", type=int, default=4)
@@ -138,28 +86,50 @@ class Baker:
             log(f"using the ISO on disk: {self.args.iso}")
             return os.path.abspath(self.args.iso)
 
-        pin = IMAGES[self.args.image]
-        log(f"image {self.args.image}: {pin['size']} bytes, sha256 {pin['sha256']}")
+        pin = images.pin_for_bake(self.args.image)
+        tag = images.tag(self.args.image)
         dest = os.path.join(self.work, f"{self.args.image}.iso")
-        found = os.path.join(self.work, f"{self.args.image}.iso")
-        if os.path.exists(found) and os.path.getsize(found) == pin["size"]:
-            # A complete but corrupt file would fail the hash below anyway; this
-            # only skips re-hashing seven gigabytes on a re-run.
-            log("already downloaded")
-            return found
-        return iso.fetch_url(pin["url"], dest, sha256=pin["sha256"], size=pin["size"])
+
+        if os.path.exists(dest) and os.path.getsize(dest) == pin["size"]:
+            # A complete but corrupt file would fail the hash at the next step anyway;
+            # this only skips re-hashing seven gigabytes on a re-run.
+            log(f"{dest} already present, size matches the pin")
+            return dest
+
+        # Pull from this repository's package first. The publish-iso workflow put it
+        # there and verified it against the same pin; doing the 7.2 GiB download here
+        # again would make every bake pay for a step that is already done.
+        try:
+            log(f"pulling {tag} from ghcr")
+            return iso.fetch_iso(self.args.image, dest)
+        except iso.IsoError as exc:
+            # Falling back is deliberate here and wrong in lib/iso.py's own use: a
+            # Linux ISO that is missing from the cache means publish-iso.yml never
+            # ran, and a mirror is a dependency nobody measured. A Windows ISO is
+            # different - it has no mirror, only the vendor, and the pin is verified
+            # either way. Failing hard would make a first run impossible.
+            log(f"not in the package ({exc}); falling back to the vendor")
+            log(f"image {self.args.image}: {pin['size']} bytes, sha256 {pin['sha256']}")
+            return iso.fetch_url(pin["url"], dest, sha256=pin["sha256"], size=pin["size"])
 
     def fetch_virtio(self) -> str | None:
         dest = os.path.join(self.work, "virtio-win.iso")
         if os.path.exists(dest):
             log("virtio-win.iso already present")
             return dest
+
+        try:
+            log("pulling virtio-win from ghcr")
+            return iso.fetch_iso("virtio-win", dest)
+        except iso.IsoError as exc:
+            log(f"not in the package ({exc}); falling back to the vendor")
+
         try:
             log("fetching virtio-win drivers")
             # No hash: the URL is a tagged release and the file is not large. The
             # failure this protects against - a different ISO than intended - is
             # caught by setup itself, which finds no disk.
-            return iso.fetch_url(VIRTIO_WIN["url"], dest)
+            return iso.fetch_url(images.VIRTIO["virtio-win"]["url"], dest)
         except Exception as exc:  # noqa: BLE001 - a missing driver CD is not fatal
             log(f"WARNING: could not fetch virtio-win: {exc}")
             log("setup may not see the disk; continuing without the driver CD")
@@ -259,7 +229,7 @@ class Baker:
         # Before anything boots: does the index in the answer file resolve to the
         # edition this image is supposed to be? This is the check the guest script
         # used to do after the fact, moved to the host and to before the boot.
-        pin = IMAGES[self.args.image]
+        pin = images.pin_for_bake(self.args.image)
         log(f"verifying the edition for index {pin['index']}")
         wim.check_iso(clean, pin["index"], pin["edition"], forbid=pin.get("forbid"))
 

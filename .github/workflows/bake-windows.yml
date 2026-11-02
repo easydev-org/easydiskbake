@@ -45,18 +45,14 @@ on:
         description: "Windows image to install"
         type: choice
         options:
-          - win11x64
-          - win11x64-enterprise-eval
-        default: win11x64
+          - windows11
+          - windows11-enterprise-eval
+        default: windows11
       disk_size:
         description: "Guest disk size"
         default: "64G"
       publish:
         description: "Push to ghcr"
-        type: boolean
-        default: true
-      reuse_iso:
-        description: "Reuse the cached Windows ISO (skip the download)"
         type: boolean
         default: true
 
@@ -130,16 +126,6 @@ jobs:
             echo "At least 45 GB is required."; exit 1
           fi
 
-      # The ISO is verified by sha256 inside the bake, so a stale cache is caught
-      # rather than silently installed. The cache only has to avoid re-downloading
-      # seven gigabytes on every run.
-      - name: cache the Windows ISO
-        if: ${{ inputs.reuse_iso != false }}
-        uses: actions/cache@v4
-        with:
-          path: out/${{ inputs.image || 'win11x64' }}.iso
-          key: windows-iso-${{ inputs.image || 'win11x64' }}
-
       - name: bake
         uses: easydev-org/easyagent-github-ext/actions/log-stream@main
         with:
@@ -149,12 +135,7 @@ jobs:
           command: |
             set -euo pipefail
             mkdir -p out
-            IMAGE="${{ inputs.image || 'win11x64' }}"
-
-            # Pass the cached ISO through if it is there; the bake's sha256 check
-            # decides whether it is still the right one.
-            ISO_ARG=""
-            if [ -f "out/${IMAGE}.iso" ]; then ISO_ARG="--iso out/${IMAGE}.iso"; fi
+            IMAGE="${{ inputs.image || 'windows11' }}"
 
             docker run --rm \
               --device /dev/kvm \
@@ -170,8 +151,7 @@ jobs:
                 --answer /repo/windows/11/answer \
                 --image "$IMAGE" \
                 --disk-size "${{ inputs.disk_size || '64G' }}" \
-                --timeout 5400 \
-                $ISO_ARG
+                --timeout 5400
 
       # A second, independent read of the disk. The bake already checked it, but the
       # bake also had the ISO attached and a live installer in memory: this is a
@@ -199,7 +179,7 @@ jobs:
           {
             echo "## Windows base bake"
             echo
-            echo "- image: ${{ inputs.image || 'win11x64' }}"
+            echo "- image: ${{ inputs.image || 'windows11' }}"
             echo "- commit: $(git rev-parse --short HEAD)"
             echo "- when: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             if [ -f out/windows11.qcow2 ]; then
@@ -295,7 +275,7 @@ jobs:
             --annotation "org.opencontainers.image.revision=${{ github.sha }}" \
             --annotation "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --annotation "org.opencontainers.image.title=windows11-base" \
-            --annotation "dev.easydev.image=${{ inputs.image || 'win11x64' }}" \
+            --annotation "dev.easydev.image=${{ inputs.image || 'windows11' }}" \
             --annotation "dev.easydev.disk-size=${{ inputs.disk_size || '64G' }}"
 
           echo "published: $tag"
