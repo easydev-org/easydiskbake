@@ -826,17 +826,42 @@ def installer_panes(d: Recovery, seconds: int = 4 * 3600) -> bool:
     d.wait_for_change(timeout=90, why="the welcome pane has to be drawn")
 
     d.click(INSTALLER_CONTINUE, "welcome Continue", settle=5)
-    d.wait_for_change(timeout=90, why="the licence pane has to replace the welcome pane")
+    if not d.wait_for_change(timeout=90,
+                             why="the licence pane has to replace the welcome pane"):
+        log("=== THE WELCOME PANE DID NOT ADVANCE ===")
+        log("  Continue was clicked and the licence never appeared")
+        return False
 
     log("licence: Agree")
     d.click(AGREE, "Agree", settle=5)
 
     # THE SHEET COMES UP OVER THE SAME PANE. Its own Agree is at (1060, 530) and is the
     # one that matters - the pane's Agree disabled itself when it raised the sheet.
+    #
+    # Confirmed before clicking it: a click on a sheet that never opened lands on the
+    # licence text underneath, which does nothing and looks exactly like the sheet's
+    # button being ignored.
+    if not d.wait_for_change(timeout=60, why="the licence sheet has to open"):
+        log("=== THE LICENCE SHEET DID NOT OPEN ===")
+        log("  Agree was clicked and no sheet appeared over the licence")
+        return False
+
     log("licence sheet: Agree")
     d.click(AGREE_SHEET, "Agree in the sheet", settle=5)
-    d.wait_for_change(timeout=90,
-                      why="the destination pane has to replace the licence")
+
+    # A PANE THAT DID NOT ARRIVE ENDS THE SEQUENCE. Run 41493723813 is the reason: the
+    # sheet Agree was clicked, the screen stayed on the licence for ninety seconds, this
+    # wait said so - and the driver went on to click the disk card and Continue anyway.
+    # Those two clicks landed on a licence pane that has no such controls, the disk was
+    # never written, and the failure surfaced two panes later as "the disk did not grow".
+    #
+    # A wait that is not allowed to fail is not a wait.
+    if not d.wait_for_change(timeout=90,
+                             why="the destination pane has to replace the licence"):
+        log("=== THE LICENCE SHEET DID NOT ADVANCE ===")
+        log("  the sheet's Agree was clicked and the destination pane never appeared")
+        log("  the last frame shows what the pane was still showing")
+        return False
 
     # THE DESTINATION PANE, AND THE CLICK THAT HAS TO BE PROVEN.
     #

@@ -515,3 +515,57 @@ class TheFirstClickWaitsForTheMenu(unittest.TestCase):
         """
         self.assertEqual(install.ROW_Y[1], 333)
         self.assertEqual(install.ROW_Y[3], 514)
+
+
+class AWaitThatFailsEndsTheSequence(unittest.TestCase):
+    """A wait that is not allowed to fail is not a wait.
+
+    MEASURED ON RUN 41493723813, which reached further than any run before it - the disk
+    was erased, the menu came back, Reinstall opened the installer, the welcome pane and
+    both Agree clicks landed - and then:
+
+        17:54:48  #15 click (1060, 530) Agree in the sheet
+        17:56:24    the pane did not change in 90s - the destination pane has to replace
+                    the licence
+        17:56:24  destination: select the card, then Continue
+        17:56:24  #16 click (850, 550) the main disk card
+        17:56:30  #17 click (1005, 712) destination Continue
+        17:58:50    the disk did not grow in 120s (still 0 MiB)
+
+    The wait reported the failure and the driver went on anyway. The two clicks landed on
+    a licence pane that has no disk card, the target disk was never written, and the
+    failure surfaced two panes later as "the disk did not grow" - a symptom of a click
+    that happened a minute and a half earlier.
+
+    The last frame of that run is a licence pane, which is what the report should have
+    said instead.
+    """
+
+    def body(self):
+        with open(os.path.join(MACOS15, "install.py"), encoding="utf-8") as fh:
+            source = fh.read()
+        start = source.index("def installer_panes")
+        end = source.index("def main(")
+        return source[start:end]
+
+    def test_every_pane_change_is_checked(self):
+        body = self.body()
+        # Three transitions in the sequence: welcome -> licence, licence -> sheet,
+        # sheet -> destination. Each is a wait whose answer is used.
+        self.assertGreaterEqual(body.count("if not d.wait_for_change"), 2, body)
+        self.assertGreaterEqual(body.count("wait_for_change"), 3, body)
+
+    def test_a_failed_pane_change_returns_false(self):
+        body = self.body()
+        for marker in ("THE WELCOME PANE DID NOT ADVANCE",
+                       "THE LICENCE SHEET DID NOT OPEN",
+                       "THE LICENCE SHEET DID NOT ADVANCE"):
+            self.assertIn(marker, body, marker)
+
+    def test_the_destination_clicks_come_after_a_checked_transition(self):
+        """No click may happen after a wait whose result was ignored."""
+        body = self.body()
+        sheet = body.index('"Agree in the sheet"')
+        card = body.index('"the main disk card"')
+        between = body[sheet:card]
+        self.assertIn("if not d.wait_for_change", between, between)
