@@ -102,30 +102,49 @@ def click(q, x, y):
 
 
 def key(q, qcode):
+    """Press and release one key, in a single QMP event list.
+
+    DOWN AND UP MUST ARRIVE TOGETHER.
+
+    This used to be two execute() calls with a sleep between them. That works, and it is
+    what dockur-macos had until it found the failure mode: when another thread shares the
+    QMP socket - the frame recorder here, the capture thread there - the second call can
+    be interleaved with the other thread's traffic, and the guest sees a key that went
+    down and never came up. The visible symptom is a modifier stuck on, or a menu that
+    opens every time the pointer moves.
+
+    One events list keeps the pair inside one request. dockur-macos fixed the same thing
+    in the same way: "sending down and up as one events list keeps the pair inside a
+    single lock acquisition".
+    """
     q.execute("input-send-event", events=[
-        {"type": "key", "data": {"down": True, "key": {"type": "qcode", "data": qcode}}}])
-    time.sleep(0.08)
-    q.execute("input-send-event", events=[
-        {"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": qcode}}}])
+        {"type": "key", "data": {"down": True, "key": {"type": "qcode", "data": qcode}}},
+        {"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": qcode}}},
+    ])
 
 
 def key_combo(q, *qcodes):
     """Press several keys together, e.g. key_combo(q, "meta_l", "spc") for Cmd-Space.
 
-    QMP delivers held state, so a chord is the modifiers down, the key down and up,
-    then the modifiers up in reverse order. Sending them as separate presses - which
-    is what key() does - produces Cmd, release, Space, release, which macOS reads as
-    two unrelated keystrokes rather than a shortcut.
+    QMP delivers held state, so a chord is the modifiers down, the key down and up, then
+    the modifiers up in reverse order. Sending them as separate presses produces Cmd,
+    release, Space, release, which macOS reads as two unrelated keystrokes rather than a
+    shortcut.
+
+    ALL OF IT GOES IN ONE EVENT LIST. The previous version executed 2N separate
+    requests, one per key press and one per release, with sleeps between them - so a
+    shared socket could interleave anything at all into the middle of a chord, and a
+    failed request part-way through left the modifiers held down.
     """
-    for qcode in qcodes:
-        q.execute("input-send-event", events=[
-            {"type": "key", "data": {"down": True, "key": {"type": "qcode", "data": qcode}}}])
-        time.sleep(0.05)
-    time.sleep(0.1)
-    for qcode in reversed(qcodes):
-        q.execute("input-send-event", events=[
-            {"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": qcode}}}])
-        time.sleep(0.05)
+    events = [
+        {"type": "key", "data": {"down": True, "key": {"type": "qcode", "data": qcode}}}
+        for qcode in qcodes
+    ]
+    events += [
+        {"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": qcode}}}
+        for qcode in reversed(qcodes)
+    ]
+    q.execute("input-send-event", events=events)
 
 
 def main():
