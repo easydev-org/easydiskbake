@@ -9,11 +9,11 @@ name: image
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - Containerfile
-      - .github/workflows/image.yml
+
+# MANUAL ONLY. The image is consumed by every bake through :latest, so rebuilding it
+# changes what every later bake runs against. That is worth being a decision rather
+# than a side effect of editing the Containerfile - and it makes the ordering
+# explicit: build the image, then run the bake.
 
 env:
   REGISTRY: ghcr.io

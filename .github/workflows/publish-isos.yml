@@ -44,8 +44,10 @@ on:
           - arch
           - all
         default: all
-  schedule:
-    - cron: "0 4 1 * *"
+
+# MANUAL ONLY. Publishing an ISO is a deliberate act: it downloads gigabytes and
+# overwrites a tag that every bake depends on. A schedule here would mean the cache
+# changes under a bake that was already planned.
 
 concurrency:
   group: publish-isos-${{ github.ref }}

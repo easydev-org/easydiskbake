@@ -286,10 +286,11 @@ class Baker:
         console = os.path.join(self.work, "console.log")
         guest = vm.Guest(self.work, extra=drives, shape=shape, stdout=console).start()
 
+        shots = os.path.join(self.frames, "shots")
         snap = subprocess.Popen(
             [sys.executable, os.path.join(os.path.dirname(os.path.dirname(
                 os.path.abspath(__file__))), "lib", "snapshots.py"),
-             guest.paths.record, os.path.join(self.frames, "shots"),
+             guest.paths.record, shots,
              os.environ.get("SNAPSHOT_INTERVAL", "5"), "2000"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
@@ -303,6 +304,24 @@ class Baker:
                 snap.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 snap.kill()
+
+        # Encode the recording whether or not the bake succeeded.
+        #
+        # A failed run is exactly when the frames are worth watching: a setup pane
+        # waiting for a click and a hung kernel are identical in a log and obvious in
+        # a picture. Encoding only on success would throw away the one artifact that
+        # explains a failure.
+        #
+        # RECORD_FPS defaults to 1 because frames are captured every SNAPSHOT_INTERVAL
+        # seconds: encoding at 1 fps makes the video run SNAPSHOT_INTERVAL times
+        # faster than real time, which is the point - a 90-minute install is worth
+        # watching in 18 minutes, and the file stays small.
+        log("=== encoding the recording ===")
+        mp4 = os.path.join(self.work, "install.mp4")
+        if vm.record_many(mp4, shots, fps=int(os.environ.get("RECORD_FPS", "1"))):
+            log(f"recording: {mp4} ({os.path.getsize(mp4) >> 20} MiB)")
+        else:
+            log("recording: nothing to encode")
 
         if not arrived:
             log("=== THE GUEST DID NOT REACH A RUNNING SYSTEM ===")

@@ -60,11 +60,13 @@ on:
         type: boolean
         default: true
 
-  # A monthly rebuild catches two things a pinned ISO cannot: a Microsoft URL that
-  # stopped serving, and a setup behaviour that changed. Both are worth knowing
-  # about before a release needs them.
-  schedule:
-    - cron: "0 3 1 * *"
+# MANUAL ONLY.
+#
+# A bake costs 90 minutes of a 4-core runner and 7 GiB of download. Nothing here
+# runs on a schedule or on a push: a Windows disk is produced when somebody asks for
+# one, and the timestamp in its tag is what says which one that was. If a periodic
+# rebuild is ever wanted, it belongs in a separate scheduled workflow so that its
+# cost is visible as its own job.
 
 concurrency:
   group: bake-windows-${{ github.ref }}
@@ -161,6 +163,7 @@ jobs:
               --workdir /work \
               --env GITHUB_TOKEN="${{ github.token }}" \
               --env SNAPSHOT_INTERVAL=5 \
+              --env RECORD_FPS=1 \
               "$BAKE_IMAGE" \
               python3 /repo/windows/11/bake.py \
                 --out /work/windows11.qcow2 \
@@ -207,16 +210,33 @@ jobs:
       # The recording is what explains a failure: a setup pane waiting for a click
       # and a hung kernel look identical in a log, and this is the only artifact
       # that shows which one it was.
+      #
+      # The mp4 is encoded from the frames whether or not the bake succeeded, so it
+      # is uploaded with if: always(). A 90-minute install at one frame every five
+      # seconds is about 1080 frames, and at 1 fps that is an 18-minute video.
       - name: keep the recording
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: windows-recording
           path: |
-            out/frames/shots/*.ppm
+            out/install.mp4
+            out/frames/shots/frames.txt
             out/console.log
           if-no-files-found: warn
           retention-days: 14
+
+      # The raw frames are kept only when there is no mp4 to watch, because they are
+      # large: a 1920x1080 PPM is 6 MB, and a 90-minute run produces a thousand of
+      # them. The mp4 is what anyone actually watches.
+      - name: keep raw frames as a fallback
+        if: always() && hashFiles('out/install.mp4') == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-frames
+          path: out/frames/shots/*.ppm
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: upload disk
         uses: actions/upload-artifact@v4
