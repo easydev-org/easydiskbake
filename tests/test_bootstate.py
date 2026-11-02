@@ -250,3 +250,56 @@ class TheArchiveFollowsTheDisk(unittest.TestCase):
         open(archive, "wb").close()
         self.assertEqual(bootstate.adopt(disk, archive), archive)
         self.assertTrue(os.path.isfile(archive))
+
+
+class EveryStagePublishesWhatItWrote(unittest.TestCase):
+    """A stage that can be another stage's input has to save the bootstate it ended with.
+
+    THE FAILURE THIS EXISTS FOR
+
+    bake-windows-dev starts from the ssh stage's disk, and the ssh workflow uploaded
+
+        name: windows-ssh-bootstate
+        path: out/windows11-ssh.qcow2.bootstate.tar.gz
+        if-no-files-found: warn
+
+    ssh.py never wrote that file. `if-no-files-found: warn` meant the upload uploaded
+    nothing and reported success, so the dev stage would have failed exactly as the ssh
+    stage had - "no bootstate archive" - with an empty artifact to blame.
+
+    The save has to be in ssh.py, not only in bake.py, because this stage BOOTS the
+    disk: the firmware writes to OVMF's variables during that boot, so what goes out is
+    what this stage ended with, not what came in.
+    """
+
+    def source(self, name):
+        with open(os.path.join(HERE, "windows", "11", name), encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_the_ssh_stage_saves_its_bootstate(self):
+        source = self.source("ssh.py")
+        self.assertIn("bootstate.save", source)
+        # After the disk is written: save() names the archive after the disk.
+        self.assertLess(source.index("BAKED {args.out}"),
+                        source.index("bootstate.save"))
+
+    def test_a_stage_that_names_a_bootstate_must_receive_it(self):
+        """--bootstate pointing at nothing is an error, not a skipped step.
+
+        Run 41480134822 passed `out/windows11-gold.qcow2.bootstate.tar.gz` while the
+        artifact downloads as `windows11.qcow2.bootstate.tar.gz`. The old code skipped
+        the missing file and then reported "no archive at <working disk>", which named
+        a directory that was never the problem.
+        """
+        for name in ("ssh.py", "devtools.py"):
+            source = self.source(name)
+            self.assertIn("does not exist", source, name)
+
+    def test_the_ssh_workflow_passes_the_name_the_artifact_has(self):
+        path = os.path.join(HERE, ".github", "workflows", "bake-windows-ssh.yml")
+        with open(path, encoding="utf-8") as fh:
+            source = fh.read()
+        self.assertIn("--bootstate out/windows11.qcow2.bootstate.tar.gz", source)
+        # The tag's name is not the archive's name, and passing it was the bug.
+        self.assertNotIn('--bootstate "out/windows11-gold.qcow2', source)
+        self.assertNotIn("--bootstate out/windows11-gold.qcow2", source)

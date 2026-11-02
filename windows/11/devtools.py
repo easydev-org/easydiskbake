@@ -386,11 +386,25 @@ def main(argv: list[str]) -> int:
     # Same coupling as the ssh stage: the archive moves to the working disk's name.
     if args.bootstate:
         source = args.bootstate
+        # A PATH THAT DOES NOT EXIST IS AN ERROR HERE, NOT A WARNING LATER.
+        #
+        # The workflow names this file and can name it wrongly - run 41480134822 passed
+        # `out/windows11-gold.qcow2.bootstate.tar.gz` while the artifact downloads as
+        # `windows11.qcow2.bootstate.tar.gz`. The old code silently skipped a missing
+        # --bootstate and failed on the generic "no archive at <working disk>" message,
+        # which pointed at the wrong directory.
+        if not os.path.isfile(source):
+            raise SystemExit(
+                f"--bootstate {source} does not exist. It must be the archive as it "
+                f"arrives - named after the PUBLISHED disk (windows11.qcow2), not after "
+                f"the tag this stage pulled (windows11-gold.qcow2). Instead of guessing, "
+                f"this stops: the archive beside {os.path.basename(source)} is what the "
+                f"publisher actually wrote."
+            )
     else:
         source = bootstate.archive_path(args.ssh)
-    if os.path.isfile(source):
-        placed = bootstate.adopt(disk, source)
-        log(f"bootstate {source} -> {placed}")
+    placed = bootstate.adopt(disk, source)
+    log(f"bootstate {source} -> {placed}")
     restored = bootstate.restore(work, disk)
     if not restored:
         raise SystemExit(

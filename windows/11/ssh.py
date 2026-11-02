@@ -393,11 +393,25 @@ def main(argv: list[str]) -> int:
     # published disk's name - so it is renamed here rather than searched for later.
     if args.bootstate:
         source = args.bootstate
+        # A PATH THAT DOES NOT EXIST IS AN ERROR HERE, NOT A WARNING LATER.
+        #
+        # The workflow names this file and can name it wrongly - run 41480134822 passed
+        # `out/windows11-gold.qcow2.bootstate.tar.gz` while the artifact downloads as
+        # `windows11.qcow2.bootstate.tar.gz`. The old code silently skipped a missing
+        # --bootstate and failed on the generic "no archive at <working disk>" message,
+        # which pointed at the wrong directory.
+        if not os.path.isfile(source):
+            raise SystemExit(
+                f"--bootstate {source} does not exist. It must be the archive as it "
+                f"arrives - named after the PUBLISHED disk (windows11.qcow2), not after "
+                f"the tag this stage pulled (windows11-gold.qcow2). Instead of guessing, "
+                f"this stops: the archive beside {os.path.basename(source)} is what the "
+                f"publisher actually wrote."
+            )
     else:
         source = bootstate.archive_path(args.gold)
-    if os.path.isfile(source):
-        placed = bootstate.adopt(disk, source)
-        log(f"bootstate {source} -> {placed}")
+    placed = bootstate.adopt(disk, source)
+    log(f"bootstate {source} -> {placed}")
     restored = bootstate.restore(work, disk)
     if not restored:
         raise SystemExit(
@@ -455,6 +469,21 @@ def main(argv: list[str]) -> int:
                             "-c", "-o", "compression_type=zstd", disk, args.out],
                            check=True)
             log(f"BAKED {args.out} ({os.path.getsize(args.out) >> 20} MiB)")
+
+            # THIS STAGE HAS TO PUBLISH THE BOOTSTATE TOO, because bake-windows-dev
+            # starts from this disk. The firmware variables and the TPM were carried in
+            # from the base bake, restored for this boot, and the boot wrote to them -
+            # so what goes out is what this stage ended with, not what came in.
+            #
+            # Until this was added the ssh workflow uploaded a `windows-ssh-bootstate`
+            # artifact with `if-no-files-found: warn`, which silently uploaded nothing,
+            # and the dev stage would have failed exactly as the ssh stage did.
+            archive = bootstate.save(work, args.out)
+            if archive:
+                log(f"bootstate: {archive} ({os.path.getsize(archive) >> 10} KiB)")
+            else:
+                log("bootstate: NOTHING SAVED - the dev stage will not be able to boot "
+                    "this disk; the firmware variables were not found in " + work)
 
 
 def wait_for_desktop(guest: vm.Guest, shots: str, timeout: int) -> bool:
