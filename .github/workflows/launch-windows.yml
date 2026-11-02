@@ -1,0 +1,125 @@
+name: launch-windows
+
+# Start a published Windows disk on KVM and photograph the screen.
+#
+# WHAT THIS ANSWERS
+#
+#     does the artifact in ghcr actually boot to a desktop
+#
+# bake-windows publishes a disk and a bootstate archive. The ssh stage starts one and
+# waits for a desktop, and when that fails it says
+#
+#     the guest did not reach a desktop
+#
+# which is true of two very different situations: the firmware could not find a boot
+# loader, or Windows booted and the desktop test does not recognise what it drew.
+#
+# Run 41483694400 was the first of those. Seventy-five frames were captured, twenty-one
+# had a picture in them, and the brightest read
+#
+#     BdsDxe: failed to load Boot000A "Windows Boot Manager" from HD(1,GPT,...)
+#       /EFI/Microsoft/Boot/bootmgfw.efi: Not Found
+#     >>Start PXE over IPv4.
+#     PXE-E16: No valid offer received.
+#     UEFI Interactive Shell v2.2
+#
+# and the report was nine minutes of "waiting Ns for a desktop". So this runs BEFORE the
+# ssh stage: if the disk does not reach a desktop, there is no point typing into it.
+#
+# MANUAL ONLY, like every other workflow here.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The disk to start (a tag in this package)"
+        default: "windows-base-20261102-155400"
+      bootstate_run:
+        description: "The run whose windows11-bootstate artifact goes with that tag"
+        default: ""
+      boot_timeout:
+        description: "Seconds to wait for a desktop"
+        default: "900"
+
+concurrency:
+  group: launch-windows-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  launch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      packages: read
+      checks: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: windows-launch-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            # The disk in, a working copy, and room for qemu's own state.
+            python3 lib/ci.py free-disk --need 30
+            python3 lib/ci.py tags --prefix windows-
+
+      # THE BOOTSTATE IS NOT OPTIONAL FOR WINDOWS. OVMF's variables carry the
+      # "Windows Boot Manager" entry and the TPM holds the state Windows sealed against
+      # it; a disk without both drops into the firmware shell - which is what the first
+      # ssh attempt looked like before this was understood.
+      - name: pull the bootstate
+        if: inputs.bootstate_run != ''
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: windows11-bootstate
+          path: out
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.bootstate_run }}
+
+      - name: launch it and photograph the screen
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: windows-launch
+          interval: "20"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            python3 lib/launch_windows.py \
+              --tag "${{ inputs.tag }}" \
+              --bootstate out/windows11.qcow2.bootstate.tar.gz \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --artifacts out
+
+      # THE FRAME IS THE RESULT. A launch that reports "no desktop" and shows nothing has
+      # not said where it stopped; the picture is what turned nine silent minutes into
+      # "the firmware could not find bootmgfw.efi".
+      - name: keep the screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-launch-screenshots
+          path: |
+            out/screen.png
+            out/launch.txt
+            out/launch-work/console.log
+          if-no-files-found: warn
+          retention-days: 14
