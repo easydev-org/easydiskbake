@@ -66,25 +66,54 @@ class IsoError(RuntimeError):
 
 
 def _token(scope: str) -> str:
-    """A pull token for one repository. The package is private, so an anonymous
-    request gets 401 and no manifest."""
-    user = os.environ.get("GITHUB_ACTOR") or "x"
-    password = os.environ.get("GITHUB_TOKEN")
-    if not password:
-        raise IsoError(
-            "GITHUB_TOKEN is not set; the iso packages are private"
-        )
+    """A pull token for one repository.
 
+    ANONYMOUS FIRST, CREDENTIALS SECOND.
+
+    The package this repository publishes is public, so ghcr hands out a pull token to
+    anyone who asks:
+
+        https://ghcr.io/token?scope=repository:...:pull&service=ghcr.io
+
+    The first version required GITHUB_TOKEN unconditionally and sent Basic auth with it.
+    That is correct for a private package and fatal for a public one on any runner that
+    does not set GITHUB_TOKEN - which is every runner except GitHub's:
+
+        urllib.error.HTTPError: HTTP Error 403: Forbidden
+        File "lib/iso.py", line 89, in _token
+
+    Sending credentials where none are needed is also the wrong shape for a public
+    artifact: it makes the push/prod distinction invisible and it fails closed.
+    """
     url = (
         f"https://{REGISTRY}/token"
         f"?scope=repository:{scope}:pull&service={REGISTRY}"
     )
-    req = urllib.request.Request(url)
+
+    # Anonymous. Works for a public package and costs one request.
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url), timeout=60) as resp:
+            return json.load(resp)["token"]
+    except urllib.error.HTTPError as exc:
+        if exc.code not in (401, 403):
+            raise
+        anonymous_error = exc
+
+    token = os.environ.get("GITHUB_TOKEN")
+    if not token:
+        raise IsoError(
+            f"{scope} needs credentials and GITHUB_TOKEN is not set.\n"
+            f"The package is not public, or this runner is not logged in to "
+            f"{REGISTRY}.\nFrom {anonymous_error}"
+        )
+
     import base64
 
+    user = os.environ.get("GITHUB_ACTOR") or "x"
+    req = urllib.request.Request(url)
     req.add_header(
         "Authorization",
-        "Basic " + base64.b64encode(f"{user}:{password}".encode()).decode(),
+        "Basic " + base64.b64encode(f"{user}:{token}".encode()).decode(),
     )
     with urllib.request.urlopen(req, timeout=60) as resp:
         return json.load(resp)["token"]
