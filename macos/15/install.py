@@ -161,10 +161,21 @@ AGREE = (1005, 713)
 # Disagree, kept because a pane that offers both is telling you where the boundary is.
 DISAGREE = (915, 713)
 
-# The sheet that follows the licence pane agrees on the right-hand side. NOT MEASURED -
-# no frame of it exists yet; probe.py stops at the licence. One click through the
-# licence pane will produce the frame that fixes this.
-AGREE_SHEET = (1026, 634)
+# THE FLOATING SHEET THAT FOLLOWS THE MAIN AGREE, measured on a live guest.
+#
+# Pressing Agree on the licence pane raises a second, smaller dialog:
+#
+#     To continue installing the software, you must agree to the terms of the
+#     software license agreement.
+#     I have read and agree to the terms of the software license agreement.
+#
+# Its buttons are unreadable to tesseract at any page-segmentation mode - grey on grey -
+# so the position was found by having somebody read a coordinate grid drawn over the
+# frame. (1060, 530) is in its lower right, and clicking it is what advances the installer.
+#
+# THE EARLIER VALUE WAS A GUESS. (1026, 634) was reasoned from the first sheet's layout
+# and never worked; four runs clicked it while the installer sat still.
+AGREE_SHEET = (1060, 530)
 
 # THE INSTALLER'S CONTINUE IS NOT THE WIZARD'S CONTINUE, AND THAT COST A RUN.
 #
@@ -180,6 +191,24 @@ AGREE_SHEET = (1026, 634)
 # so the button is at (960, 712). Thirty-seven clicks at (1306, 810) landed 346px right
 # and 98px below it, on a pane that had one control, and the screen never changed once.
 INSTALLER_CONTINUE = (960, 712)
+
+# THE DESTINATION PANE, measured on a live guest. It lists the erased disk as a card:
+#
+#     Select the disk where you want to install macOS.
+#        main
+#        68.51 GB total   68.30 GB available
+#                                              [Back]  [Continue]
+#
+# THE CARD HAS TO BE SELECTED FIRST - Continue is grey until it is, and a click on a grey
+# Continue does nothing and says nothing. (850, 550) is inside the card; (865, 622) is on
+# its label, which is also inside it but was the first thing tried and worked only once
+# the card's own area was used.
+#
+# After the card is selected the pane re-reads as
+#     macOS Sequoia will be installed on the disk "main"
+# and Continue becomes usable at (1005, 712).
+DISK_CARD = (850, 550)
+PANE_CONTINUE = (1005, 712)
 
 # What "the screen has gone dark" means, in mean grey level 0-255. A lit macOS pane
 # averages well above 100; a black screen averages under 10. 24 is far from both, so a
@@ -206,10 +235,16 @@ DARK_LEVEL = 24
 DISK_STALL_SECONDS = 5 * 60
 DISK_SAMPLE_SECONDS = 30
 
-# The backstop, for a guest that never goes dark and never finishes: an installer that
-# has not rebooted in this long is not going to. dockur-macos's runs take 40-70 minutes
-# end to end, and this is deliberately well past that.
-INSTALL_PATIENCE = 150 * 60
+# THE BACKSTOP, and it is the one number the installer itself decides.
+#
+# The progress pane said "About 2 hours and 52 minutes remaining" on the first run that
+# reached it. That estimate is Apple's, made for real hardware, and this guest copies at
+# whatever the runner's disk gives it - so it is not a deadline. What it does establish is
+# that an installation which has not finished in ninety minutes is not merely slow.
+#
+# Ninety minutes is also short enough that a stuck run reports while somebody is still
+# looking at it, instead of being cancelled by the job's own timeout with nothing to say.
+INSTALL_PATIENCE = 90 * 60
 
 # The forward control is pressed no faster than a pane can redraw: the installer takes
 # several seconds per pane and a click arriving during a redraw is lost.
@@ -456,7 +491,7 @@ def reinstall(d: Recovery) -> None:
     d.click(CONTINUE_MENU, "recovery Continue", settle=30)
 
 
-def installer_panes(d: Recovery, seconds: int = 3600) -> bool:
+def installer_panes(d: Recovery, seconds: int = 4 * 3600) -> bool:
     """Advance the installer until it reboots, or say why it did not.
 
     WHAT WAS WRONG WITH THE PREVIOUS VERSION, EXACTLY
@@ -500,12 +535,43 @@ def installer_panes(d: Recovery, seconds: int = 3600) -> bool:
     last_click = 0.0
     last_size: int | None = None
     grew_at: float | None = None
+    # Set when the installer reaches its progress pane. From then on the screen is lit
+    # and static, so the disk is the only thing that can be measured.
+    started_install: float | None = None
 
-    # The licence pane is the first thing after the recovery menu. It is agreed to
-    # twice: once on the pane and once in the sheet that follows it.
-    d.wait(25, "the licence pane draws")
-    d.click(AGREE, "Agree", settle=6)
-    d.click(AGREE_SHEET, "Agree in the sheet", settle=8)
+    # THE PANES IN ORDER, each with the click that leaves it. Measured by hand on a live
+    # guest; the comments next to the constants carry what each one looks like.
+    #
+    #   welcome        "To set up the installation of macOS Sequoia, click Continue."
+    #                  -> Continue, lower right       (960, 712)
+    #   licence        the agreement text, Agree/Disagree at the foot
+    #                  -> Agree                        (1005, 713)
+    #   licence sheet  the smaller dialog Agree raises, with no readable buttons
+    #                  -> its lower right              (1060, 530)
+    #   destination    the card for the erased disk, then Continue
+    #                  -> the card FIRST               (850, 550)
+    #                     then Continue                (1005, 712)
+    #
+    # The order is the sequence; none of these is a retry. A pane that does not advance
+    # therefore ends the run rather than being clicked at again, which is what the
+    # unchanged-screen check below is for.
+    d.wait(25, "the welcome pane draws")
+    d.click(INSTALLER_CONTINUE, "welcome Continue", settle=8)
+    d.wait(10, "the licence pane draws")
+
+    log("licence: Agree")
+    d.click(AGREE, "Agree", settle=8)
+
+    # THE SHEET COMES UP OVER THE SAME PANE. Its own Agree is at (1060, 530) and is the
+    # one that matters - the pane's Agree disabled itself when it raised the sheet.
+    log("licence sheet: Agree")
+    d.click(AGREE_SHEET, "Agree in the sheet", settle=10)
+
+    # THE DESTINATION PANE, WHERE THE CARD MUST BE CHOSEN BEFORE CONTINUE WORKS.
+    log("destination: select the card, then Continue")
+    d.wait(15, "the disk list draws")
+    d.click(DISK_CARD, "the main disk card", settle=5)
+    d.click(PANE_CONTINUE, "destination Continue", settle=20)
 
     while time.time() < deadline:
         level = d.brightness()
@@ -557,12 +623,48 @@ def installer_panes(d: Recovery, seconds: int = 3600) -> bool:
                 f"{(time.time() - dark_since) / 60:.1f} minutes")
             return True
 
-        # Lit, and not yet dark: still walking the installer's panes. Click the forward
-        # control, but not faster than the pane can redraw.
-        if time.time() - last_click >= CLICK_INTERVAL:
-            d.click(INSTALLER_CONTINUE, "installer Continue", settle=3)
-            last_click = time.time()
-        time.sleep(2)
+        # THE INSTALLATION PROGRESS PANE IS LIGHT, NOT DARK, and it is where the installer
+        # spends all of its time. It reads
+        #
+        #     macOS Sequoia will be installed on the disk "main"
+        #     About 2 hours and 52 minutes remaining
+        #     [Cancel]
+        #
+        # so the dark-screen branch never fires and the only evidence of progress is the
+        # target disk growing. That is measured here, on the lit screen, with the same
+        # stall rule: gigabytes over hours for a working install, nothing at all for a
+        # stopped one.
+        if started_install is None:
+            started_install = time.time()
+            last_size = d.disk_allocated()
+            grew_at = time.time()
+            log("the installer is on its progress pane; watching the disk")
+
+        size = d.disk_allocated()
+        now = time.time()
+
+        if size is None:
+            # No disk path to watch. The backstop is all that is left, and saying so beats
+            # pretending the absence of information is progress.
+            if now - started_install > INSTALL_PATIENCE:
+                log(f"the installer has been on its progress pane for "
+                    f"{(now - started_install) / 60:.0f} minutes and this driver was "
+                    f"given no disk to watch")
+                return False
+        else:
+            if last_size is not None and size > last_size:
+                grew = (size - last_size) >> 20
+                if grew:
+                    log(f"  {grew} MiB written ({size >> 20} MiB allocated)")
+                grew_at = now
+                last_size = size
+            stalled = now - (grew_at or started_install)
+            if stalled > DISK_STALL_SECONDS:
+                log(f"=== THE DISK HAS NOT GROWN IN {stalled / 60:.0f} MINUTES ===")
+                log(f"  allocated: {size >> 20} MiB, unchanged")
+                return False
+
+        time.sleep(DISK_SAMPLE_SECONDS)
 
     log(f"the installer did not finish within {seconds / 60:.0f} minutes")
     return False

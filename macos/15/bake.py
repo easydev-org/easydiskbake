@@ -77,8 +77,12 @@ def parse(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--mem", type=int, default=8192,
                    help="MB; macOS needs 4 GB to install and more to be useful")
     p.add_argument("--cpus", type=int, default=4)
-    p.add_argument("--timeout", type=int, default=5400,
-                   help="seconds the installation may run before Setup Assistant")
+    # NINETY MINUTES, matching macos/15/install.py's own patience. The installer's own
+    # estimate on the first run that reached its progress pane was "about 2 hours and 52
+    # minutes" - Apple's figure for real hardware - and a run that has not rebooting in
+    # ninety is not merely slow.
+    p.add_argument("--timeout", type=int, default=90 * 60,
+                   help="seconds each stage may run")
     p.add_argument("--user", default=os.environ.get("MACOS_USER", "docker"))
     p.add_argument("--password", default=os.environ.get("MACOS_PASSWORD", "admin"))
     p.add_argument("--keep-work", action="store_true")
