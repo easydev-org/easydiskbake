@@ -53,6 +53,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import compress  # noqa: E402
 import desktop  # noqa: E402
+import machine  # noqa: E402
 import images  # noqa: E402
 import iso  # noqa: E402
 import opencore  # noqa: E402
@@ -63,13 +64,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 # The release's marketing name, for the recovery tag. The bake takes the number.
 RELEASES = {"14": "sonoma", "15": "sequoia", "26": "tahoe"}
-
-# Apple's SMC key, obfuscated the way every hackintosh does it. This is not a secret or
-# a credential: it is the value macOS reads from the SMC device to decide whether the
-# firmware is Apple's, and it is in OSX-KVM, in dockur/macos and in Apple's own
-# diagnostic tooling.
-OSK_PLAIN = "ourhardworkbythesewordsguardedpleasedontsteal(c)AppleComputerInc"
-
 
 def log(msg: str) -> None:
     print(f"[bake-macos {time.strftime('%H:%M:%S')}] {msg}", flush=True)
@@ -163,117 +157,15 @@ class Baker:
         )
         log(f"disk created: {self.args.disk_size}")
 
-        # THE MACHINE, TAKEN FROM dockur/macos RATHER THAN REASONED OUT.
+        # THE MACHINE AND ITS DISKS COME FROM macos/15/machine.py.
         #
-        # Each of these was a difference between this file and src/*.sh in dockur/macos,
-        # found by reading them side by side after two runs failed at the firmware. They
-        # are listed in the order they matter.
-        shape = vm.Shape(
-            cpus=self.args.cpus,
-            mem_mb=self.args.mem,
-            machine="q35",
-            firmware_code=assets["rom"],
-            firmware_vars=assets["vars"],
-            # NOT -vga vmware. On q35 -vga creates an ISA VGA device on the legacy bus;
-            # dockur's display.sh maps "vmware" to `-device vmware-svga`, a PCIe device.
-            # OpenCore's graphics output and macOS's driver both expect the latter.
-            vga="none",
-            # Skylake-Client-v4, not Penryn. dockur's cpu.sh selects it for every Intel
-            # host (selectAmdCpuModel only fires on AMD), and the DEFAULT_FLAGS it
-            # composes are not optional decoration:
-            #
-            #     vendor=GenuineIntel      macOS refuses to boot without it
-            #     vmx=off                  nested virtualisation confuses the kernel
-            #     vmware-cpuid-freq=on     the kernel reads the TSC frequency from this
-            #     -pdpe1gb                 1 GB pages are broken under this guest
-            #
-            # plus the instruction set the macOS profile advertises, and `check` so qemu
-            # refuses an unsupportable combination at startup instead of booting a guest
-            # that panics later.
-            cpu=("Skylake-Client-v4,vendor=GenuineIntel,vmx=off,"
-                 "vmware-cpuid-freq=on,-pdpe1gb,"
-                 "+ssse3,+sse4.2,+popcnt,+avx,+avx2,+aes,+fma,+bmi1,+bmi2,+smep,"
-                 "+xsave,+xsaveopt,+xgetbv1,+movbe,+rdrand,check"),
-            # dockur's configureSmp() describes cores as a topology macOS understands
-            # rather than leaving qemu to invent one: sockets=1,dies=1,cores=N,threads=1.
-            smp_topology=f"{self.args.cpus},sockets=1,dies=1,cores={self.args.cpus},threads=1",
-            extra_args=[
-                # From boot.sh. The first two stop the guest hanging at a black screen
-                # when macOS asks for a sleep state this firmware cannot perform; the
-                # third is the PCIe hotplug bridge that macOS mishandles on ICH9.
-                "-global", "ICH9-LPC.disable_s3=1",
-                "-global", "ICH9-LPC.disable_s4=1",
-                "-global", "ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off",
-                # macOS reads the clock from the RTC and expects UTC, as Apple hardware
-                # provides. Without this the guest starts at the host's local time
-                # interpreted as UTC and every timestamp in the installer is wrong.
-                "-rtc", "base=utc",
-                # SMBIOS type 2 is the baseboard record. macOS's platform check reads it
-                # and a guest without one reports an unknown board.
-                "-smbios", "type=2",
-                # THE SCREEN HAS TO BE THE SIZE THE COORDINATES ARE IN.
-                #
-                # dockur uses `-device vmware-svga` and relies on OpenCore's
-                # UEFI/Output/Resolution to pick the mode. That works there because
-                # vmware-svga's own framebuffer is already large. Here it is not:
-                #
-                #     -device vmware-svga           no xres/yres property at all
-                #     actual guest screen           1280x800
-                #     every driver coordinate       1920x1080
-                #
-                # so OpenCore was asking for a mode the firmware's list did not contain,
-                # quietly kept 1280x800, and every click in macos/15/install.py landed
-                # somewhere else. The console showed a RECOVERY MENU that was never
-                # touched while thirty-seven clicks went into it.
-                #
-                # virtio-vga takes xres and yres, so the mode exists before OpenCore
-                # asks for it. WhateverGreen - which the LongQT template ships - is the
-                # kext that makes macOS accept a virtio GPU.
-                # xres and yres only. virtio-vga has no vgamem_mb property - the
-                # first version of this line asked for one and qemu refused to start:
-                #     Property 'virtio-vga.vgamem_mb' not found
-                # The inherited framebuffer size is 16 MiB by default, which is enough
-                # for 1920x1080x32 (8 MiB).
-                "-device", f"virtio-vga,xres={opencore.GUEST_WIDTH},"
-                           f"yres={opencore.GUEST_HEIGHT}",
-            ],
-        )
-
-        # THE DEVICES, AND WHY EACH ONE IS THE TYPE IT IS.
-        #
-        # dockur/macos reaches this layout through createDevice() in the base image's
-        # disk.sh. Two details there are load-bearing and the first version of this
-        # file had neither:
-        #
-        #   virtio-blk-pci, not ide-hd   q35 has no IDE controller of its own; ide-hd
-        #                                hangs off an AHCI compatibility layer whose
-        #                                enumeration OVMF does not reliably do
-        #
-        #   bootindex=<n>                a disk with no bootindex is not in the firmware's
-        #                                boot order at all. It is present and readable,
-        #                                and OVMF will not try it - which is exactly the
-        #                                "failed to load Boot0001" the frames show.
-        #
-        #   boot.img     OpenCore, bootindex=0: the firmware must try this first.
-        #   disk.qcow2   the target, bootindex=1: after the installer has written a
-        #                system, OpenCore finds it here.
-        #   recovery     as USB. macOS installs from removable media; the disk it
-        #                installs TO is not the disk it boots FROM. USB devices have no
-        #                bootindex property - qemu rejects the argument, which was worth
-        #                checking rather than assuming - and they do not need one: the
-        #                firmware reaches this only after OpenCore hands over.
-        drives = [
-            "-drive", f"file={assets['boot']},format=raw,if=none,id=oc",
-            "-device", "virtio-blk-pci,drive=oc,bootindex=0",
-            "-drive", f"file={self.disk},if=none,format=qcow2,id=target",
-            "-device", "virtio-blk-pci,drive=target,bootindex=1",
-            "-drive", f"file={recovery},media=disk,if=none,id=rec,readonly=on",
-            "-device", "usb-storage,bus=xhci.0,drive=rec",
-            "-device", f"isa-applesmc,osk={OSK_PLAIN}",
-        ]
-
-        console = os.path.join(self.work, "console.log")
-        guest = vm.Guest(self.work, extra=drives, shape=shape, stdout=console).start()
+        # Eleven parameters that took eight runs to get right, and macos/15/probe.py has
+        # to build the same machine or it measures a different one. The reasoning for
+        # each field is in that module, next to the field.
+        guest = machine.make_guest(
+            self.work, assets, self.disk, recovery,
+            cpus=self.args.cpus, mem_mb=self.args.mem,
+        ).start()
 
         shots = os.path.join(self.frames, "shots")
         os.makedirs(shots, exist_ok=True)

@@ -142,3 +142,69 @@ class InsideTheScreen(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Probe(unittest.TestCase):
+    """macos/15/probe.py clicks only what is already measured.
+
+    Its job is to discover the panes nobody has measured, so every position it uses has
+    to be one that IS measured - otherwise it spends its clicks the way the bake does,
+    on a screen it does not understand.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "macos_probe", os.path.join(MACOS15, "probe.py"))
+        cls.probe = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.probe)
+
+    def test_it_clicks_the_measured_installer_continue(self):
+        self.assertEqual(self.probe.CONTINUE, install.INSTALLER_CONTINUE)
+
+    def test_it_opens_reinstall_from_the_measured_row(self):
+        # ROW_Y[1] is "Reinstall macOS Sequoia" - index 1 of the measured rows.
+        self.assertEqual(self.probe.REINSTALL_ROW, (install.ROW_X, install.ROW_Y[1]))
+
+    def test_it_uses_the_measured_menu_continue(self):
+        self.assertEqual(self.probe.MENU_CONTINUE, install.CONTINUE_MENU)
+
+    def test_every_position_is_on_screen(self):
+        for name in ("REINSTALL_ROW", "CONTINUE", "MENU_CONTINUE"):
+            x, y = getattr(self.probe, name)
+            self.assertLess(x, opencore.GUEST_WIDTH, name)
+            self.assertLess(y, opencore.GUEST_HEIGHT, name)
+
+    def test_it_stops_at_a_pane_it_cannot_move(self):
+        source = open(os.path.join(MACOS15, "probe.py"), encoding="utf-8").read()
+        # Two unchanged frames in a row is the stop condition: one is a repaint, two is
+        # a click that is not reaching anything.
+        self.assertIn("unchanged >= 2", source)
+
+
+class MachineIsShared(unittest.TestCase):
+    """bake.py and probe.py must build the same machine.
+
+    The eleven parameters in macos/15/machine.py took eight runs to get right. A probe
+    that rebuilt them itself would answer questions about a machine nobody bakes.
+    """
+
+    def test_the_bake_uses_the_shared_machine(self):
+        with open(os.path.join(MACOS15, "bake.py"), encoding="utf-8") as fh:
+            source = fh.read()
+        self.assertIn("machine.make_guest", source)
+        # The old inline construction must be gone, or there are two machines again.
+        self.assertNotIn("vm.Guest(self.work, extra=drives", source)
+
+    def test_the_probe_uses_the_shared_machine(self):
+        with open(os.path.join(MACOS15, "probe.py"), encoding="utf-8") as fh:
+            source = fh.read()
+        self.assertIn("machine.make_guest", source)
+
+    def test_the_shared_machine_keeps_the_settings_that_were_hard_won(self):
+        source = open(os.path.join(MACOS15, "machine.py"), encoding="utf-8").read()
+        for required in ("Skylake-Client-v4", "vmx=off", "-pdpe1gb",
+                         "bootindex=0", "bootindex=1", "virtio-vga",
+                         "ICH9-LPC.disable_s3=1", "base=utc", "type=2"):
+            self.assertIn(required, source, required)
