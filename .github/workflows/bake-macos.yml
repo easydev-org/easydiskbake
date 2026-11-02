@@ -141,6 +141,26 @@ jobs:
           retention-days: 14
 
 
+      # WHEN THE ENCODING NEVER RUNS, THE PICTURES ARE ALL THERE IS.
+      #
+      # This step was removed once, on the reasoning that lib/vm.record_many() cannot
+      # fail silently. It can fail silently enough: a run that is cancelled or times out
+      # never reaches the encoding call at all, so `keep the recording` uploads
+      # console.log and a frames.txt that lists files nobody can open. That happened to
+      # run 41446883463 - 454 frames on the runner, and the artifact was 32 KB.
+      #
+      # Gated on the mp4 being absent, so the usual case uploads nothing extra: a PPM
+      # here is 3 MB and there are hundreds of them.
+      - name: keep raw frames as a fallback
+        if: always() && hashFiles('out/install.mp4') == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-frames
+          path: out/frames/shots/*.ppm
+          if-no-files-found: warn
+          retention-days: 7
+          compression-level: 0   # a PPM is already raw; zipping it buys nothing
+
       - name: upload the disk
         uses: actions/upload-artifact@v4
         with:
