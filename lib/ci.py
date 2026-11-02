@@ -73,52 +73,49 @@ def check_kvm() -> None:
 
 # --- disk --------------------------------------------------------------------
 
-# What a stock GitHub runner carries that a bake never uses. Measured by dockur/windows
-# for the same purpose and the same reason: a Windows ISO is 7.2 GiB, its disk is
-# 64 GiB sparse, and a compressed copy goes beside it.
-PRUNE = [
-    "/usr/local/.ghcup",
-    "/usr/local/lib/android",
-    "/usr/local/lib/node_modules",
-    "/usr/local/share/boost",
-    "/usr/local/share/chromium",
-    "/usr/local/share/powershell",
-    "/usr/share/dotnet",
-    "/usr/share/swift",
-    "/opt/az",
-    "/opt/ghc",
-    "/opt/google",
-    "/opt/hostedtoolcache",
-    "/opt/microsoft",
-    "/opt/pipx",
-]
+# PRUNE used to live here: fourteen paths of preinstalled toolchains, copied from
+# dockur/windows. It is gone because it was measured rather than inherited - the runner
+# had 121 GB free against a 30 GB requirement, and two of those paths are used by
+# Actions itself. See free_disk() for the numbers.
 
 
 def free_disk(need_gb: int) -> None:
-    """Remove the preinstalled toolchains and assert there is room for the bake."""
-    for path in PRUNE:
-        if os.path.exists(path):
-            # sudo because several of these are root-owned and the step runs as the
-            # runner user. -rf and no --no-preserve-root: these are fixed paths in this
-            # file, never user input.
-            subprocess.run(["sudo", "rm", "-rf", path], check=False)
-            log(f"removed {path}")
+    """Check there is room, and refuse early if there is not.
 
-    subprocess.run(["sudo", "apt-get", "clean"], check=False, capture_output=True)
-    subprocess.run(
-        ["sudo", "rm", "-rf", "/var/cache/apt/*", "/var/lib/apt/lists/*"],
-        check=False, capture_output=True,
-    )
-    subprocess.run(
-        ["docker", "system", "prune", "--all", "--force", "--volumes"],
-        check=False, capture_output=True,
-    )
+    WHY THIS NO LONGER DELETES ANYTHING
 
+    It used to prune the preinstalled toolchains - dotnet, android, ghcup, the hosted
+    toolcache - copied from dockur/windows, which does it because its job runs inside a
+    container and genuinely cannot see them.
+
+    Measured here instead of inherited: the runner had 121 GB free, against a 30 GB
+    requirement. Every one of those `rm -rf` calls was deleting data nothing needed to
+    delete, and two of the paths - /opt/hostedtoolcache and /usr/local/lib/node_modules
+    - are used by Actions itself. Deleting them to free space that was never short is
+    how a job develops a strange failure two steps later.
+
+    What is kept is the check, because the number that matters is not "how much can we
+    free" but "is there enough":
+
+        7.2 GiB   the Windows ISO
+        64 GiB    the qcow2, sparse, so a few GB of real blocks
+        ~4 GiB    the compressed copy that gets pushed
+
+    A runner that fails this check would fail the bake ninety minutes in with ENOSPC,
+    which is worse than refusing at second twelve.
+    """
     usage = shutil.disk_usage("/")
     available = usage.free // (1024 ** 3)
     log(f"available: {available} GB (need {need_gb})")
+
     if available < need_gb:
-        raise Failed(f"at least {need_gb} GB is required, {available} GB is free")
+        raise Failed(
+            f"at least {need_gb} GB is required, {available} GB is free.\n"
+            f"Nothing was deleted: this repository used to prune the runner's\n"
+            f"toolchains, and on a runner with this much free space that was noise.\n"
+            f"If a runner really is this small, run `docker system prune -a` there or\n"
+            f"use a larger runner."
+        )
 
 
 # --- oras --------------------------------------------------------------------

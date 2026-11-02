@@ -86,7 +86,8 @@ jobs:
           command: |
             set -euo pipefail
             python3 lib/ci.py kvm
-            # 7.2 GiB image + 64 GiB sparse disk + a compressed copy, with headroom.
+            # 7.2 GiB image + 64 GiB sparse disk + a compressed copy. A check, not a
+            # cleanup: nothing is deleted, because there was never a shortage.
             python3 lib/ci.py free-disk --need 45
 
       - name: bake

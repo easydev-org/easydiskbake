@@ -80,8 +80,7 @@ jobs:
           interval: "10"
           command: |
             set -euo pipefail
-            # 7.2 GiB download plus a 7.2 GiB upload needs the space; a stock runner
-            # has ~14 GB free after the preinstalled toolchains.
+            # A check, not a cleanup: the runner reported 121 GB free. See ci.py.
             python3 lib/ci.py free-disk --need 30
             python3 lib/ci.py install-oras
             python3 lib/ci.py login --registry ghcr.io

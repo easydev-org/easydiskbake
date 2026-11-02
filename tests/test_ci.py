@@ -31,21 +31,16 @@ class Kvm(unittest.TestCase):
 
 
 class FreeDisk(unittest.TestCase):
+    """It checks, and refuses early. It does not delete.
 
-    def test_the_prune_list_is_absolute_paths_only(self):
-        # These are handed to `sudo rm -rf`. A relative path would delete from the
-        # checkout, which is the working copy of the repository being built.
-        for path in ci.PRUNE:
-            self.assertTrue(path.startswith("/"), path)
-            self.assertNotIn("..", path, path)
+    The deleting version pruned fourteen toolchain paths copied from dockur/windows,
+    on a runner that had 121 GB free against a 30 GB requirement. Two of those paths
+    are used by Actions itself.
+    """
 
     def test_insufficient_space_fails_and_says_how_much_is_needed(self):
-        fake = shutil.disk_usage("/huge") if os.path.exists("/huge") else None
-        # Simulate a full disk: free bytes below the threshold in GB.
         usage = type("U", (), {"free": 5 * 1024 ** 3})()
-        with mock.patch("shutil.disk_usage", return_value=usage), \
-             mock.patch("subprocess.run"), \
-             mock.patch("os.path.exists", return_value=False):
+        with mock.patch("shutil.disk_usage", return_value=usage):
             with self.assertRaises(ci.Failed) as ctx:
                 ci.free_disk(45)
         self.assertIn("45", str(ctx.exception))
@@ -53,10 +48,21 @@ class FreeDisk(unittest.TestCase):
 
     def test_enough_space_passes(self):
         usage = type("U", (), {"free": 100 * 1024 ** 3})()
-        with mock.patch("shutil.disk_usage", return_value=usage), \
-             mock.patch("subprocess.run"), \
-             mock.patch("os.path.exists", return_value=False):
+        with mock.patch("shutil.disk_usage", return_value=usage):
             ci.free_disk(45)
+
+    def test_it_does_not_delete_anything(self):
+        # The whole point of the change: no subprocess call, so nothing can be removed.
+        usage = type("U", (), {"free": 100 * 1024 ** 3})()
+        with mock.patch("shutil.disk_usage", return_value=usage), \
+             mock.patch("subprocess.run") as run:
+            ci.free_disk(45)
+        run.assert_not_called()
+
+    def test_no_prune_list_remains(self):
+        # A re-added list would make the previous test pass while still deleting,
+        # because the deletion would be inside free_disk rather than the list.
+        self.assertFalse(hasattr(ci, "PRUNE"))
 
 
 class Repository(unittest.TestCase):

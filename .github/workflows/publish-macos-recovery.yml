@@ -102,7 +102,7 @@ jobs:
           interval: "20"
           command: |
             set -euo pipefail
-            # 850 MiB per release, and three run in parallel.
+            # 850 MiB per release, three in parallel. A check, not a cleanup.
             python3 lib/ci.py free-disk --need 12
 
             ARGS="--release ${{ matrix.release }} --out recovery-${{ matrix.name }}.dmg"
