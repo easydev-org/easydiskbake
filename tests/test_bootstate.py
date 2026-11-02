@@ -31,6 +31,11 @@ sys.path.insert(0, os.path.join(HERE, "lib"))
 
 import bootstate  # noqa: E402
 
+# save() stops swtpm before packing, and that polling waits for the process to go away.
+# There is no swtpm in a unit test; the stop is what is being worked around, not tested.
+_orig_stop = bootstate.stop_swtpm
+bootstate.stop_swtpm = lambda work: None
+
 
 class Save(unittest.TestCase):
 

@@ -55,6 +55,30 @@ def archive_path(disk: str) -> str:
                         os.path.basename(disk) + SUFFIX)
 
 
+def stop_swtpm(work: str) -> None:
+    """Stop swtpm on `work`'s TPM state so the state it holds reaches the disk.
+
+    pkill on the state directory: swtpm does not expose a stop command, and the state
+    directory is the only thing that identifies this instance. A timeout is what makes
+    the subsequent read safe - SIGTERM lets swtpm flush, and a state file written before
+    the flush is a state file that fails to initialise.
+
+    Not fatal when nothing is running: save() is called on paths where the TPM never
+    started (a bake that failed early), and pkill's exit status is about matches, not
+    about correctness.
+    """
+    import subprocess
+    import time
+
+    marker = os.path.join(work, "tpm")
+    subprocess.run(["pkill", "-f", marker], check=False)
+    for _ in range(20):
+        time.sleep(0.25)
+        check = subprocess.run(["pgrep", "-f", marker], capture_output=True, text=True)
+        if not check.stdout.strip():
+            return
+
+
 def save(work: str, disk: str) -> str | None:
     """Collect the firmware and TPM state next to `disk`. Returns the archive, or None.
 
@@ -74,14 +98,25 @@ def save(work: str, disk: str) -> str | None:
                 members.append(os.path.basename(found))
                 break
 
+    # THE TPM HAS TO BE STOPPED BEFORE ITS STATE IS COPIED.
+    #
+    # swtpm keeps the authoritative state in memory and writes tpm2-00.permall when it
+    # shuts down or checkpoints. Packing the directory while it is still running gives
+    # whatever happened to be on disk at that moment - and the restored copy then fails
+    # to initialise:
+    #
+    #     qemu-system-x86_64: tpm-emulator: TPM result for CMD_INIT: 0x9 operation failed
+    #     qemu exited during the boot
+    #     0 frames captured over 12s
+    #
+    # measured on launch-windows runs 41501928264 and 41503681324, both against a disk
+    # whose bake had finished normally.
+    stop_swtpm(work)
+
     # THE LOCK IS NOT STATE. swtpm writes tpm/.lock to claim the directory for the
     # running process, and packing it means the restored copy claims to be in use by a
-    # process that no longer exists - which swtpm answers with
-    #
-    #     TPM result for CMD_INIT: 0x9 operation failed
-    #
-    # and qemu exits. The file is excluded here and deleted again in restore(), because
-    # archives published before this change still carry one.
+    # process that no longer exists - which produces the same CMD_INIT failure. Excluded
+    # here and deleted again in restore(), because published archives still carry one.
     tpm = os.path.join(work, "tpm")
     if os.path.isdir(tpm) and os.listdir(tpm):
         members.append("tpm")
