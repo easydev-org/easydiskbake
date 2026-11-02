@@ -39,6 +39,15 @@ FROM qemux/qemu:7.50
 #                     gets a shared folder without the host opening a port. qemu checks
 #                     for the binary at startup and refuses the netdev if it is absent -
 #                     the check is CONFIG_SMBD_COMMAND, normally /usr/sbin/smbd.
+#   nodejs            for GitHub/Forgejo actions that are written in JavaScript. An
+#                     action like actions/checkout@v4 is a Node program the runner has
+#                     to execute inside this container:
+#
+#                         OCI runtime exec failed: exec: "node": executable file not
+#                         found in $PATH
+#
+#                     That is what a job container without node looks like, and it
+#                     fails before any of this repository's code runs.
 #
 # (Comments cannot sit inside a line-continued RUN, so they sit above it.)
 RUN set -eux; \
@@ -54,6 +63,7 @@ RUN set -eux; \
         ovmf \
         aria2 \
         samba \
+        nodejs \
         ; \
     rm -rf /var/lib/apt/lists/*
 
@@ -73,6 +83,7 @@ RUN set -eux; \
     swtpm --version; \
     aria2c --version | head -1; \
     smbd --version | head -1; \
+    node --version; \
     ls -l /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_VARS_4M.fd; \
     command -v debugfs genisoimage mkfifo timeout setsid jq curl
 

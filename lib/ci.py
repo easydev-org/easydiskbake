@@ -402,6 +402,8 @@ def main(argv: list[str]) -> int:
     tg = sub.add_parser("tags", help="list package tags with a prefix")
     tg.add_argument("--registry", default="ghcr.io")
     tg.add_argument("--prefix", required=True)
+    tg.add_argument("--repo", default=None,
+                    help="owner/name; defaults to $GITHUB_REPOSITORY")
 
     rc = sub.add_parser("repo", help="print the lowercased owner/repo")
 
@@ -426,7 +428,7 @@ def main(argv: list[str]) -> int:
             text = args.text if args.text is not None else sys.stdin.read()
             append_summary(text)
         elif args.cmd == "tags":
-            repo = lowercase_repository()
+            repo = (args.repo or lowercase_repository()).lower()
             for t in tags_in_package(args.registry, repo, args.prefix):
                 print(t)
         elif args.cmd == "repo":

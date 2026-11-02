@@ -55,6 +55,9 @@ BAKE_CHECKS = [
     ["wimlib-imagex", "--version"],
     ["swtpm", "--version"],
     ["aria2c", "--version"],
+    # Actions are Node programs the runner executes inside this container. Without
+    # node, `uses: actions/checkout@v4` fails before any code in this repository runs.
+    ["node", "--version"],
     ["qemu-system-x86_64", "--version"],
     ["qemu-img", "--version"],
     ["xorriso", "-version"],

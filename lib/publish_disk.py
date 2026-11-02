@@ -113,10 +113,13 @@ def main(argv: list[str]) -> int:
     p.add_argument("--tag", default=None,
                    help="exact tag, overriding --kind and the stamp")
     p.add_argument("--registry", default="ghcr.io")
+    p.add_argument("--repo", default=None,
+                   help="owner/name to push into; defaults to $GITHUB_REPOSITORY. "
+                        "Forgejo sets neither, so it is passed explicitly there.")
     args = p.parse_args(argv)
 
     try:
-        repository = ci.lowercase_repository()
+        repository = (args.repo or ci.lowercase_repository()).lower()
         tag = args.tag or f"{args.kind}-{utc_stamp()}"
         reference = push(args.disk, tag, repository, kind=args.kind, registry=args.registry)
 
