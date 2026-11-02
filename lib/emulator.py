@@ -57,7 +57,8 @@ class EmulatorError(RuntimeError):
 
 def build_args(avd: str, work: str, *, api: int = 35, abi: str = "x86_64",
                memory_mb: int = 4096, cores: int = 4,
-               gpu: str = "swiftshader_indirect", login: bool = False) -> list[str]:
+               gpu: str = "swiftshader_indirect", login: bool = False,
+               wipe_data: bool = True) -> list[str]:
     """The emulator argv. Pure, so it can be asserted without running it.
 
     Taken from easysandbox-android/entrypoint.sh, which is the version of this that
@@ -71,10 +72,24 @@ def build_args(avd: str, work: str, *, api: int = 35, abi: str = "x86_64",
         -accel on               KVM. Without it an Android boot is tens of minutes.
         -gpu swiftshader_indirect   software rendering. The alternative needs a host
                                 GPU, and a CI runner has none.
-        -wipe-data              always a clean device, so the disk is reproducible
+        -wipe-data              conditional, and the condition is the whole design
 
-    -wipe-data is deliberately NOT conditional here. easysandbox-android makes it a
-    variable because a sandbox pod may want to keep state; a bake never does.
+    WHY -wipe-data IS A PARAMETER NOW
+
+    It used to be unconditional, with the reasoning that a bake must start cold and a
+    snapshot would hide a broken image. That is right for the FIRST boot and wrong for
+    the second, and the two are different jobs:
+
+        bake      the first boot. -wipe-data, because the point is to run a known-clean
+                  device and leave a /data that a later boot can be shown to have reused.
+
+        verify    a boot of the artifact the bake just produced. WITHOUT -wipe-data,
+                  because wiping would make it indistinguishable from a fresh AVD - the
+                  one thing the check exists to rule out.
+
+    A verify that passed with -wipe-data would prove only that the system image boots,
+    which is true of the input. It would say nothing about whether the bake's output
+    carries state, which is what makes it an artifact rather than a copy.
     """
     if not shutil.which("emulator"):
         raise EmulatorError(
@@ -85,10 +100,13 @@ def build_args(avd: str, work: str, *, api: int = 35, abi: str = "x86_64",
 
     qmp = os.path.join(work, QEMU_SOCKET)
 
-    return [
+    args = [
         "emulator", "-avd", avd,
         "-no-window", "-no-audio", "-no-boot-anim", "-no-snapshot",
-        "-wipe-data",
+    ]
+    if wipe_data:
+        args.append("-wipe-data")
+    args += [
         "-gpu", gpu,
         "-accel", "on",
         "-memory", str(memory_mb),
@@ -102,6 +120,7 @@ def build_args(avd: str, work: str, *, api: int = 35, abi: str = "x86_64",
         "-no-metrics",
         "-no-keys",
     ]
+    return args
 
 
 class Emulator:
@@ -203,8 +222,30 @@ class Emulator:
         return False
 
     def stop(self) -> None:
+        """Ask the guest to power off, then make sure it did.
+
+        A SIGTERM to the emulator's process group kills a machine that is mid-write,
+        and the /data partition of an AVD is the thing this bake is about. `adb emu
+        kill` is the emulator's own shutdown: it flushes the disk images and exits.
+
+        The signals stay as the fallback, because a guest that is hung at the kernel
+        must not be able to hang the bake - so this is "polite, bounded, then firm".
+        """
         if self.proc is None:
             return
+
+        if self.alive():
+            try:
+                self.adb("emu", "kill", timeout=30)
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+            try:
+                self.proc.wait(timeout=60)
+                log("stopped cleanly (adb emu kill)")
+                return
+            except subprocess.TimeoutExpired:
+                log("the emulator did not exit within 60s; sending SIGTERM")
+
         try:
             os.killpg(os.getpgid(self.proc.pid), 15)
         except ProcessLookupError:

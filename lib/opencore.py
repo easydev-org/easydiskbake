@@ -51,9 +51,12 @@ import json
 import os
 import plistlib
 import shutil
+import struct
 import subprocess
 import sys
 import time
+import uuid
+import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -71,6 +74,19 @@ OSK = ("ourhardworkbythesewordsguardedpleasedontsteal(c)AppleComputerInc")
 BOOT_IMG_MB = 200
 BOOT_IMG_SECTOR = 512
 BOOT_IMG_SECTORS = (BOOT_IMG_MB * 1024 * 1024) // BOOT_IMG_SECTOR
+
+# The boot image is a GPT disk with one partition, and these are the constants of that
+# layout. They were parameters of nothing before, which is how the partition table came
+# to be missing entirely - see build_boot_image().
+SECTOR_SIZE = 512
+ESP_START_SECTOR = 2048          # 1 MiB: the conventional, and cluster-aligned, start
+GPT_ENTRY_ARRAY_SECTORS = 32     # 128 entries x 128 bytes = 16 KiB
+# C12A7328-F81F-11D2-BA4B-00A0C93EC93B, as GPT stores it (first three fields
+# little-endian, the rest as written).
+ESP_TYPE_GUID = bytes.fromhex("28732ac11ff8d211ba4b00a0c93ec93b")
+# The disk's own GUID. Fixed rather than random on purpose: this image is rebuilt on
+# every bake and a stable identifier makes two builds comparable byte for byte.
+GPT_DISK_GUID = bytes.fromhex("1ACB1E003B8F4B2A86A4D99ED21DCAEB")
 
 # How a serial pair is made: macserial ships inside OpenCore's release archive under
 # Utilities/, so the generator travels with the payload it describes rather than being
@@ -561,40 +577,224 @@ def recovery_image(work: str) -> str:
 
 
 def build_boot_image(efi: str, dest: str) -> str:
-    """A raw FAT image with the EFI tree at its root, which is what OpenCore boots from.
+    """A GPT disk whose single partition is the ESP OpenCore boots from.
 
-    mtools rather than a loop mount: mounting needs privileges a container job does not
-    have, and mformat/mcopy write the same filesystem without them. dockur/macos does
-    exactly this and records the one non-obvious part - the cluster and sector counts
-    have to be consistent with each other or mcopy reports a full disk on a 200 MiB
-    image that is empty.
+    THE PARTITION TABLE IS THE POINT, AND IT WAS MISSING.
+
+    The first version ran `mformat -F` on the whole file, which makes a "superfloppy":
+    a FAT filesystem starting at LBA 0 with an MBR signature written over the FAT boot
+    sector. mtools reads it happily, so `mdir` listed the tree and the build passed its
+    own check. OVMF did not: firmware looks for an EFI SYSTEM PARTITION in a GPT or MBR
+    partition table, and a filesystem at LBA 0 is neither. The run died at
+
+        TianoCore ... failed to load Boot0001
+
+    which reads like a broken loader and is actually a disk the firmware cannot
+    enumerate. That is the whole class of failure this function now rules out.
+
+    WHAT A BOOTABLE ESP NEEDS, all of it done here:
+
+        LBA 0        a PROTECTIVE MBR: one 0xEE entry covering the disk
+        LBA 1        a GPT header with a CRC32
+        LBA 2..33    the entry array, 128 x 128 bytes
+        LBA 34       first usable sector; the partition may not start below it
+        LBA 2048     the ESP itself, FAT32, 1 MiB in
+        last LBA-33  the backup entry array
+        last LBA     the backup header
+
+    THE ALTERNATIVE WAS sfdisk, which is what dockur/macos uses. It is not in the bake
+    image, and adding a partitioning tool to write one fixed table for one fixed image
+    is a dependency for something that is forty lines of struct.pack. The values below
+    are constants of this layout rather than parameters.
     """
+    total_mb = BOOT_IMG_MB
+    image_size = total_mb * 1024 * 1024
+    total_sectors = image_size // SECTOR_SIZE
+
+    # The ESP, in sectors. 2048 is 1 MiB, which is what makes the FAT filesystem's own
+    # geometry land on whole clusters and is the conventional ESP start.
+    esp_first = ESP_START_SECTOR
+    esp_last = total_sectors - 34
+    esp_sectors = esp_last - esp_first + 1
+
     if os.path.exists(dest):
         os.unlink(dest)
     with open(dest, "wb") as fh:
-        fh.truncate(BOOT_IMG_MB * 1024 * 1024)
+        fh.truncate(image_size)
 
+    # The FAT filesystem goes INSIDE the partition, at its byte offset. mtools addresses
+    # a file offset with the @@ suffix, which writes the same bytes a mount would.
+    partition = f"{dest}@@{esp_first * SECTOR_SIZE}"
     geometry = [
-        "-F",                       # a full disk, not a partition image
-        "-i", dest,
+        "-F",                       # a full filesystem, not a partition image
+        "-i", partition,
         "-c", "8",                  # 8 sectors per cluster: small enough for many files
-        "-T", str(BOOT_IMG_SECTORS),
+        "-T", str(esp_sectors),
         "-v", "EFI",
     ]
     subprocess.run(["mformat", *geometry], check=True)
+    subprocess.run(["mcopy", "-s", "-i", partition, "-m", efi, "::/"], check=True)
 
-    subprocess.run(["mcopy", "-s", "-i", dest, "-m", efi, "::/"], check=True)
-    # The template's drivers and kexts sit beside OpenCore.efi, so the whole EFI tree
-    # above was copied; nothing is filtered, because a missing kext is a guest that
-    # stops at a prohibited sign with no explanation in any log.
-    listing = subprocess.run(["mdir", "-i", dest, "-/", "::/"], capture_output=True,
-                             text=True)
+    write_gpt(dest, esp_first, esp_last)
+
+    # Verify what the FIRMWARE will see, not what mtools will: the partition table has
+    # to be readable and the ESP entry has to be there. This is the check the first
+    # version lacked - it asked mtools, which never looks at a partition table.
+    check_gpt(dest, esp_first)
+
+    listing = subprocess.run(["mdir", "-i", partition, "-/", "::/"],
+                             capture_output=True, text=True)
     if listing.returncode != 0 or "OpenCore.efi" not in listing.stdout:
         raise OpenCoreError(
-            f"{dest} does not hold OpenCore.efi after mcopy:\n{listing.stdout[:600]}"
+            f"{dest} does not hold OpenCore.efi inside its ESP after mcopy:\n"
+            f"{listing.stdout[:600]}"
         )
-    log(f"boot.img: {os.path.getsize(dest) >> 20} MiB, EFI tree copied")
+    log(f"boot.img: {image_size >> 20} MiB, GPT + ESP at LBA {esp_first}, "
+        f"EFI tree copied")
     return dest
+
+
+def _crc32(data: bytes) -> int:
+    return zlib.crc32(data) & 0xFFFFFFFF
+
+
+def _partition_entry(first: int, last: int, *, name: str) -> bytes:
+    """One 128-byte GPT entry: type GUID, unique GUID, LBAs, attributes, UTF-16 name."""
+    entry = bytearray(128)
+    entry[0:16] = ESP_TYPE_GUID          # EFI System Partition
+    entry[16:32] = uuid.uuid4().bytes_le  # this partition's own GUID
+    struct.pack_into("<Q", entry, 32, first)
+    struct.pack_into("<Q", entry, 40, last)
+    # attributes, 48..56: zero - no legacy BIOS bootable, no read-only
+    for index, char in enumerate(name[:35]):
+        struct.pack_into("<H", entry, 56 + index * 2, ord(char))
+    return bytes(entry)
+
+
+def write_gpt(path: str, esp_first: int, esp_last: int) -> None:
+    """Write a protective MBR, a primary GPT, and its backup. Idempotent by rewriting.
+
+    The backup copies are not decoration: a firmware that finds the primary header
+    damaged falls back to the last sector, and OVMF does look there. Leaving them out
+    produces a disk that works until the one run where it does not.
+    """
+    size = os.path.getsize(path)
+    total_sectors = size // SECTOR_SIZE
+
+    # --- protective MBR -----------------------------------------------------------------
+    mbr = bytearray(SECTOR_SIZE)
+    # Boot code is left zero: the firmware never executes it, and a stub that does
+    # nothing is more honest than one that pretends to be a loader.
+    mbr[0x1BE:0x1BE + 16] = bytes(
+        [0x00, 0x00, 0x02, 0x00, 0xEE, 0xFF, 0xFF, 0xFF]
+        + list(struct.pack("<I", 1))
+        + list(struct.pack("<I", min(total_sectors - 1, 0xFFFFFFFF)))
+    )
+    mbr[0x1FE:0x200] = b"\x55\xAA"
+
+    # --- entries ------------------------------------------------------------------------
+    entries = bytearray(GPT_ENTRY_ARRAY_SECTORS * SECTOR_SIZE)
+    entries[0:128] = _partition_entry(esp_first, esp_last, name="primary")
+
+    entries_crc = _crc32(bytes(entries))
+
+    def header(this_lba: int, other_lba: int, entries_lba: int) -> bytes:
+        head = bytearray(SECTOR_SIZE)
+        head[0:8] = b"EFI PART"
+        struct.pack_into("<I", head, 8, 0x00010000)   # revision 1.0
+        struct.pack_into("<I", head, 12, 92)          # header size
+        struct.pack_into("<Q", head, 24, this_lba)
+        struct.pack_into("<Q", head, 32, other_lba)
+        struct.pack_into("<Q", head, 40, 34)           # first usable LBA
+        struct.pack_into("<Q", head, 48, total_sectors - 34)
+        head[56:72] = GPT_DISK_GUID
+        struct.pack_into("<Q", head, 72, entries_lba)
+        struct.pack_into("<I", head, 80, 128)          # entry count
+        struct.pack_into("<I", head, 84, 128)          # entry size
+        struct.pack_into("<I", head, 88, entries_crc)
+        # The CRC covers the header's DECLARED SIZE - 92 bytes - not the whole sector.
+        # The rest of the sector is padding and is not part of the header. Computing it
+        # over all 512 was the bug: the write and the read agreed with each other and
+        # disagreed with every other GPT implementation.
+        struct.pack_into("<I", head, 16, _crc32(bytes(head[:92])))
+        return bytes(head)
+
+    primary_entries_lba = 2
+    backup_entries_lba = total_sectors - 1 - GPT_ENTRY_ARRAY_SECTORS
+    primary_header_lba = 1
+    backup_header_lba = total_sectors - 1
+
+    with open(path, "r+b") as fh:
+        fh.seek(0)
+        fh.write(mbr)
+
+        fh.seek(primary_header_lba * SECTOR_SIZE)
+        fh.write(header(primary_header_lba, backup_header_lba, primary_entries_lba))
+
+        fh.seek(primary_entries_lba * SECTOR_SIZE)
+        fh.write(entries)
+
+        fh.seek(backup_entries_lba * SECTOR_SIZE)
+        fh.write(entries)
+
+        fh.seek(backup_header_lba * SECTOR_SIZE)
+        fh.write(header(backup_header_lba, primary_header_lba, backup_entries_lba))
+
+
+def check_gpt(path: str, esp_first: int) -> None:
+    """Read the table back the way the firmware will: MBR, header, entry.
+
+    Deliberately separate from the write. The failure this guards against is a disk
+    that mtools likes and the firmware cannot boot, and only reading the table - not
+    the filesystem - catches that.
+    """
+    with open(path, "rb") as fh:
+        fh.seek(0x1BE)
+        mbr_entry = fh.read(16)
+        if mbr_entry[4:5] != b"\xEE":
+            raise OpenCoreError(
+                f"{path}: the MBR has no protective 0xEE entry (found "
+                f"{mbr_entry[4]:#04x}); firmware will treat this as a plain "
+                f"partitioned-less disk"
+            )
+
+        fh.seek(SECTOR_SIZE)
+        head = bytearray(fh.read(SECTOR_SIZE))
+        if head[0:8] != b"EFI PART":
+            raise OpenCoreError(f"{path}: no GPT header at LBA 1")
+
+        # The header's CRC is computed with its own field zeroed - that is the rule the
+        # format states, and forgetting it was a bug here: the check compared a CRC
+        # over a header that still contained the CRC, so a correct table failed.
+        header_size = struct.unpack_from("<I", head, 12)[0]
+        if not 92 <= header_size <= SECTOR_SIZE:
+            raise OpenCoreError(
+                f"{path}: the GPT header claims a size of {header_size} bytes"
+            )
+        stored = struct.unpack_from("<I", head, 16)[0]
+        body = bytearray(head[:header_size])
+        struct.pack_into("<I", body, 16, 0)
+        actual = _crc32(bytes(body))
+        if actual != stored:
+            raise OpenCoreError(
+                f"{path}: the GPT header CRC is {stored:#010x} but the header "
+                f"computes to {actual:#010x}"
+            )
+
+        entries_lba = struct.unpack_from("<Q", head, 72)[0]
+        fh.seek(entries_lba * SECTOR_SIZE)
+        first_entry = fh.read(128)
+        if first_entry[0:16] != ESP_TYPE_GUID:
+            raise OpenCoreError(
+                f"{path}: the first partition is not an EFI System Partition "
+                f"(type {first_entry[0:16].hex()})"
+            )
+        start = struct.unpack_from("<Q", first_entry, 32)[0]
+        if start != esp_first:
+            raise OpenCoreError(
+                f"{path}: the ESP starts at LBA {start}, expected {esp_first}"
+            )
+    log(f"boot.img: GPT verified, ESP type GUID at LBA {esp_first}")
 
 
 def build(release: str, work: str) -> dict:
