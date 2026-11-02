@@ -86,26 +86,7 @@ class Brightness(unittest.TestCase):
     def test_a_white_pane_reads_lit(self):
         self.assertEqual(self.probe(lambda x, y: (255, 255, 255)), 255)
 
-    def test_a_mid_grey_pane_reads_above_the_dark_threshold(self):
-        level = self.probe(lambda x, y: (144, 144, 144))
-        self.assertGreater(level, install.DARK_LEVEL)
 
-    def test_the_threshold_is_between_dark_and_lit(self):
-        # Not a tautology: DARK_LEVEL has to sit in the gap, or a dark wallpaper fails
-        # the check and a dim pane passes it.
-        self.assertLess(install.DARK_LEVEL, 40)
-        self.assertGreater(install.DARK_LEVEL, 8)
-
-    def test_a_mostly_black_screen_with_text_still_reads_dark(self):
-        """An OVMF error console: black with a few lines of white text.
-
-        This is what the frames of the failed run actually contained, and it must not
-        be mistaken for a working screen. Text covers well under one percent of the
-        pixels, so the mean stays near zero.
-        """
-        def pixel(x, y):
-            return (255, 255, 255) if 40 <= y < 52 and 20 <= x < 300 else (0, 0, 0)
-        self.assertLess(self.probe(pixel), install.DARK_LEVEL)
 
     def test_no_frames_directory_means_no_answer(self):
         recovery = install.Recovery.__new__(install.Recovery)
@@ -129,34 +110,32 @@ class Brightness(unittest.TestCase):
         self.assertIsNone(recovery.brightness())
 
 
-class InstallerPatience(unittest.TestCase):
-    """What decides that a dark screen means a stopped guest.
+class TheSequenceStops(unittest.TestCase):
+    """The driver stops three minutes after its last click, and says so.
 
-    NOT a duration. The first version used a flat 90 minutes with a comment about how
-    long a copy takes - a number with no measurement behind it, since no run of this
-    bake had ever reached an installation. A duration cannot tell slow from stopped
-    anyway, which is why the check moved to the disk.
+    It used to watch for the whole installation - 40-70 minutes - behind a
+    DISK_STALL_SECONDS/INSTALL_PATIENCE pair that no run had ever been measured against.
+    What this bake now asks is "did every click land on the pane it was aimed at", which
+    is answered within seconds of the last one: the installer accepts the destination and
+    writes gigabytes, or it does not.
+
+    A cancelled run is the other half of that: if nothing is published from this path,
+    the recording is the result, and three minutes is enough to see whether it worked.
     """
 
-    def test_a_disk_stall_is_measured_not_guessed(self):
-        self.assertTrue(hasattr(install, "DISK_STALL_SECONDS"))
+    def test_the_watch_after_the_last_click_is_two_to_five_minutes(self):
+        self.assertGreaterEqual(install.AFTER_LAST_ACTION_SECONDS, 120)
+        self.assertLessEqual(install.AFTER_LAST_ACTION_SECONDS, 300)
 
-    def test_the_stall_window_is_longer_than_a_slow_write(self):
-        # An installer flushing a large buffer can pause for a minute. Five minutes of
-        # literally no allocation is not a slow write.
-        self.assertGreaterEqual(install.DISK_STALL_SECONDS, 3 * 60)
-
-    def test_the_stall_window_is_short_enough_to_be_useful(self):
-        # A run that hangs should fail while somebody is still watching, not after the
-        # job timeout has already cancelled it.
-        self.assertLess(install.DISK_STALL_SECONDS, 20 * 60)
-
-    def test_the_backstop_covers_a_real_installation(self):
-        # For the paths where the disk is not available, or the screen never goes dark.
-        self.assertGreaterEqual(install.INSTALL_PATIENCE, 60 * 60)
-
-    def test_the_backstop_fits_inside_the_job_timeout(self):
-        self.assertLess(install.INSTALL_PATIENCE, 240 * 60)
+    def test_it_keeps_watching_the_disk_after_the_sequence(self):
+        """A disk that stops growing after the clicks is the failure this catches."""
+        with open(os.path.join(MACOS15, "install.py"), encoding="utf-8") as fh:
+            source = fh.read()
+        start = source.index("def installer_panes")
+        end = source.index("def run_installation")
+        body = source[start:end]
+        self.assertIn("AFTER_LAST_ACTION_SECONDS", body)
+        self.assertIn("disk_allocated", body)
 
     def test_the_forward_control_is_not_pressed_faster_than_a_pane_draws(self):
         self.assertGreaterEqual(install.CLICK_INTERVAL, 8)

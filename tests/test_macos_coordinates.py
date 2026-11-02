@@ -443,12 +443,18 @@ class TheFirstClickWaitsForTheMenu(unittest.TestCase):
         with open(os.path.join(MACOS15, "install.py"), encoding="utf-8") as fh:
             return fh.read()
 
-    def test_the_first_click_waits_two_minutes(self):
-        """120 seconds before the first click, and the number comes from a measurement.
+    def test_the_first_click_waits_four_minutes(self):
+        """240 seconds before the first click, and the number comes from a measurement.
 
-        The gap from QMP connect to a usable menu was 83 seconds on run 41480111851
-        (16:19:17 first frame, 16:20:40 the menu). The file had 60 and the click went
-        into a blank display. 120 is that measurement with room.
+        Run 41480111851: 83 seconds from QMP connect to a usable menu, with 60 in the
+        file - the click went into a blank display.
+
+        Run 41498618924: 143 seconds (18:15:43 first frame, 18:18:06 the menu), with 120
+        in the file - the click went into a white flash during the boot, landed on the
+        first menu row, and the whole run happened inside Time Machine System Restore.
+
+        Both failures looked identical in the log and only the recording separated them.
+        240 is the larger measurement with the margin this file uses elsewhere.
         """
         body = self.source()
         start = body.index("def disk_utility")
@@ -456,10 +462,10 @@ class TheFirstClickWaitsForTheMenu(unittest.TestCase):
         utility = body[start:end]
 
         click_at = utility.index('"Disk Utility row"')
-        wait_at = utility.index('d.wait(120,')
+        wait_at = utility.index("d.wait(240,")
         self.assertLess(wait_at, click_at,
-                        "the first click must come after the 120 second wait")
-        self.assertIn('d.wait(120, "the recovery menu draws")', utility)
+                        "the first click must come after the 240 second wait")
+        self.assertIn('d.wait(240, "the recovery menu draws")', utility)
 
     def test_nothing_is_clicked_before_the_first_wait(self):
         """The 120 seconds is the FIRST thing the driver does, not the fourth.
@@ -475,7 +481,7 @@ class TheFirstClickWaitsForTheMenu(unittest.TestCase):
 
         first_click = code.index("d.click(")
         self.assertEqual(code[:first_click].strip(),
-                         'd.wait(120, "the recovery menu draws")',
+                         'd.wait(240, "the recovery menu draws")',
                          "something happens before the menu is waited for")
         self.assertIn('"Disk Utility row"', code[first_click:first_click + 120])
 
@@ -601,8 +607,8 @@ class ReinstallMustOpenTheWindow(unittest.TestCase):
         start = body.index("def reinstall(")
         end = body.index("def wait_for_install_start")
         fn = body[start:end]
-        self.assertIn("if not d.wait_for_change", fn, fn)
-        self.assertIn("THE INSTALLER WINDOW NEVER OPENED", fn)
+        self.assertIn("if not d.wait_until_drawn", fn, fn)
+        self.assertIn("THE INSTALLER WINDOW NEVER APPEARED", fn)
         self.assertIn("return False", fn)
 
     def test_the_caller_stops_when_it_did_not(self):

@@ -206,41 +206,8 @@ INSTALLER_CONTINUE = (960, 712)
 DISK_CARD = (850, 550)
 PANE_CONTINUE = (1005, 712)
 
-# What "the screen has gone dark" means, in mean grey level 0-255. A lit macOS pane
-# averages well above 100; a black screen averages under 10. 24 is far from both, so a
-# dark wallpaper cannot trip it and a dim pane cannot fail to.
-DARK_LEVEL = 24
-
-# HOW LONG A DARK SCREEN MAY LAST IS NOT DECIDED BY A CLOCK. It is decided by whether
-# the target disk is growing, and the clock is only a backstop for the case where it is
-# neither growing nor dark any more.
-#
-# The first version used a flat 90 minutes with a note about how long the copy takes.
-# That note was a guess - no run of this bake has ever completed an installation, so
-# there was nothing to measure - and a guess is the wrong shape for this anyway: a hung
-# guest and a copying guest are indistinguishable on a screen that is black. The disk is
-# not: an installer writes gigabytes, a stopped one writes nothing.
-#
-# The numbers below are about the observation, not the installation:
-#
-#     DISK_STALL_SECONDS   how long the disk may show no growth before "it stopped"
-#     DISK_SAMPLE_SECONDS  how often to look; qcow2 allocation moves by MBs per minute
-#
-# A copy of the recovery's 3.2 GB payload into a fresh APFS container moves the qcow2
-# file by gigabytes, so 5 minutes of no change at all is not a slow write.
-DISK_STALL_SECONDS = 5 * 60
 DISK_SAMPLE_SECONDS = 30
 
-# THE BACKSTOP, and it is the one number the installer itself decides.
-#
-# The progress pane said "About 2 hours and 52 minutes remaining" on the first run that
-# reached it. That estimate is Apple's, made for real hardware, and this guest copies at
-# whatever the runner's disk gives it - so it is not a deadline. What it does establish is
-# that an installation which has not finished in ninety minutes is not merely slow.
-#
-# Ninety minutes is also short enough that a stuck run reports while somebody is still
-# looking at it, instead of being cancelled by the job's own timeout with nothing to say.
-INSTALL_PATIENCE = 90 * 60
 
 # HOW LONG THE DRIVER KEEPS WATCHING AFTER THE LAST ACTION.
 #
@@ -404,19 +371,27 @@ class Recovery:
     def fingerprint(self) -> int | None:
         """A coarse hash of the screen, for "did this pane change at all".
 
-        SAMPLED, NOT COMPLETE. Every 401st pixel, which is far coarser than the text on
+        SAMPLED, NOT COMPLETE. Every 97th pixel, which is far coarser than the text on
         these panes and far finer than "the whole screen scrolled". The question it
-        answers is only ever "is this a different pane than the one before", and for
-        that a sample is both sufficient and cheap.
+        answers is only ever "is this a different picture than the one before", and for
+        that a sample is sufficient and cheap.
+
+        ALL THREE CHANNELS. The first version hashed only the red byte of every 401st
+        pixel, and that is 5,172 samples for a 1920x1080 frame - enough to see a pane
+        change, and too coarse to see a small one. Two macOS backgrounds that differ
+        only in a grey-blue tint came out identical, which is what made run 41498618924
+        report "the pane did not change" over a welcome page that had replaced the
+        recovery menu.
         """
         pixels = self.capture()
         if not pixels:
             return None
-        # Python's own hash is randomised per process; this needs to be stable within
-        # one, which is all it is used for, but an explicit mixer keeps it honest.
+        # A stable mixer; Python's own hash is randomised per process.
         digest = 0
-        for index in range(0, len(pixels), 401 * 3):
+        for index in range(0, len(pixels), 97 * 3):
             digest = (digest * 131 + pixels[index]) & 0xFFFFFFFF
+            digest = (digest * 131 + pixels[index + 1]) & 0xFFFFFFFF
+            digest = (digest * 131 + pixels[index + 2]) & 0xFFFFFFFF
         return digest
 
     def wait_until_drawn(self, timeout: float = 180.0, settle: float = 5.0,
@@ -568,35 +543,40 @@ class Recovery:
 # --- the sequence -------------------------------------------------------------------
 
 
-def disk_utility(d: Recovery) -> None:
-    """Open Disk Utility from the recovery menu, once the menu is really there.
+def disk_utility(d: Recovery) -> bool:
+    """Open Disk Utility from the recovery menu, once the menu is really on screen.
 
-    SIXTY SECONDS IS NOT ENOUGH, AND THE RECORDING OF RUN 41480111851 PROVES IT
+    NO FIXED SLEEP CAN DO THIS, AND TWO RUNS MEASURED IT.
 
-    Frame by frame, against the driver's own log:
+    Run 41480111851, 60 second wait:
 
-        t=11s  (16:20:15)  #1 click Disk Utility row     the display is still BLANK
-        t=13s  (16:20:21)  #2 click recovery Continue
-        t=16s              the first frame with any picture in it
-        t=20s              the recovery menu is fully drawn
+        t=11s (16:20:15)  #1 click Disk Utility row     the display was still BLANK
+        t=16s             the first frame with any picture in it
+        t=20s             the recovery menu was fully drawn
 
-    The click was delivered at 16:20:15 and the menu did not exist until 16:20:40-ish.
-    Everything after it was aimed at a window that was not there, so the driver spent
-    the run inside "Time Machine System Restore" (visible at t=40) - the FIRST row of
-    the menu, which is where a click that arrives early lands - and then went back to
-    the menu, then into Reinstall. Disk Utility was never opened at all.
+    Run 41498618924, 120 second wait:
 
-    THE FIX IS TO WAIT LONGER THAN THE SCREEN TAKES, WHICH IS 120 SECONDS.
+        t= 0..22   mean grey   0-1   the Apple logo and its progress bar
+        t=23       mean grey    77   a full-screen white flash  <- #1 click Disk Utility
+        t=24..25   mean grey     1   back to the logo
+        t=26       mean grey    21   the menu starts to paint
+        t=27+      mean grey 23-25   the menu
 
-    The measured gap was 83 seconds from QMP connect to a usable menu (16:19:17 first
-    frame, 16:20:40 the menu). Sixty was the number in this file and it was not enough;
-    120 is that measurement with room, and it is a single wait at the top of the run
-    rather than a guess repeated at every step.
+    Both clicks went out before the menu existed, both landed on the FIRST row, and both
+    runs then spent everything inside "Time Machine System Restore" - where the Up keys,
+    Erase, the name field and Done all mean nothing. Disk Utility was never opened, the
+    disk was never erased, and the failure surfaced much later.
 
-    THE FIVE SECOND SPACING STAYS. It is not the thing that was wrong - the panes really
-    do take seconds to paint - it just cannot carry the weight of the first wait.
+    240 SECONDS, and the number is the measurement plus room.
+
+    The boot from QMP connect to a usable menu took 143 seconds on run 41498618924
+    (18:15:43 first frame, 18:18:06 the menu at t=27). Sixty was too short, 120 was too
+    short, and both failures looked identical: a click into the boot screen, landing on
+    whichever menu row appears at that point, which is always the first one.
+
+    240 is that 143 with the same margin the other waits in this file carry.
     """
-    d.wait(120, "the recovery menu draws")
+    d.wait(240, "the recovery menu draws")
 
     d.click((ROW_X, ROW_Y[3]), "Disk Utility row", settle=5)
     d.wait_until_drawn(timeout=90,
@@ -730,11 +710,34 @@ def reinstall(d: Recovery) -> bool:
     # only just dismissed with Cmd-Q. A menu that has not finished redrawing takes the
     # click on whatever row is under it, and the run is then in the wrong application -
     # which is what the whole "Disk Utility row" bug was.
-    if not d.wait_for_change(timeout=180,
-                             why="the installer window has to replace the recovery menu"):
-        log("=== THE INSTALLER WINDOW NEVER OPENED ===")
-        log("  Reinstall and Continue were clicked and the recovery menu stayed")
-        log("  nothing after this can work: every later pane belongs to that window")
+    # WAIT FOR THE SCREEN TO SETTLE, NOT FOR IT TO DIFFER.
+    #
+    # Run 41498618924 used wait_for_change here and reported
+    #
+    #     the pane did not change in 180s - the installer window has to replace the
+    #     recovery menu
+    #     === THE INSTALLER WINDOW NEVER OPENED ===
+    #
+    # while its last frame reads
+    #
+    #     macOS Sequoia
+    #     To set up the installation of macOS Sequoia, click Continue.
+    #
+    # The window HAD opened. wait_for_change compares the screen now against the screen
+    # when it started sampling, and that baseline was taken five seconds after the
+    # Reinstall click - with the menu already gone and the new window not yet painted.
+    # Once the window finished, the sampled fingerprint happened to match that
+    # transitional frame, so "different" never became true and the wait timed out on a
+    # pane that was exactly where it should be.
+    #
+    # wait_until_drawn asks the question that has an answer: has the picture stopped
+    # changing? A window that opened and settled passes it; one that never appeared
+    # fails it, because the menu it is supposed to replace is where the picture stays.
+    if not d.wait_until_drawn(timeout=180,
+                              why="the installer window has to open and settle"):
+        log("=== THE INSTALLER WINDOW NEVER APPEARED ===")
+        log("  Reinstall and Continue were clicked and the screen never settled on it")
+        log("  the last frame shows what is on screen")
         return False
     return True
 
@@ -799,7 +802,7 @@ def installer_panes(d: Recovery, seconds: int = 4 * 3600) -> bool:
 
     THE DISK CAN. An installation writes gigabytes into the target qcow2; a guest that
     has stopped writes nothing. disk_allocated() reads st_blocks, which is what grows on
-    a sparse file, and a stall of DISK_STALL_SECONDS with no change is the answer.
+    a sparse file, and a stall is the answer.
 
     The previous version waited a flat 90 minutes with a comment about how long the copy
     takes. That number was invented - no run of this bake had ever reached an
@@ -943,102 +946,6 @@ def installer_panes(d: Recovery, seconds: int = 4 * 3600) -> bool:
     log("  the installer is still copying; this run stops here on purpose")
     return True
 
-    while time.time() < deadline:
-        level = d.brightness()
-
-        if level is None:
-            log("the screen could not be read; waiting")
-            time.sleep(DISK_SAMPLE_SECONDS)
-            continue
-
-        if level < DARK_LEVEL:
-            if dark_since is None:
-                dark_since = time.time()
-                last_size = d.disk_allocated()
-                grew_at = time.time()
-                log(f"the screen is dark (mean grey {level}); watching the disk, "
-                    f"not the screen")
-
-            size = d.disk_allocated()
-            now = time.time()
-
-            if size is None:
-                # No disk path: fall back to the backstop rather than pretending to know.
-                if now - dark_since > INSTALL_PATIENCE:
-                    log(f"the screen has been dark for "
-                        f"{(now - dark_since) / 60:.0f} minutes and this driver was "
-                        f"given no disk to watch")
-                    return False
-            else:
-                if last_size is not None and size > last_size:
-                    grew_by = (size - last_size) >> 20
-                    if grew_by:
-                        log(f"  the disk grew by {grew_by} MiB "
-                            f"({size >> 20} MiB allocated in total)")
-                    grew_at = now
-                    last_size = size
-                stalled = now - (grew_at or dark_since)
-                if stalled > DISK_STALL_SECONDS:
-                    log(f"=== THE DISK HAS NOT GROWN IN {stalled / 60:.0f} MINUTES ===")
-                    log(f"  allocated: {size >> 20} MiB, unchanged")
-                    log("  a guest that is copying writes gigabytes; this one is not "
-                        "doing anything")
-                    return False
-
-            time.sleep(DISK_SAMPLE_SECONDS)
-            continue
-
-        if dark_since is not None:
-            log("the screen came back after "
-                f"{(time.time() - dark_since) / 60:.1f} minutes")
-            return True
-
-        # THE INSTALLATION PROGRESS PANE IS LIGHT, NOT DARK, and it is where the installer
-        # spends all of its time. It reads
-        #
-        #     macOS Sequoia will be installed on the disk "main"
-        #     About 2 hours and 52 minutes remaining
-        #     [Cancel]
-        #
-        # so the dark-screen branch never fires and the only evidence of progress is the
-        # target disk growing. That is measured here, on the lit screen, with the same
-        # stall rule: gigabytes over hours for a working install, nothing at all for a
-        # stopped one.
-        if started_install is None:
-            started_install = time.time()
-            last_size = d.disk_allocated()
-            grew_at = time.time()
-            log("the installer is on its progress pane; watching the disk")
-
-        size = d.disk_allocated()
-        now = time.time()
-
-        if size is None:
-            # No disk path to watch. The backstop is all that is left, and saying so beats
-            # pretending the absence of information is progress.
-            if now - started_install > INSTALL_PATIENCE:
-                log(f"the installer has been on its progress pane for "
-                    f"{(now - started_install) / 60:.0f} minutes and this driver was "
-                    f"given no disk to watch")
-                return False
-        else:
-            if last_size is not None and size > last_size:
-                grew = (size - last_size) >> 20
-                if grew:
-                    log(f"  {grew} MiB written ({size >> 20} MiB allocated)")
-                grew_at = now
-                last_size = size
-            stalled = now - (grew_at or started_install)
-            if stalled > DISK_STALL_SECONDS:
-                log(f"=== THE DISK HAS NOT GROWN IN {stalled / 60:.0f} MINUTES ===")
-                log(f"  allocated: {size >> 20} MiB, unchanged")
-                return False
-
-        time.sleep(DISK_SAMPLE_SECONDS)
-
-    log(f"the installer did not finish within {seconds / 60:.0f} minutes")
-    return False
-
 
 def run_installation(qmp_path: str, frames_dir: str | None,
                      disk_path: str | None = None) -> int:
@@ -1051,7 +958,8 @@ def run_installation(qmp_path: str, frames_dir: str | None,
     d = Recovery(qmp_path, frames_dir, disk_path)
     log("connected; coordinates for the clicks, a brightness probe for the state")
     try:
-        disk_utility(d)
+        if not disk_utility(d):
+            return 1
         select_and_erase(d)
         leave_disk_utility(d)
         if not reinstall(d):
