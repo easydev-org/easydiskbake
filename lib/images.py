@@ -100,18 +100,36 @@ VIRTIO = {
 # publish_iso.py is what catches a mirror serving an error page.
 LINUX = {
     "mx": {
+        # The file is MX-25.3_Xfce_x64.iso, not MX-25.3_x64.iso: the edition is part
+        # of the name. The earlier value returned 404 and would have failed the first
+        # --all run.
+        #
+        # No sha256 and no size: SourceForge redirects to a per-request CDN URL with
+        # an expiring token, so the bytes are the same but nothing about the response
+        # is stable. The ISO9660 check in publish_iso.py is what catches a bad one.
         "url": "https://sourceforge.net/projects/mx-linux/files/Final/Xfce/"
-               "MX-25.3_x64.iso/download",
+               "MX-25.3_Xfce_x64.iso/download",
         "sha256": None,
         "size": None,
     },
     "alpine": {
         "url": "https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/x86_64/"
                "alpine-virt-3.21.3-x86_64.iso",
+        # Measured with a HEAD; the filename carries the version, which is the pin.
         "sha256": None,
-        "size": None,
+        "size": 66060288,
     },
 }
+
+
+# macOS recovery images are NOT in this table, because they have no fixed URL.
+#
+# Apple issues one per request: a board identifier selects the release, a session
+# cookie authorises the exchange, and the reply carries a CDN URL plus an expiring
+# token that is sent as a Cookie header. There is nothing to pin. They are fetched by
+# lib/macos_recovery.py, which drives that exchange, and published as
+# :macos-recovery-<name>.
+MACOS_RELEASES = ["14", "15", "26"]
 
 
 def all_images() -> dict:

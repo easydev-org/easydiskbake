@@ -57,6 +57,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import ci  # noqa: E402
 import images  # noqa: E402
 import iso  # noqa: E402
 
@@ -125,6 +126,16 @@ def push(path: str, tag: str, repository: str, registry: str = "ghcr.io") -> Non
         [
             "oras", "push", f"{registry}/{repo}:{tag}",
             "--artifact-type", "application/vnd.easydev.iso",
+            # oras rejects an absolute path in a file:media:type reference:
+            #
+            #   Error: absolute file path detected. If it's intentional, use
+            #   --disable-path-validation flag to skip this check
+            #
+            # The path is a tempfile, so it is always absolute, and we know what it is -
+            # it was downloaded and verified two steps ago. Disabling the check is the
+            # honest fix; rewriting to a relative path would mean changing the process
+            # cwd, which leaks into every later call.
+            "--disable-path-validation",
             f"{path}:application/vnd.oci.image.layer.v1.tar",
             "--annotation", f"org.opencontainers.image.source={os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{repository}",
             "--annotation", f"org.opencontainers.image.revision={os.environ.get('GITHUB_SHA', 'local')}",
@@ -141,7 +152,15 @@ def push(path: str, tag: str, repository: str, registry: str = "ghcr.io") -> Non
         )
 
 
-def publish_one(tag: str, pin: dict, repository: str, workdir: str) -> None:
+def publish_one(tag: str, pin: dict, repository: str, workdir: str, *,
+                keep: bool = False) -> None:
+    """Download, verify, push. Returns once the image is in the registry.
+
+    The downloaded file is only removed AFTER a successful push. The first version
+    unlinked unconditionally in a straight line, so an oras failure deleted a verified
+    7.2 GiB download and the retry had to fetch it again - which is exactly what
+    happened, twice.
+    """
     name = tag[len("iso-"):]
     dest = os.path.join(workdir, f"{name}.iso")
     log(f"=== {tag} ===")
@@ -150,8 +169,9 @@ def publish_one(tag: str, pin: dict, repository: str, workdir: str) -> None:
         log(f"  already downloaded: {dest}")
         try:
             check(dest, pin)
-        except PublishError:
-            log("  the cached download does not match the pin; fetching again")
+            log("  the cached download still matches the pin")
+        except PublishError as exc:
+            log(f"  the cached download does not match the pin ({exc}); fetching again")
             os.unlink(dest)
             iso.fetch_url(pin["url"], dest, sha256=pin.get("sha256"), size=pin.get("size"))
             check(dest, pin)
@@ -165,10 +185,13 @@ def publish_one(tag: str, pin: dict, repository: str, workdir: str) -> None:
 
     push(dest, tag, repository)
 
-    # The image is multi-gigabyte and the runner disk is the scarce resource; the next
-    # image in --all needs the space.
-    os.unlink(dest)
-    log(f"  removed {dest}")
+    if keep:
+        log(f"  kept {dest}")
+    else:
+        # The image is multi-gigabyte and the runner disk is the scarce resource; the
+        # next image in --all needs the space. Only safe after a successful push.
+        os.unlink(dest)
+        log(f"  removed {dest}")
 
 
 def main(argv: list[str]) -> int:
@@ -176,6 +199,10 @@ def main(argv: list[str]) -> int:
     p.add_argument("names", nargs="*", help="tags to publish, e.g. iso-windows11")
     p.add_argument("--all", action="store_true", help="publish every pinned image")
     p.add_argument("--list", action="store_true", help="show the pins and exit")
+    p.add_argument("--keep", action="store_true",
+                   help="keep the downloaded image instead of deleting it after push")
+    p.add_argument("--keep-going", action="store_true",
+                   help="attempt every image even after one fails")
     p.add_argument("--repository", default=os.environ.get("GITHUB_REPOSITORY", ""),
                    help="owner/repo to push into (default: $GITHUB_REPOSITORY)")
     # The workflow passes its choice through an environment variable rather than
@@ -212,10 +239,20 @@ def main(argv: list[str]) -> int:
     failed = []
     for tag in wanted:
         try:
-            publish_one(tag, table[tag], args.repository, workdir)
-        except (PublishError, iso.IsoError) as exc:
+            publish_one(tag, table[tag], args.repository, workdir, keep=args.keep)
+        except (PublishError, iso.IsoError, ci.Failed) as exc:
             log(f"FAILED {tag}: {exc}")
             failed.append(tag)
+            # Stop at the first failure rather than starting the next download.
+            #
+            # --all downloads 7.2 + 6.6 + 0.9 + 3 + 0.06 GiB. When the first one fails
+            # for a reason that is not about that image - a bad oras flag, a missing
+            # login - the remaining downloads are pure waste on a runner that has
+            # already spent its disk and forty minutes. The failure is reported either
+            # way; this just does not spend more to report the same thing.
+            if not args.keep_going:
+                log("stopping at the first failure (--keep-going to attempt the rest)")
+                break
 
     if failed:
         log(f"failed: {', '.join(failed)}")

@@ -212,12 +212,30 @@ def lowercase_repository() -> str:
 # --- summaries ---------------------------------------------------------------
 
 
-def append_summary(text: str) -> None:
-    """Write to $GITHUB_STEP_SUMMARY, which is how a workflow renders a markdown block.
+def select(wanted: str, release: str, name: str, output_key: str = "run") -> bool:
+    """Should this matrix leg run?
 
-    The file may not exist (locally), and a missing summary must never fail a job whose
-    actual work succeeded.
+    The workflow used to answer this in a shell `case` over a comma-joined list, which
+    is the kind of string matching that works until somebody passes a name with a
+    space. Comma-separated values, trimmed, matched against either the release number
+    or its marketing name; "all" matches everything.
+
+    Writes `key=true|false` to $GITHUB_OUTPUT, because that is how a step's result
+    reaches the next step's `if:`.
     """
+    tokens = {t.strip().lower() for t in wanted.split(",") if t.strip()}
+    hit = "all" in tokens or release.strip().lower() in tokens or name.strip().lower() in tokens
+    value = "true" if hit else "false"
+    log(f"release {release} ({name}): wanted={sorted(tokens)} -> {value}")
+
+    out = os.environ.get("GITHUB_OUTPUT")
+    if out:
+        with open(out, "a", encoding="utf-8") as fh:
+            fh.write(f"{output_key}={value}\n")
+    return hit
+
+
+def append_summary(text: str) -> None:
     path = os.environ.get("GITHUB_STEP_SUMMARY")
     if not path:
         log("(no GITHUB_STEP_SUMMARY; printing instead)")
@@ -277,6 +295,12 @@ def main(argv: list[str]) -> int:
 
     rc = sub.add_parser("repo", help="print the lowercased owner/repo")
 
+    sel = sub.add_parser("select", help="matrix gate: should this leg run?")
+    sel.add_argument("--wanted", required=True, help="comma-separated numbers or names")
+    sel.add_argument("--release", required=True)
+    sel.add_argument("--name", required=True)
+    sel.add_argument("--output-key", default="run")
+
     args = p.parse_args(argv)
 
     try:
@@ -297,6 +321,8 @@ def main(argv: list[str]) -> int:
                 print(t)
         elif args.cmd == "repo":
             print(lowercase_repository())
+        elif args.cmd == "select":
+            select(args.wanted, args.release, args.name, args.output_key)
     except Failed as exc:
         log(f"FAILED: {exc}")
         return 1

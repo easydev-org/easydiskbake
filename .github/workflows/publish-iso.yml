@@ -43,13 +43,15 @@ on:
         description: "Which image(s) to publish"
         type: choice
         options:
-          - all
           - iso-windows11
-          - iso-windows11-enterprise-eval
           - iso-virtio-win
+          - iso-windows11-enterprise-eval
           - iso-mx
           - iso-alpine
-        default: all
+          - all
+        # Not "all" by default: that is 18 GiB of downloads, and the two images a
+        # Windows bake needs are the first two. "all" is there for a deliberate refresh.
+        default: iso-windows11
 
 concurrency:
   group: publish-iso-${{ github.ref }}

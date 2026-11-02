@@ -1,0 +1,123 @@
+name: publish-macos-recovery
+
+# Fetch macOS recovery images from Apple and publish them to this repository's ghcr.
+#
+#     ghcr.io/easydev-org/easydiskbake:macos-recovery-sonoma     (14)
+#     ghcr.io/easydev-org/easydiskbake:macos-recovery-sequoia   (15)
+#     ghcr.io/easydev-org/easydiskbake:macos-recovery-tahoe     (26)
+#
+# WHY THIS IS NOT IN publish-iso.yml
+#
+# Those images have fixed URLs and fixed hashes and are published once. A macOS
+# recovery image has neither: Apple issues one per request. A board identifier selects
+# the release, a session cookie authorises the exchange, and the reply carries a CDN
+# URL plus an expiring token that travels as a Cookie header. There is nothing to pin,
+# so the download is a session the script drives rather than a file the workflow fetches.
+#
+# WHY ONE JOB PER RELEASE
+#
+# Three releases, three independent downloads of ~850 MiB each. Run in one job they
+# share a disk and a failure in the first starves the other two; as a matrix, each one
+# reports its own result and its own tag.
+#
+# WHEN APPLES'S ENDPOINT CHANGES
+#
+#     [recovery] FAILED: no session cookie in the response.
+#     Apple changes this endpoint occasionally; check that osrecovery.apple.com
+#     still sets `session=` on a plain GET with the InternetRecovery user agent.
+#
+# or
+#
+#     [recovery] FAILED: the reply contained no oscd URL.
+#
+# Both mean the exchange in lib/macos_recovery.py needs looking at, not that the
+# release is wrong. The board identifiers are dockur-macos's, which maintains them by
+# running these bakes.
+#
+# MANUAL ONLY: several gigabytes and a dependency on an undocumented endpoint.
+
+on:
+  workflow_dispatch:
+    inputs:
+      releases:
+        description: "Which releases (comma-separated names or numbers)"
+        default: "14,15,26"
+      publish:
+        description: "Push to ghcr"
+        type: boolean
+        default: true
+
+concurrency:
+  group: publish-macos-recovery-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  recovery:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+      checks: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # name: the release's marketing name, which is what the tag uses
+        include:
+          - release: "14"
+            name: sonoma
+          - release: "15"
+            name: sequoia
+          - release: "26"
+            name: tahoe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: should this release run
+        id: want
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: macos-want-${{ matrix.name }}
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py select \
+              --wanted "${{ inputs.releases || '14,15,26' }}" \
+              --release "${{ matrix.release }}" \
+              --name "${{ matrix.name }}" \
+              --output-key run
+
+      - name: fetch and publish
+        if: steps.want.outputs.run == 'true'
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: macos-recovery-${{ matrix.name }}
+          interval: "20"
+          command: |
+            set -euo pipefail
+            # 850 MiB per release, and three run in parallel.
+            python3 lib/ci.py free-disk --need 12
+
+            ARGS="--release ${{ matrix.release }} --out recovery-${{ matrix.name }}.dmg"
+            if [ "${{ inputs.publish }}" = "true" ]; then
+              ARGS="$ARGS --publish --repository ${{ github.repository }}"
+            fi
+
+            python3 lib/macos_recovery.py $ARGS
+
+      - name: keep the image
+        if: always() && steps.want.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-recovery-${{ matrix.name }}
+          path: recovery-${{ matrix.name }}.dmg
+          if-no-files-found: warn
+          retention-days: 7
+          compression-level: 0   # a DMG is already compressed

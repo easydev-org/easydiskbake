@@ -30,9 +30,10 @@ FROM qemux/qemu:7.50
 #   ovmf              the UEFI firmware. Windows 11 will not install on SeaBIOS, and
 #                     a guest with no UEFI boots to "no bootable device" - which looks
 #                     like a broken ISO rather than a missing package.
-#   ovmf + qemu-system-x86 are separate packages on Debian: qemux/qemu is Alpine
-#                     based, so this is the Debian name. The 4M variant is the one
-#                     with enough room for the variable store Windows wants.
+#   aria2             segmented downloader for the macOS recovery image. An 847 MiB
+#                     transfer from Apple's CDN gets reset around 20 MiB with one
+#                     connection; aria2c splits and resumes it. dockur-macos relies on
+#                     the same tool (it cleans up aria2's control file).
 #
 # (Comments cannot sit inside a line-continued RUN, so they sit above it.)
 RUN set -eux; \
@@ -46,6 +47,7 @@ RUN set -eux; \
         wimtools \
         swtpm \
         ovmf \
+        aria2 \
         ; \
     rm -rf /var/lib/apt/lists/*
 
@@ -63,6 +65,7 @@ RUN set -eux; \
     tesseract --list-langs 2>&1 | head -5; \
     wimlib-imagex --version | head -1; \
     swtpm --version; \
+    aria2c --version | head -1; \
     ls -l /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_VARS_4M.fd; \
     command -v debugfs genisoimage mkfifo timeout setsid jq curl
 
