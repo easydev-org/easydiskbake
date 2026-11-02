@@ -703,8 +703,8 @@ def leave_disk_utility(d: Recovery) -> None:
     d.shot(f"after-{d.n:02d}-leave-disk-utility")
 
 
-def reinstall(d: Recovery) -> None:
-    """Pick Reinstall from the menu and press Continue.
+def reinstall(d: Recovery) -> bool:
+    """Pick Reinstall from the menu and press Continue. False if the installer never came.
 
     ROW_Y[1] is "Reinstall macOS Sequoia". The menu order was read off a frame:
 
@@ -720,8 +720,23 @@ def reinstall(d: Recovery) -> None:
     d.click((ROW_X, ROW_Y[1]), "Reinstall macOS row", settle=5)
     d.click(CONTINUE_MENU, "recovery Continue", settle=30)
     # The recovery menu is replaced by the installer's own window.
-    d.wait_for_change(timeout=180,
-                      why="the installer window has to replace the recovery menu")
+    #
+    # THIS ONE IS CHECKED TOO. Run 41496584150 pressed Reinstall and Continue, the screen
+    # did not change for 180 seconds, this wait said so - and the driver went on to
+    # "wait 25s - the installer window opens" and then to click Continue on the welcome
+    # pane that was never there.
+    #
+    # The Reinstall click lands on the recovery menu, which is a window the previous step
+    # only just dismissed with Cmd-Q. A menu that has not finished redrawing takes the
+    # click on whatever row is under it, and the run is then in the wrong application -
+    # which is what the whole "Disk Utility row" bug was.
+    if not d.wait_for_change(timeout=180,
+                             why="the installer window has to replace the recovery menu"):
+        log("=== THE INSTALLER WINDOW NEVER OPENED ===")
+        log("  Reinstall and Continue were clicked and the recovery menu stayed")
+        log("  nothing after this can work: every later pane belongs to that window")
+        return False
+    return True
 
 
 def wait_for_install_start(d: Recovery, timeout: int = 120) -> bool:
@@ -822,8 +837,13 @@ def installer_panes(d: Recovery, seconds: int = 4 * 3600) -> bool:
     # EACH PANE IS WAITED FOR, NOT ASSUMED AFTER A SLEEP. See wait_for_change(): run
     # 41477776580 clicked welcome Continue, slept ten seconds, clicked Agree, and the
     # screen was still the welcome pane at 16:10:37 - three clicks later.
-    d.wait(25, "the installer window opens")
-    d.wait_for_change(timeout=90, why="the welcome pane has to be drawn")
+    # reinstall() already confirmed the installer window replaced the recovery menu, so
+    # there is nothing to wait 25 seconds for here. The welcome pane is still given its
+    # own wait, because the window painting and the pane painting are separate events.
+    if not d.wait_for_change(timeout=90, why="the welcome pane has to be drawn"):
+        log("=== THE WELCOME PANE NEVER APPEARED ===")
+        log("  the installer window opened but is not showing its first pane")
+        return False
 
     d.click(INSTALLER_CONTINUE, "welcome Continue", settle=5)
     if not d.wait_for_change(timeout=90,
@@ -1034,7 +1054,8 @@ def run_installation(qmp_path: str, frames_dir: str | None,
         disk_utility(d)
         select_and_erase(d)
         leave_disk_utility(d)
-        reinstall(d)
+        if not reinstall(d):
+            return 1
         if not installer_panes(d):
             log("the installer did not reach a reboot")
             return 1

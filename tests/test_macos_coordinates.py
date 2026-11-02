@@ -569,3 +569,57 @@ class AWaitThatFailsEndsTheSequence(unittest.TestCase):
         card = body.index('"the main disk card"')
         between = body[sheet:card]
         self.assertIn("if not d.wait_for_change", between, between)
+
+
+class ReinstallMustOpenTheWindow(unittest.TestCase):
+    """Reinstall's Continue is the last click that can silently do nothing.
+
+    MEASURED ON RUN 41496584150:
+
+        18:07:20  #11 click (837, 333) Reinstall macOS row
+        18:07:25  #12 click (1142, 586) recovery Continue
+        18:10:56    the pane did not change in 180s - the installer window has to
+                    replace the recovery menu
+        18:10:56  wait 25s - the installer window opens
+        18:11:21  (and then it would have clicked Continue on a welcome pane that was
+                   never there)
+
+    The wait said the window had not opened and the driver carried on regardless.
+
+    WHY THIS CLICK IN PARTICULAR. It lands on the recovery menu, which is a window the
+    previous step only just dismissed with Cmd-Q. A menu that has not finished redrawing
+    takes the click on whatever row is under it, and the run is in the wrong application
+    - which is exactly the "Disk Utility row" failure that cost several runs.
+    """
+
+    def source(self):
+        with open(os.path.join(MACOS15, "install.py"), encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_reinstall_reports_whether_the_window_opened(self):
+        body = self.source()
+        start = body.index("def reinstall(")
+        end = body.index("def wait_for_install_start")
+        fn = body[start:end]
+        self.assertIn("if not d.wait_for_change", fn, fn)
+        self.assertIn("THE INSTALLER WINDOW NEVER OPENED", fn)
+        self.assertIn("return False", fn)
+
+    def test_the_caller_stops_when_it_did_not(self):
+        body = self.source()
+        self.assertIn("if not reinstall(d):", body)
+        self.assertIn("return 1", body[body.index("if not reinstall(d):"):
+                                       body.index("if not reinstall(d):") + 120])
+
+    def test_the_welcome_pane_is_not_waited_for_twice(self):
+        """reinstall() confirmed the window; a 25 second sleep after that is a guess.
+
+        The pane still gets its own wait - the window painting and the pane painting are
+        separate events - but a fixed sleep on top of a confirmed transition is how the
+        old sequence drifted one pane behind.
+        """
+        body = self.source()
+        start = body.index("def installer_panes")
+        end = body.index("def main(")
+        panes = body[start:end]
+        self.assertNotIn('wait(25, "the installer window opens")', panes)
