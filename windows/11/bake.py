@@ -602,8 +602,25 @@ class Baker:
                 if frames == 0:
                     log("no frames are being captured at all; check snapshots.log")
                 elif not changed and elapsed > 900:
-                    log("the screen has not changed for a while - if this continues, "
-                        "the installer is waiting for something (see install.mp4)")
+                    # A STATIC SCREEN IS NOT EVIDENCE OF A HANG, and this message used
+                    # to say it was. Two runs have now been stopped on it:
+                    #
+                    #   the "Installing Windows 11" progress bar, which updates less
+                    #   often than the three-frame window this compares over
+                    #
+                    #   the Welcome pane, which is black with a spinner. The spinner
+                    #   moves by a few pixels; over 2000 pixels subsampled it is
+                    #   indistinguishable from a still image.
+                    #
+                    # There is no honest test for "still working" from this side. The
+                    # console byte count is the closest thing, and it only moves at
+                    # phase boundaries. So this reports what it sees and says nothing
+                    # about the cause - the recording is for looking at, not for
+                    # inferring from.
+                    log("the screen has been static since the last report - this is "
+                        "expected during the Welcome pane and during file expansion")
+                    log("  it is not a failure signal: the timeout is "
+                        f"{self.args.timeout}s and {elapsed:.0f}s have passed")
 
             time.sleep(5)
 

@@ -185,21 +185,34 @@ class Baker:
             ],
         )
 
-        # THE DISK ORDER IS THE DEVICE ORDER MACOS SEES.
+        # THE DEVICES, AND WHY EACH ONE IS THE TYPE IT IS.
         #
-        #   boot.img   OpenCore, as a raw IDE disk. It has to be first: the firmware
-        #              finds no OS on an empty pflash, falls to the first disk, and
-        #              BOOT/BOOTx64.efi is what it starts.
-        #   disk.qcow2 the target, virtio-blk. macOS has a virtio driver in its own
-        #              recovery image, so unlike Windows this needs no driver CD.
-        #   recovery   the installer, as USB media. macOS will not install from a
-        #              virtio disk whose contents it must read *before* it has a
-        #              filesystem driver for it, and it treats a USB volume as a
-        #              bootable installer exactly as it does on real hardware.
+        # dockur/macos reaches this layout through createDevice() in the base image's
+        # disk.sh. Two details there are load-bearing and the first version of this
+        # file had neither:
+        #
+        #   virtio-blk-pci, not ide-hd   q35 has no IDE controller of its own; ide-hd
+        #                                hangs off an AHCI compatibility layer whose
+        #                                enumeration OVMF does not reliably do
+        #
+        #   bootindex=<n>                a disk with no bootindex is not in the firmware's
+        #                                boot order at all. It is present and readable,
+        #                                and OVMF will not try it - which is exactly the
+        #                                "failed to load Boot0001" the frames show.
+        #
+        #   boot.img     OpenCore, bootindex=0: the firmware must try this first.
+        #   disk.qcow2   the target, bootindex=1: after the installer has written a
+        #                system, OpenCore finds it here.
+        #   recovery     as USB. macOS installs from removable media; the disk it
+        #                installs TO is not the disk it boots FROM. USB devices have no
+        #                bootindex property - qemu rejects the argument, which was worth
+        #                checking rather than assuming - and they do not need one: the
+        #                firmware reaches this only after OpenCore hands over.
         drives = [
             "-drive", f"file={assets['boot']},format=raw,if=none,id=oc",
-            "-device", "ide-hd,bus=ide.0,drive=oc",
-            "-drive", f"file={self.disk},if=virtio,format=qcow2",
+            "-device", "virtio-blk-pci,drive=oc,bootindex=0",
+            "-drive", f"file={self.disk},if=none,format=qcow2,id=target",
+            "-device", "virtio-blk-pci,drive=target,bootindex=1",
             "-drive", f"file={recovery},media=disk,if=none,id=rec,readonly=on",
             "-device", "usb-storage,bus=xhci.0,drive=rec",
             "-device", f"isa-applesmc,osk={OSK_PLAIN}",
