@@ -66,20 +66,25 @@ def log(msg: str) -> None:
 
 # --- measured positions, all at 1920x1080 -------------------------------------------
 
-# The recovery list, measured with tesseract on a captured frame. Every entry's label
-# is left-aligned at x=837 inside the window; the rows are 92px apart:
+# The recovery list, MEASURED with tesseract on a captured frame of this bake. Every
+# entry's label is left-aligned at x=837 inside the window; each entry is a title line
+# with an 18px-smaller description below it, so the clickable centre sits between them:
 #
-#   Restore from Time Machine   y=232
-#   Reinstall macOS Sequoia     y=324
-#   Safari                      y=416
-#   Disk Utility                y=508
-#   Continue                    y=585, x=1115-1169
-ROW_Y = (232, 324, 416, 508)
+#   © Restore from Time Machine   title y=229  desc y=250   centre 240
+#   Reinstall macOS Sequoia       title y=324  desc y=342   centre 333
+#   Safari                       title y=416  desc y=434   centre 425
+#   = Disk Utility               title y=502  desc y=526   centre 514
+#   Continue                     y=585, x=1115..1169
+#
+# The previous values (232, 324, 416, 508) were prose rather than measurement; they are
+# within 8px and would have worked, but the numbers here are the ones on the frame.
+ROW_Y = (240, 333, 425, 514)
 ROW_X = 837
 
 # The recovery menu's own Continue. An entry is opened by selecting it and then pressing
-# this; clicking the entry alone only highlights it.
-CONTINUE_MENU = (1142, 588)
+# this; clicking the entry alone only highlights it. Measured: x=1115..1169, y=578..595,
+# so the centre is (1142, 586).
+CONTINUE_MENU = (1142, 586)
 
 # Disk Utility's View menu, measured from a frame captured with the menu open:
 #
@@ -119,7 +124,20 @@ AGREE = (604, 810)
 # The sheet that follows the licence pane agrees on the right-hand side.
 AGREE_SHEET = (1026, 634)
 
-INSTALLER_CONTINUE = (1306, 810)
+# THE INSTALLER'S CONTINUE IS NOT THE WIZARD'S CONTINUE, AND THAT COST A RUN.
+#
+# It was (1306, 810), copied from macos/15/drive.py - whose positions come from dockur's
+# Setup Assistant driver, a different set of windows. Measured on a frame of the
+# installer's own welcome pane:
+#
+#     macOS Sequoia                                   y=569..595, x=865..1056
+#     To set up the installation of macOS Sequoia,
+#     click Continue.                                 y=622
+#     [ Continue ]                                    y=698..727, x=919..1002
+#
+# so the button is at (960, 712). Thirty-seven clicks at (1306, 810) landed 346px right
+# and 98px below it, on a pane that had one control, and the screen never changed once.
+INSTALLER_CONTINUE = (960, 712)
 
 # What "the screen has gone dark" means, in mean grey level 0-255. A lit macOS pane
 # averages well above 100; a black screen averages under 10. 24 is far from both, so a
