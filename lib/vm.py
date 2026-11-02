@@ -255,9 +255,23 @@ class Guest:
     def alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
 
-    def stop(self) -> None:
+    def stop(self, *, acpi_first: bool = False, acpi_timeout: int = 60) -> None:
+        """Stop qemu.
+
+        `acpi_first` asks the guest to shut down through ACPI before the process is
+        killed. That is the difference between a disk Windows closed properly and one
+        that was powered off mid-write: on the next boot the second kind runs chkdsk or
+        lands in the recovery environment.
+
+        It is off by default because every other caller in this repository stops a
+        machine that is going to be thrown away or a guest that has already hung.
+        """
         if self.proc is None:
             return
+
+        if acpi_first:
+            self._acpi_shutdown(acpi_timeout)
+
         try:
             os.killpg(os.getpgid(self.proc.pid), signal.SIGTERM)
         except ProcessLookupError:
@@ -271,6 +285,45 @@ class Guest:
                 pass
             self.proc.wait(timeout=5)
         log("qemu stopped")
+
+    def _acpi_shutdown(self, timeout: int) -> None:
+        """Send the guest a power button press and wait for it to go away.
+
+        system_powerdown is what the ACPI power button does: Windows sees it, stops its
+        services, flushes its filesystems and powers off. The qemu process then exits on
+        its own, and the SIGTERM that follows finds nothing to do.
+
+        If the guest does not respond the caller's SIGTERM still lands, so this can only
+        make the shutdown cleaner - it cannot hang the bake.
+        """
+        import time
+
+        try:
+            import qmp as qmpmod
+
+            client = qmpmod.QMP(self.paths.drive)
+        except (OSError, RuntimeError, ImportError) as exc:
+            log(f"could not open QMP for an ACPI shutdown ({exc}); killing instead")
+            return
+
+        try:
+            log("asking the guest to shut down")
+            client.execute("system_powerdown")
+        except (OSError, RuntimeError) as exc:
+            log(f"system_powerdown failed ({exc}); killing instead")
+            client.close()
+            return
+        finally:
+            client.close()
+
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self.proc.poll() is not None:
+                log(f"the guest powered off after {timeout - int(deadline - time.time())}s")
+                return
+            time.sleep(2)
+
+        log(f"the guest did not power off within {timeout}s; killing it")
 
 
 def wait_port(host: str, port: int, seconds: int = 60, label: str = "port") -> bool:

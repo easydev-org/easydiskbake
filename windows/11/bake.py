@@ -441,10 +441,14 @@ class Baker:
                         log(f"  {line}")
             except OSError:
                 pass
+        arrived = False
         try:
             arrived = self.wait_for_arrival(console, guest)
         finally:
-            guest.stop()
+            # ACPI shutdown only on success. When the wait timed out the guest is
+            # either hung or showing a pane somebody has to click, and asking it to
+            # power down politely would just wait sixty seconds for nothing.
+            guest.stop(acpi_first=arrived)
             snap.terminate()
             try:
                 snap.wait(timeout=5)
@@ -518,8 +522,6 @@ class Baker:
         PXE attempt, a boot loop through Boot0001..0007. They no longer decide
         anything: the desktop does.
         """
-        import time
-
         deadline = time.time() + self.args.timeout
         started = time.time()
         last_report = started
@@ -538,6 +540,33 @@ class Baker:
             if desktop.reached_desktop(shots):
                 elapsed = time.time() - started
                 log(f"a Windows desktop is on screen ({elapsed:.0f}s)")
+
+                # DO NOT STOP THE MACHINE YET.
+                #
+                # A desktop is when the shell has drawn, not when Windows has finished
+                # with the disk. The first minute after first logon is full of writes -
+                # profile creation, service start, the component store, the defrag and
+                # indexing services settling - and cutting power in the middle of them
+                # leaves a disk that boots into a repair prompt or a chkdsk.
+                #
+                # Thirty seconds is enough for those writes to land and short enough
+                # not to care. The desktop is re-checked afterwards: if the guest
+                # restarted or crashed in that window, the settle time was watching the
+                # wrong thing and the bake should not keep the disk.
+                settle = int(os.environ.get("DESKTOP_SETTLE_SECONDS", "30"))
+                log(f"letting the guest settle for {settle}s before stopping it")
+                time.sleep(settle)
+
+                if not guest.alive():
+                    log("the guest exited while settling - not keeping the disk")
+                    return False
+
+                if not desktop.reached_desktop(shots):
+                    log("the desktop is no longer on screen after settling - "
+                        "the guest restarted or crashed; not keeping the disk")
+                    return False
+
+                log("still at a desktop after settling")
                 return True
 
             # --- the console: for the record, and for the failure message --------
