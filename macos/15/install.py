@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
 import time
 
@@ -322,7 +323,20 @@ class Recovery:
         # So every screenshot also becomes out/last-frame.png, overwritten in place.
         # Cancel at any moment and the artifact holds the pane the driver was looking at.
         # It is 300 KiB, and it is written at most once per click.
-        self._write_last_frame(os.path.join(self.frames, "last-frame.png"))
+        #
+        # WRAPPED, BECAUSE A PICTURE MUST NEVER STOP A CLICK. An earlier version called
+        # this without a guard and the module never imported subprocess, so the FIRST
+        # click of run 41485902304 died here:
+        #
+        #     NameError: name 'subprocess' is not defined
+        #     the installer driver failed: exit status 1
+        #
+        # The import is fixed, but the guard is the real lesson: this is the diagnostic
+        # path, and it sits inside click(), which is the thing it is diagnosing.
+        try:
+            self._write_last_frame(os.path.join(self.frames, "last-frame.png"))
+        except Exception as exc:  # noqa: BLE001 - see above; a picture is not worth a run
+            log(f"could not refresh last-frame.png: {exc}")
 
     def _write_last_frame(self, dest: str) -> None:
         """Convert the newest screenshot to a PNG, replacing `dest`.

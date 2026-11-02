@@ -38,8 +38,10 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -169,6 +171,152 @@ def check_mbr(disk: str) -> bool:
     return True
 
 
+def check_efi_bootloader(disk: str) -> bool:
+    """Is there a Windows boot loader inside the EFI system partition?
+
+    THE FAILURE THIS EXISTS FOR, MEASURED ON RUN 41483694400
+
+    The ssh stage started the published gold disk and got, at the firmware:
+
+        BdsDxe: failed to load Boot000A "Windows Boot Manager" from
+          HD(1,GPT,...) /EFI/Microsoft/Boot/bootmgfw.efi: Not Found
+        >>Start PXE over IPv4.
+        PXE-E16: No valid offer received.
+        ...
+        UEFI Interactive Shell v2.2
+
+    The bootstate did its job - Boot000A exists, and it was recovered from the archive -
+    so the firmware looked exactly where the entry said. There was no bootmgfw.efi on the
+    disk. The gold disk was not an installed Windows.
+
+    WHY NOTHING CAUGHT IT. check_disk() verified a protective MBR and a GPT header, and
+    an empty disk has both: `qemu-img create` plus a partition step is enough. The bake
+    printed "BAKED windows11" and published a disk that could never start, and the next
+    stage spent fifteen minutes in the firmware's own shell before timing out.
+
+    Reading the file is the answer that cannot be faked. mtools (already installed for
+    the boot image work) reads a FAT32 partition out of a raw file offset, which is what
+    an ESP is - no mounting, no loop device, no root.
+
+    Returns False when it cannot tell; the caller decides whether that is fatal.
+    """
+    import shutil as _shutil
+
+    if not _shutil.which("mdir"):
+        log("mtools is not installed; the EFI system partition cannot be checked")
+        return False
+
+    try:
+        partitions = _gpt_partitions(disk)
+    except DiskReadError as exc:
+        log(f"could not read the GPT: {exc}")
+        return False
+    if not partitions:
+        log("no partitions in the GPT")
+        return False
+
+    # THE ESP IS THE FAT PARTITION. Its type GUID is C12A7328-F81F-11D2-BA4B-00A0C93EC93B,
+    # stored as the first three fields little-endian.
+    esp = None
+    for entry in partitions:
+        if entry["type"] == "c12a7328-f81f-11d2-ba4b-00a0c93ec93b":
+            esp = entry
+            break
+    if esp is None:
+        types = ", ".join(sorted(set(e["type"][:8] for e in partitions)))
+        log(f"no EFI system partition in the GPT (types: {types})")
+        return False
+
+    offset = esp["first_lba"] * 512
+    size = (esp["last_lba"] - esp["first_lba"] + 1) * 512
+
+    # THE PARTITION IS COPIED OUT FIRST, because mtools' `@@offset` syntax wants a raw
+    # image and every disk here is a qcow2: the guest's logical bytes are not at the same
+    # host offset. Handing mtools `disk@@offset` produced
+    #
+    #     init :: could not read boot sector
+    #
+    # on a disk whose ESP was fine - measured while writing this check.
+    tmpdir = tempfile.mkdtemp(prefix="esp-")
+    espimg = os.path.join(tmpdir, "esp.img")
+    try:
+        with open(os.path.join(tmpdir, "esp.bin"), "wb") as fh:
+            fh.write(qemu_io_read(disk, offset, min(size, 64 << 20)))
+        shutil.copyfile(os.path.join(tmpdir, "esp.bin"), espimg)
+        result = subprocess.run(
+            ["mdir", "-i", espimg, "-/", "-b", "::/EFI/Microsoft/Boot"],
+            capture_output=True, text=True, timeout=60,
+        )
+    except (DiskReadError, OSError, subprocess.SubprocessError) as exc:
+        log(f"could not read the EFI partition: {exc}")
+        return False
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    if result.returncode != 0:
+        log("the EFI system partition has no /EFI/Microsoft/Boot")
+        log(f"  mdir said: {(result.stderr or result.stdout).strip()[:200]}")
+        return False
+
+    # `mdir -b` prints FULL PATHS, not bare names:
+    #
+    #     ::/EFI/Microsoft/Boot/bootmgfw.efi
+    #
+    # which is easy to read as a name and then never match. Compare basenames.
+    names = [os.path.basename(n.strip().replace("\\", "/")).lower()
+             for n in result.stdout.splitlines() if n.strip()]
+    loader = "bootmgfw.efi"
+    if loader not in names:
+        log(f"/EFI/Microsoft/Boot exists but holds no {loader} "
+            f"({', '.join(names[:8]) or 'nothing'})")
+        return False
+
+    log(f"the EFI system partition holds {loader} "
+        f"({esp['first_lba']}..{esp['last_lba']} LBA)")
+    return True
+
+
+def _gpt_partitions(disk: str) -> list[dict]:
+    """The GPT entries, as {type, first_lba, last_lba}.
+
+    Read with one qemu-io call over the entry array, which lives at LBA 2 and is sized by
+    the header. Entry size and count come from the header rather than being assumed: 128
+    x 128 is the usual pair and not the only one.
+    """
+    header = qemu_io_read(disk, 512, 512)
+    if header[0:8] != b"EFI PART":
+        return []
+    entry_lba = int.from_bytes(header[72:80], "little")
+    count = int.from_bytes(header[80:84], "little")
+    size = int.from_bytes(header[84:88], "little")
+    if not (entry_lba and count and 128 <= size <= 4096):
+        return []
+    count = min(count, 128)
+
+    raw = qemu_io_read(disk, entry_lba * 512, count * size)
+    out = []
+    for i in range(count):
+        entry = raw[i * size:(i + 1) * size]
+        if len(entry) < 56:
+            break
+        if entry[0:16] == b"\x00" * 16:
+            continue
+        # The type GUID's first three fields are little-endian; printing it in the usual
+        # order is what makes c12a7328... recognisable.
+        a = int.from_bytes(entry[0:4], "little")
+        b = int.from_bytes(entry[4:6], "little")
+        c = int.from_bytes(entry[6:8], "little")
+        d = entry[8:10].hex()
+        e = entry[10:16].hex()
+        guid = f"{a:08x}-{b:04x}-{c:04x}-{d}-{e}"
+        out.append({
+            "type": guid,
+            "first_lba": int.from_bytes(entry[32:40], "little"),
+            "last_lba": int.from_bytes(entry[40:48], "little"),
+        })
+    return out
+
+
 def check_gpt(disk: str) -> bool:
     """A GPT disk has a protective MBR: one partition entry of type 0xEE."""
     try:
@@ -292,15 +440,16 @@ def check_disk(disk: str, root_fs: str = "ext4") -> bool:
         "ext4"  (default) look for 53ef at 1 MiB
         "gpt"   only check that the partition table is GPT
         "apfs"  GPT, and an APFS container on the disk
+        "windows" GPT, and bootmgfw.efi in the EFI system partition
         "none"  skip the filesystem check entirely
 
     A missing disk, or a host without qemu-io, returns False rather than raising:
     the caller prints the verdict and continues to the boot check, and a traceback
     here would read as "the bake crashed" instead of "the disk is bad".
     """
-    if root_fs not in ("ext4", "gpt", "apfs", "none"):
+    if root_fs not in ("ext4", "gpt", "apfs", "windows", "none"):
         raise ValueError(
-            f"unknown root_fs: {root_fs!r} (expected ext4, gpt, apfs or none)"
+            f"unknown root_fs: {root_fs!r} (expected ext4, gpt, apfs, windows or none)"
         )
 
     problems = 0
@@ -311,18 +460,39 @@ def check_disk(disk: str, root_fs: str = "ext4") -> bool:
         print(f"  {disk}: MISSING", flush=True)
         print("=== THE DISK WILL NOT BOOT ===", flush=True)
         return False
+    # THE MBR IS NOT THE BOOT PATH ON A UEFI DISK.
+    #
+    # Windows on UEFI boots from bootmgfw.efi in the EFI system partition and never reads
+    # the MBR's code area; the "protective MBR" is a table entry and one signature byte.
+    # Requiring 440 bytes of boot code here made a perfectly good Windows disk fail with
+    #
+    #     [disk] signature present, boot code area is zero - no bootloader
+    #     === THE DISK WILL NOT BOOT ===
+    #
+    # while the check that WOULD have answered the question never ran, because "windows"
+    # was not in the branch below and fell through to "filesystem check skipped".
+    #
+    # So the MBR is required only where something actually boots from it: ext4 (a BIOS
+    # bootloader) and gpt (a disk claimed to be bootable by its own table).
+    mbr_required = root_fs in ("ext4", "gpt")
     if not check_mbr(disk):
-        problems += 1
+        if mbr_required:
+            problems += 1
+        else:
+            log("(no MBR boot code - expected for a UEFI disk)")
 
     if root_fs == "ext4":
         if not check_ext_root(disk):
             log("(not fatal here - a non-ext root is possible)")
-    elif root_fs in ("gpt", "apfs"):
+    elif root_fs in ("gpt", "apfs", "windows"):
         if not check_gpt(disk):
             problems += 1
         # An APFS disk is GPT *and* has a container. The second is the one that says
         # macOS is on it; the first only says the disk was partitioned.
         if root_fs == "apfs" and not check_apfs(disk):
+            problems += 1
+        # A GPT with no boot loader on it is a partition table, not a system.
+        if root_fs == "windows" and not check_efi_bootloader(disk):
             problems += 1
     else:
         log("filesystem check skipped")

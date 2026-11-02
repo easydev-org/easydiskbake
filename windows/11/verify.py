@@ -36,7 +36,7 @@ def main(argv: list[str]) -> int:
         print(f"no disk at {disk}", flush=True)
         return 1
 
-    ok = smoke.check_disk(disk, root_fs="gpt")
+    ok = smoke.check_disk(disk, root_fs="windows")
     print(f"disk checks: {'PASS' if ok else 'FAIL'}", flush=True)
     return 0 if ok else 1
 

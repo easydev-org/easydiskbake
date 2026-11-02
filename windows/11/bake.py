@@ -499,7 +499,7 @@ class Baker:
 
         log("the guest reached a running system; checking the disk")
 
-        if not smoke.check_disk(self.disk, root_fs="gpt"):
+        if not smoke.check_disk(self.disk, root_fs="windows"):
             # Do not produce an artifact from a disk that failed its checks. The
             # previous run compressed an empty qcow2 and called it BAKED because this
             # result was only used as the exit code - the publish step then had a
