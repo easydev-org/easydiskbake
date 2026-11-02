@@ -77,6 +77,49 @@ class ExtOffsets(unittest.TestCase):
         self.assertEqual((0xEF53).to_bytes(2, "little"), b"\x53\xef")
 
 
+class QemuIoParsing(unittest.TestCase):
+    """The parser, against the exact shape qemu-io writes.
+
+    This is the bug that made a good Windows disk look unbootable: the pattern expected
+    whitespace after the offset and the real output has a colon there, so every read
+    parsed to zero bytes.
+    """
+
+    SAMPLE = (
+        "00000000:  55 aa 31 c0 8e d0 bc 00 7c 8e c0 8e d8 00 00 00  U.1.......|.......\n"
+        "00000010:  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................\n"
+        "read 32/32 bytes at offset 0\n"
+        "32 bytes, 1 ops; 00.00 sec (24.751 MiB/sec and 811030.0081 ops/sec)\n"
+    )
+
+    def _parse(self, text):
+        import re
+        data = bytearray()
+        for line in text.splitlines():
+            m = re.match(r"^([0-9a-f]{8,16}):?\s+((?:[0-9a-f]{2,4}\s*)+)", line)
+            if not m:
+                continue
+            for token in m.group(2).split():
+                if len(token) == 8:
+                    data += bytes.fromhex(token)[::-1]
+                else:
+                    data += bytes.fromhex(token)
+        return bytes(data)
+
+    def test_the_colon_form_is_parsed(self):
+        data = self._parse(self.SAMPLE)
+        self.assertEqual(len(data), 32)
+        self.assertEqual(data[:2], b"\x55\xaa")
+
+    def test_the_old_pattern_would_match_nothing(self):
+        # Kept as the record of what went wrong: this is the pattern that was in the
+        # file, and it produces zero bytes from the shape qemu-io actually writes.
+        import re
+        wrong = re.compile(r"^([0-9a-f]{8,16})\s+((?:[0-9a-f]{2,4}\s*)+)")
+        matched = [l for l in self.SAMPLE.splitlines() if wrong.match(l)]
+        self.assertEqual(matched, [])
+
+
 class RootFsSelection(unittest.TestCase):
 
     def test_unknown_value_is_an_error_not_a_default(self):

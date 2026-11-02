@@ -82,10 +82,28 @@ def qemu_io_read(disk: str, offset: int, length: int) -> bytes:
     if result.returncode != 0:
         raise DiskReadError(f"qemu-io could not read {disk} at {offset}: {result.stderr.strip()}")
 
-    # qemu-io -v prints: "00000000  55 aa 00 ...  ascii" one line per 16 bytes.
+    # qemu-io -v prints one line per 16 bytes, in this exact shape:
+    #
+    #     00000000:  55 aa 00 00 ...  ascii
+    #     00000010:  ...
+    #     read 512/512 bytes at offset 0
+    #     512 bytes, 1 ops; ...
+    #
+    # THE COLON IS PART OF THE FORMAT. The first version of this pattern was
+    #
+    #     ^([0-9a-f]{8,16})\s+...
+    #
+    # which needs whitespace right after the offset and therefore matched none of these
+    # lines. Every read parsed to zero bytes, so every disk was reported as
+    #
+    #     [disk] short read: got 0 bytes, expected 512
+    #     [disk] partition table truncated
+    #
+    # - and a Windows install that had just reached its desktop was thrown away as an
+    # unbootable disk. The check exists to catch a bad disk; it was rejecting a good one.
     data = bytearray()
     for line in result.stdout.splitlines():
-        m = re.match(r"^([0-9a-f]{8,16})\s+((?:[0-9a-f]{2,4}\s*)+)", line)
+        m = re.match(r"^([0-9a-f]{8,16}):?\s+((?:[0-9a-f]{2,4}\s*)+)", line)
         if not m:
             continue
         for token in m.group(2).split():
