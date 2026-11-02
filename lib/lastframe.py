@@ -35,6 +35,7 @@ what the producer meant; the newest mtime is what the filesystem happened to do.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 
@@ -47,7 +48,15 @@ import sys
 #
 # A prefix list is honest about that. Sorting by name across two schemes would put
 # `boot-…` after `frame-…` for no reason except the alphabet.
-PREFIXES = ("frame-", "boot-")
+# THREE NAMING SCHEMES, and each one is a different producer:
+#
+#     frame-0000.ppm      lib/snapshots.py, the timer that records every bake
+#     boot-1793633015.ppm windows/11/ssh.py, which takes its own and stamps the clock
+#     inst-003-after-...  macos/15/install.py's shot(), one per driver action
+#
+# The third has the action's name in the filename, which is why it is not numbered only:
+# "inst-003-after-02-recovery-Continue.ppm" says more than "frame-0003".
+PREFIXES = ("frame-", "boot-", "inst-")
 
 
 def newest_frame(directory: str) -> str | None:
@@ -72,13 +81,50 @@ def newest_frame(directory: str) -> str | None:
             if not name.startswith(prefix):
                 continue
             stem = name[len(prefix):-len(".ppm")]
-            if stem.isdigit():
-                candidates.append((int(stem), name))
+            # `frame-0000` and `boot-1793633015` are numbers; `inst-003-after-...` starts
+            # with one and then carries a label.
+            head = stem.split("-", 1)[0]
+            if head.isdigit():
+                candidates.append((int(head), name))
             break
 
     if not candidates:
         return None
     return os.path.join(directory, max(candidates)[1])
+
+
+def convert(source: str, dest: str) -> bool:
+    """Turn one PPM into a PNG. True when it was written.
+
+    THE FUNCTION macos/15/install.py CALLS AFTER EVERY SCREENSHOT. It did not exist: the
+    driver called lastframe.convert() and got
+
+        module 'lastframe' has no attribute 'convert'
+
+    on every click of run 41493723813. The call is wrapped so a missing picture cannot
+    stop a run, which is why that showed up as a warning rather than a failure - and also
+    why nobody noticed the picture was never written.
+
+    ffmpeg rather than a hand-written PNG encoder, for the reason in the module docstring:
+    it reads a PPM and writes a PNG without being told anything about the format.
+    """
+    if not os.path.isfile(source):
+        print(f"[lastframe] nothing at {source}", flush=True)
+        return False
+    if not shutil.which("ffmpeg"):
+        print("[lastframe] no ffmpeg", flush=True)
+        return False
+
+    os.makedirs(os.path.dirname(os.path.abspath(dest)) or ".", exist_ok=True)
+    result = subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error", "-i", source, dest],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print(f"[lastframe] ffmpeg failed: {(result.stderr or '').strip()[:300]}",
+              flush=True)
+        return False
+    return True
 
 
 def main(argv: list[str]) -> int:
@@ -97,16 +143,7 @@ def main(argv: list[str]) -> int:
         print(f"[lastframe] nothing at {source_arg}", flush=True)
         return 1
 
-    os.makedirs(os.path.dirname(os.path.abspath(dest)) or ".", exist_ok=True)
-
-    result = subprocess.run(
-        ["ffmpeg", "-y", "-loglevel", "error", "-i", source, dest],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        print(f"[lastframe] ffmpeg failed: {(result.stderr or '').strip()[:300]}",
-              flush=True)
-        return 1
+    return 0 if convert(source, dest) else 1
 
     if not os.path.exists(dest) or os.path.getsize(dest) == 0:
         print(f"[lastframe] {dest} was not written", flush=True)

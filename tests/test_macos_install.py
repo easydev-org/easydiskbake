@@ -202,3 +202,49 @@ class DiskGrowth(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheLastFrameIsWritten(unittest.TestCase):
+    """lastframe.convert() has to exist, because the driver calls it after every click.
+
+    MEASURED ON RUN 41493723813:
+
+        could not refresh last-frame.png: module 'lastframe' has no attribute 'convert'
+
+    on every click. The call is wrapped so a missing picture cannot stop a run - which is
+    why it showed up as a warning rather than a failure, and also why nobody noticed the
+    picture was never written.
+
+    A cancelled run uploads out/last-frame.png as its only evidence of where it stopped,
+    so a converter that does not exist turns every cancelled run back into 1086 bytes of
+    frames.txt.
+    """
+
+    def test_convert_exists_and_takes_a_file(self):
+        import lastframe
+        self.assertTrue(hasattr(lastframe, "convert"))
+        import inspect
+        params = list(inspect.signature(lastframe.convert).parameters)
+        self.assertEqual(params, ["source", "dest"])
+
+    def test_the_driver_calls_convert_and_not_something_else(self):
+        with open(os.path.join(MACOS15, "install.py"), encoding="utf-8") as fh:
+            source = fh.read()
+        self.assertIn("lastframe.convert(", source)
+
+    def test_a_missing_source_is_false_rather_than_raising(self):
+        """Called from inside click(); an exception here would stop the driver."""
+        import tempfile
+        import lastframe
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertFalse(lastframe.convert(os.path.join(tmp, "nope.ppm"),
+                                               os.path.join(tmp, "nope.png")))
+
+    def test_the_inst_prefix_is_recognised(self):
+        """shot() writes inst-NNN-<label>.ppm, which newest_frame() has to see.
+
+        The names carry the action - "inst-003-after-02-recovery-Continue.ppm" says more
+        than "frame-0003" - so the number is a prefix rather than the whole stem.
+        """
+        import lastframe
+        self.assertIn("inst-", lastframe.PREFIXES)
