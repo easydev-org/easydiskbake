@@ -96,10 +96,20 @@ RUN set -eux; \
     # it is missing. --no_https is not needed; dl.google.com is https.
     "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "emulator" >/dev/null
 
-ENV PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH"
+# The emulator's own directories are on PATH because lib/publish_android.py starts it:
+# sdkmanager installs the binary into $ANDROID_SDK_ROOT/emulator but does not add it
+# itself, and lib/emulator.build_args() checks shutil.which("emulator") before doing
+# anything. Without these two entries the publish fails with "the emulator is not on
+# PATH" - one step after the failure it replaced.
+ENV PATH="$ANDROID_SDK_ROOT/emulator:$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH"
 
 # A build-time self-check. avdmanager is the one tool the workflow cannot do without,
 # and it fails with a Java stack trace when the JRE is missing rather than saying so.
+#
+# `command -v emulator` is not the same test as `test -x .../emulator`: it asks whether
+# the binary is reachable the way lib/emulator.build_args() reaches it, through
+# shutil.which(). A PATH that omits the directory passes one and fails the other, and
+# that is exactly the failure this image shipped once.
 RUN set -eux; \
     python3 --version; \
     unzip -v | head -1; \
@@ -108,7 +118,9 @@ RUN set -eux; \
     sdkmanager --version; \
     avdmanager --help 2>&1 | head -3; \
     test -d "$ANDROID_SDK_ROOT/emulator"; \
-    test -x "$ANDROID_SDK_ROOT/emulator/emulator"
+    test -x "$ANDROID_SDK_ROOT/emulator/emulator"; \
+    command -v emulator; \
+    command -v adb
 
 ENTRYPOINT []
 CMD ["/bin/bash"]
