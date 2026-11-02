@@ -47,7 +47,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", ".."))
 
-from lib import iso, smoke, vm  # noqa: E402
+from lib import compress, iso, smoke, vm  # noqa: E402
 
 MX_VERSION = os.environ.get("MX_VERSION", "25.3")
 MX_EDITION = os.environ.get("MX_EDITION", "Xfce")
@@ -305,11 +305,7 @@ def main() -> int:
     )
 
     # --- compress -----------------------------------------------------------
-    subprocess.run(
-        ["qemu-img", "convert", "-O", "qcow2", "-c",
-         "-o", "compression_type=zstd", "disk.qcow2", out],
-        check=True,
-    )
+    compress.compress("disk.qcow2", out)
     blog(f"BAKED mx -> {out}")
     return 0 if booted else 1
 

@@ -47,7 +47,7 @@ import time
 # windows/11/bake.py -> the repository root
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from lib import bootkey, desktop, images, iso, smoke, vm, wim, winiso  # noqa: E402
+from lib import bootkey, compress, desktop, images, iso, smoke, vm, wim, winiso  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ANSWER = os.path.join(HERE, "answer")
@@ -489,11 +489,9 @@ class Baker:
             return False
 
         log("compressing")
-        subprocess.run(
-            ["qemu-img", "convert", "-O", "qcow2", "-c",
-             "-o", "compression_type=zstd", self.disk, self.args.out],
-            check=True,
-        )
+        # lib/compress.py probes what this qemu-img can do rather than assuming; the
+        # image's qemu-img is 2.12 and has no compression_type. See its docstring.
+        compress.compress(self.disk, self.args.out)
         log(f"BAKED windows11 -> {self.args.out} "
             f"({os.path.getsize(self.args.out) >> 20} MiB)")
         return True

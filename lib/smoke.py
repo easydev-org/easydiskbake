@@ -58,6 +58,25 @@ GPT_PROTECTIVE_TYPE = b"\xee"
 # is 1024 bytes into the partition.
 EXT_MAGIC_OFFSET = 1024 + 0x38
 
+# The APFS container superblock: the block begins with a 32-byte object header whose
+# type is NXSB, so the magic sits at relative offset 32 of the container's first block.
+APFS_MAGIC = b"NXSB"
+APFS_MAGIC_OFFSET = 32
+
+# APFS partition type GUID, in the byte order GPT stores it: the first three fields are
+# little-endian and the last two keep the GUID's own byte order. macOS creates exactly
+# one of these for its container, so reading the entry is a better answer than scanning
+# for the magic - the entry states where the partition starts.
+#
+#   7C3457EF-0000-11AA-AA11-00306543ECAC  ->  7c3457ef 0000 aa11 aa11 00306543ecac
+APFS_PARTITION_TYPE = bytes.fromhex("7c3457ef0000aa11aa1100306543ecac")
+
+# The GPT partition entry array. LBA 1 is the header, which states where the array is
+# (normally LBA 2); each entry is 128 bytes and its first 16 are the partition type GUID.
+GPT_HEADER_LBA = 1
+GPT_ENTRY_SIZE = 128
+GPT_MAX_ENTRIES = 128
+
 
 def log(msg: str) -> None:
     print(f"[disk] {msg}", flush=True)
@@ -195,20 +214,94 @@ def check_ext_root(disk: str) -> bool:
     return False
 
 
+def check_apfs(disk: str) -> bool:
+    """Is there an APFS container on this disk, and is it where a partition says?
+
+    WHY THIS IS THE macOS CHECK AND "GPT" ALONE IS NOT. A disk that reached this point
+    has been through the installer, so it has a partition table either way. What the
+    bake needs to know is whether the SYSTEM is on it, and for macOS that means an APFS
+    container - macOS 15 installs to nothing else.
+
+    WHY THE GPT IS READ RATHER THAN SEARCHED. The first version scanned the first 64 MiB
+    of the disk for the NXSB magic. That is wrong twice over: an installed APFS
+    partition starts after macOS's own 200-500 MiB EFI system partition, so the magic is
+    past the window; and a search that happens to find the magic anywhere proves nothing
+    about which partition it belongs to. The GPT entry states the start LBA, which makes
+    this a read at a known place.
+
+    It does not prove the APFS DRIVER works - only booting the disk does, and the
+    recording from the run that produced it is the evidence for that. It proves the
+    installation put a container there, which is what an artifact is being published on.
+    """
+    header_lba = GPT_HEADER_LBA * 512
+    try:
+        header = qemu_io_read(disk, header_lba, 512)
+    except DiskReadError as exc:
+        log(f"could not read the GPT header: {exc}")
+        return False
+
+    if header[:8] != b"EFI PART":
+        log(f"no GPT header at {header_lba:#x} (found {header[:8]!r})")
+        return False
+
+    # entry_lba  offset 72, number_of_entries  offset 80, entry_size  offset 84
+    entry_lba = int.from_bytes(header[72:80], "little")
+    count = int.from_bytes(header[80:84], "little")
+    size = int.from_bytes(header[84:88], "little")
+    if not (entry_lba and count and size):
+        log(f"the GPT header states no entry array ({entry_lba}, {count}, {size})")
+        return False
+    if size < 16 or count > GPT_MAX_ENTRIES:
+        log(f"implausible GPT entry array: {count} entries of {size} bytes")
+        return False
+
+    try:
+        entries = qemu_io_read(disk, entry_lba * 512, count * size)
+    except DiskReadError as exc:
+        log(f"could not read the partition entries: {exc}")
+        return False
+
+    for index in range(count):
+        entry = entries[index * size:(index + 1) * size]
+        if entry[:16] != APFS_PARTITION_TYPE:
+            continue
+
+        # first_lba is the third 8-byte field of a GPT entry.
+        start = int.from_bytes(entry[32:40], "little") * 512
+        log(f"APFS partition at {start:#x} (entry {index + 1})")
+        try:
+            block = qemu_io_read(disk, start, 4096)
+        except DiskReadError as exc:
+            log(f"could not read the container header: {exc}")
+            return False
+        if block[APFS_MAGIC_OFFSET:APFS_MAGIC_OFFSET + 4] == APFS_MAGIC:
+            log("APFS container superblock: NXSB")
+            return True
+        log(f"the APFS partition has no NXSB at its start "
+            f"(found {block[APFS_MAGIC_OFFSET:APFS_MAGIC_OFFSET + 4]!r})")
+        return False
+
+    log("no APFS partition in the GPT - macOS did not install")
+    return False
+
+
 def check_disk(disk: str, root_fs: str = "ext4") -> bool:
     """Everything that can be learned without starting the machine.
 
     root_fs is one of:
         "ext4"  (default) look for 53ef at 1 MiB
         "gpt"   only check that the partition table is GPT
+        "apfs"  GPT, and an APFS container on the disk
         "none"  skip the filesystem check entirely
 
     A missing disk, or a host without qemu-io, returns False rather than raising:
     the caller prints the verdict and continues to the boot check, and a traceback
     here would read as "the bake crashed" instead of "the disk is bad".
     """
-    if root_fs not in ("ext4", "gpt", "none"):
-        raise ValueError(f"unknown root_fs: {root_fs!r} (expected ext4, gpt or none)")
+    if root_fs not in ("ext4", "gpt", "apfs", "none"):
+        raise ValueError(
+            f"unknown root_fs: {root_fs!r} (expected ext4, gpt, apfs or none)"
+        )
 
     problems = 0
     print("=== the disk ===", flush=True)
@@ -224,8 +317,12 @@ def check_disk(disk: str, root_fs: str = "ext4") -> bool:
     if root_fs == "ext4":
         if not check_ext_root(disk):
             log("(not fatal here - a non-ext root is possible)")
-    elif root_fs == "gpt":
+    elif root_fs in ("gpt", "apfs"):
         if not check_gpt(disk):
+            problems += 1
+        # An APFS disk is GPT *and* has a container. The second is the one that says
+        # macOS is on it; the first only says the disk was partitioned.
+        if root_fs == "apfs" and not check_apfs(disk):
             problems += 1
     else:
         log("filesystem check skipped")

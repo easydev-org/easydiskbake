@@ -74,6 +74,16 @@ class Shape:
     firmware_vars: str = ""      # a WRITABLE copy per guest; boot state accumulates
     tpm_socket: str = ""         # swtpm chardev socket, or "" for no TPM
     vga: str = "std"             # "std" (default), "vmware", "none"
+    # The CPU model, and "" means "-cpu host".
+    #
+    # macOS cannot use "host": its kernel reads the CPU's family and model and refuses
+    # to boot on anything it does not recognise, so the guest has to be given a model
+    # Apple shipped in real hardware (Penryn, Haswell, ...) with the feature flags the
+    # kernel expects. Every other guest here is happy with "host" and gets it.
+    cpu: str = ""
+    # Extra flags appended to the argument vector, for machines that need a global
+    # (macOS needs ICH9-LPC's sleep states disabled, which is not a per-device option).
+    extra_args: list[str] = field(default_factory=list)
     vnc_bind: str = "127.0.0.1"
     vnc_display: int = 0
     ssh_port: int = 2222
@@ -94,6 +104,7 @@ class Shape:
             firmware_vars=env.get("VM_FIRMWARE_VARS", ""),
             tpm_socket=env.get("VM_TPM", ""),
             vga=env.get("VM_VGA", "std"),
+            cpu=env.get("VM_CPU", ""),
             vnc_bind=env.get("VNC_BIND", "127.0.0.1"),
             vnc_display=int(env.get("VNC_DISPLAY", 0)),
             ssh_port=int(env.get("SSH_PORT", 2222)),
@@ -138,7 +149,7 @@ def build_args(work: str, extra: list[str] | None = None,
 
     args: list[str] = [
         QEMU,
-        "-enable-kvm", "-cpu", "host",
+        "-enable-kvm", "-cpu", shape.cpu or "host",
         "-smp", str(shape.cpus), "-m", str(shape.mem_mb),
         "-display", "none",
         "-vnc", f"{shape.vnc_bind}:{shape.vnc_display}",
@@ -198,6 +209,11 @@ def build_args(work: str, extra: list[str] | None = None,
     # passes vga="none" and its own -device.
     if shape.vga != "none":
         args += ["-vga", shape.vga]
+
+    # Machine-level flags that are not a device and not a -global the caller can put in
+    # `extra` without it looking like a device. macOS needs two of these.
+    if shape.extra_args:
+        args += list(shape.extra_args)
 
     if extra:
         args += list(extra)

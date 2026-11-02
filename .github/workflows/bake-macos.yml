@@ -1,0 +1,185 @@
+name: bake-macos
+
+# Bake a macOS disk in CI and publish it to ghcr.
+#
+# WHAT IS PUBLISHED
+#
+#     ghcr.io/easydev-org/easydiskbake:macos-base-<YYYYmmdd-HHMMSS>
+#
+# A timestamp and no floating tag, for the same reason as the Windows bake: a disk is
+# not something to redeploy by accident, and "which build is this" has to stay
+# answerable.
+#
+# THE THREE INPUTS, AND WHERE EACH COMES FROM
+#
+#     recovery image   :macos-recovery-sequoia, filled by publish-macos-recovery.yml.
+#                      Apple issues one per request, so there is nothing to pin and
+#                      this job never talks to Apple.
+#     boot assets      :macos-asset-opencore, -opencore-template, -ovmf-code,
+#                      -ovmf-vars-1920x1080, filled by publish-macos-assets.yml.
+#                      lib/opencore.py pulls all four and verifies each sha256; no
+#                      fallback to GitHub's release CDN.
+#     APFS driver      extracted from the recovery image at build time. OpenCore ships
+#                      none and OVMF has none, so without it the finished disk cannot
+#                      be booted - see lib/opencore.install_apfs_driver().
+#
+# WHEN ONE IS MISSING
+#
+#     [iso] no manifest for tag 'macos-recovery-sequoia'
+#     Run publish-macos-recovery.yml for 15 first.
+#
+# Nothing here downloads from Apple or from a release URL. That is deliberate: a bake
+# whose first step is a vendor transfer has its own failure modes, and the message a
+# missing image should produce is "run this workflow", not a CDN error four minutes in.
+#
+# WHY macOS NEEDS A LONGER TIMEOUT THAN WINDOWS
+#
+# A cold recovery boot is minutes of grey screen before anything is drawn, the installer
+# copies a 3 GB BaseSystem and then a full system image, and the guest reboots twice.
+# Measured against dockur-macos's runs, the installation alone is 40-70 minutes.
+#
+# MANUAL ONLY: this is a 4-core runner for up to three hours, and it produces one disk.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "macOS release to bake"
+        type: choice
+        options:
+          - "15"
+          - "14"
+          - "26"
+        default: "15"
+      disk_size:
+        description: "Guest disk size"
+        default: "64G"
+      publish:
+        description: "Push the disk to ghcr"
+        type: boolean
+        default: true
+      snapshot_interval:
+        description: "Seconds between recorded frames (lower = bigger video)"
+        default: "5"
+      install_timeout:
+        description: "Seconds the installation may run before Setup Assistant"
+        default: "5400"
+
+concurrency:
+  group: bake-macos-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  base:
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    # The installation, the wizard and the recording encode, with room for one slow
+    # recovery download at the start.
+    timeout-minutes: 240
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: macos-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            # 850 MiB recovery + 64 GiB sparse disk + a compressed copy. A check, not a
+            # cleanup.
+            python3 lib/ci.py free-disk --need 45
+            # Say which assets exist before spending minutes discovering one does not.
+            python3 lib/ci.py tags --prefix macos-asset-
+            python3 lib/ci.py tags --prefix macos-recovery-
+
+      - name: bake
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: macos-bake
+          interval: "15"
+          command: |
+            set -euo pipefail
+            mkdir -p out
+            export GITHUB_TOKEN="${{ github.token }}"
+            export SNAPSHOT_INTERVAL="${{ inputs.snapshot_interval || '5' }}"
+            export RECORD_FPS=1
+            export MACOS_USER=docker
+            export MACOS_PASSWORD=docker
+            python3 macos/${{ inputs.release || '15' }}/bake.py \
+              --out "out/macos${{ inputs.release || '15' }}.qcow2" \
+              --release "${{ inputs.release || '15' }}" \
+              --disk-size "${{ inputs.disk_size || '64G' }}" \
+              --timeout "${{ inputs.install_timeout || '5400' }}"
+
+      # The recording is what explains a failure. A wizard pane waiting for a click and
+      # a hung kernel look identical in a log, and a macOS bake has no serial console to
+      # read at all - the frames are the only record of what the guest did.
+      - name: keep the recording
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-recording
+          path: |
+            out/install.mp4
+            out/console.log
+            out/frames/shots/frames.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: keep raw frames as a fallback
+        if: always() && hashFiles('out/install.mp4') == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-frames
+          path: out/frames/shots/*.ppm
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: upload the disk
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-qcow2
+          path: out/macos${{ inputs.release || '15' }}.qcow2
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0   # qcow2 is already zstd-compressed
+
+      - name: push the disk
+        if: ${{ inputs.publish == true || inputs.publish == null }}
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: macos-publish
+          interval: "15"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py install-oras
+            python3 lib/ci.py login --registry ghcr.io
+            python3 lib/publish_disk.py \
+              "out/macos${{ inputs.release || '15' }}.qcow2" \
+              --kind "macos${{ inputs.release || '15' }}-base"
+
+      - name: what is in the package
+        if: always()
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: macos-tags
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py tags --prefix macos

@@ -77,6 +77,11 @@ BOOT_IMG_SECTORS = (BOOT_IMG_MB * 1024 * 1024) // BOOT_IMG_SECTOR
 # a second download that can drift from it.
 MACSERIAL = "Utilities/macserial/macserial.linux"
 
+# Where Apple keeps the APFS driver inside a recovery image. The bake extracts it from
+# there rather than pinning it - see install_apfs_driver() for why that beats every
+# alternative, and lib/images.py for the failure it prevents.
+APFS_DRIVER = "macOS Base System/usr/standalone/i386/apfs.efi"
+
 
 class OpenCoreError(RuntimeError):
     pass
@@ -427,6 +432,134 @@ def _find_file(directory: str, wanted: str) -> str | None:
 # --- the disk the firmware boots ---------------------------------------------
 
 
+def install_apfs_driver(efi: str, recovery: str, work: str) -> str:
+    """Put Apple's own APFS driver into the boot image, and register it.
+
+    WHY THIS IS NOT OPTIONAL, AND WHY IT IS NOT IN THE PINS.
+
+    OpenCore ships no APFS driver and neither does the LongQT template. Its
+    config carries EnableJumpstart=true, which is often mistaken for a driver: it
+    is not. Jumpstart HOOKS a driver the firmware is expected to already have, and
+    OVMF - which is what boots this guest - has none. The symptom is specific and
+    silent: an installation completes, the disk is full of a working macOS, and
+    OpenCore's picker lists only Reset NVRAM and Toggle SIP because it cannot read
+    the AF0A partition the system is on. Nothing in any log says "no APFS driver".
+
+    THE DRIVER IS ALREADY ON DISK, INSIDE THE RECOVERY IMAGE. macOS ships it at
+    usr/standalone/i386/apfs.efi in BaseSystem, and that is what the installer itself
+    uses. Extracting it from there beats every alternative:
+
+        copying it off the installed disk    impossible before the first boot, and
+                                             dockur's fix-opencore-apfs.sh has to do
+                                             exactly this on the second run
+        taking it from a Linux package       the APFS driver is Apple's, not
+                                             apfs-fuse's userspace library
+        adding it to the pins                it would be a fifth pinned download for
+                                             a file the bake already has
+
+    So the input is the recovery image, which the bake fetches anyway, and the output
+    is one 700 KiB file in the EFI tree plus one entry in config.plist.
+
+    The driver is registered with LoadEarly=false: it is a filesystem driver, and
+    OpenCore's documentation puts those after the runtime services drivers
+    (OpenRuntime) that they may call into.
+    """
+    source = os.path.join(work, "apfs.efi")
+    if not os.path.exists(source):
+        if not os.path.isfile(recovery):
+            raise OpenCoreError(
+                f"no recovery image at {recovery}, and the APFS driver can only come "
+                f"from one; the guest would install a macOS it cannot boot"
+            )
+        log(f"extracting apfs.efi from {os.path.basename(recovery)}")
+        # 7z walks the DMG's compressed blocks and its HFS+ contents, which is the only
+        # way to reach a file inside a UDIF image without mounting it.
+        extract = os.path.join(work, "apfs-extract")
+        subprocess.run(
+            ["7z", "x", "-y", f"-o{extract}", recovery, APFS_DRIVER],
+            check=True, stdout=subprocess.DEVNULL,
+        )
+        found = None
+        for root, _dirs, files in os.walk(extract):
+            for name in files:
+                if name.lower() == os.path.basename(APFS_DRIVER).lower():
+                    found = os.path.join(root, name)
+                    break
+            if found:
+                break
+        if found is None:
+            raise OpenCoreError(
+                f"{recovery} holds no {APFS_DRIVER}; the recovery layout changed.\n"
+                f"Without it OpenCore cannot read the installed system and the bake "
+                f"produces a disk that only boots with a matching recovery attached."
+            )
+        shutil.move(found, source)
+
+    # A driver that is not a PE image is not a driver. This is cheap and it is the
+    # difference between "the extraction produced a file" and "the extraction produced
+    # the file" - an obfuscated or truncated apfs.efi fails at boot with no message.
+    with open(source, "rb") as fh:
+        head = fh.read(2)
+    if head != b"MZ":
+        raise OpenCoreError(
+            f"{source} is not a PE image (begins {head!r}, expected b'MZ')"
+        )
+    size = os.path.getsize(source)
+
+    drivers = os.path.join(efi, "OC", "Drivers")
+    os.makedirs(drivers, exist_ok=True)
+    shutil.copyfile(source, os.path.join(drivers, "apfs.efi"))
+
+    # Register it. The template's list is kept in order and the new entry is appended,
+    # because the drivers OpenCore loads first are the ones it needs for the filesystem
+    # it is about to read - this one, so it goes last.
+    config_path = _find_file(os.path.join(efi, "OC"), "config.plist")
+    if config_path is None:
+        raise OpenCoreError(f"no config.plist under {efi}/OC to register apfs.efi in")
+    with open(config_path, "rb") as fh:
+        config = plistlib.load(fh)
+
+    entries = config["UEFI"]["Drivers"]
+    if not any(entry.get("Path", "").lower() == "apfs.efi" for entry in entries):
+        entries.append({
+            "Arguments": "",
+            "Comment": "Apple's APFS driver, from the recovery image",
+            "Enabled": True,
+            "LoadEarly": False,
+            "Path": "apfs.efi",
+        })
+        with open(config_path, "wb") as fh:
+            plistlib.dump(config, fh, fmt=plistlib.FMT_XML, sort_keys=False)
+
+    with open(config_path, "rb") as fh:
+        check = plistlib.load(fh)
+    if not any(e.get("Path", "").lower() == "apfs.efi" and e.get("Enabled")
+               for e in check["UEFI"]["Drivers"]):
+        raise OpenCoreError(f"apfs.efi did not land in {config_path}")
+
+    log(f"apfs.efi: {size >> 10} KiB, registered in config.plist")
+    return source
+
+
+def recovery_image(work: str) -> str:
+    """Where the recovery image for this work directory lives, if it is there.
+
+    The bake fetches it (lib/macos_recovery.py, or a pull of :macos-recovery-<name>)
+    and this only has to find it. Two names are accepted because the two routes that
+    produce it disagree: the workflow writes recovery-<name>.dmg and a manual run
+    writes recovery.dmg. Neither is guessed at - a bake that cannot find its installer
+    should stop, not build a boot image for an installer it does not have.
+    """
+    for name in ("recovery.dmg", "setup.dmg", "BaseSystem.dmg"):
+        path = os.path.join(work, name)
+        if os.path.isfile(path) and os.path.getsize(path) > 0:
+            return path
+    for name in sorted(os.listdir(work)) if os.path.isdir(work) else []:
+        if name.endswith(".dmg"):
+            return os.path.join(work, name)
+    return os.path.join(work, "recovery.dmg")
+
+
 def build_boot_image(efi: str, dest: str) -> str:
     """A raw FAT image with the EFI tree at its root, which is what OpenCore boots from.
 
@@ -501,6 +634,12 @@ def build(release: str, work: str) -> dict:
     template_efi = extract_template_boot(template_iso, work)
     efi = _merge_template(efi, template_efi)
     write_config(efi, template_efi, ident, release)
+
+    # APFS AFTER the config is written, because this registers a driver in it - and
+    # BEFORE the boot image is built, because the driver has to be inside that image.
+    # The recovery image is an input here as well as the installer; see the function.
+    recovery = recovery_image(work)
+    install_apfs_driver(efi, recovery, work)
 
     boot = build_boot_image(efi, os.path.join(work, "boot.img"))
 
