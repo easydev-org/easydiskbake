@@ -482,6 +482,46 @@ class Recovery:
             + (f" - {why}" if why else ""))
         return False
 
+    def click(self, xy: tuple[int, int], why: str = "", settle: float = 5.0) -> None:
+        """Click, then wait before anything else happens.
+
+        FIVE SECONDS BETWEEN EVERY ACTION. This guest draws a pane in about three
+        seconds on an unaccelerated qemu, and a click that arrives during the repaint is
+        swallowed. Run 41472163272 sent seventeen actions in eighty seconds onto a
+        display that had not painted yet.
+        """
+        self.n += 1
+        log(f"#{self.n} click {xy} {why}")
+        qmpmod.click(self.q, *xy)
+        time.sleep(settle)
+        self.shot(f"after-{self.n:02d}-{why}")
+
+    def key(self, name: str, settle: float = 5.0) -> None:
+        self.n += 1
+        log(f"#{self.n} key {name}")
+        qmpmod.key(self.q, name)
+        time.sleep(settle)
+
+    def type_text(self, text: str, settle: float = 0.3) -> None:
+        """Type lower-case ASCII, one key at a time.
+
+        The only thing typed here is the volume name, `main` - five lower-case letters.
+        An upper-case character is a shift chord, and the first attempt at naming the
+        disk typed `M`, watched the field stay empty, and reported success; so this
+        refuses anything it cannot press in one key rather than appearing to work.
+        """
+        self.n += 1
+        log(f"#{self.n} type {text!r}")
+        for ch in text:
+            if ch.isupper() or not (ch.islower() or ch.isdigit()):
+                raise ValueError(
+                    f"cannot type {ch!r}: only lower-case letters and digits, because "
+                    f"an upper-case character is a shift chord and typing one silently "
+                    f"does nothing on this guest"
+                )
+            qmpmod.key(self.q, ch)
+            time.sleep(settle)
+
     def close(self) -> None:
         try:
             self.q.close()

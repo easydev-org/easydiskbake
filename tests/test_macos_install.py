@@ -327,3 +327,46 @@ class EveryPredicateReturns(unittest.TestCase):
         with open(os.path.join(MACOS15, "install.py"), encoding="utf-8") as fh:
             source = fh.read()
         self.assertIn("if not disk_utility(d):", source)
+
+
+class TheDriverCanStillDrive(unittest.TestCase):
+    """Recovery must still have the methods the sequence calls.
+
+    MEASURED ON RUN 41510118982
+
+        Traceback (most recent call last):
+          File "macos/15/install.py", line 530, in disk_utility
+            d.click((ROW_X, ROW_Y[3]), "Disk Utility row", settle=5)
+        AttributeError: 'Recovery' object has no attribute 'click'
+
+    click(), key() and type_text() were deleted by an edit that meant to remove
+    wait_for_change(): the slice ran from that method to `def close(`, and these three sat
+    between them. Every later run died on the first click.
+
+    WHAT CAUGHT IT WAS THE stderr PASSTHROUGH added one commit earlier. Without that, the
+    report would have been "the installer driver failed: exit status 1" and the missing
+    method would have taken another run to find.
+    """
+
+    CALLED = ("click", "key", "type_text", "wait", "shot", "capture", "brightness",
+              "fingerprint", "disk_allocated", "wait_until_drawn", "close")
+
+    def test_every_method_the_sequence_uses_exists(self):
+        missing = [name for name in self.CALLED if not hasattr(install.Recovery, name)]
+        self.assertEqual(missing, [], f"Recovery lost: {missing}")
+
+    def test_every_d_dot_call_is_a_real_method(self):
+        """Nothing calls a method that was removed - checked over the whole module."""
+        import ast
+        import re
+
+        with open(os.path.join(MACOS15, "install.py"), encoding="utf-8") as fh:
+            source = fh.read()
+        tree = ast.parse(source)
+
+        cls = [n for n in ast.walk(tree)
+               if isinstance(n, ast.ClassDef) and n.name == "Recovery"][0]
+        defined = {n.name for n in cls.body if isinstance(n, ast.FunctionDef)}
+        used = set(re.findall(r"\bd\.([a-z_]+)\(", source))
+        self.assertEqual(sorted(used - defined), [],
+                         f"calls on d that do not exist: {sorted(used - defined)}")
