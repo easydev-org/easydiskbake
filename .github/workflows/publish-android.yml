@@ -98,7 +98,31 @@ jobs:
               ghcr.io/easydev-org/easydiskbake:android-builder \
               python3 /repo/lib/publish_android.py \
                 --image sysimg:android-15-aosp \
+                --artifacts /out \
                 --repository "${{ github.repository }}"
+
+      # THE RECORDING IS WHAT EXPLAINS A FAILURE, AND ANDROID HAD NONE.
+      #
+      # lib/snapshots.py photographs the emulator over QMP and the bake encodes the
+      # frames into install.mp4 - but the work directory was a tempfile inside the
+      # container and publish_android.py deleted it, so every Android run so far
+      # produced an artifact of nothing. A failed boot left a log line and no picture.
+      #
+      # --artifacts copies the recording and the last frame into /out, which is the
+      # volume this workflow already mounts. if-no-files-found is warn rather than
+      # error: a run that died before the emulator started has no frames to give, and
+      # that is a fact worth reporting rather than a second failure.
+      - name: keep the recording
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-recording
+          path: |
+            out/install.mp4
+            out/last-frame.png
+            out/emulator.log
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: what is in the package
         if: always()

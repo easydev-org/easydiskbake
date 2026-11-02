@@ -167,6 +167,10 @@ def main(argv: list[str]) -> int:
                    help="a key in lib/images.py ANDROID (default sysimg:android-15-aosp)")
     p.add_argument("--repository", default=os.environ.get("GITHUB_REPOSITORY", ""))
     p.add_argument("--keep", action="store_true", help="keep the downloaded zip")
+    p.add_argument("--artifacts", default="",
+                   help="directory to copy the recording and last frame into, so a "
+                        "workflow can publish them; without it the work directory is "
+                        "a tempdir and both are deleted with it")
     args = p.parse_args(argv)
 
     table = images.all_images()
@@ -176,7 +180,21 @@ def main(argv: list[str]) -> int:
         return 2
     pin = table[args.image]
 
-    workdir = tempfile.mkdtemp(prefix="android-")
+    # THE WORK DIRECTORY HAS TO OUTLIVE THE RUN WHEN SOMETHING IN IT MATTERS.
+    #
+    # It used to be an unconditional tempfile.mkdtemp(), and the bake inside it wrote
+    # install.mp4 and last-frame.png beside the AVD archive. Both were then deleted by
+    # the rmtree below, inside a container, and publish-android.yml uploaded no artifact
+    # at all - so every Android run so far produced no picture of itself. The only way to
+    # see what the emulator drew was to add a screendump step and run it again.
+    #
+    # With --artifacts the tempdir is created UNDER the caller's directory, so the rmtree
+    # still happens and the recording has already been copied out.
+    if args.artifacts:
+        os.makedirs(args.artifacts, exist_ok=True)
+        workdir = tempfile.mkdtemp(prefix="android-", dir=args.artifacts)
+    else:
+        workdir = tempfile.mkdtemp(prefix="android-")
     zip_path = os.path.join(workdir, "sysimg.zip")
 
     try:
@@ -205,6 +223,13 @@ def main(argv: list[str]) -> int:
         log(f"FAILED: {exc}")
         return 1
     finally:
+        # COPY THE PICTURES OUT BEFORE ANYTHING DELETES THEM. See --artifacts above.
+        if args.artifacts:
+            for name in ("install.mp4", "last-frame.png", "emulator.log"):
+                source = os.path.join(workdir, name)
+                if os.path.isfile(source):
+                    shutil.copyfile(source, os.path.join(args.artifacts, name))
+                    log(f"kept {name} ({(os.path.getsize(source)) >> 10} KiB)")
         if args.keep:
             log(f"kept {workdir}")
         else:

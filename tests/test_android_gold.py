@@ -381,3 +381,52 @@ class ValidateWithoutWipe(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheRecordingLeavesTheContainer(unittest.TestCase):
+    """Every Android run so far produced no picture of itself.
+
+    lib/snapshots.py photographs the emulator over QMP and android/15/bake.py encodes the
+    frames into install.mp4. Both were written into publish_android.py's work directory
+
+        workdir = tempfile.mkdtemp(prefix="android-")
+
+    which lives inside the build container, and then deleted:
+
+        shutil.rmtree(workdir, ignore_errors=True)
+
+    publish-android.yml uploaded no artifact at all. So a failed boot left one log line
+    and no way to see what the emulator drew - the opposite of the macOS bake, where the
+    recording has been the thing that found every real failure.
+
+    --artifacts puts the work directory under the caller's directory and copies the
+    recording out before the rmtree.
+    """
+
+    def source(self):
+        with open(os.path.join(HERE, "lib", "publish_android.py"),
+                  encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_the_work_directory_can_be_placed_by_the_caller(self):
+        body = self.source()
+        self.assertIn("--artifacts", body)
+        self.assertIn("dir=args.artifacts", body)
+
+    def test_the_pictures_are_copied_out_before_the_delete(self):
+        body = self.source()
+        copy_at = body.index('for name in ("install.mp4"')
+        delete_at = body.index("shutil.rmtree(workdir")
+        self.assertLess(copy_at, delete_at,
+                        "the recording has to leave before the workdir does")
+        self.assertIn("install.mp4", body[copy_at:delete_at])
+        self.assertIn("last-frame.png", body[copy_at:delete_at])
+
+    def test_the_workflow_uploads_the_recording(self):
+        path = os.path.join(HERE, ".github", "workflows", "publish-android.yml")
+        with open(path, encoding="utf-8") as fh:
+            source = fh.read()
+        self.assertIn("android-recording", source)
+        self.assertIn("out/install.mp4", source)
+        # And it has to be passed the directory, or the copies land in /tmp again.
+        self.assertIn("--artifacts /out", source)
