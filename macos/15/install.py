@@ -110,17 +110,44 @@ SIDEBAR_CLICK_X = 540
 # The toolbar's Erase is at y=332 as well, so the y is what tells them apart.
 ERASE_CONFIRM = (1146, 639)
 
-# The installer's own panes put Agree at the lower left and Continue at the lower right,
-# the same row the wizard uses everywhere.
+# The installer's own panes put Agree at the lower left. It is NOT the same position as
+# NOT_NOW: a licence pane's buttons sit on the ordinary button row, and the earlier
+# value here was copied from the wizard's three-button layout, which put the click
+# below the window entirely.
 AGREE = (604, 810)
+
+# The sheet that follows the licence pane agrees on the right-hand side.
+AGREE_SHEET = (1026, 634)
+
 INSTALLER_CONTINUE = (1306, 810)
+
+# What "the screen has gone dark" means, in mean grey level 0-255. A lit macOS pane
+# averages well above 100; a black screen averages under 10. 24 is far from both, so a
+# dark wallpaper cannot trip it and a dim pane cannot fail to.
+DARK_LEVEL = 24
+
+# How long a dark screen may last before it is called a failure. The install copies a
+# 12 GB system image and reboots twice; dockur-macos's own runs spend 40-70 minutes in
+# this phase. An hour and a half is generous for the copy and short enough that a hung
+# guest does not outlive the job's own timeout.
+DARK_PATIENCE = 90 * 60
+
+# The forward control is pressed no faster than a pane can redraw: the installer takes
+# several seconds per pane and a click arriving during a redraw is lost.
+CLICK_INTERVAL = 12
 
 
 class Recovery:
     """The few actions this needs, each recording a frame afterwards.
 
-    Frames are RECORDED, never read. A run that goes wrong is diagnosed afterwards by
-    looking at them, which is how every position above was found in the first place.
+    Frames are RECORDED and also READ - but only for one thing: whether the screen has
+    gone dark. That is not OCR and not a screen-scraper; it is the difference between
+    "the installer is copying 12 GB with a static progress bar" and "the machine
+    stopped", and nothing else in this file can tell those apart.
+
+    The distinction matters because the first version had no dark check at all. The run
+    showed 93 identical black frames over 7.75 minutes and the driver cheerfully went on
+    clicking coordinates at a screen that was not there.
     """
 
     def __init__(self, qmp_path: str, frames_dir: str | None = None):
@@ -143,6 +170,42 @@ class Recovery:
                            filename=os.path.join(self.frames, f"inst-{self.shots:03d}-{safe}.ppm"))
         except (OSError, RuntimeError) as exc:
             log(f"screendump failed at {label}: {exc}")
+
+    def brightness(self) -> int | None:
+        """The mean grey level of a fresh screendump, or None if it cannot be read.
+
+        A screendump goes to a file the emulator wrote, so this is one capture and one
+        pass over its pixels - no OCR, no template, no interpretation of what is drawn.
+        """
+        if not self.frames:
+            return None
+        path = os.path.join(self.frames, "probe.ppm")
+        try:
+            self.q.execute("screendump", filename=path)
+        except (OSError, RuntimeError):
+            return None
+        try:
+            with open(path, "rb") as fh:
+                if fh.readline().strip() != b"P6":
+                    return None
+                line = fh.readline()
+                while line.startswith(b"#"):
+                    line = fh.readline()
+                width, height = (int(v) for v in line.split())
+                fh.readline()
+                pixels = fh.read(width * height * 3)
+        except (OSError, ValueError):
+            return None
+        if not pixels:
+            return None
+        # Every 97th pixel: a fixed stride larger than any text run, cheap, and it gives
+        # the same answer as reading all of them for a question about the whole screen.
+        total = 0
+        count = 0
+        for index in range(0, len(pixels), 97 * 3):
+            total += pixels[index] + pixels[index + 1] + pixels[index + 2]
+            count += 3
+        return (total // count) if count else None
 
     def click(self, xy: tuple[int, int], why: str = "", settle: float = 2.0) -> None:
         self.n += 1
@@ -234,37 +297,107 @@ def reinstall(d: Recovery) -> None:
     d.click(CONTINUE_MENU, "recovery Continue", settle=30)
 
 
-def installer_panes(d: Recovery, panes: int = 8) -> None:
-    """Work through the installer's own panes to Setup Assistant.
+def installer_panes(d: Recovery, seconds: int = 3600) -> bool:
+    """Advance the installer until it reboots, or say why it did not.
 
-    A count, not a loop over anything observed. The panes are: the licence agreement
-    (Agree, then Agree again in the sheet), the destination disk selector (which has
-    the only disk preselected), and then Continue until the installer reboots into the
-    new system. The reboot is the point at which this returns - the caller waits for
-    Setup Assistant, not this function.
+    WHAT WAS WRONG WITH THE PREVIOUS VERSION, EXACTLY
+
+    It clicked (1306, 810) eight times with 15-second waits and reported success. The
+    frames of run 41435208961 show what that did: the sequence reached the licence
+    agreement, clicked twice at a position that is outside the window it was looking at,
+    and then the screen went black for 7.75 minutes while eight more clicks landed on
+    nothing. `bake.py` had already moved on to the Setup Assistant driver, so the run
+    spent its remaining time clicking coordinates at a black screen.
+
+    Two things are different here:
+
+        the screen is CHECKED before every action, so a black screen ends the sequence
+        with a message instead of a click
+
+        the sequence ENDS on evidence - the installer reboots when it starts copying -
+        rather than after a count
+
+    WHY DARK MEANS "THE INSTALLER IS WORKING"
+
+    The installer's own transition is: agree to the licence, choose the disk, and then
+    the screen goes black while it copies and reboots into the new system. A dark screen
+    is therefore not a failure by itself. What separates the two is duration: copying
+    takes tens of minutes, a crash stays dark for ever and qemu eventually exits. So a
+    dark screen is reported and waited on, and only a dark screen with an exceeded
+    deadline is a failure.
+
+    Returns True when the guest stopped answering - which on this path is the reboot
+    into the installed system.
     """
-    # The licence pane is the one with a fixed shape: Agree lower left, and a sheet
-    # behind it that has to be agreed to again.
-    d.wait(20, "the licence pane draws")
-    d.click(AGREE, "Agree", settle=5)
-    d.click(AGREE, "Agree in the sheet", settle=10)
+    deadline = time.time() + seconds
+    dark_since: float | None = None
+    last_click = 0.0
 
-    for i in range(panes):
-        d.wait(15, f"installer pane {i + 1} settles")
-        d.click(INSTALLER_CONTINUE, f"installer Continue {i + 1}", settle=25)
+    # The licence pane is the first thing after the recovery menu. It is agreed to
+    # twice: once on the pane and once in the sheet that follows it.
+    d.wait(25, "the licence pane draws")
+    d.click(AGREE, "Agree", settle=6)
+    d.click(AGREE_SHEET, "Agree in the sheet", settle=8)
+
+    while time.time() < deadline:
+        level = d.brightness()
+
+        if level is None:
+            log("the screen could not be read; waiting")
+            time.sleep(15)
+            continue
+
+        if level < DARK_LEVEL:
+            # Dark: either copying, or gone. Record when it started and keep waiting.
+            if dark_since is None:
+                dark_since = time.time()
+                log(f"the screen is dark (mean grey {level}); the installer is "
+                    f"copying or the guest has stopped - waiting")
+            waited = time.time() - dark_since
+            if waited > DARK_PATIENCE:
+                log(f"the screen has been dark for {waited / 60:.0f} minutes")
+                return False
+            time.sleep(20)
+            continue
+
+        if dark_since is not None:
+            # It came back. That is the reboot into the installed system, or the
+            # installer redrew a pane - both are progress, and the caller decides
+            # which by waiting for a desktop.
+            log("the screen came back after "
+                f"{(time.time() - dark_since) / 60:.1f} minutes")
+            return True
+
+        # Lit, and not yet dark: still walking the installer's panes. Click the forward
+        # control, but not faster than the pane can redraw.
+        if time.time() - last_click >= CLICK_INTERVAL:
+            d.click(INSTALLER_CONTINUE, "installer Continue", settle=3)
+            last_click = time.time()
+
+    log(f"the installer did not finish within {seconds / 60:.0f} minutes")
+    return False
 
 
-def run_installation(qmp_path: str, frames_dir: str | None) -> None:
+def run_installation(qmp_path: str, frames_dir: str | None) -> int:
+    """Drive Recovery to a finished installation. Returns a process exit code.
+
+    A non-zero code is what tells bake.py not to start the Setup Assistant driver: on a
+    black screen that driver would click coordinates at nothing for an hour, which is
+    exactly what the first version did.
+    """
     d = Recovery(qmp_path, frames_dir)
-    log("connected; fixed sequence, no reads")
+    log("connected; coordinates for the clicks, a brightness probe for the state")
     try:
         disk_utility(d)
         show_all_devices(d)
         select_and_erase(d)
         leave_disk_utility(d)
         reinstall(d)
-        installer_panes(d)
+        if not installer_panes(d):
+            log("the installer did not reach a reboot")
+            return 1
         log(f"installation driven, {d.n} actions; the guest should now be rebooting")
+        return 0
     finally:
         d.close()
 
@@ -275,8 +408,7 @@ def main(argv: list[str]) -> int:
     p.add_argument("--frames", default=None, help="where to save a frame after each action")
     args = p.parse_args(argv)
 
-    run_installation(args.qmp, args.frames)
-    return 0
+    return run_installation(args.qmp, args.frames)
 
 
 if __name__ == "__main__":

@@ -266,17 +266,18 @@ class Baker:
         return True
 
     def run_installer(self, guest: vm.Guest) -> bool:
-        """Recovery -> a finished installation, via macos/15/install.py.
+        """Recovery -> the reboot into the installed system, via macos/15/install.py.
 
-        It cannot report success from inside: the installer's last act is to reboot the
-        guest into the new system, and the script's job ends at the click that starts
-        it. What decides whether it worked is the wait that follows.
+        THE EXIT CODE IS THE RESULT. install.py returns non-zero when it gave up - a
+        black screen that outlasted its patience, or an installer that never rebooted -
+        and the first version ignored that: it treated "the script exited" as "the
+        installation finished" and handed a black screen to the Setup Assistant driver.
         """
         script = os.path.join(HERE, "install.py")
         log(f"=== installation: {os.path.basename(script)} ===")
         # A thread because the guest must keep running while the sequence plays out,
         # and because a crash in the driver has to surface rather than hang a 90-minute
-        # job. The timeout is the bake's own.
+        # job. The timeout is the bake's own; install.py has its own patience inside it.
         result: dict[str, object] = {}
 
         def drive() -> None:
@@ -287,15 +288,16 @@ class Baker:
                     check=True,
                 )
                 result["ok"] = True
-            except (subprocess.CalledProcessError, OSError) as exc:
+            except subprocess.CalledProcessError as exc:
+                result["ok"] = False
+                result["error"] = f"exit status {exc.returncode}"
+            except OSError as exc:
                 result["ok"] = False
                 result["error"] = str(exc)
 
         thread = threading.Thread(target=drive, daemon=True)
         thread.start()
 
-        # The installer takes tens of minutes; the driver's own waits add up to about
-        # half an hour. This bound is for the case where it is stuck on a pane.
         deadline = time.time() + self.args.timeout
         while thread.is_alive() and time.time() < deadline:
             if not guest.alive():
@@ -309,6 +311,8 @@ class Baker:
             return False
         if not result.get("ok"):
             log(f"the installer driver failed: {result.get('error')}")
+            log("the Setup Assistant is NOT started: clicking a screen the installer "
+                "never reached is how the previous run spent an hour on black frames")
             return False
 
         log("installation sequence complete")
