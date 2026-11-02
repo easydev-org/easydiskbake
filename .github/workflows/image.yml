@@ -17,7 +17,9 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE: ${{ github.repository_owner }}/easydiskbake
+  # The bake image lives in this repository's own package, alongside the disks and
+  # ISOs it produces: ghcr.io/<owner>/<repo>:latest
+  IMAGE: ${{ github.repository }}
 
 jobs:
   build:

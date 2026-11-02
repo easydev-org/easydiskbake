@@ -4,12 +4,17 @@ name: bake-windows
 #
 # WHAT IS PUBLISHED
 #
-#   base           the disk setup produced, with the answer file as the only
-#                  guest-side contract
-#   dev-<stamp>    the same bytes, tagged with when they were built, so a
-#                  regression can be bisected by pulling an older one
+# One tag per successful build, in this repository's own package:
 #
-# There is deliberately no "ssh" tag yet. It used to be a stage here, derived from
+#   ghcr.io/<owner>/<repo>:windows-base-<YYYYmmdd-HHMMSS>
+#
+# The tag carries the timestamp, so a regression can be bisected by pulling an older
+# disk and the newest one is always the lexicographically largest `windows-base-*`.
+# There is no floating `latest` for a disk: a tag that silently moves would make
+# "which build is this" unanswerable, and a disk is not something to redeploy by
+# accident.
+#
+# There is deliberately no "ssh" tag yet. It used to be a stage here, derived from a
 # base by a script staged into the guest, and that was wrong twice over:
 #
 #   - a stage that changes the disk belongs against an ALREADY PUBLISHED disk, so a
@@ -17,13 +22,13 @@ name: bake-windows
 #   - the work it did (enable OpenSSH, verify it listens) is better expressed as a
 #     second boot driven from the host, the way dockur-macos does its stage 3.
 #
-# Neither is implemented. When ssh is added it gets its own job that downloads the
-# published base and derives from it, and this comment is removed.
+# Neither is implemented. When ssh is added it gets its own job that pulls a
+# windows-base-* tag and derives from it, publishing windows-ssh-<timestamp>.
 #
 # WHY THE BAKE RUNS IN THE IMAGE
 #
 # Everything the bake needs (qemu, xorriso, swtpm, ffmpeg, 7z, wimlib, python3) is
-# in ghcr.io/easydev-org/easydiskbake, pinned by the Containerfile. The runner
+# in this repository's own package (see image.yml), pinned by the Containerfile. The runner
 # supplies /dev/kvm and nothing else, so the difference between "works locally" and
 # "works in CI" is one flag.
 #
@@ -67,8 +72,22 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_REPO: ${{ github.repository_owner }}/easydisk-windows
-  BAKE_IMAGE: ghcr.io/easydev-org/easydiskbake:latest
+  # Everything this repository publishes goes into this repository's own package,
+  # so the artifact, the workflow and the commit are one identity:
+  #
+  #   ghcr.io/${{ github.repository }}:latest                  the bake image
+  #   ghcr.io/<owner>/<repo>:windows-base-<stamp>             a baked disk
+  #
+  # Nothing is published under a personal account, and a disk is never pushed to a
+  # repository other than the one that built it.
+  #
+  # ghcr requires a lowercase path. github.repository is "owner/repo" verbatim, so a
+  # fork under a mixed-case owner needs it lowercased where a registry path is
+  # built - which the publish step does. container.image cannot be computed at run
+  # time, so a mixed-case fork has to change that line by hand; this repository's own
+  # name is already lowercase.
+  IMAGE_REPO: ${{ github.repository }}
+  BAKE_IMAGE: ghcr.io/${{ github.repository }}:latest
 
 jobs:
   base:
@@ -151,9 +170,9 @@ jobs:
                 --timeout 5400 \
                 $ISO_ARG
 
-      # A second, independent boot of the disk. The bake already checked it, but the
-      # bake also had the ISO attached and a live installer in memory: this is the
-      # boot that says the disk alone starts.
+      # A second, independent read of the disk. The bake already checked it, but the
+      # bake also had the ISO attached and a live installer in memory: this is a
+      # separate process that reads only the file.
       - name: verify, from scratch
         uses: easydev-org/easyagent-github-ext/actions/log-stream@main
         with:
@@ -168,14 +187,7 @@ jobs:
               --volume "$PWD:/repo:ro" \
               --workdir /work \
               "$BAKE_IMAGE" \
-              python3 -c '
-import sys
-sys.path.insert(0, "/repo/lib")
-import smoke
-ok = smoke.check_disk("/work/windows11.qcow2", root_fs="gpt")
-print("disk checks:", "PASS" if ok else "FAIL")
-sys.exit(0 if ok else 1)
-'
+              python3 /repo/windows/11/verify.py /work/windows11.qcow2
 
       - name: record what was built
         if: always()
@@ -246,33 +258,37 @@ sys.exit(0 if ok else 1)
           curl -fsSL "https://github.com/oras-project/oras/releases/download/v${version}/oras_${version}_linux_amd64.tar.gz" \
             | sudo tar -xz -C /usr/local/bin oras
 
-      - name: push base and the dev tag
+      - name: push windows-base-<timestamp>
+        id: push
         run: |
           set -euo pipefail
+          # ghcr requires a lowercase path.
+          repo="$(echo "$IMAGE_REPO" | tr '[:upper:]' '[:lower:]')"
           stamp="$(date -u +%Y%m%d-%H%M%S)"
+          tag="windows-base-${stamp}"
 
-          push() {
-            local tag="$1"
-            echo "==> $REGISTRY/$IMAGE_REPO:$tag"
-            oras push "$REGISTRY/$IMAGE_REPO:$tag" \
-              --artifact-type application/vnd.easydev.disk.qcow2 \
-              "out/windows11.qcow2:application/vnd.easydev.disk.qcow2+zstd" \
-              --annotation "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
-              --annotation "org.opencontainers.image.revision=${{ github.sha }}" \
-              --annotation "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          }
+          echo "==> $REGISTRY/$repo:$tag"
+          oras push "$REGISTRY/$repo:$tag" \
+            --artifact-type application/vnd.easydev.disk.qcow2 \
+            "out/windows11.qcow2:application/vnd.easydev.disk.qcow2+zstd" \
+            --annotation "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
+            --annotation "org.opencontainers.image.revision=${{ github.sha }}" \
+            --annotation "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --annotation "org.opencontainers.image.title=windows11-base" \
+            --annotation "dev.easydev.image=${{ inputs.image || 'win11x64' }}" \
+            --annotation "dev.easydev.disk-size=${{ inputs.disk_size || '64G' }}"
 
-          push base
-          push "dev-${stamp}"
-          echo "published: base, dev-${stamp}"
+          echo "published: $tag"
+          echo "TAG=$tag" >> "$GITHUB_OUTPUT"
 
       - name: what was published
         if: always()
         run: |
+          repo="$(echo "$IMAGE_REPO" | tr '[:upper:]' '[:lower:]')"
           {
             echo "## Published"
             echo
             echo '```'
-            oras repo tags "$REGISTRY/$IMAGE_REPO" 2>/dev/null || echo "(none)"
+            oras repo tags "$REGISTRY/$repo" 2>/dev/null | grep 'windows-base-' | tail -10 || echo "(none)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

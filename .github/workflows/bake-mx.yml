@@ -31,7 +31,7 @@ jobs:
   bake:
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/easydev-org/easydiskbake:latest
+      image: ghcr.io/${{ github.repository }}:latest
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}

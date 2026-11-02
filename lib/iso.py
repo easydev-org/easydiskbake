@@ -42,7 +42,11 @@ import urllib.error
 import urllib.request
 
 REGISTRY = os.environ.get("ISO_REGISTRY", "ghcr.io")
+# Everything this repository publishes lives in its own package: the bake image
+# (image.yml), the ISOs (publish-isos.yml) and the baked disks (bake-*). The default
+# matches the repository, so a fork publishes to its own name without a change.
 OWNER = os.environ.get("ISO_OWNER", "easydev-org")
+REPO = os.environ.get("ISO_REPO", "easydiskbake")
 
 # The blob download is the only long operation. It aborts when the rate stays
 # under 20 KB/s for two minutes, which is what caught the SourceForge hang: the
@@ -140,19 +144,30 @@ def _download(url: str, dest: str, *, token: str | None, expected_size: int | No
 
 
 def fetch_iso(name: str, dest: str) -> str:
-    """Pull the image published under `name` (e.g. "mx", "alpine") into dest."""
+    """Pull the image published under `name` (e.g. "mx", "alpine") into dest.
+
+    The image lives in the same ghcr package as everything else this repository
+    publishes, under the tag `iso-<name>`:
+
+        ghcr.io/easydev-org/easydiskbake:iso-alpine
+
+    One package rather than one per artifact keeps the tag namespace honest: a tag
+    says what kind of thing it is (`iso-`, `windows-base-`, or no prefix for the
+    bake image itself), and there is exactly one place to look for all of them.
+    """
     if os.path.exists(dest) and os.path.getsize(dest) > 0:
         log(f"{dest} already present ({os.path.getsize(dest)} bytes)")
         return dest
 
-    repo = f"{OWNER}/iso"
-    log(f"fetching {name} from {REGISTRY}/{repo}")
+    repo = f"{OWNER}/{REPO}"
+    tag = f"iso-{name}"
+    log(f"fetching {tag} from {REGISTRY}/{repo}")
 
     token = _token(repo)
-    manifest = _manifest(repo, name, token)
+    manifest = _manifest(repo, tag, token)
     layers = manifest.get("layers") or []
     if not layers:
-        raise IsoError(f"manifest for {name!r} has no layers")
+        raise IsoError(f"manifest for {tag!r} has no layers")
     layer = layers[0]
     digest = layer["digest"]
     size = layer["size"]
