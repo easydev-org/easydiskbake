@@ -52,9 +52,26 @@ class EmulatorArgs(unittest.TestCase):
         self.assertTrue(dump[0].endswith("emulator-qmp.sock,server=on,wait=off"))
 
     def test_no_telemetry(self):
-        # A bake should not depend on Google's endpoints being reachable.
-        self.assertIn("-no-metrics", self.args)
-        self.assertIn("-no-keys", self.args)
+        """The flags this used to assert are rejected by the shipped emulator.
+
+        MEASURED ON RUN 41472222286:
+
+            unknown option: -no-keys
+            please use -help for a list of valid options
+
+        `emulator 37.2.13` is the current `stable` channel release in Google's
+        repository2-3.xml, so this is not a stale install - it is what sdkmanager
+        gives you, and it does not implement either flag. They were copied from
+        easysandbox-android, whose emulator is a different build.
+
+        The intent behind them is still worth keeping in mind: a bake should not depend
+        on Google's telemetry endpoints. It simply cannot express that as a command-line
+        flag here. Asserting their ABSENCE is the assertion that matters now - a flag
+        the binary rejects stops the emulator before it opens QMP, and that is the
+        failure this test exists to prevent recurring.
+        """
+        self.assertNotIn("-no-metrics", self.args)
+        self.assertNotIn("-no-keys", self.args)
 
     def test_missing_emulator_is_an_error_that_says_where_it_lives(self):
         with mock.patch("shutil.which", return_value=None):

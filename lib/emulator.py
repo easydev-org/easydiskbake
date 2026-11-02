@@ -124,14 +124,19 @@ def build_args(avd: str, work: str, *, api: int = 35, abi: str = "x86_64",
         # underneath, which is where -qmp lives. Everything downstream of this line -
         # lib/qmp.py, lib/snapshots.py - is unchanged: the socket is a real QMP socket,
         # it is only the route to it that differs.
-        # -no-metrics and -no-keys keep the emulator from making network calls of its
-        # own; a bake should not depend on Google's telemetry endpoints being up.
+        # NON-ESSENTIAL FLAGS ARE NOT WORTH A HARD DEPENDENCY.
         #
-        # THE ORDER MATTERS: everything after -qemu goes to qemu, so these have to be
-        # before it or the emulator never sees them.
-        "-no-metrics",
-        "-no-keys",
-        # LAST, because -qemu hands the rest of the vector to qemu underneath.
+        # -no-metrics and -no-keys were here to stop the emulator making telemetry calls.
+        # emulator 37.2.13 rejects both:
+        #
+        #     unknown option: -no-keys
+        #     please use -help for a list of valid options
+        #
+        # They were copied from easysandbox-android, where the emulator is a different
+        # build. A flag that does not exist in the binary cannot be relied on, and a bake
+        # that will not start is worse than one that might emit telemetry.
+        #
+        # -qemu is LAST, because it hands the rest of the vector to qemu underneath.
         "-qemu", "-qmp", f"unix:{qmp},server=on,wait=off",
     ]
     return args

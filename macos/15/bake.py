@@ -234,7 +234,13 @@ class Baker:
 
         if not arrived:
             log("=== THE GUEST DID NOT REACH A DESKTOP ===")
-            self.tail(console)
+            # THE PATH IS BUILT, NOT REMEMBERED. An earlier version of this line said
+            # `self.tail(console)`, and there is no such local: the failure path that
+            # exists to report a failure crashed with
+            #     NameError: name 'console' is not defined
+            # and took the diagnosis with it. macos/15/machine.py hands the guest
+            # os.path.join(work, "console.log"); this is that path.
+            self.tail(os.path.join(self.work, "console.log"))
             return False
 
         log("the guest reached its desktop; checking the disk")

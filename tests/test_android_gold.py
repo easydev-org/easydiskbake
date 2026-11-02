@@ -109,10 +109,35 @@ class EmulatorArgv(unittest.TestCase):
         argv = self.argv()
         cutoff = argv.index("-qemu")
         for option in ("-no-window", "-no-audio", "-no-boot-anim", "-no-snapshot",
-                       "-no-metrics", "-no-keys", "-wipe-data", "-gpu", "-accel"):
+                       "-wipe-data", "-gpu", "-accel"):
             if option in argv:
                 self.assertLess(argv.index(option), cutoff,
                                 f"{option} after -qemu would be passed to qemu")
+
+    def test_no_flags_the_emulator_rejects(self):
+        """emulator 37.2.13 refuses two flags this list used to carry.
+
+        MEASURED ON RUN 41472222286, after the -qemu/-qmp ordering was already right:
+
+            unknown option: -no-keys
+            please use -help for a list of valid options
+
+        and on the run before it:
+
+            unknown option: -qmp
+
+        -no-metrics and -no-keys were copied from easysandbox-android, whose emulator is
+        a different build. Google's repository2-3.xml lists 37.2.13 as the current
+        `stable` channel release - so this is not a stale install, it is the version
+        sdkmanager gives you, and it does not implement them.
+
+        A flag that does not exist in the binary cannot be a requirement. The bake must
+        not depend on one.
+        """
+        argv = self.argv()
+        for rejected in ("-no-keys", "-no-metrics"):
+            self.assertNotIn(rejected, argv,
+                             f"{rejected} is rejected by emulator 37.2.13 at startup")
 
     def test_the_socket_has_a_server_and_does_not_wait(self):
         # wait=off: the emulator must not block until a client connects, or a bake that

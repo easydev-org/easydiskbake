@@ -350,20 +350,28 @@ class Recovery:
             count += 3
         return (total // count) if count else None
 
-    def click(self, xy: tuple[int, int], why: str = "", settle: float = 2.0) -> None:
+    def click(self, xy: tuple[int, int], why: str = "", settle: float = 5.0) -> None:
+        """Click, then wait five seconds before anything else happens.
+
+        FIVE SECONDS BETWEEN EVERY ACTION, NOT TWO. This guest draws a pane in about
+        three seconds on an unaccelerated qemu, and a click that arrives during the
+        repaint is swallowed. Run 41472163272 sent seventeen actions in eighty seconds
+        onto a display that had not painted yet; pacing every action at five seconds is
+        the cheapest way to stop that happening again, and it costs a minute per run.
+        """
         self.n += 1
         log(f"#{self.n} click {xy} {why}")
         qmpmod.click(self.q, *xy)
         time.sleep(settle)
         self.shot(f"after-{self.n:02d}-{why}")
 
-    def key(self, name: str, settle: float = 1.0) -> None:
+    def key(self, name: str, settle: float = 5.0) -> None:
         self.n += 1
         log(f"#{self.n} key {name}")
         qmpmod.key(self.q, name)
         time.sleep(settle)
 
-    def type_text(self, text: str, settle: float = 0.1) -> None:
+    def type_text(self, text: str, settle: float = 0.3) -> None:
         """Type lower-case ASCII, one key at a time.
 
         WHAT THIS IS FOR AND WHAT IT IS NOT. The only thing typed here is the volume name,
@@ -399,13 +407,31 @@ class Recovery:
 def disk_utility(d: Recovery) -> None:
     """Open Disk Utility from the recovery menu.
 
-    The menu is up within a minute of the guest reaching Recovery, but the window draws
-    slowly and a click before the rows exist is lost. Sixty seconds is measured, not
-    padded: the first run clicked at thirty and hit an empty window.
+    THE MENU IS NOT UP WHEN THE GUEST CONNECTS, AND THAT COST A WHOLE RUN.
+
+    The recording of run 41472163272, read frame by frame, is unambiguous:
+
+        t= 0..21s   mean grey 0.6    the display is blank
+        t=22s       mean grey 1.1    still blank
+        t=23s       mean grey 23.6   the first frame with any picture in it
+
+    The driver had been clicking since t=1s. All seventeen actions - Disk Utility,
+    Continue, View, Show All Devices, two Ups, Erase, the name, Done, Cmd-Q, Reinstall,
+    welcome Continue, both Agree clicks - landed on a blank display. Nothing was
+    erased, and the run then failed at the destination pane because there was no
+    erased disk to install onto. The log said every click succeeded, because a click
+    that is delivered is a click that succeeded; whether it hit a *menu row* is a
+    different question and this file was not asking it.
+
+    SO THE MENU GETS A FULL MINUTE BEFORE ANYTHING IS CLICKED, and every action after
+    that is spaced by five seconds. The pacing is the fix: these panes are drawn by a
+    guest with no acceleration, and a click that arrives during a repaint is lost. A
+    minute up front covers the debut of the display and the menu both.
     """
     d.wait(60, "the recovery menu draws")
-    d.click((ROW_X, ROW_Y[3]), "Disk Utility row", settle=3)
+    d.click((ROW_X, ROW_Y[3]), "Disk Utility row", settle=5)
     d.click(CONTINUE_MENU, "recovery Continue", settle=20)
+    d.wait(5, "Disk Utility finishes opening")
 
 
 def show_all_devices(d: Recovery) -> None:
@@ -415,8 +441,8 @@ def show_all_devices(d: Recovery) -> None:
     read-only recovery volume - so this is not a nicety, it is the prerequisite.
     """
     d.wait(15, "Disk Utility finishes drawing")
-    d.click(VIEW_BUTTON, "View button", settle=3)
-    d.click(SHOW_ALL_DEVICES, "Show All Devices", settle=6)
+    d.click(VIEW_BUTTON, "View button", settle=5)
+    d.click(SHOW_ALL_DEVICES, "Show All Devices", settle=5)
 
 
 def select_and_erase(d: Recovery) -> None:
@@ -460,25 +486,26 @@ def select_and_erase(d: Recovery) -> None:
     d.wait(5, "the sidebar settles")
 
     # THE TARGET IS ONE ROW ABOVE THE DEFAULT SELECTION. Measured, not assumed: with the
-    # recovery volume selected, two Ups land on disk0.
+    # recovery volume selected, two Ups land on disk0. Five seconds apart: the detail
+    # pane repaints between them and a second Up during that repaint is lost.
     for i in range(2):
-        d.key("up", settle=1.0)
+        d.key("up", settle=5.0)
         log(f"  up {i + 1}/2")
-    d.wait(2, "the detail pane repaints")
+    d.wait(5, "the detail pane repaints")
 
-    d.click(ERASE_BUTTON, "Erase", settle=6)
+    d.click(ERASE_BUTTON, "Erase", settle=5)
 
     # ONE BACKSPACE, because the name field arrives holding the disk's own name with the
     # text selected. Without this the typed name appends instead of replacing.
-    d.key("backspace", settle=1.0)
-    d.type_text(DISK_NAME, settle=0.12)
-    d.wait(1, "the name field settles")
+    d.key("backspace", settle=5.0)
+    d.type_text(DISK_NAME, settle=0.3)
+    d.wait(5, "the name field settles")
 
     d.click(ERASE_CONFIRM, "confirm Erase", settle=60)
 
     # THE SHEET DOES NOT CLOSE ITSELF. It reports completion and waits for Done, and a
     # run that skips this leaves every subsequent click landing on the sheet.
-    d.click(ERASE_DONE, "Done on the erase report", settle=8)
+    d.click(ERASE_DONE, "Done on the erase report", settle=5)
 
 
 def leave_disk_utility(d: Recovery) -> None:
@@ -495,7 +522,7 @@ def leave_disk_utility(d: Recovery) -> None:
 
 
 def reinstall(d: Recovery) -> None:
-    d.click((ROW_X, ROW_Y[1]), "Reinstall macOS row", settle=3)
+    d.click((ROW_X, ROW_Y[1]), "Reinstall macOS row", settle=5)
     d.click(CONTINUE_MENU, "recovery Continue", settle=30)
 
 
@@ -595,16 +622,16 @@ def installer_panes(d: Recovery, seconds: int = 4 * 3600) -> bool:
     # therefore ends the run rather than being clicked at again, which is what the
     # unchanged-screen check below is for.
     d.wait(25, "the welcome pane draws")
-    d.click(INSTALLER_CONTINUE, "welcome Continue", settle=8)
+    d.click(INSTALLER_CONTINUE, "welcome Continue", settle=5)
     d.wait(10, "the licence pane draws")
 
     log("licence: Agree")
-    d.click(AGREE, "Agree", settle=8)
+    d.click(AGREE, "Agree", settle=5)
 
     # THE SHEET COMES UP OVER THE SAME PANE. Its own Agree is at (1060, 530) and is the
     # one that matters - the pane's Agree disabled itself when it raised the sheet.
     log("licence sheet: Agree")
-    d.click(AGREE_SHEET, "Agree in the sheet", settle=10)
+    d.click(AGREE_SHEET, "Agree in the sheet", settle=5)
 
     # THE DESTINATION PANE, AND THE CLICK THAT HAS TO BE PROVEN.
     #
