@@ -256,14 +256,60 @@ class Guest:
 def wait_port(host: str, port: int, seconds: int = 60, label: str = "port") -> bool:
     """Wait for a TCP port to answer, or give up saying which one did not."""
     for i in range(1, seconds + 1):
-        try:
-            with socket.create_connection((host, port), timeout=1):
-                log(f"{label} is up: {host}:{port} after {i}s")
-                return True
-        except OSError:
-            time.sleep(1)
+        if port_open(host, port):
+            log(f"{label} is up: {host}:{port} after {i}s")
+            return True
+        time.sleep(1)
     log(f"{label} did NOT come up: {host}:{port} after {seconds}s")
     return False
+
+
+def port_open(host: str, port: int, timeout: float = 1.0) -> bool:
+    """One TCP connect attempt. No retries, no sleeping."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def rdp_serving(rdp_port: int, host: str = "127.0.0.1") -> bool:
+    """Is the guest actually answering RDP, rather than just the forward existing?
+
+    THIS IS NOT THE SAME AS port_open, AND THE DIFFERENCE COST A RUN.
+
+    `-netdev user,hostfwd=tcp::3389-:3389` makes QEMU bind the HOST port the moment
+    it starts, before the guest has booted anything. A TCP handshake with that port
+    therefore succeeds immediately and proves only that QEMU is alive - and a bake
+    that checked port_open() declared "the guest is a running Windows" six seconds
+    after qemu-img create, having installed nothing at all.
+
+    What distinguishes a real RDP server is the protocol: the server speaks first,
+    sending a TPKT/COTP Connection Confirm (or a Negotiation Response) before the
+    client says anything. So the check reads bytes and requires them to look like
+    X.224: version 3, and a packet length that matches what arrived.
+    """
+    try:
+        with socket.create_connection((host, rdp_port), timeout=3) as sock:
+            sock.settimeout(3)
+            try:
+                data = sock.recv(11)
+            except socket.timeout:
+                # A forward with nothing behind it accepts and then says nothing.
+                return False
+    except OSError:
+        return False
+
+    # TPKT header: version 3, reserved 0, then a 2-byte big-endian length.
+    #   byte 0  0x03
+    #   byte 1  0x00
+    #   bytes 2-3  length, always >= 11 for X.224
+    if len(data) < 4:
+        return False
+    if data[0] != 0x03 or data[1] != 0x00:
+        return False
+    length = (data[2] << 8) | data[3]
+    return length >= 11
 
 
 def record_many(out: str, *frame_dirs: str, fps: int = 1) -> bool:

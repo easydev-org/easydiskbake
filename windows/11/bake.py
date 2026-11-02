@@ -89,10 +89,16 @@ IMAGES = {
 # The virtio-win drivers. Without a second CD, setup cannot see the virtio disk it
 # is installing to, and the failure is a pane with an empty disk list - which the
 # answer file's WillShowUI=OnError would show as a dialog nobody is watching.
+#
+# The source is qemus/virtiso-whql, which is what dockur/windows uses for the same
+# purpose: it republishes the upstream virtio-win ISO with a stable tag. The first
+# attempt pointed at virtio-win-pkg-scripts/raw/master/drivers/archive-virtio/...,
+# which answers 404 - the archive moved, and a URL built from a guessed path is
+# exactly the kind of dependency that fails at run time.
 VIRTIO_WIN = {
-    "url": "https://github.com/virtio-win/virtio-win-pkg-scripts/raw/master/"
-           "drivers/archive-virtio/virtio-win-0.1.271/virtio-win-0.1.271.iso",
-    "sha256": None,  # pinned by size only; the ISO is small and the URL is tagged
+    "url": "https://github.com/qemus/virtiso-whql/releases/download/v1.9.61-0/"
+           "virtio-win-1.9.61.iso",
+    "sha256": None,  # pinned by the release tag and by setup's own behaviour
     "size": None,
 }
 
@@ -294,7 +300,6 @@ class Baker:
              os.environ.get("SNAPSHOT_INTERVAL", "5"), "2000"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-
         try:
             arrived = self.wait_for_arrival(console, guest)
         finally:
@@ -330,7 +335,13 @@ class Baker:
 
         log("the guest reached a running system; checking the disk")
 
-        ok_disk = smoke.check_disk(self.disk, root_fs="gpt")
+        if not smoke.check_disk(self.disk, root_fs="gpt"):
+            # Do not produce an artifact from a disk that failed its checks. The
+            # previous run compressed an empty qcow2 and called it BAKED because this
+            # result was only used as the exit code - the publish step then had a
+            # file to push. A disk that fails here is not publishable at any size.
+            log("=== THE DISK FAILED ITS CHECKS; refusing to produce an artifact ===")
+            return False
 
         log("compressing")
         subprocess.run(
@@ -338,8 +349,9 @@ class Baker:
              "-o", "compression_type=zstd", self.disk, self.args.out],
             check=True,
         )
-        log(f"BAKED windows11 -> {self.args.out}")
-        return ok_disk
+        log(f"BAKED windows11 -> {self.args.out} "
+            f"({os.path.getsize(self.args.out) >> 20} MiB)")
+        return True
 
     def wait_for_arrival(self, console: str, guest: vm.Guest) -> bool:
         """Wait until the guest is a running Windows, using only host-side signals.
@@ -368,9 +380,20 @@ class Baker:
         import time
 
         deadline = time.time() + self.args.timeout
+        started = time.time()
         seen: set[str] = set()
         reboots = 0
         last_boot_marker = ""
+
+        # A floor under the arrival time, because the cheapest way for this check to
+        # be wrong is to be too eager.
+        #
+        # The first run declared success six seconds after `qemu-img create`, on an
+        # RDP forward that accepted a connection because qemu had started - nothing
+        # had booted. rdp_serving() fixes that specific cause, but a floor is a guard
+        # against the next one: no Windows install reaches a desktop faster than this,
+        # and a check that says otherwise is measuring the wrong thing.
+        minimum = int(os.environ.get("MIN_INSTALL_SECONDS", "600"))
 
         while time.time() < deadline:
             if not guest.alive():
@@ -394,9 +417,21 @@ class Baker:
             last_boot_marker = text
 
             # --- the port: the only signal that proves OOBE finished -------------
-            if vm.wait_port("127.0.0.1", self.args.rdp_port, 1, "rdp"):
-                log("3389 is listening: the guest is a running Windows")
-                return True
+            #
+            # rdp_serving, not port_open: see its docstring. The forward accepts a
+            # connection from the moment qemu starts, so a bare TCP check declares
+            # success in seconds and ships an empty disk.
+            if vm.rdp_serving(self.args.rdp_port):
+                elapsed = time.time() - started
+                if elapsed < minimum:
+                    log(f"RDP answered after {elapsed:.0f}s, which is before any Windows "
+                        f"install can finish (floor is {minimum}s) - ignoring it")
+                    log("this means something other than the guest is answering; "
+                        "check that the forward is not colliding with a host service")
+                else:
+                    log(f"3389 is serving RDP: the guest is a running Windows "
+                        f"({elapsed:.0f}s)")
+                    return True
 
             if reboots == 0:
                 seen.add("no hard-disk boot yet")
