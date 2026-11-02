@@ -207,10 +207,18 @@ class Baker:
         try:
             installed = self.run_installer(guest)
 
+            # THE DRIVER STOPS AFTER THE SEQUENCE, BY DESIGN - see
+            # install.AFTER_LAST_ACTION_SECONDS. `installed` therefore means "every click
+            # landed and the installer accepted the disk", not "macOS is on the disk".
+            #
+            # THE SETUP ASSISTANT IS NOT STARTED FROM HERE. It appears after a reboot
+            # the installer performs when it is finished, which is 40-70 minutes out;
+            # driving it now would click coordinates at a progress pane. That is the
+            # failure this file has been avoiding all along.
             if installed:
-                log("=== Setup Assistant ===")
-                self.run_setup_assistant(guest)
-                arrived = self.wait_for_desktop(guest)
+                log("=== the sequence is verified; this bake stops here ===")
+                log("  the installation is still running and the disk is still growing")
+                log("  the recording is the result of this run")
         finally:
             guest.stop(acpi_first=arrived)
             snap.terminate()
@@ -232,16 +240,24 @@ class Baker:
         # out/last-frame.png, which the workflow uploads when there is no mp4.
         convert_last_frame(shots, os.path.join(self.work, "last-frame.png"))
 
-        if not arrived:
-            log("=== THE GUEST DID NOT REACH A DESKTOP ===")
-            # THE PATH IS BUILT, NOT REMEMBERED. An earlier version of this line said
-            # `self.tail(console)`, and there is no such local: the failure path that
-            # exists to report a failure crashed with
-            #     NameError: name 'console' is not defined
-            # and took the diagnosis with it. macos/15/machine.py hands the guest
-            # os.path.join(work, "console.log"); this is that path.
+        if not installed:
+            log("=== THE INSTALLER SEQUENCE DID NOT COMPLETE ===")
             self.tail(os.path.join(self.work, "console.log"))
             return False
+
+        if not arrived:
+            # NOT A FAILURE. The sequence ran to the end; the installation it started is
+            # minutes or hours from finishing, and this bake was told to stop watching -
+            # see install.AFTER_LAST_ACTION_SECONDS.
+            #
+            # NOTHING IS COMPRESSED OR PUBLISHED EITHER. A half-installed macOS is not a
+            # disk anyone can boot, and this repository's rule is that a partial artifact
+            # is worse than none: it looks like a system image and behaves like a
+            # corrupt one.
+            log("=== THE SEQUENCE COMPLETED; THE INSTALLATION IS STILL RUNNING ===")
+            log("  every pane was reached and the target disk grew, which is what this")
+            log("  bake checks. No disk is published: it is not installed yet.")
+            return True
 
         log("the guest reached its desktop; checking the disk")
         if not smoke.check_disk(self.disk, root_fs="apfs"):

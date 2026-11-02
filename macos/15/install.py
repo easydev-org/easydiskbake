@@ -241,6 +241,15 @@ DISK_SAMPLE_SECONDS = 30
 # looking at it, instead of being cancelled by the job's own timeout with nothing to say.
 INSTALL_PATIENCE = 90 * 60
 
+# HOW LONG THE DRIVER KEEPS WATCHING AFTER THE LAST ACTION.
+#
+# The full installation is 40-70 minutes and this driver no longer waits for it: the
+# point of a bake right now is to see whether the sequence LANDS, and the recording is
+# what answers that. Three minutes is long enough for the first gigabytes to be written,
+# which is the difference between "the installer accepted the disk" and "it did not",
+# and short enough to read the result while it is still fresh.
+AFTER_LAST_ACTION_SECONDS = 180
+
 # The forward control is pressed no faster than a pane can redraw: the installer takes
 # several seconds per pane and a click arriving during a redraw is lost.
 CLICK_INTERVAL = 12
@@ -300,6 +309,42 @@ class Recovery:
                            filename=os.path.join(self.frames, f"inst-{self.shots:03d}-{safe}.ppm"))
         except (OSError, RuntimeError) as exc:
             log(f"screendump failed at {label}: {exc}")
+            return
+
+        # ONE PICTURE, KEPT UP TO DATE, WHICH IS WHAT A CANCELLED RUN CAN STILL UPLOAD.
+        #
+        # The last frame was written once, after the recording was encoded - and a run
+        # that is cancelled (or times out) never reaches the encoding, so the fallback
+        # artifact had nothing in it. Run 41483303829 was cancelled while sitting on a
+        # pane and produced 1086 bytes of artifact: a frames.txt listing files that were
+        # never uploaded.
+        #
+        # So every screenshot also becomes out/last-frame.png, overwritten in place.
+        # Cancel at any moment and the artifact holds the pane the driver was looking at.
+        # It is 300 KiB, and it is written at most once per click.
+        self._write_last_frame(os.path.join(self.frames, "last-frame.png"))
+
+    def _write_last_frame(self, dest: str) -> None:
+        """Convert the newest screenshot to a PNG, replacing `dest`.
+
+        Not fatal: this runs beside the driver's real work, and a missing picture must
+        not stop a run that is otherwise fine.
+        """
+        newest = None
+        try:
+            names = [n for n in os.listdir(self.frames)
+                     if n.startswith("inst-") and n.endswith(".ppm")]
+            if not names:
+                return
+            newest = os.path.join(self.frames, max(names, key=lambda n: int(n[5:8])
+                                                   if n[5:8].isdigit() else 0))
+        except OSError:
+            return
+        try:
+            import lastframe
+            lastframe.convert(newest, dest)
+        except (ImportError, OSError, subprocess.SubprocessError):
+            pass
 
     def capture(self) -> bytes | None:
         """One screendump, returned as its raw pixel bytes. None if it cannot be read.
@@ -803,11 +848,41 @@ def installer_panes(d: Recovery, seconds: int = 4 * 3600) -> bool:
     d.click(PANE_CONTINUE, "destination Continue", settle=20)
 
     log("confirming the installation actually started")
-    if not wait_for_install_start(d, timeout=START_EVIDENCE_SECONDS):
+    started = wait_for_install_start(d, timeout=START_EVIDENCE_SECONDS)
+    if not started:
         log("=== THE INSTALLER DID NOT START ===")
         log("  the destination pane was accepted and nothing was written")
         log("  the last frame shows what the pane was offering")
         return False
+
+    # THAT IS THE WHOLE SEQUENCE. The driver now watches for three more minutes and
+    # stops, rather than sitting through the installation.
+    #
+    # WHY THIS IS THE RIGHT SHAPE FOR THIS BAKE. The question the sequence has to answer
+    # is "did every click land on the pane it was aimed at" - and the answer is visible
+    # in the first three minutes: the disk grows by gigabytes as soon as the installer
+    # accepts the destination, and a run that got the clicks wrong writes nothing. The
+    # remaining 40-70 minutes add no information about the sequence, and they are what
+    # every recent run spent its time on before being cancelled.
+    #
+    # The recording is what came out of it, and the recording is what has found every
+    # real failure in this file.
+    log(f"the installation is running; watching the disk for "
+        f"{AFTER_LAST_ACTION_SECONDS}s and then reporting")
+    baseline = d.disk_allocated()
+    finish = time.time() + AFTER_LAST_ACTION_SECONDS
+    while time.time() < finish:
+        time.sleep(DISK_SAMPLE_SECONDS)
+        size = d.disk_allocated()
+        if size is not None and baseline is not None and size > baseline:
+            log(f"  the disk is at {size >> 20} MiB "
+                f"(+{(size - baseline) >> 20} MiB since the sequence finished)")
+            baseline = size
+
+    log("=== THE SEQUENCE RAN TO THE END ===")
+    log(f"  the disk holds {d.disk_allocated() >> 20 if d.disk_allocated() else 0} MiB")
+    log("  the installer is still copying; this run stops here on purpose")
+    return True
 
     while time.time() < deadline:
         level = d.brightness()

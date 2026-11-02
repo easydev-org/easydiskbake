@@ -135,6 +135,7 @@ jobs:
           name: macos-recording
           path: |
             out/install.mp4
+            out/last-frame.png
             out/console.log
             out/frames/shots/frames.txt
           if-no-files-found: warn

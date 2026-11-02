@@ -319,13 +319,7 @@ def fetch_tag(tag: str, dest: str) -> str:
     "macos-recovery-sequoia". Anything that has to guess a prefix is a second place
     that can disagree with the publisher.
     """
-    if os.path.exists(dest) and os.path.getsize(dest) > 0:
-        log(f"{dest} already present ({os.path.getsize(dest)} bytes)")
-        return dest
-
     repo = f"{OWNER}/{REPO}"
-    log(f"fetching {tag} from {REGISTRY}/{repo}")
-
     manifest = _manifest(repo, tag)
     layers = manifest.get("layers") or []
     if not layers:
@@ -333,6 +327,28 @@ def fetch_tag(tag: str, dest: str) -> str:
     layer = layers[0]
     digest = layer["digest"]
     size = layer["size"]
+
+    # A FILE THAT EXISTS IS NOT A FILE THAT ARRIVED.
+    #
+    # This check used to be `if os.path.exists(dest) and size > 0: return dest`, with no
+    # reference to what the manifest says the size is. A truncated transfer from an
+    # earlier attempt therefore looked complete forever:
+    #
+    #     crane blob ... > avd.tar.zst      -> died at 1.9 MB of 483 MB
+    #     fetch_tag(...)                    -> "[iso] ... already present (1893276 bytes)"
+    #
+    # A partial download of a 10 GiB disk would have been handed to qemu the same way,
+    # and the failure would have surfaced as a corrupt-image error a long way from the
+    # cause. The manifest is already being fetched for the digest, so its size is free.
+    if os.path.exists(dest):
+        have = os.path.getsize(dest)
+        if have == size:
+            log(f"{dest} already present ({have} bytes)")
+            return dest
+        log(f"{dest} is {have} bytes but the manifest says {size}; discarding it")
+        os.unlink(dest)
+
+    log(f"fetching {tag} from {REGISTRY}/{repo}")
     log(f"layer {digest}, {size} bytes")
 
     _download(
