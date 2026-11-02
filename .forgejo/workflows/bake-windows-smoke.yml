@@ -1,0 +1,90 @@
+name: bake-windows-smoke
+
+# Everything bake-windows does, minus the 90-minute install.
+#
+# Before spending a runner on a real bake, this checks the four things that are
+# different on Forgejo and would otherwise fail forty minutes in:
+#
+#   the workflow is picked up from .forgejo/workflows/
+#   actions/checkout@v4 clones this repository
+#   the job container gets /dev/kvm through options:
+#   lib/ and windows/11/bake.py are importable and can build an answer ISO
+#
+# It does not touch the ISO, the disk, or the registry.
+
+on: [workflow_dispatch]
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/easydev-org/easydiskbake:latest
+      options: --device /dev/kvm
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: checkout landed
+        run: |
+          set -euo pipefail
+          pwd
+          ls
+          test -f lib/ci.py
+          test -f windows/11/bake.py
+          git log --oneline -1
+
+      - name: kvm
+        run: python3 lib/ci.py kvm
+
+      - name: the bake parses its arguments
+        run: |
+          set -euo pipefail
+          python3 windows/11/bake.py --help | head -12
+
+      - name: the answer file substitutes cleanly
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import re
+          import sys
+          import tempfile
+
+          sys.path.insert(0, ".")
+          import importlib.util
+          spec = importlib.util.spec_from_file_location("wb", "windows/11/bake.py")
+          bake = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(bake)
+
+          from lib import images
+
+          args = bake.parse(["--out", "/tmp/wk/out.qcow2"])
+          pin = images.pin_for_bake(args.image)
+
+          text = open(os.path.join(args.answer, "Autounattend.xml"), encoding="utf-8").read()
+          for placeholder, value in {
+              "__ADMIN_PASSWORD__": "docker",
+              "__COMPUTER_NAME__": "sandbox",
+              "__WINDOWS_IMAGE_INDEX__": str(pin["index"]),
+          }.items():
+              text = text.replace(placeholder, value)
+
+          leftover = re.findall(r"__[A-Z_]+__", text)
+          assert not leftover, f"placeholders left: {leftover}"
+          assert "<ProductKey>" in text
+          assert "BypassSecureBootCheck" in text
+          assert f"<Value>{pin['index']}</Value>" in text
+          print(f"answer file OK for {args.image} (index {pin['index']})")
+          PY
+
+      - name: the answer ISO can be built
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/smoke
+          # A fake "virtio-win ISO" is not needed: the builder takes the drivers as an
+          # optional path, and driver extraction is tested against the real archive in
+          # the full bake.
+          python3 lib/winiso.py windows/11/answer /tmp/smoke/answer.iso
+          ls -l /tmp/smoke/answer.iso
+          echo "SMOKE_DONE"

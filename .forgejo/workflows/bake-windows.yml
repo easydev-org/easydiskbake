@@ -1,0 +1,142 @@
+name: bake-windows
+
+# Bake a Windows 11 disk, on Forgejo.
+#
+# WHAT DIFFERS FROM .github/workflows/bake-windows.yml
+#
+#   the path                    .forgejo/workflows/ - Forgejo does not read .github/
+#   the registry credentials    ghcr.io is pulled anonymously (the package is public);
+#                               pushing goes to this Forgejo's own registry
+#   the token                   secrets.FORGEJO_TOKEN instead of secrets.GITHUB_TOKEN
+#   log-stream                  removed. It exists to work around GitHub answering 404
+#                               for a running job's log; Forgejo serves the log while the
+#                               job runs, so the wrapper is only an extra failure mode.
+#
+# Everything else - the image, the bake, the verify step, the artifact names - is the
+# same code. lib/ is shared.
+#
+# WHY PUSH TO THE FORGEJO REGISTRY AND NOT ghcr
+#
+# ghcr.io/easydev-org/easydiskbake is a public package this cluster pulls from. Pushing
+# a 4 GiB disk to it from a runner inside the cluster would send the bytes out through
+# the proxy and back. forgejo.develop.fenjin.org is on the same cluster network and is
+# already the runner's docker daemon's insecure-registries entry.
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: "Windows image to install"
+        type: choice
+        options:
+          - windows11
+          - windows11-enterprise-eval
+        default: windows11
+      disk_size:
+        description: "Guest disk size"
+        default: "64G"
+      publish:
+        description: "Push the disk to the Forgejo registry"
+        type: boolean
+        default: true
+      snapshot_interval:
+        description: "Seconds between recorded frames"
+        default: "5"
+
+env:
+  BAKE_IMAGE: ghcr.io/easydev-org/easydiskbake:latest
+  DISK_REPO: forgejo.develop.fenjin.org/fenjin/easydisk-windows
+
+jobs:
+  base:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/easydev-org/easydiskbake:latest
+      options: --device /dev/kvm
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        run: |
+          set -euo pipefail
+          python3 lib/ci.py kvm
+          python3 lib/ci.py free-disk --need 45
+
+      - name: bake
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          export SNAPSHOT_INTERVAL="${{ inputs.snapshot_interval || '5' }}"
+          export RECORD_FPS=1
+          python3 windows/11/bake.py \
+            --out out/windows11.qcow2 \
+            --answer windows/11/answer \
+            --image "${{ inputs.image || 'windows11' }}" \
+            --disk-size "${{ inputs.disk_size || '64G' }}" \
+            --timeout 5400
+
+      # A second, independent read of the disk. The bake already checked it, but the
+      # bake also had the ISO attached and a live installer in memory.
+      - name: verify the disk
+        run: |
+          set -euo pipefail
+          python3 windows/11/verify.py out/windows11.qcow2
+
+      - name: keep the recording
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-recording
+          path: |
+            out/install.mp4
+            out/frames/shots/frames.txt
+            out/console.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: keep raw frames as a fallback
+        if: always() && hashFiles('out/install.mp4') == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-frames
+          path: out/frames/shots/*.ppm
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: upload the disk
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows11-qcow2
+          path: out/windows11.qcow2
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: push the disk
+        if: ${{ inputs.publish == true || inputs.publish == null }}
+        env:
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 lib/ci.py install-oras
+          # login() reads GITHUB_TOKEN/GITHUB_ACTOR; Forgejo supplies neither, so the
+          # names are mapped here rather than teaching lib/ci.py a second vocabulary.
+          export GITHUB_TOKEN="$FORGEJO_TOKEN"
+          export GITHUB_ACTOR="fenjin"
+          python3 lib/ci.py login --registry forgejo.develop.fenjin.org
+          python3 lib/publish_disk.py out/windows11.qcow2 --kind windows-base \
+            --registry forgejo.develop.fenjin.org \
+            --repo fenjin/easydisk-windows
+
+      - name: what is in the package
+        if: always()
+        env:
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          set -euo pipefail
+          export GITHUB_TOKEN="$FORGEJO_TOKEN"
+          export GITHUB_ACTOR="fenjin"
+          python3 lib/ci.py tags --registry forgejo.develop.fenjin.org \
+            --repo fenjin/easydisk-windows --prefix windows-base-
