@@ -45,6 +45,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import avd  # noqa: E402
 import ci  # noqa: E402
+import emulator  # noqa: E402
 import images  # noqa: E402
 import iso  # noqa: E402
 
@@ -96,7 +97,30 @@ def fetch(zip_path: str, pin: dict) -> str:
 
 
 def build(zip_path: str, pin: dict, workdir: str) -> str:
-    """Unpack, create the AVD, pack it. Returns the archive."""
+    """Unpack, create the AVD, START IT ONCE, then pack it. Returns the archive.
+
+    WHY THE EMULATOR HAS TO RUN HERE, WHICH THE FIRST VERSION ASSERTED IT DID NOT
+
+    android/15/Containerfile.builder carried this note:
+
+        WHAT IT DOES NOT CONTAIN
+        No emulator, no qemu, no KVM. Building an AVD does not boot anything.
+
+    That is wrong twice over. `avdmanager create avd` writes config.ini and nothing
+    else - the disk images are created by the emulator's first start - so packing after
+    create produced a 1.6 KB archive of one config file and pushed it to ghcr as a
+    system image. And avdmanager itself refuses to create an AVD at all unless the
+    `emulator` package is present, which is how the second run failed:
+
+        Error: "emulator" package must be installed!
+
+    So this function boots the AVD to completion once, which is what makes
+    system.img, userdata.img and cache.img exist. Those files are 4.5 GB; the archive
+    before this change was 1642 bytes.
+
+    -wipe-data is deliberate: the published AVD must be a clean device, and the boot
+    here is preparation rather than use. The bake's own first boot wipes again.
+    """
     avd.install_system_image(
         zip_path, api=pin["api"], flavour=pin["flavour"], abi=pin["abi"],
     )
@@ -106,6 +130,31 @@ def build(zip_path: str, pin: dict, workdir: str) -> str:
     created = avd.list_avds(home)
     if not created:
         raise avd.AvdError(f"no AVD in {home} after create_avd")
+
+    # THE BOOT THAT CREATES THE DISKS. Without KVM this is slow and is the reason the
+    # publish job needs /dev/kvm.
+    name = created[0]
+    log(f"starting {name} once so its disk images exist")
+    emulator_run = emulator.Emulator(
+        name, os.path.join(workdir, "emulator"),
+        memory_mb=4096, cores=4, gpu="swiftshader_indirect",
+        wipe_data=True,
+    )
+    try:
+        emulator_run.start()
+    except emulator.EmulatorError as exc:
+        raise avd.AvdError(
+            f"the emulator did not start, so the AVD has no disk images to pack: {exc}"
+        ) from exc
+
+    try:
+        if not emulator_run.wait_for_boot(1800):
+            raise avd.AvdError(
+                "the AVD did not reach sys.boot_completed, so its disks were never "
+                "created; the archive would be a config file"
+            )
+    finally:
+        emulator_run.stop()
 
     archive = os.path.join(workdir, "avd.tar.zst")
     avd.pack(home, archive)

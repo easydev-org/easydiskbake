@@ -10,18 +10,28 @@
 #
 # So this image exists for one workflow, publish-android.yml, and is discarded after.
 #
-# WHAT IT CONTAINS, AND WHY THE EMULATOR IS ONE OF THEM
+# WHAT IT CONTAINS, AND WHY IT BOOTS A GUEST AFTER ALL
 #
-# No qemu, no KVM: building an AVD does not boot anything.
+# The first version of this image carried:
 #
-# It DOES contain the `emulator` SDK package, which is not the same thing. The first
-# version left it out on the reasoning above, and `avdmanager create avd` then refused:
+#     WHAT IT DOES NOT CONTAIN
+#     No emulator, no qemu, no KVM. Building an AVD does not boot anything.
 #
-#     Error: "emulator" package must be installed!
+# Both halves of that are wrong, and each cost a publish run:
 #
-# avdmanager writes an AVD that the emulator will open, so it checks for the package
-# before creating one. The package is a few megabytes of tools and a launcher script;
-# the runtime it needs (qemu, KVM) is still absent, and nothing here starts a guest.
+#   avdmanager create avd needs the `emulator` SDK package.
+#       Error: "emulator" package must be installed!
+#
+#   avdmanager does not write disk images. system.img, userdata.img and cache.img are
+#   created when the emulator first starts the AVD. Packing right after create produced
+#   a 1,642-byte archive of one config file, and that is what reached ghcr.
+#
+# So this image installs the emulator package AND boots the AVD once, which means it
+# needs the emulator's own dependencies and /dev/kvm. The publish workflow passes the
+# device through.
+#
+# What it still does not need is the bake image's qemu: the emulator is Google's own
+# qemu fork and ships its own binaries.
 #
 # TWO SOURCES, BOTH PINNED BY URL
 #
@@ -35,20 +45,30 @@ FROM debian:trixie-slim
 ENV DEBIAN_FRONTEND=noninteractive
 
 # unzip for the system image, zstd for packing the AVD, tar is in the base.
-# openjdk is for avdmanager, which is a Java tool - it is the reason this image is
-# separate from the bake image.
+# openjdk is for avdmanager, which is a Java tool.
+#
+# The lib* group is the emulator's runtime. It is the same list the bake image installs
+# for the same binary, taken from there rather than guessed: a missing shared library
+# shows up as a linker error naming a .so, several steps away from the package that
+# should have provided it.
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
         unzip \
+        file \
+        p7zip-full \
         zip \
         xz-utils \
         zstd \
         tar \
         python3 \
         openjdk-21-jre-headless \
+        libx11-6 libx11-xcb1 libxcb1 libxau6 libxdmcp6 libbsd0 \
+        libpulse0 libasound2t64 libnss3 libnspr4 \
+        libgl1 libglx-mesa0 libegl1 libgles2 \
+        libgtk-3-0t64 libxcb-render0 libxcb-shape0 libxcb-xfixes0 libxcb-randr0 \
         ; \
     rm -rf /var/lib/apt/lists/*
 

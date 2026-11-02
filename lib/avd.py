@@ -194,9 +194,44 @@ def create_avd(name: str, *, api: int = 35, flavour: str = "default",
 
 
 def pack(avd_home_dir: str, out: str) -> str:
-    """Tar the AVD directory. zstd, because the images are mostly sparse zeros."""
+    """Tar the AVD directory. zstd, because the images are mostly sparse zeros.
+
+    REFUSES AN AVD THAT HOLDS NO DISK. `avdmanager create avd` writes config.ini and
+    nothing else - the disk images (system.img, userdata.img, cache.img) are made by the
+    emulator when it first starts the AVD. Packing straight after create therefore
+    produces a 1.6 KB archive of one config file, and that is exactly what the first
+    publish-android run pushed to ghcr:
+
+        [avd] packing /opt/android-avd -> avd.tar.zst
+        [avd] 0 MiB
+
+    Nothing downstream noticed: lib/publish_disk.py pushes whatever it is given and the
+    tag listing showed a manifest. So the check lives here, where the missing files are
+    still visible.
+    """
     if not os.path.isdir(avd_home_dir):
         raise AvdError(f"no AVD directory at {avd_home_dir}")
+
+    # Find the .avd directory and require a system image in it.
+    avds = [d for d in os.listdir(avd_home_dir) if d.endswith(".avd")]
+    if not avds:
+        raise AvdError(
+            f"no *.avd directory in {avd_home_dir}; avdmanager did not create one, or "
+            f"--avd-home points somewhere else"
+        )
+    missing = []
+    for name in avds:
+        for required in ("system.img", "userdata.img"):
+            path = os.path.join(avd_home_dir, name, required)
+            if not os.path.isfile(path) or os.path.getsize(path) == 0:
+                missing.append(f"{name}/{required}")
+    if missing:
+        raise AvdError(
+            f"the AVD holds no disk: {', '.join(missing)}.\n"
+            f"avdmanager only writes config.ini; the images are created when the "
+            f"emulator starts the AVD. Start it once (with -wipe-data) before packing, "
+            f"or this archive is a config file and nothing else."
+        )
 
     if os.path.exists(out):
         os.unlink(out)

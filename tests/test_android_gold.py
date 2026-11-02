@@ -185,12 +185,25 @@ class BuilderImage(unittest.TestCase):
         source = open(path, encoding="utf-8").read()
         self.assertIn('sdkmanager" "emulator"', source)
 
-    def test_the_builder_still_has_no_kvm_dependency(self):
-        # The reason the emulator package was left out in the first place is still
-        # true: nothing in this image boots a guest.
+    def test_the_builder_boots_a_guest_because_it_has_to(self):
+        """The image was built to not boot anything, and that produced a 1.6 KB image.
+
+        `avdmanager create avd` writes config.ini and nothing else. system.img,
+        userdata.img and cache.img appear when the emulator first starts the AVD, so
+        packing after create captured a config file and ghcr received it as a system
+        image.
+
+        This asserts the requirement now in place rather than the one that was removed:
+        the image carries the emulator's runtime, and the workflow passes /dev/kvm.
+        """
         source = open(os.path.join(HERE, "android", "15",
                                    "Containerfile.builder"), encoding="utf-8").read()
-        self.assertIn("No qemu, no KVM", source)
+        for library in ("libpulse0", "libgtk-3-0t64", "libx11-6"):
+            self.assertIn(library, source, library)
+
+        workflow = open(os.path.join(HERE, ".github", "workflows",
+                                     "publish-android.yml"), encoding="utf-8").read()
+        self.assertIn("--device /dev/kvm", workflow)
 
 
 class ValidateWithoutWipe(unittest.TestCase):
