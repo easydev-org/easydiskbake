@@ -57,6 +57,39 @@ def log(msg: str) -> None:
     print(f"[bake] {msg}", flush=True)
 
 
+def frame_progress(shots: str, window: int = 3) -> tuple[int, bool]:
+    """How many frames exist, and whether the last few differ.
+
+    Windows setup writes nothing to the serial console, so `console N bytes` cannot
+    distinguish a slow install from a frozen one - both sit at a constant size. The
+    captured frames can: snapshots.py writes one every few seconds, and if the newest
+    two are byte-identical the screen is not changing.
+
+    Returning `changed=False` for a screen that is genuinely static (a progress bar
+    that has not moved, a dialog waiting for a click) is the point. It is a hint, not a
+    verdict: an installer partitioning a disk draws nothing for a while.
+    """
+    try:
+        names = sorted(f for f in os.listdir(shots)
+                       if f.startswith("frame-") and f.endswith(".ppm"))
+    except OSError:
+        return 0, False
+
+    if len(names) < 2:
+        return len(names), False
+
+    # Compare the newest frame against one `window` frames back, clamped to the oldest
+    # available. A frame count below the window still compares against frame 0, which
+    # is what "did anything change since the beginning" means for a short run.
+    older_index = max(0, len(names) - 1 - window)
+    try:
+        with open(os.path.join(shots, names[-1]), "rb") as a, \
+             open(os.path.join(shots, names[older_index]), "rb") as b:
+            return len(names), a.read() != b.read()
+    except OSError:
+        return len(names), False
+
+
 def parse(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Bake a Windows 11 disk.")
     p.add_argument("--out", default="out/windows11.qcow2")
@@ -527,11 +560,26 @@ class Baker:
             # guest that never started: the only log lines were state changes, and
             # nothing had changed. One line a minute with the numbers that decide the
             # outcome costs nothing and answers that immediately.
+            # --- a heartbeat that can tell progress from a hang ------------------
+            #
+            # Console byte count alone is not enough: Windows setup writes nothing to
+            # the serial console, so a healthy install and a frozen one both show a
+            # constant size. The frames are the signal - snapshots.py writes one every
+            # N seconds, and comparing the newest two says whether the screen changed.
+            #
+            # This is the difference between "wait 90 minutes and find out" and "know
+            # at minute five".
             if time.time() - last_report >= 60:
                 last_report = time.time()
                 elapsed = time.time() - started
+                frames, changed = frame_progress(os.path.join(self.frames, "shots"))
                 log(f"waiting {elapsed:.0f}s: {reboots} disk boot(s), "
-                    f"console {len(text)} bytes, rdp not answering yet")
+                    f"console {len(text)} bytes, {frames} frames, "
+                    f"screen {'CHANGING' if changed else 'static'}, "
+                    f"rdp not answering yet")
+                if frames and not changed and elapsed > 600:
+                    log("the screen has not changed in a minute; if this persists the "
+                        "installer is waiting for something")
 
             time.sleep(5)
 
