@@ -91,23 +91,31 @@ CONTINUE_MENU = (1142, 586)
 # itself is the icon ABOVE the label, which is why clicking the label's centre does
 # nothing and y=306 is what opens the sheet.
 #
-# MEASURED FROM A FRAME, NOT GUESSED. Three runs tried three values:
+# MEASURED FROM A FULL-RESOLUTION FRAME, WHICH IS THE ONLY KIND THAT ANSWERS THIS.
 #
-#   run 41506477596 @ 306   no sheet
-#   run 41511491789 @ 296   no sheet
-#   (this one)      @ 301   no sheet
+# Four runs tried four values and opened no sheet:
 #
-# So the recording of run 41511491789 was measured instead. At x=1289 the vertical
-# profile is:
+#   run 41506477596 @ 306
+#   run 41511491789 @ 296
+#   run 41510118982 @ 296   (never reached it - the driver had a NameError)
+#   run 41514056068 @ 311
 #
-#     y=294..297   the glyph's top edge
-#     y=306..321   the glyph itself, peaking at 56/255 around y=311
-#     y=334..339   the "Erase" LABEL, which is a separate thing 20px below
+# The measurements before this one came from a video frame, and the video is encoded at
+# 640x480 and scaled back up - which blurs exactly the 12 pixels this coordinate lives
+# in. 311 looked like the glyph's centre in that blur and was still wrong.
 #
-# The old note in this file was right that the label is at y=332-340 and wrong about
-# where the control is: y=306 sits on the glyph's lower shoulder and y=296 above its top.
-# The centre of the drawn glyph is 311.
-ERASE_BUTTON = (1290, 311)
+# So it was measured on a 1920x1080 capture instead. At x=1289 the toolbar reads:
+#
+#     y=294         60   the control's top border
+#     y=295..308    38   inside the control, above the drawing
+#     y=309..320  130-166 the GLYPH, brightest at 314-320
+#     y=321..331    38   inside the control, below the drawing
+#     y=332..339   147   the "Erase" label, a separate thing
+#     y=346          0   the control's bottom border
+#
+# The glyph's vertical centre is 314. The control spans 294..346, so 314 is also its
+# middle - which is what a toolbar button drawn inside a 52px box should be.
+ERASE_BUTTON = (1290, 314)
 
 # Sidebar rows under "Internal", 28px apart, x=540 inside the labels. Five rows because
 # the count differs between Show Only Volumes (one) and Show All Devices (four), and a
