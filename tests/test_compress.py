@@ -58,7 +58,7 @@ if "convert" in ARGV:
     if "-o" in ARGV and "help" in ARGV:
         print("Supported options:")
         print("size             Virtual disk size")
-        if MODE == "zstd":
+        if MODE in ("zstd", "fail"):
             print("compression_type Compression method (zlib, zstd)")
         raise SystemExit(0)
 
@@ -116,16 +116,26 @@ class Compress(unittest.TestCase):
         self.assertEqual(len(conversions), 1)
         self.assertIn("compression_type=zstd", conversions[0])
 
-    def test_zlib_is_used_when_the_option_is_absent(self):
-        # The 2.12 case: the option list has no compression_type.
+    def test_a_tool_without_zstd_is_a_failure(self):
+        """NO FALLBACK TO zlib.
+
+        A quiet downgrade lived here for one revision. It produced disks 10-20% larger
+        under a log line that read like a note, which is how a defect becomes permanent:
+        nothing fails, the artifact is simply worse than the one it replaced.
+
+        If qemu-img cannot write zstd, the tool is wrong - and the message says where to
+        look, because the cause that actually happened was a qemu-img shadowed on PATH
+        by the Android SDK's copy, reporting the same version string.
+        """
         os.environ["FAKE_QEMU_IMG_MODE"] = "zlib"
-        compress.compress(self.source, self.dest)
-        self.assertTrue(os.path.exists(self.dest))
-        conversions = [c for c in self.calls() if "convert" in c and "help" not in c]
-        self.assertEqual(len(conversions), 1)
-        self.assertNotIn("compression_type", conversions[0])
-        # Still compressed: -c is what asks for that, and it works on every version.
-        self.assertIn("-c", conversions[0])
+        with self.assertRaises(RuntimeError) as ctx:
+            compress.compress(self.source, self.dest)
+        message = str(ctx.exception)
+        self.assertIn("zstd", message)
+        self.assertIn("shadow", message.lower())
+        # Nothing was written: no artifact, and no .part for a retry to mistake for one.
+        self.assertFalse(os.path.exists(self.dest))
+        self.assertFalse(os.path.exists(self.dest + ".part"))
 
     def test_the_option_list_is_asked_not_the_version(self):
         """A version string must not decide this.
@@ -140,6 +150,8 @@ class Compress(unittest.TestCase):
         self.assertIn("compression_type=zstd", conversions[0])
 
     def test_a_failed_conversion_leaves_nothing_under_the_final_name(self):
+        # zstd mode, so the capability check passes and the failure being tested is the
+        # conversion itself.
         os.environ["FAKE_QEMU_IMG_MODE"] = "fail"
         with self.assertRaises(RuntimeError) as ctx:
             compress.compress(self.source, self.dest)

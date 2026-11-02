@@ -56,8 +56,29 @@ def log(msg: str) -> None:
     print(f"[compress] {msg}", flush=True)
 
 
+# THE ABSOLUTE PATH IS THE FIX, NOT A STYLE CHOICE.
+#
+# The bake image puts the Android SDK on PATH ahead of /usr/bin:
+#
+#     ENV PATH="$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/emulator:$PATH"
+#
+# and /opt/android-sdk/emulator ships its own qemu-img. It reports the same version
+# string as the distribution's - "qemu-img version 11.1.0 (Debian 1:11.1.0+ds-2)" -
+# and does not support compression_type. So every compression probe in every bake was
+# answered by the wrong binary, the capability check correctly said "no", and the disk
+# was written with zlib on a machine that could have used zstd.
+#
+# QEMU_IMG still overrides this for a host that keeps qemu elsewhere.
+QEMU_IMG_BINARY = "/usr/bin/qemu-img"
+
+
 def qemu_img() -> str:
-    return os.environ.get("QEMU_IMG", "qemu-img")
+    override = os.environ.get("QEMU_IMG", "")
+    if override:
+        return override
+    if os.path.exists(QEMU_IMG_BINARY):
+        return QEMU_IMG_BINARY
+    return "qemu-img"
 
 
 def version() -> str:
@@ -115,17 +136,25 @@ def compress(source: str, dest: str) -> str:
     if not os.path.isfile(source):
         raise FileNotFoundError(f"no disk to compress at {source}")
 
-    stamp = version()
-    zstd = supports_zstd()
-    if zstd:
-        options = ["-o", "compression_type=zstd"]
-        log(f"compressing with zstd ({stamp})")
-    else:
-        options = []
-        # Not a silent downgrade: the size difference is real and whoever reads the log
-        # should know why the artifact is bigger than the one from a newer qemu-img.
-        log(f"compressing with qcow2's default zlib: {stamp} has no "
-            f"compression_type option (added in qemu 5.1)")
+    # ZSTD OR NOTHING. There is no fallback to zlib.
+    #
+    # A quiet downgrade was here for one revision and it produced disks 10-20% larger
+    # than the ones they replaced, under a log line that read like a note rather than a
+    # defect. If the tool cannot write zstd then the tool is wrong, and the bake should
+    # say so instead of shipping the bigger file.
+    binary = qemu_img()
+    if not supports_zstd():
+        raise RuntimeError(
+            f"{binary} cannot write a zstd-compressed qcow2.\n"
+            f"  {version()}\n"
+            f"zstd is required: it is what this repository publishes, and a silent "
+            f"zlib fallback makes the artifact quietly larger.\n"
+            f"Check that {binary} is the distribution's qemu-img and not a copy that "
+            f"shadows it on PATH - the Android SDK ships one that reports the same "
+            f"version string and has no compression_type."
+        )
+    options = ["-o", "compression_type=zstd"]
+    log(f"compressing with zstd ({binary}, {version()})")
 
     tmp = dest + ".part"
     if os.path.exists(tmp):
