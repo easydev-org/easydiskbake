@@ -53,6 +53,27 @@ class IsoError(RuntimeError):
     pass
 
 
+def build_args(out: str, stage: str, label: str) -> list[str]:
+    """The xorriso argv. Pure, so the flags can be asserted without running it.
+
+    That matters because a wrong flag is a FAILURE at run time only: the first
+    version passed `-rock on`, which xorriso does not have - Rock Ridge is produced by
+    default - and the bake died with exit 5 ninety seconds in, after downloading
+    7.2 GiB. A test over this list costs nothing.
+    """
+    return [
+        "xorriso", "-outdev", out,
+        "-volid", label,
+        # Joliet lets Windows read long filenames. There is no "-rock" command: Rock
+        # Ridge is on by default, and asking for it is an error rather than a no-op.
+        "-joliet", "on",
+        # -map on a directory inserts its whole subtree; the destination "/" puts the
+        # file at the image root, which is where setup looks.
+        "-map", stage, "/",
+        "-commit",
+    ]
+
+
 def answer_iso(answer_dir: str, out: str, *, label: str = "ANSWER") -> str:
     """Build a small ISO whose root holds Autounattend.xml.
 
@@ -75,18 +96,7 @@ def answer_iso(answer_dir: str, out: str, *, label: str = "ANSWER") -> str:
             os.unlink(out)
 
         log(f"building the answer ISO -> {out}")
-        result = subprocess.run(
-            [
-                "xorriso", "-outdev", out,
-                "-volid", label,
-                "-joliet", "on", "-rock", "on",
-                # -map on a directory inserts its whole subtree; the destination "/"
-                # puts the file at the image root, which is where setup looks.
-                "-map", stage, "/",
-                "-commit",
-            ],
-            capture_output=True, text=True,
-        )
+        result = subprocess.run(build_args(out, stage, label), capture_output=True, text=True)
         for line in result.stdout.splitlines():
             if line.strip():
                 log(line)
