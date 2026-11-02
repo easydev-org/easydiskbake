@@ -229,8 +229,13 @@ class Baker:
                 # virtio-vga takes xres and yres, so the mode exists before OpenCore
                 # asks for it. WhateverGreen - which the LongQT template ships - is the
                 # kext that makes macOS accept a virtio GPU.
+                # xres and yres only. virtio-vga has no vgamem_mb property - the
+                # first version of this line asked for one and qemu refused to start:
+                #     Property 'virtio-vga.vgamem_mb' not found
+                # The inherited framebuffer size is 16 MiB by default, which is enough
+                # for 1920x1080x32 (8 MiB).
                 "-device", f"virtio-vga,xres={opencore.GUEST_WIDTH},"
-                           f"yres={opencore.GUEST_HEIGHT},vgamem_mb=64",
+                           f"yres={opencore.GUEST_HEIGHT}",
             ],
         )
 
