@@ -132,7 +132,11 @@ class VendorUrls(unittest.TestCase):
             def add_header(self, key, value):
                 self.__dict__.setdefault("headers", {})[key] = value
 
+        # A download that fails is retried DOWNLOAD_ATTEMPTS times with a backoff; the
+        # retrying is not what this test is about, and sleeping through it is 30 seconds
+        # of a unit test suite.
         with mock.patch("urllib.request.Request", FakeReq), \
+             mock.patch("time.sleep"), \
              mock.patch("urllib.request.urlopen",
                         side_effect=urllib.error.URLError("stop here")):
             try:

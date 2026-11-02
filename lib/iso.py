@@ -38,6 +38,7 @@ import json
 import os
 import shutil
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -186,41 +187,107 @@ def _manifest(repo: str, tag: str) -> dict:
         raise
 
 
+# A TEN GIGABYTE TRANSFER OVER THE PUBLIC INTERNET DOES NOT SUCCEED ONCE.
+#
+# Run 41481670715 died pulling the gold disk:
+#
+#     size mismatch: got 3472883712, the manifest says 11286607360
+#
+# 3.2 GiB of 10.5 GiB, then the connection stopped. Nothing was retried, so the whole
+# run - which had already pulled the base image and prepared the runner - was lost to a
+# dropped connection. The partial file was right there on disk, unused.
+#
+# Five attempts with a backoff, each RESUMING from what the .part file already holds.
+# A registry that answers 416 (Range Not Satisfiable, because the part is already
+# complete) is treated as success by the size check at the end.
+DOWNLOAD_ATTEMPTS = 5
+
+
 def _download(url: str, dest: str, *, scope: str, expected_size: int | None) -> None:
     """Stream one blob to dest.part, then move it into place.
 
-    The partial file is what makes a failure resumable-by-retry rather than
-    restarting a multi-gigabyte transfer: a half-written dest would be skipped
-    by the `already present` check at the top of fetch_iso.
+    The partial file is what makes a failure resumable rather than restarting a
+    multi-gigabyte transfer: a half-written dest would be skipped by the `already
+    present` check at the top of fetch_iso, so the bytes in flight are kept in .part
+    and the next attempt asks for the rest.
+
+    RESUMING NEEDS A RANGE REQUEST, and the registry supports them (it is a normal OCI
+    distribution endpoint). If the server ignores the Range and starts from zero the
+    file is truncated first, so a resume can never append the start of the blob to the
+    end of itself.
     """
     part = dest + ".part"
-    req = urllib.request.Request(url)
-    # scope="" means a vendor URL, not this registry: no credentials go with it.
-    if scope:
-        for key, value in _AUTH.headers(scope).items():
-            req.add_header(key, value)
+    last_error: Exception | None = None
 
-    got = 0
-    with urllib.request.urlopen(req, timeout=BLOB_SPEED_WINDOW) as resp, open(part, "wb") as fh:
-        total = expected_size or int(resp.headers.get("Content-Length") or 0)
-        if total:
-            log(f"downloading {total} bytes")
-        while True:
-            chunk = resp.read(1 << 20)
-            if not chunk:
-                break
-            fh.write(chunk)
-            got += len(chunk)
-            if total and got % (64 << 20) < len(chunk):
-                pct = 100.0 * got / total
-                log(f"  {got >> 20} MiB / {total >> 20} MiB ({pct:.0f}%)")
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        have = os.path.getsize(part) if os.path.exists(part) else 0
+        if expected_size is not None and have == expected_size:
+            log(f"{dest}: already complete ({have >> 20} MiB)")
+            shutil.move(part, dest)
+            return
+        if expected_size is not None and have > expected_size:
+            # A part larger than the blob is a previous attempt that wrote past the end
+            # (a redirect to an error page, say). It cannot be resumed from.
+            log(f"discarding an oversized part ({have} > {expected_size})")
+            os.unlink(part)
+            have = 0
 
-    if expected_size is not None and got != expected_size:
-        raise IsoError(
+        req = urllib.request.Request(url)
+        # scope="" means a vendor URL, not this registry: no credentials go with it.
+        if scope:
+            for key, value in _AUTH.headers(scope).items():
+                req.add_header(key, value)
+        if have:
+            req.add_header("Range", f"bytes={have}-")
+
+        try:
+            with urllib.request.urlopen(req, timeout=BLOB_SPEED_WINDOW) as resp:
+                # A 206 means the Range was honoured; 200 means it was not, and the body
+                # starts at byte zero.
+                resuming = have > 0 and resp.status == 206
+                if have and not resuming:
+                    log("  the server ignored the Range; starting over")
+                total = expected_size or int(resp.headers.get("Content-Length") or 0)
+                if total:
+                    log(f"downloading {total} bytes"
+                        + (f" from {have >> 20} MiB" if resuming else ""))
+                got = have if resuming else 0
+                mode = "ab" if resuming else "wb"
+                with open(part, mode) as fh:
+                    while True:
+                        chunk = resp.read(1 << 20)
+                        if not chunk:
+                            break
+                        fh.write(chunk)
+                        got += len(chunk)
+                        if total and got % (64 << 20) < len(chunk):
+                            pct = 100.0 * got / total
+                            log(f"  {got >> 20} MiB / {total >> 20} MiB ({pct:.0f}%)")
+        except (urllib.error.URLError, OSError, TimeoutError) as exc:
+            last_error = exc
+            log(f"  attempt {attempt}/{DOWNLOAD_ATTEMPTS} failed: {exc}")
+            if attempt < DOWNLOAD_ATTEMPTS:
+                time.sleep(min(30, 3 * attempt))
+            continue
+
+        if expected_size is None:
+            shutil.move(part, dest)
+            return
+
+        got = os.path.getsize(part) if os.path.exists(part) else 0
+        if got == expected_size:
+            shutil.move(part, dest)
+            return
+
+        last_error = IsoError(
             f"size mismatch: got {got}, the manifest says {expected_size}"
         )
+        log(f"  attempt {attempt}/{DOWNLOAD_ATTEMPTS} ended short: {got >> 20} MiB "
+            f"of {expected_size >> 20} MiB")
 
-    shutil.move(part, dest)
+    raise IsoError(
+        f"could not download {url} in {DOWNLOAD_ATTEMPTS} attempts: {last_error}"
+    )
 
 
 def fetch_iso(name: str, dest: str) -> str:
