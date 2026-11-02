@@ -7,7 +7,7 @@ name: bake-windows
 #   the path                    .forgejo/workflows/ - Forgejo does not read .github/
 #   the registry credentials    ghcr.io is pulled anonymously (the package is public);
 #                               pushing goes to this Forgejo's own registry
-#   the token                   secrets.FORGEJO_TOKEN instead of secrets.GITHUB_TOKEN
+#   the token                   secrets.FORGEJOTOKEN instead of secrets.GITHUB_TOKEN
 #   log-stream                  removed. It exists to work around GitHub answering 404
 #                               for a running job's log; Forgejo serves the log while the
 #                               job runs, so the wrapper is only an extra failure mode.
@@ -117,7 +117,7 @@ jobs:
       - name: push the disk
         if: ${{ inputs.publish == true || inputs.publish == null }}
         env:
-          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+          FORGEJO_TOKEN: ${{ secrets.FORGEJOTOKEN }}
         run: |
           set -euo pipefail
           python3 lib/ci.py install-oras
@@ -133,7 +133,7 @@ jobs:
       - name: what is in the package
         if: always()
         env:
-          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+          FORGEJO_TOKEN: ${{ secrets.FORGEJOTOKEN }}
         run: |
           set -euo pipefail
           export GITHUB_TOKEN="$FORGEJO_TOKEN"
