@@ -329,13 +329,28 @@ def main(argv: list[str]) -> int:
     shots = os.path.join(work, "shots")
     os.makedirs(shots, exist_ok=True)
 
-    # A WRITABLE COPY PER STAGE. The gold disk is an input this stage must not modify: a
-    # run that fails half way through leaves a disk with a half-installed OpenSSH, and
-    # re-running from the gold disk is the only cheap recovery.
-    disk = os.path.join(work, "disk.qcow2")
+    # A REAL COPY, NOT A QCOW2 BACKING FILE.
+    #
+    # The obvious design is `qemu-img create -b <gold> -F qcow2`, which costs nothing until
+    # something writes. It does not work against a disk this repository publishes, and the
+    # error says why:
+    #
+    #     qemu-img: Unsupported qcow2 feature(s): compression type
+    #     Could not open backing image to determine size.
+    #
+    # qcow2 refuses a compressed image as a backing file, and every disk here is published
+    # with -o compression_type=zstd for size. So the reuse is a copy.
+    #
+    # `cp --reflink=auto` asks the filesystem for copy-on-write (btrfs, xfs with reflink)
+    # and falls back to a byte copy where it cannot. On a CI overlay filesystem that is the
+    # latter, which is why the free-space check in the workflow asks for the disk twice.
     log(f"copying {args.gold} -> {disk}")
-    subprocess.run(["qemu-img", "create", "-f", "qcow2",
-                    "-b", os.path.abspath(args.gold), "-F", "qcow2", disk], check=True)
+    copied = subprocess.run(["cp", "--reflink=auto", args.gold, disk],
+                            capture_output=True, text=True)
+    if copied.returncode != 0:
+        raise SystemExit(
+            f"could not copy the disk: {(copied.stderr or copied.stdout).strip()[:300]}"
+        )
 
     firmware_code = os.environ.get("OVMF_CODE", "/usr/share/OVMF/OVMF_CODE_4M.fd")
     firmware_vars = os.path.join(work, "OVMF_VARS.fd")

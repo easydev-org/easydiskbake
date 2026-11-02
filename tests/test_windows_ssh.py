@@ -134,10 +134,14 @@ class GuestIsTheBakes(unittest.TestCase):
 
         A run that fails half way leaves a disk with a half-installed OpenSSH; re-running
         from the untouched gold disk is the only cheap recovery.
+
+        The copy is a real one rather than a qcow2 backing file, because a published disk
+        is zstd-compressed and qcow2 will not open that as -b. See
+        PublishedDiskCannotBeABackingFile for the failure that taught this.
         """
         with open(os.path.join(WINDOWS11, "ssh.py"), encoding="utf-8") as fh:
             source = fh.read()
-        self.assertIn('"-b"', source)
+        self.assertIn("--reflink=auto", source)
         self.assertIn("work", source)
 
 
@@ -272,3 +276,47 @@ class DevWorkflow(unittest.TestCase):
         # A password prompt cannot be answered in a job, and this stage logs in rather
         # than looking at a screen.
         self.assertIn("sshpass", self.source())
+
+
+class PublishedDiskCannotBeABackingFile(unittest.TestCase):
+    """A zstd-compressed qcow2 is not a valid backing file, and every disk here is one.
+
+    THE FAILURE
+
+        qemu-img: /.../disk.qcow2: Unsupported qcow2 feature(s): compression type
+        Could not open backing image to determine size.
+
+    qemu refuses a compressed image as -b, and lib/compress.py publishes every disk with
+    -o compression_type=zstd. So a stage that starts from a published disk copies it.
+
+    These tests are about the source, because the failure is a one-second startup error in
+    a job that has just spent ten minutes downloading 12 GiB.
+    """
+
+    def stages(self):
+        for name in ("ssh.py", "devtools.py"):
+            with open(os.path.join(WINDOWS11, name), encoding="utf-8") as fh:
+                yield name, fh.read()
+
+    def test_no_stage_uses_a_backing_file(self):
+        for name, source in self.stages():
+            self.assertNotIn('"-b",', source,
+                             f"{name} uses a backing file; the published disks are "
+                             f"zstd-compressed and qcow2 will not open one as -b")
+            self.assertNotIn('"-F", "qcow2"', source,
+                             f"{name} names a backing format")
+
+    def test_each_stage_copies_the_input(self):
+        for name, source in self.stages():
+            self.assertIn("--reflink=auto", source,
+                          f"{name} should copy the disk, asking the filesystem for "
+                          f"copy-on-write and falling back to a byte copy")
+
+    def test_the_copy_is_still_a_copy(self):
+        """The gold disk must not be modified.
+
+        A stage that failed half way would otherwise leave a disk with a partial install
+        and no untouched input to re-run from.
+        """
+        for name, source in self.stages():
+            self.assertIn("could not copy the disk", source, name)
