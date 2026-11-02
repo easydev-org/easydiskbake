@@ -476,8 +476,13 @@ def main(argv: list[str]) -> int:
         import ci
         import publish_disk
 
-        ci.install_oras()
         try:
+            ci.install_oras()
+            # oras reads the same credential store docker does, so a push without this
+            # is an anonymous push - which ghcr answers with "requested access to the
+            # resource is denied" rather than "not logged in", because by then it is
+            # talking about a specific manifest.
+            ci.login("ghcr.io")
             publish_disk.push(
                 dest, f"macos-recovery-{name}", ci.lowercase_repository(),
                 kind="macos-recovery",

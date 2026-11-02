@@ -86,6 +86,16 @@ class Arguments(unittest.TestCase):
         self.assertEqual(artifact_type, "application/vnd.easydev.disk.qcow2")
         self.assertTrue(any(a.endswith("+zstd") for a in argv))
 
+    def test_absolute_paths_are_allowed_explicitly(self):
+        # oras refuses an absolute path unless told otherwise:
+        #   Error: absolute file path detected. If it's intentional, use
+        #   --disable-path-validation
+        # The disk path is always absolute, and the file was just produced by the bake.
+        with mock.patch("subprocess.run", side_effect=self._capture), \
+             mock.patch.dict(os.environ, {"GITHUB_REPOSITORY": "o/r"}):
+            publish_disk.push(self.disk, "t", "o/r", kind="windows-base")
+        self.assertIn("--disable-path-validation", self.captured)
+
     def test_the_kind_is_recorded_as_an_annotation(self):
         with mock.patch("subprocess.run", side_effect=self._capture), \
              mock.patch.dict(os.environ, {"GITHUB_REPOSITORY": "o/r"}):

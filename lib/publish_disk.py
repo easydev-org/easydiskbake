@@ -72,6 +72,10 @@ def push(path: str, tag: str, repository: str, *, kind: str,
         [
             "oras", "push", reference,
             "--artifact-type", media_type,
+            # oras rejects an absolute path in a file:media:type reference, and the
+            # disk path is always absolute. See publish_iso.py for the same flag and
+            # the same reasoning.
+            "--disable-path-validation",
             f"{path}:{media_type}+zstd",
             *annotations,
         ],
