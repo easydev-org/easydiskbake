@@ -171,6 +171,24 @@ class TheScript(unittest.TestCase):
         # And it must refuse a version it has no pin for.
         self.assertIn("Refusing to substitute", body)
 
+    def test_the_config_is_found_under_the_avd_suffix(self):
+        """list_avds() returns the NAME; the directory is name + ".avd".
+
+        MEASURED ON RUN 41494168764: this looked for
+
+            /opt/android-avd/sandbox/config.ini
+
+        which does not exist. The OSError branch reported it and returned, so the system
+        image was never installed and the emulator failed with the same FATAL it had
+        before the fix was written. The launch looked like the fix had not worked.
+
+        Reading the config is not optional: without it there is no way to know which
+        system image the artifact needs.
+        """
+        body = self.source()
+        self.assertIn('f"{name}.avd"', body)
+        self.assertNotIn('os.path.join(home, name, "config.ini")', body)
+
 
 if __name__ == "__main__":
     unittest.main()

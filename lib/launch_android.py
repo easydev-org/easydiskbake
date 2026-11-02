@@ -168,10 +168,11 @@ def main(argv: list[str]) -> int:
     # has run. Reading them BEFORE the boot would need the guest already up, so they are
     # read after - what this line records is the state the launch produced, and the bake
     # records the state it packed.
-    note(f"disk images: " + ", ".join(
-        f"{n} {(os.path.getsize(os.path.join(home, name, n)) >> 20)} MiB"
+    avd_dir = os.path.join(home, f"{name}.avd")
+    note("disk images: " + ", ".join(
+        f"{n} {(os.path.getsize(os.path.join(avd_dir, n)) >> 20)} MiB"
         for n in ("userdata-qemu.img", "userdata-qemu.img.qcow2", "cache.img")
-        if os.path.isfile(os.path.join(home, name, n))
+        if os.path.isfile(os.path.join(avd_dir, n))
     ))
 
     # --- 4. start it -----------------------------------------------------------
@@ -238,7 +239,16 @@ def ensure_system_image(home: str, name: str, note) -> None:
     """
     import images
 
-    config = os.path.join(home, name, "config.ini")
+    # list_avds() returns the AVD's NAME, with the .avd suffix already stripped, so the
+    # directory is name + ".avd". Using `name` alone looked for
+    #
+    #     /opt/android-avd/sandbox/config.ini
+    #
+    # which does not exist, and the OSError branch below reported it as "could not read
+    # the config" - so the system image was never installed and the emulator failed with
+    # the same FATAL it had before the fix. Measured on run 41494168764.
+    avd_dir = os.path.join(home, f"{name}.avd")
+    config = os.path.join(avd_dir, "config.ini")
     wanted = ""
     try:
         with open(config, encoding="utf-8") as fh:
@@ -247,12 +257,22 @@ def ensure_system_image(home: str, name: str, note) -> None:
                     wanted = line.split("=", 1)[1].strip().rstrip("/")
                     break
     except OSError as exc:
-        note(f"  could not read {config}: {exc}")
-        return
+        # A CONFIG THAT CANNOT BE READ IS NOT A REASON TO CONTINUE. Continuing is what
+        # run 41494168764 did: the wrong path made this branch fire, the launch went on
+        # to start the emulator without a system image, and the failure it reported was
+        # the emulator's rather than the one actually wrong.
+        raise SystemExit(
+            f"could not read the AVD's config at {config}: {exc}. Without it there is no "
+            f"way to know which system image the artifact needs, and guessing would test "
+            f"a different pair than the one that was published."
+        ) from exc
 
     if not wanted:
-        note("  the AVD names no system image; the emulator will say so if it needs one")
-        return
+        raise SystemExit(
+            f"{config} names no system image (no image.sysdir.1). The emulator will "
+            f"refuse to start the AVD, so this stops here with the file that is wrong "
+            f"rather than with a FATAL from emulator.log."
+        )
 
     target = os.path.join(avd.sdk_root(), wanted)
     if os.path.isfile(os.path.join(target, "system.img")):
