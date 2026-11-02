@@ -41,11 +41,13 @@ import argparse
 import os
 import subprocess
 import sys
+import threading
+import time
 
 # windows/11/bake.py -> the repository root
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from lib import images, iso, smoke, vm, wim, winiso  # noqa: E402
+from lib import bootkey, images, iso, smoke, vm, wim, winiso  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ANSWER = os.path.join(HERE, "answer")
@@ -317,14 +319,61 @@ class Baker:
         console = os.path.join(self.work, "console.log")
         guest = vm.Guest(self.work, extra=drives, shape=shape, stdout=console).start()
 
+        # THE ISO WILL NOT BOOT WITHOUT A KEYPRESS.
+        #
+        # The El Torito boot image prints "Press any key to boot from CD or DVD..." and
+        # waits about five seconds. Nothing presses it in a bake, so the guest falls
+        # through to PXE and the run ends with four thousand bytes of firmware output
+        # and no Windows at all - which is what the first full run produced:
+        #
+        #     BdsDxe: starting Boot0001 "UEFI QEMU DVD-ROM QM00001"
+        #     BdsDxe: failed to start Boot0001 ...: Time out
+        #     >>Start PXE over IPv4.
+        #
+        # It runs in a thread because wait_for_arrival must be watching at the same
+        # time: the prompt is five seconds of the install, and the arrival check is the
+        # whole rest of it.
+        keypress = threading.Thread(
+            target=bootkey.wait_for_boot_prompt,
+            args=(console, guest.paths.drive),
+            daemon=True,
+        )
+        keypress.start()
+
         shots = os.path.join(self.frames, "shots")
+        os.makedirs(shots, exist_ok=True)
+        snap_log = os.path.join(shots, "snapshots.log")
+
+        # stdout and stderr go to a file, not DEVNULL. The first run's recording was
+        # missing entirely and there was no way to tell why: snapshots.py says "no QMP
+        # socket" on stderr and a discarded stderr is a silent failure.
         snap = subprocess.Popen(
             [sys.executable, os.path.join(os.path.dirname(os.path.dirname(
                 os.path.abspath(__file__))), "lib", "snapshots.py"),
              guest.paths.record, shots,
              os.environ.get("SNAPSHOT_INTERVAL", "5"), "2000"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdout=open(snap_log, "wb"), stderr=subprocess.STDOUT,
         )
+
+        # Prove the recorder is producing frames before waiting fifteen minutes for a
+        # guest. The prompt to boot from CD is answered in the first seconds, so by the
+        # time this check runs there should already be a frame or two.
+        time.sleep(20)
+        try:
+            early = [f for f in os.listdir(shots) if f.startswith("frame-")]
+        except OSError:
+            early = []
+        if early:
+            log(f"recording: {len(early)} frame(s) captured already")
+        else:
+            log("recording: NO FRAMES after 20s - the QMP screendump is not working")
+            log(f"recording: see {snap_log}")
+            try:
+                with open(snap_log, "rb") as fh:
+                    for line in fh.read().decode("utf-8", "replace").splitlines()[-10:]:
+                        log(f"  {line}")
+            except OSError:
+                pass
         try:
             arrived = self.wait_for_arrival(console, guest)
         finally:

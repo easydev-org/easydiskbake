@@ -15,6 +15,15 @@ name: image
 
 on:
   workflow_dispatch:
+    inputs:
+      only:
+        description: "Build one image instead of both"
+        type: choice
+        options:
+          - both
+          - bake
+          - android
+        default: both
 
 jobs:
   build:
@@ -39,4 +48,9 @@ jobs:
           command: |
             set -euo pipefail
             python3 lib/ci.py login --registry ghcr.io
-            python3 lib/build_image.py
+            ONLY="${{ inputs.only || 'both' }}"
+            if [ "$ONLY" = "both" ]; then
+              python3 lib/build_image.py
+            else
+              python3 lib/build_image.py --only "$ONLY"
+            fi

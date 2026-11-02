@@ -68,13 +68,17 @@ BAKE_CHECKS = [
 # What the Android builder carries. avdmanager is the one tool the workflow cannot do
 # without, and it fails with a Java stack trace when the JRE is missing rather than
 # saying so.
+#
+# avdmanager --help exits non-zero and writes to stderr, so `sdkmanager --version` is
+# the version check and avdmanager is checked by its mere existence - see the `command
+# -v` style entry below, which is why this list is not only version flags.
 BUILDER_CHECKS = [
     ["python3", "--version"],
     ["unzip", "-v"],
     ["zstd", "--version"],
     ["java", "-version"],
     ["sdkmanager", "--version"],
-    ["avdmanager", "--help"],
+    ["sh", "-c", "command -v avdmanager"],
 ]
 
 
