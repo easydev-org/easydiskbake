@@ -198,9 +198,11 @@ def main(argv: list[str]) -> int:
             f"&& echo GOT_SCRIPT || echo SCRIPT_FAIL", wait=8)
         ser.say("", wait=1)
         ser.say("sudo -i sh /tmp/derive.sh", wait=20)
-        # The typed commands end here; the guest's own script powers the machine off when
-        # the rebuild finishes or fails. Keeping the writer open would block it.
-        ser.close()
+        # THE SERIAL STAYS OPEN UNTIL THE GUEST IS GONE. This is the same mistake the
+        # base bake made and run 41617665357 shows its cost: closing the writer after the
+        # last command gave qemu EOF on its serial chardev, the console stopped mid-line
+        # ("[console] c"), and the run then watched a machine nobody could see for forty
+        # minutes. ser.close() belongs in the finally block, after guest.stop().
 
         log(f"waiting up to {args.timeout}s for the rebuild")
         deadline = time.time() + args.timeout
@@ -213,6 +215,9 @@ def main(argv: list[str]) -> int:
             log(f"=== THE GUEST DID NOT POWER OFF IN {args.timeout}s ===")
     finally:
         guest.stop()
+        # CLOSED AFTER THE MACHINE, not before it: closing the writer earlier sends EOF
+        # down qemu's serial chardev, which qemu treats as the console going away.
+        ser.close()
         server.terminate()
         try:
             server.wait(timeout=10)

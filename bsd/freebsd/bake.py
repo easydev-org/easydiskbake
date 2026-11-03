@@ -179,45 +179,44 @@ def build_media(iso_path: str, work: str) -> str:
             fh.write('boot_serial="YES"\n')
             fh.write('comconsole_speed="115200"\n')
             fh.write('comconsole_port="0x3f8"\n')
-            fh.write('# run the scripted installer instead of the menu wizard\n')
-            fh.write('init_script="/etc/easydiskbake-install"\n')
         log("boot/loader.conf: autoboot, console on ttyu0")
 
-    # rc.local DOES NOT RUN ON THIS MEDIUM, AND THAT IS WHY THE ANSWER FILE WAS IGNORED.
+    # rc.local IS THE HOOK, AND ITS LAST LINE HAS TO SAY `primary`.
     #
-    # The media's root is the ISO itself, mounted read-only - the boot log says so:
+    # The media's rc.local ends:
     #
-    #     Updating motd:ln: /etc/motd: Read-only file system
+    #     if bsdinstall_multicons_disabled; then
+    #         /usr/libexec/bsdinstall/startbsdinstall primary
+    #     else
+    #         /usr/libexec/bsdinstall/runconsoles /usr/libexec/bsdinstall/startbsdinstall %
+    #     fi
     #
-    # and FreeBSD's /etc/rc does not execute /etc/rc.local: it runs rcorder over
-    # $local_startup, which is /usr/local/etc/rc.d. The file on the ISO is a document,
-    # not a hook, so the edit made no difference and run 41612049061 stopped at
+    # and runconsoles replaces % with the console's name - ttyu0 - before exec. So
+    # startbsdinstall's $1 is "ttyu0", and its test is
     #
-    #     Please choose the appropriate terminal type for your system.
+    #     if [ "$1" != "primary" ]; then ... msgbox "use the primary console"
     #
-    # exactly as the run before it had.
+    # which is why /etc/installerconfig, sitting on the medium the whole time, was never
+    # opened. Three runs stopped at "Please choose the appropriate terminal type".
     #
-    # THE HOOK THAT DOES WORK IS init_script: loader(8) runs it before init(8), and its
-    # value travels in the kernel environment, so it needs no writable filesystem.
+    # bsdinstall.multicons_disable WAS TRIED FIRST AND DOES NOT WORK: the function reads
+    # it with `kenv -q`, and a loader.conf variable is not in the boot environment that
+    # kenv reports. A local boot of the repacked media still asked for a terminal type.
     #
-    # What it runs is a script this bake writes into the media's own tree, and that
-    # script is also where startbsdinstall has to be named `primary` - its first argument
-    # decides script mode, and runconsoles would pass the console's name instead.
-    answer_script = os.path.join(tree, "etc", "easydiskbake-install")
-    with open(answer_script, "w", encoding="utf-8", newline="\n") as fh:
+    # So the media's own rc.local is rewritten. rc.d/local runs it - the boot log says
+    # "Starting local daemons:" - and the replacement is the branch that installs, with
+    # no wrapper between the console and the installer.
+    rc_local = os.path.join(tree, "etc", "rc.local")
+    with open(rc_local, "w", encoding="utf-8", newline="\n") as fh:
         fh.write("#!/bin/sh\n")
-        fh.write("# run by loader(8) via init_script=, before init(8)\n")
+        fh.write("# easydiskbake: install from /etc/installerconfig, no menu\n")
+        fh.write("# rc.d/local runs this file; the media's version wraps the call in\n")
+        fh.write("# runconsoles, which passes the console's name instead of 'primary'\n")
+        fh.write("# and startbsdinstall then reads no answer file at all.\n")
         fh.write("TERM=vt100; export TERM\n")
-        fh.write("# 'primary' is what makes startbsdinstall read /etc/installerconfig;\n")
-        fh.write("# runconsoles would hand it the console's name and it would prompt\n")
-        fh.write("# for a terminal type instead of installing.\n")
         fh.write("/usr/libexec/bsdinstall/startbsdinstall primary\n")
-    os.chmod(answer_script, 0o755)
-    log("etc/easydiskbake-install: startbsdinstall primary (script mode)")
-
-    # AND THE LOADER IS TOLD TO RUN IT. init_script is documented in loader.conf(5) as
-    # the initial script init(8) runs before chrooting - for this media that is before
-    # anything is mounted, which is early enough and needs nothing writable.
+    os.chmod(rc_local, 0o755)
+    log("etc/rc.local: startbsdinstall primary, no runconsoles")
 
     # The repack keeps the El Torito record that makes it bootable: boot/cdboot for BIOS
     # and boot/boot1.efi for UEFI, both of which this image carries.
@@ -319,6 +318,37 @@ def main(argv: list[str]) -> int:
             os.path.join(work, "last-frame.png"),
             every=float(os.environ.get("LIVE_ARTIFACT_SECONDS", "20")),
         )
+
+        # ANSWER THE TERMINAL-TYPE PROMPT, WHICH IS NOT ABOUT THE ANSWER FILE.
+        #
+        # startbsdinstall's first act is
+        #
+        #     kbdcontrol -d >/dev/null 2>&1
+        #     if [ $? -eq 0 ]; then
+        #         TERM=xterm                       # a syscons console
+        #     else
+        #         echo "Please choose the appropriate terminal type ..."
+        #         read TERM                        # <-- blocks here
+        #     fi
+        #
+        # `kbdcontrol -d` succeeds only when syscons is present, and this machine's only
+        # console is the serial port. So it asks - and WAITS - before it ever looks at
+        # /etc/installerconfig. That is what every FreeBSD run has been sitting on: not a
+        # wrong branch, a read that never got an answer.
+        #
+        # Measured locally against the repacked media: sending one carriage return took
+        # it straight to
+        #
+        #     DEBUG: f_debug_init: ARGV=[/etc/installerconfig]
+        #     DEBUG: Began Installation at Tue Nov  3 10:50:04 UTC 2026
+        #
+        # with the answer file being read and scriptedpart starting.
+        #
+        # AN EMPTY LINE TAKES THE DEFAULT, which the prompt itself states: "Console type
+        # [vt100]". TERM=vt100 is already exported by rc.local.
+        time.sleep(45)
+        log("answering the installer's terminal-type prompt with the default")
+        ser.say("", wait=10)
 
         log(f"waiting up to {args.timeout}s for bsdinstall to finish and reboot")
         deadline = time.time() + args.timeout

@@ -11,7 +11,23 @@ memory.
 
 THE RULE, as decided:
 
-    {os}-{version}_{stage}-{action}
+    {os}-{tag}-{action}
+
+    and the tag is {version}_{stage} where the workflow has a stage:
+
+        macos-15_setup-bake        os macos,  tag 15_setup,   action bake
+        windows-11_desktop-bake    os windows, tag 11_desktop, action bake
+        android-15_aosp-bake       os android, tag 15_aosp,   action bake
+        linux-nixos-bake           os linux,   tag nixos,     action bake
+        bsd-freebsd-bake           os bsd,     tag freebsd,   action bake
+
+    THE UNDERSCORE IS PART OF THE TAG. `setup` in macos-15_setup-bake is not an action -
+    it says what the disk holds when the bake stops, and the action is `bake`. Replacing
+    every underscore with a hyphen breaks that: macos-15-setup-bake reads as a tag of
+    "15" and an action of "setup-bake", and actions are single words.
+
+    Utility workflows keep their two-word names - bench-encode, image-build, iso-publish,
+    selftest - because they are not bakes of a system image.
 
     macos-15_setup-bake        macOS from recovery to the Setup Assistant
     macos-15_desktop-bake      Setup Assistant to a desktop
@@ -24,8 +40,8 @@ THE RULE, as decided:
     linux-nixos_gnome-bake     install NixOS and derive one desktop
     linux-ubuntu_desktop-bake  autoinstall
     linux-kubuntu_desktop-bake autoinstall, KDE flavour
-    bsd-freebsd_bake           scripted bsdinstall, ssh and toolchain included
-    bsd-openbsd_bake           install.conf, ssh and toolchain included
+    bsd-freebsd-bake           scripted bsdinstall, ssh and toolchain included
+    bsd-openbsd-bake           install.conf, ssh and toolchain included
 
 Utility workflows keep the same shape with a single-part version:
 
@@ -54,7 +70,7 @@ RENAMES: dict[str, tuple[str, str]] = {
     "bake-windows-ssh": ("windows-11_ssh-bake", "windows-11_ssh-bake"),
     "bake-windows-dev": ("windows-11_dev-bake", "windows-11_dev-bake"),
     # --- Linux ----------------------------------------------------------------
-    "bake-nixos": ("linux-nixos_bake", "linux-nixos_bake"),
+    "bake-nixos": ("linux-nixos-bake", "linux-nixos-bake"),
     # --- Android --------------------------------------------------------------
     "bake-android": ("android-15_aosp-bake", "android-15_aosp-bake"),
     "launch-android": ("android-15_aosp-launch", "android-15_aosp-launch"),

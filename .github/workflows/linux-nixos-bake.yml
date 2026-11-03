@@ -1,4 +1,4 @@
-name: linux-nixos_bake
+name: linux-nixos-bake
 
 # Install NixOS and derive its desktops, entirely inside this job's container.
 #

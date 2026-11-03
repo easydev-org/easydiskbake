@@ -1,4 +1,4 @@
-name: bsd-freebsd_bake
+name: bsd-freebsd-bake
 
 # Install FreeBSD with bsdinstall in script mode, and publish the disk.
 #

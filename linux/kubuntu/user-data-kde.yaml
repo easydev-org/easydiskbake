@@ -63,7 +63,20 @@ autoinstall:
     layout:
       name: direct
 
-  updates: security
+  # NO SECURITY UPDATES AT INSTALL TIME, AND THE MEASUREMENT IS WHY.
+  #
+  # `updates: security` runs unattended-upgrades as subiquity's last step, and it was
+  # the slowest part of the bake: run 41617045180's log ends on
+  #
+  #     run_unattended_upgrades: downloading and installing security updates
+  #
+  # ten minutes in, with the desktop already installed. It also writes two to three
+  # gigabytes into the disk for packages that a later `apt upgrade` would fetch anyway.
+  #
+  # A gold disk is a starting point, not a patched fleet member: whoever uses it runs
+  # their own updates, and baking a snapshot of today's security fixes into it makes the
+  # artifact larger and no more correct.
+  updates: none
 
   # ---------------------------------------------------------------------------
   # THE TOOLCHAIN, AND WHY EACH ENTRY IS HERE

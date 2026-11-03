@@ -1,4 +1,4 @@
-name: bsd-openbsd_bake
+name: bsd-openbsd-bake
 
 # Install OpenBSD by answering its installer over the serial console.
 #

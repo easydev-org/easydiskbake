@@ -1,4 +1,4 @@
-name: linux-ubuntu_bake
+name: linux-ubuntu-bake
 
 # Install Ubuntu Server unattended with subiquity's autoinstall, in this job's container.
 #

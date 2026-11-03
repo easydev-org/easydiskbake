@@ -1,4 +1,4 @@
-name: linux-kubuntu_bake
+name: linux-kubuntu-bake
 
 # Install Kubuntu unattended with subiquity's autoinstall, in this job's container.
 #
