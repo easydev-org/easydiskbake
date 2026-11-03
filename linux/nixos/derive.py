@@ -145,9 +145,30 @@ def main(argv: list[str]) -> int:
     if copied.returncode != 0:
         raise SystemExit(
             f"could not copy the base: {(copied.stderr or copied.stdout).strip()[:300]}")
-    # A desktop closure is larger than the base and 20G was sized for the base alone.
-    subprocess.run(["qemu-img", "resize", disk, "24G"], check=True,
-                   capture_output=True)
+    # A desktop closure is larger than the base, and 20G was sized for the base alone.
+    #
+    # THE ABSOLUTE BINARY, NOT THE BARE NAME, AND THE ERROR IS PRINTED.
+    #
+    # This is the same shadowing lib/compress.py documents at length: the bake image
+    # puts the Android SDK ahead of /usr/bin on PATH, and its qemu-img cannot read a
+    # qcow2 with compression_type=zstd - which is what every disk this repository
+    # publishes is. Run 41612614733 died here with
+    #
+    #     qemu-img resize ... returned non-zero exit status 1
+    #
+    # and nothing else, because capture_output swallowed the sentence that said why.
+    # compress.qemu_img() already resolves this correctly, so it is used rather than
+    # re-derived.
+    import compress
+
+    resized = subprocess.run(
+        [compress.qemu_img(), "resize", disk, "24G"],
+        capture_output=True, text=True,
+    )
+    if resized.returncode != 0:
+        raise SystemExit(
+            f"could not grow {disk} to 24G: "
+            f"{(resized.stderr or resized.stdout).strip()[:400]}")
 
     server = serve(work, args.desktop)
     # THE GUEST SCRIPT IS SERVED, NOT TYPED - see guest_script().
