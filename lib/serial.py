@@ -163,11 +163,36 @@ class Serial:
             if pending:
                 self._emit(pending)
 
+    # LINES THIS RUN DOES NOT NEED TO SEE, AND THE REASON IT NEEDS FILTERING AT ALL.
+    #
+    # Run 41607302540 printed every line the guest produced and hit two limits at once.
+    # The check-run output is capped at 65535 characters, and `nixos-install` alone emits
+    # several thousand `copying path ... to 'local'` and `building ...drv` lines - so the
+    # log filled with progress chatter and the tail, where the actual error was, was cut
+    # off. The failure was visible only as "exit code 1".
+    #
+    # These patterns are the progress noise of nix and nothing else. Everything an error
+    # looks like - `error:`, `failed`, `FAILED`, a traceback, INSTALL_RC - still gets
+    # through, which is the whole point: the log should hold what explains the outcome.
+    CONSOLE_NOISE = (
+        "copying path '",
+        "building '/nix/store/",
+        "downloading '",
+        "fetching path '",
+    )
+
     @staticmethod
     def _emit(raw: bytes) -> None:
-        """One console line, printed so the run is readable while it happens."""
+        """One console line, printed so the run is readable while it happens.
+
+        PROGRESS CHATTER IS DROPPED, ERRORS ARE NOT. See CONSOLE_NOISE: the hundred-
+        thousand-character budget a check-run allows cannot hold a nix install's worth of
+        `copying path` lines, and losing the end of the log is losing the failure.
+        """
         text = raw.decode("utf-8", "replace").replace("\r", "").rstrip()
         if not text:
+            return
+        if any(marker in text for marker in Serial.CONSOLE_NOISE):
             return
         print(f"[console] {text[:200]}", flush=True)
 

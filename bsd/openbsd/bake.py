@@ -189,7 +189,7 @@ def main(argv: list[str]) -> int:
     if not bsdinstall.check_disk_ufs(disk):
         log("=== THE DISK HOLDS NO FFS FILESYSTEM ===")
         log("  the answers landed somewhere other than the questions")
-        first_error(ser.sink)
+        first_error(publish_console(ser, args.out))
         return 1
 
     # A SECOND BOOT, WITHOUT THE MEDIUM, TO FINISH THE SYSTEM.
@@ -273,6 +273,26 @@ def finish_install(work: str, args, disk: str) -> bool:
             server.wait(timeout=10)
         except subprocess.TimeoutExpired:
             server.kill()
+
+
+def publish_console(ser, out_path: str) -> str:
+    """Copy the guest's console to where the workflow uploads it, and return the path.
+
+    ser.sink lives in the work directory beside the disk; every workflow's artifact path
+    names out/console.log. Without this the guest's own words never reached an artifact,
+    so a failed run could only be explained by whatever happened to fit in the check-run's
+    65535-character budget - which is how run 41607302540 came to report "exit code 1"
+    and nothing else.
+    """
+    target = os.path.join(os.path.dirname(os.path.abspath(out_path)) or ".", "console.log")
+    try:
+        with open(ser.sink, "rb") as src, open(target, "wb") as dst:
+            dst.write(src.read())
+        log(f"console: {target} ({os.path.getsize(target) >> 10} KiB)")
+        return target
+    except OSError as exc:
+        log(f"could not copy the console to {target}: {exc}")
+        return ser.sink
 
 
 def first_error(path: str, context: int = 40) -> None:

@@ -401,7 +401,22 @@ def main(argv: list[str]) -> int:
         except subprocess.TimeoutExpired:
             server.kill()
 
-    console = ser.sink
+    # THE CONSOLE IS COPIED TO out/console.log, WHICH IS WHAT THE WORKFLOW UPLOADS.
+    #
+    # ser.sink lives in the work directory beside the disk, and the workflow's artifact
+    # path names out/console.log - so the guest's own words were never in the artifact,
+    # and a failed run explained itself only through whatever happened to reach the
+    # check-run's 65535-character budget. That is how run 41607302540 came to report
+    # "exit code 1" and nothing else.
+    console = os.path.join(os.path.dirname(os.path.abspath(args.out)) or ".", "console.log")
+    try:
+        with open(ser.sink, "rb") as src, open(console, "wb") as dst:
+            dst.write(src.read())
+        log(f"console: {console} ({os.path.getsize(console) >> 10} KiB)")
+    except OSError as exc:
+        log(f"could not copy the console to {console}: {exc}")
+        console = ser.sink
+
     rc = install_status(console)
     log(f"nixos-install exit status: {rc if rc is not None else '<never returned>'}")
     if rc != 0:
