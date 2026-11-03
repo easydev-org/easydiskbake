@@ -444,8 +444,20 @@ def check_apfs(disk: str) -> bool:
         log(f"could not read the partition entries: {exc}")
         return False
 
+    # EVERY ENTRY IS NAMED ON THE WAY PAST, NOT ONLY THE ONE THAT MATCHES.
+    #
+    # Run 4166067171 (see the note below) reached `no APFS partition in the GPT` on a disk
+    # whose Setup Assistant was on screen - so the container was certainly there and this
+    # loop did not find it. Printing the type of each entry is what tells "the GPT has no
+    # APFS entry" apart from "the entries were read from the wrong place", and those need
+    # different fixes.
+    found_types: list[str] = []
     for index in range(count):
         entry = entries[index * size:(index + 1) * size]
+        if entry[:16] == b"\x00" * 16:
+            # An unused entry; the array is zero-filled past the last partition.
+            break
+        found_types.append(entry[:16].hex())
         if entry[:16] != APFS_PARTITION_TYPE:
             continue
 
@@ -465,6 +477,11 @@ def check_apfs(disk: str) -> bool:
         return False
 
     log("no APFS partition in the GPT - macOS did not install")
+    log(f"  the GPT holds {len(found_types)} entries; their type GUIDs are:")
+    for index, kind in enumerate(found_types, 1):
+        mark = " <- this is the APFS type" if kind == APFS_PARTITION_TYPE.hex() else ""
+        log(f"    {index}: {kind}{mark}")
+    log(f"  looking for {APFS_PARTITION_TYPE.hex()}")
     return False
 
 

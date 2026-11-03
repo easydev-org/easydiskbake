@@ -55,6 +55,15 @@ import subprocess
 import sys
 import time
 
+# lib/assistant.py DECIDES WHEN THE INSTALL IS OVER, so it is imported here rather than in
+# the caller. The wizard on screen is the end of the install - see the note in
+# installer_panes() - and that answer has to be available while the disk is still being
+# written.
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "lib"))
+
+import assistant  # noqa: E402
+
 sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "lib"))
 
@@ -1176,6 +1185,42 @@ def installer_panes(d: Recovery, seconds: int = 4 * 3600) -> bool:
 
     while time.time() < finish_by:
         time.sleep(DISK_SAMPLE_SECONDS)
+
+        # THE WIZARD IS THE END, AND IT COMES BEFORE THE DISK SETTLES.
+        #
+        # Run 41660619717 is the measurement. The Setup Assistant appeared at 15:59:26 -
+        # frame 532, mean grey 229, the country list - and the disk kept growing until
+        # 16:10:48. This loop only looked at the disk, so the bake waited eleven minutes
+        # and twenty-two seconds on a machine that had already finished and was sitting on
+        # the wizard, then declared the install complete and only afterwards noticed the
+        # wizard had been on screen the whole time.
+        #
+        # A guest on the first Setup Assistant page has finished installing: that page is
+        # what the installer reboots into when it is done. So the picture is checked on
+        # every sample, and seeing it ends the wait immediately - the disk size at that
+        # moment is not interesting, and the SETTLE_SECONDS rule below exists only for the
+        # case where the picture cannot be read.
+        if d.frames and assistant.reached_assistant(os.path.join(d.frames, "shots")):
+            size = d.disk_allocated()
+            log(f"=== THE SETUP ASSISTANT IS ON SCREEN ===")
+            log(f"  the disk holds {0 if size is None else size >> 20} MiB; the wizard is")
+            log("  the end of the install, not the disk settling")
+
+            # THIRTY SECONDS, BY INSTRUCTION, SO THE PUBLISHED DISK IS NOT CAUGHT MID-TRANSITION.
+            #
+            # The wizard appearing means the installer has rebooted into the system it
+            # wrote - but the machine is still finishing that boot when the first readable
+            # frame arrives: filesystems are being mounted, the setup daemon is writing its
+            # state, and the disk is still taking writes at 15:59 in the run above.
+            # Stopping the guest at the first frame would publish a disk that was stopped
+            # while still starting.
+            #
+            # Thirty seconds of the wizard sitting still costs nothing against the eleven
+            # minutes this loop used to wait for a disk that had already finished, and it
+            # is the settle the rest of this file gives every other pane transition.
+            d.wait(30, "the wizard has to settle before the machine is stopped")
+            return True
+
         size = d.disk_allocated()
         if size is None:
             continue

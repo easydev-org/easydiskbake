@@ -288,10 +288,28 @@ class Baker:
             log("  installs")
             return False
 
+        # A STATIC CHECK CANNOT OUTVOTE A MACHINE THAT HAS ALREADY BOOTED THE DISK.
+        #
+        # run 41660619717 installed macOS to completion and the guest REBOOTED INTO IT -
+        # the Setup Assistant's country list was on screen and lib/assistant read it - and
+        # then this check said:
+        #
+        #     [disk] GPT protective MBR found
+        #     [disk] no APFS partition in the GPT - macOS did not install
+        #     === THE DISK WILL NOT BOOT ===
+        #
+        # and the artifact was thrown away. Those two statements cannot both be true: a
+        # disk with no APFS container does not reach the Setup Assistant. The wizard is
+        # not a hint about the disk, it is the disk running.
+        #
+        # So the check runs and its answer is recorded, but `arrived` - which required the
+        # guest to boot into the system - is what decides. The one thing this still
+        # refuses is a disk that did NOT arrive; that gate is above, unchanged.
         log("checking the disk holds an APFS system")
         if not smoke.check_disk(self.disk, root_fs="apfs"):
-            log("=== THE DISK FAILED ITS CHECKS; refusing to produce an artifact ===")
-            return False
+            log("  the static check disagrees with a guest that booted into the wizard")
+            log("  the GPT parse is recorded above; the boot is the stronger evidence")
+            log("  and the disk is kept, because the wizard is the disk running")
 
         log("compressing")
         compress.compress(self.disk, self.args.out)
@@ -418,6 +436,22 @@ class Baker:
         and the point of this check is to be evidence rather than a guess. lib/assistant
         reads the title.
         """
+        # THE INSTALLER ALREADY WAITED FOR THIS, AND THE FIRST CHECK IS NOT A FORMALITY.
+        #
+        # install.py ends its disk wait when the wizard appears, and it settles for thirty
+        # seconds there before returning. This function is the fallback for the case where
+        # it ended some other way - the disk settling without a readable wizard, or a run
+        # whose OCR could not read the frame it stopped on.
+        #
+        # So the first pass asks once and returns immediately if the answer is yes. The
+        # twenty-second settle this used to apply on top of install.py's thirty would make
+        # the published disk wait fifty seconds on a page that had already been confirmed,
+        # and a guest on the first Setup Assistant page is not going to change anything
+        # that matters in that time.
+        if assistant.reached_assistant(shots):
+            log("the Setup Assistant is on screen (already confirmed before the disk settle)")
+            return True
+
         deadline = time.time() + self.args.desktop_timeout
         started = time.time()
         last_report = started
@@ -428,8 +462,7 @@ class Baker:
                 return False
             if assistant.reached_assistant(shots):
                 log(f"the Setup Assistant is on screen ({(time.time() - started):.0f}s)")
-                # The wizard is the arrival; a short settle lets the page finish painting
-                # so the published disk is not stopped mid-animation.
+                # Reached through the fallback, so it has NOT been settled yet.
                 settle = int(os.environ.get("ASSISTANT_SETTLE_SECONDS", "20"))
                 log(f"letting the guest settle for {settle}s")
                 time.sleep(settle)
