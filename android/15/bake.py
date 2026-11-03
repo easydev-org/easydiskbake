@@ -86,6 +86,24 @@ def parse(argv: list[str]) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def system_image_path(avd_dir: str) -> str:
+    """Where the AVD's system image actually is, from its own config.ini.
+
+    Returns "" when the config names none, which is a broken AVD rather than a missing
+    file - the two want different sentences.
+    """
+    config = os.path.join(avd_dir, "config.ini")
+    try:
+        with open(config, encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("image.sysdir.1"):
+                    wanted = line.split("=", 1)[1].strip().rstrip("/")
+                    return os.path.join(avd.sdk_root(), wanted, "system.img")
+    except OSError:
+        return ""
+    return ""
+
+
 def main(argv: list[str]) -> int:
     args = parse(argv)
 
@@ -257,7 +275,6 @@ def main(argv: list[str]) -> int:
     ok = True
     required = {
         "config.ini": 1,            # bytes; any non-empty config
-        "system.img": 1,            # the read-only system, a hard link or a copy
         "userdata-qemu.img": 1,     # the data partition, created by the first boot
     }
     for filename, minimum in required.items():
@@ -267,6 +284,37 @@ def main(argv: list[str]) -> int:
         if size < minimum:
             log(f"  MISSING or EMPTY: {filename}")
             ok = False
+
+    # system.img IS NOT EXPECTED IN THE .avd DIRECTORY, AND CHECKING FOR IT THERE WAS
+    # WRONG FOR THE SECOND TIME.
+    #
+    # An AVD holds config.ini, userdata, cache and an initrd. The system partition comes
+    # from $ANDROID_SDK_ROOT/system-images/<api>/<tag>/<abi>/, named by the config's
+    # image.sysdir.1 - so a file in the .avd directory is one layout, not the layout. The
+    # comment above `required` said "a hard link or a copy", which is true of AVDs created
+    # by a tool that copies; this one does not.
+    #
+    # Run 41607953974 reported
+    #
+    #     system.img: -1 bytes
+    #     MISSING or EMPTY: system.img
+    #
+    # about an AVD whose system image had been installed and used successfully: the
+    # emulator had booted to sys.boot_completed and the gold marker was already written.
+    # The check was refusing a working artifact.
+    #
+    # So the file that matters is asked for where it actually lives, in the SDK path
+    # config.ini names.
+    wanted = system_image_path(avd_dir)
+    if wanted:
+        size = os.path.getsize(wanted) if os.path.exists(wanted) else -1
+        log(f"  system image: {size} bytes at {wanted}")
+        if size < 1:
+            log(f"  MISSING or EMPTY: {wanted}")
+            ok = False
+    else:
+        log("  config.ini names no image.sysdir.1, so no system image can be located")
+        ok = False
 
     if not ok:
         log("=== THE AVD FAILED ITS CHECKS; refusing to produce an artifact ===")
