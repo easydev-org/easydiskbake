@@ -107,18 +107,25 @@ CONTINUE_MENU = (1142, 586)
 # a deliberate move toward the smaller of them rather than a new guess - the control's
 # vertical extent is narrow, and the failures at 306, 309, 311 and 314 are all above it.
 #
-# BOTH CANDIDATES, TRIED IN TURN, BY INSTRUCTION.
+# A SWEEP, NOT A GUESS: y = 280..320 EVERY 2 PIXELS, TWO SECONDS APART.
 #
-# 295 is the one value in this file's history that opened the sheet on a real run; 305 is
-# the value that was in use through the failures but is also the toolbar's own measured
-# centre for this control. The control's vertical extent is a few pixels, so one of them
-# is inside it and the other is not - and which one has flipped between runs, because the
-# toolbar is redrawn and the button migrates a pixel or two as the window settles.
+# Every single-value attempt at this control has failed or succeeded without a pattern
+# worth trusting. The history above records 296, 305, 306, 309, 311 and 314 producing
+# nothing, and 278 and 295 opening the sheet; runs then repeated at 295, 300 and a 295/305
+# pair with mixed results. The button's vertical hit area is a few pixels tall and it moves
+# by a pixel or two as the toolbar is redrawn, so a fixed number is a coin toss per run.
 #
-# Clicking both, five seconds apart, covers the uncertainty without guessing again. The
-# first click that lands raises the sheet; the second one lands on the sheet's backdrop,
-# which does nothing.
-ERASE_BUTTON_Y_CANDIDATES = (295, 305)
+# Sweeping the whole plausible band removes the coin toss. Twenty-one clicks at two-second
+# intervals is forty seconds; the first one that lands raises the sheet, and every click
+# after that lands on the sheet's own backdrop and does nothing.
+#
+# THE BAND IS CENTRED ON WHAT HAS BEEN OBSERVED. 278 opened the sheet and 314 did not, so
+# the control lives somewhere inside 280..320; two pixels is finer than the hit area it is
+# being swept for. X stays at 1290, which is inside the button horizontally in every frame
+# that has been measured (its extent is x=1255..1310).
+ERASE_BUTTON_Y_FIRST = 280
+ERASE_BUTTON_Y_LAST = 320
+ERASE_BUTTON_Y_STEP = 2
 ERASE_BUTTON_X = 1290
 
 # Sidebar rows under "Internal", 28px apart, x=540 inside the labels. Five rows because
@@ -791,14 +798,17 @@ def select_and_erase(d: Recovery) -> None:
 
     d.wait(30, "the detail pane has to rebuild for the newly selected disk")
 
-    # BOTH y VALUES, FIVE SECONDS APART, BY INSTRUCTION.
+    # THE SWEEP: y = 280..320 BY 2, TWO SECONDS APART.
     #
-    # One click each at 295 and 305. The control's hit area is a few pixels tall and both
-    # numbers are measurements from runs where it worked, so trying each covers the
-    # uncertainty in the button's position rather than guessing between them. If the first
-    # raises the sheet the second lands on the sheet's own backdrop, which does nothing.
-    for attempt, y in enumerate(ERASE_BUTTON_Y_CANDIDATES, 1):
-        d.click((ERASE_BUTTON_X, y), f"Erase (y={y}, {attempt}/2)", settle=5)
+    # `settle` is the pause AFTER each click, so two seconds here is the interval between
+    # one click and the next. The frame before each click is still taken by click()'s own
+    # shot(), so the recording shows every position that was tried.
+    #
+    # It stops mattering the moment the sheet opens: the next click lands on the sheet's
+    # backdrop. There is no early exit because detecting "the sheet is up" needs a
+    # screen read this file deliberately does not do for control flow.
+    for y in range(ERASE_BUTTON_Y_FIRST, ERASE_BUTTON_Y_LAST + 1, ERASE_BUTTON_Y_STEP):
+        d.click((ERASE_BUTTON_X, y), f"Erase (y={y})", settle=2)
 
     # ONE BACKSPACE, because the name field arrives holding the disk's own name with the
     # text selected. Without this the typed name appends instead of replacing.
