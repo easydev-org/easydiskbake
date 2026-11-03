@@ -54,6 +54,10 @@ on:
       probe_after:
         description: "Seconds to wait for a desktop before probing (-1 = immediately)"
         default: "-1"
+      check_ssh:
+        description: "After the desktop, assert sshd answers on port 2222 (for a bake-windows-ssh disk)"
+        type: boolean
+        default: false
 
 concurrency:
   group: launch-windows-${{ github.ref }}
@@ -123,8 +127,11 @@ jobs:
             if [ "${{ inputs.probe_shell }}" = "true" ]; then
               PROBE="--probe-shell --probe-after ${{ inputs.probe_after || '-1' }}"
             fi
+            CHECK=""
+            if [ "${{ inputs.check_ssh }}" = "true" ]; then CHECK="--check-ssh"; fi
             python3 lib/launch_windows.py \
               --tag "${{ inputs.tag }}" \
+              $CHECK \
               $USE_TPM \
               --bootstate out/windows11.qcow2.bootstate.tar.gz \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}" \

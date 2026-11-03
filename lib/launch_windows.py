@@ -98,6 +98,10 @@ def main(argv: list[str]) -> int:
                    help="provide a TPM 2.0; off by default, which is how dockur-windows "
                         "runs Windows 11 - its answer file bypasses the check, and ours "
                         "does too")
+    p.add_argument("--check-ssh", action="store_true",
+                   help="after the desktop, assert that sshd answers on the forwarded "
+                        "port. For a disk that came through bake-windows-ssh: a desktop "
+                        "says nothing about whether the OpenSSH install worked")
     p.add_argument("--mem", type=int, default=6144)
     p.add_argument("--cpus", type=int, default=4)
     args = p.parse_args(argv)
@@ -280,10 +284,49 @@ def main(argv: list[str]) -> int:
 
     if arrived:
         note("OK: the published disk reached its desktop")
+        # AND SSHD, WHEN THE CALLER ASKS. A disk reaching a desktop says nothing about
+        # whether the stage that installed OpenSSH actually left it working - the run
+        # that proved this needed run 41589685920's banner line to know. So the check is
+        # opt-in and it happens BEFORE the machine is stopped, because the port forward
+        # is what is being tested and it dies with qemu.
+        if args.check_ssh:
+            return finish(check_sshd(note))
         return finish(0)
 
     note("the guest did not reach a desktop; the frames say where it stopped")
     return finish(1)
+
+
+def check_sshd(note) -> int:
+    """Is sshd answering on the forwarded port? Returns a process exit code.
+
+    THE BANNER, NOT A PORT SCAN. A TCP connect succeeds against anything listening, and
+    the question is whether the guest is running OpenSSH - the first bytes it sends say
+    so. lib/vm.py already has wait_port; this adds the part that reads them.
+
+    A REFUSED CONNECTION IS NOT RETRIED HERE. sshd is started by the previous stage and
+    enabled at boot; if it is not listening by the time the desktop is up, that is the
+    answer, and waiting longer only delays it.
+    """
+    import socket
+
+    host, port = "127.0.0.1", 2222
+    note(f"checking sshd on {host}:{port}")
+    try:
+        with socket.create_connection((host, port), timeout=20) as sock:
+            sock.settimeout(20)
+            banner = sock.recv(256).decode("utf-8", "replace").strip()
+    except OSError as exc:
+        note(f"=== SSHD DID NOT ANSWER on {host}:{port}: {exc} ===")
+        note("  the desktop is up, so this is the ssh stage's result and not the boot's")
+        return 1
+
+    note(f"  banner: {banner}")
+    if banner.startswith("SSH-2.0"):
+        note("OK: sshd is answering on the forwarded port")
+        return 0
+    note("=== SOMETHING ANSWERED, BUT NOT SSHD ===")
+    return 1
 
 
 def parse_resolution(text: str) -> tuple[int, int] | None:
