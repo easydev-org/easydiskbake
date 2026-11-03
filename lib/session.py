@@ -193,22 +193,34 @@ def check_wayland_session(port: int, process: str, note=log) -> bool:
     for line in procs.splitlines()[:3]:
         note(f"  process: {line.strip()}")
 
-    # WAYLAND_DISPLAY IN THE COMPOSITOR'S OWN ENVIRONMENT is the proof that a Wayland
-    # socket exists - not merely that a process with the right name is in the table.
-    status, envout = ssh(
-        port,
-        "for p in $(pgrep -f '" + process + "' | head -1); do "
-        "tr '\\0' '\\n' < /proc/$p/environ 2>/dev/null "
-        "| grep -E '^(WAYLAND_DISPLAY|XDG_SESSION_TYPE)=' ; done",
-    )
-    for line in envout.splitlines():
-        note(f"  env: {line.strip()}")
-    if "XDG_SESSION_TYPE=x11" in envout:
-        note("=== THE COMPOSITOR'S OWN ENVIRONMENT SAYS X11 ===")
-        return False
-    if "WAYLAND_DISPLAY=" not in envout:
-        note("=== THE COMPOSITOR HAS NO WAYLAND_DISPLAY ===")
-        note("  a process by that name is running but is not serving a Wayland socket")
+    # THE WAYLAND SOCKET ON DISK, READ WITH sudo.
+    #
+    # WAYLAND_DISPLAY is what a CLIENT sets to find a compositor. The compositor is the
+    # SERVER: it creates the socket and does not need the variable, so asking its
+    # environment for one is asking a question that has nothing to do with whether the
+    # session works. Run 41646780105 failed all six desktops on exactly that -
+    # kwin_wayland running with `--socket wayland-1`, logind reporting
+    # `1|wayland|user|yes`, and the check still saying "not serving a Wayland socket"
+    # because the server had no WAYLAND_DISPLAY of its own.
+    #
+    # miracle failed differently and for the same reason: /proc/625/environ was
+    # "Permission denied" because the compositor runs as sddm's uid, not docker's. A
+    # check that reads another user's /proc needs sudo, and one that reads a socket file
+    # in /run/user/1000 needs it too.
+    #
+    # So: sudo, and the socket file itself. `wayland-1` is the abstract name of
+    # /run/user/1000/wayland-1, so an existing file with that name is the server's own
+    # proof that it bound a socket. 1000 is docker's uid in every image here
+    # (configuration-minimal.nix creates it as the first normal user).
+    status, sockets = ssh(port, "sudo ls -l /run/user/1000/wayland-* 2>/dev/null | head -5")
+    listed = sockets.strip()
+    note(f"  wayland sockets: {listed.replace(chr(10), ' | ') if listed else '(none)'}")
+    if "wayland-" not in listed:
+        note("=== NO WAYLAND SOCKET IN /run/user/1000 ===")
+        note("  the compositor process exists but has not bound a socket")
+        status, listing = ssh(port, "sudo ls -la /run/user/1000/ 2>/dev/null | head -15")
+        for line in listing.splitlines()[:12]:
+            note(f"  run: {line.strip()}")
         return False
 
     return True
