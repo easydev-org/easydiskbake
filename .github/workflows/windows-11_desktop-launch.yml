@@ -35,8 +35,14 @@ on:
         description: "The disk to start (a tag in this package)"
         default: "windows-base-20261102-155400"
       bootstate_run:
-        description: "The run whose windows11-bootstate artifact goes with that tag"
+        description: "The run that produced the disk's bootstate artifact"
         default: ""
+      bootstate_artifact:
+        description: "The artifact name to download from that run. The base bake uploads
+          windows11-bootstate and the ssh and dev bakes upload windows-ssh-bootstate and
+          windows-dev-bootstate - they are not interchangeable, and guessing the wrong one
+          used to be a warning that surfaced nine minutes later as 'no bootstate'"
+        default: "windows11-bootstate"
       boot_timeout:
         description: "Seconds to wait for a desktop"
         default: "900"
@@ -101,12 +107,21 @@ jobs:
       # "Windows Boot Manager" entry and the TPM holds the state Windows sealed against
       # it; a disk without both drops into the firmware shell - which is what the first
       # ssh attempt looked like before this was understood.
+      #
+      # A FAILED DOWNLOAD IS A FAILED RUN. This step used to carry
+      # `continue-on-error: true`, so a wrong artifact name uploaded nothing and the
+      # failure only appeared after the disk had been pulled, copied and checked - run
+      # 41592865333 spent four minutes on that to end with "no bootstate at ...".
+      #
+      # THE NAME IS AN INPUT because the three Windows bakes upload three differently
+      # named archives: windows11-bootstate from the base, windows-ssh-bootstate from the
+      # ssh stage, windows-dev-bootstate from the dev stage. They are not
+      # interchangeable and there is no way to infer which one a tag came from.
       - name: pull the bootstate
         if: inputs.bootstate_run != ''
-        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
-          name: windows11-bootstate
+          name: ${{ inputs.bootstate_artifact }}
           path: out
           github-token: ${{ secrets.GITHUB_TOKEN }}
           repository: ${{ github.repository }}
@@ -129,11 +144,29 @@ jobs:
             fi
             CHECK=""
             if [ "${{ inputs.check_ssh }}" = "true" ]; then CHECK="--check-ssh"; fi
+            # THE ARCHIVE'S NAME IS WHATEVER THE UPLOADING STAGE CALLED IT.
+            #
+            # bake.py saves beside the PUBLISHED name, so the base bake's is
+            # windows11.qcow2.bootstate.tar.gz and the ssh stage's is
+            # windows11-ssh.qcow2.bootstate.tar.gz. This line used to name the first one
+            # literally, which meant a launch from any other disk said "no bootstate at
+            # ..." after pulling and copying twelve gigabytes.
+            #
+            # There is exactly one archive in out/ or none, so finding it is not a guess.
+            ARCHIVE=$(ls out/*.bootstate.tar.gz 2>/dev/null | head -1)
+            if [ -z "$ARCHIVE" ]; then
+              echo "=== NO BOOTSTATE ARCHIVE IN out/ ==="
+              echo "  the disk will not boot without OVMF's variables; the artifact"
+              echo "  upload is what puts one here"
+              ls -la out/ || true
+              exit 1
+            fi
+            echo "bootstate: $ARCHIVE"
             python3 lib/launch_windows.py \
               --tag "${{ inputs.tag }}" \
               $CHECK \
               $USE_TPM \
-              --bootstate out/windows11.qcow2.bootstate.tar.gz \
+              --bootstate "$ARCHIVE" \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
               --resolution "${{ inputs.resolution || '1920x1080' }}" \
               $PROBE \

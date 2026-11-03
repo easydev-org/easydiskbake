@@ -169,10 +169,19 @@ def main(argv: list[str]) -> int:
     if os.path.isfile(source_state):
         placed = bootstate.adopt(disk, source_state)
         note(f"bootstate {source_state} -> {placed}")
+    else:
+        # NAME WHAT WAS LOOKED FOR AND WHAT IS THERE. The old message named only the
+        # post-adopt path, so "no bootstate at out/launch-work/disk.qcow2.bootstate" read
+        # as a missing work file rather than as "the artifact was never downloaded" -
+        # which is what run 41592865333 actually was.
+        note(f"FAILED: no bootstate archive at {source_state}")
+        note("  and none beside the disk either. Without OVMF's variables the firmware")
+        note("  has no boot entry and Windows will not start - this is an artifact")
+        note("  problem, not a disk problem")
+        return finish(1)
     restored = bootstate.restore(work, disk)
     if not restored:
-        note(f"FAILED: no bootstate at {bootstate.archive_path(disk)}")
-        note("  without OVMF's variables and the TPM, Windows will not start")
+        note(f"FAILED: the archive {source_state} did not restore into {work}")
         return finish(1)
     note(f"bootstate restored into {work}")
 
