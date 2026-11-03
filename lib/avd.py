@@ -290,11 +290,27 @@ def pack(avd_home_dir: str, out: str) -> str:
 
 
 def unpack(archive: str, dest: str) -> str:
-    """Restore a packed AVD. zstd again, and --sparse so the holes stay holes."""
+    """Restore a packed AVD.
+
+    TWO LAYERS, AND THAT IS THE WHOLE TRICK. The published artifact is a TAR inside a
+    ZSTD stream - `tar -I zstd -cf out.tar.zst .` produces exactly that, and 7z sees only
+    the outer zstd: it extracts one file, `avd.tar`, and stops. Run 41602946085 did that
+    and then reported
+
+        no *.avd directory in /opt/android-avd after unpacking
+
+    about an archive whose contents were perfectly fine. So the inner tar is extracted
+    too, into the same directory.
+
+    BOTH NAMES ARE TRIED because a plain `.tar.zst` and a `.7z`-written archive would
+    arrive differently; the first 7z invocation tells us which by what it leaves behind.
+    """
+    import tempfile
+
     os.makedirs(dest, exist_ok=True)
 
     log(f"unpacking {archive} -> {dest}")
-    # 7z again, for the same reason as pack(): no external zstd binary is needed.
+    # 7z, for the same reason as pack(): no external zstd binary is needed.
     result = subprocess.run(
         ["7z", "x", "-y", f"-o{dest}", archive],
         capture_output=True, text=True,
@@ -302,9 +318,29 @@ def unpack(archive: str, dest: str) -> str:
     if result.returncode != 0:
         raise AvdError(f"7z failed: {(result.stderr or result.stdout)[:400]}")
 
+    # THE INNER TAR, IF THERE IS ONE. A .tar.zst gives one; a .7z does not, and its
+    # contents are already where they belong.
+    inner = None
+    for name in os.listdir(dest):
+        if name.endswith(".tar"):
+            inner = os.path.join(dest, name)
+            break
+    if inner is not None:
+        log(f"  inner archive: {os.path.basename(inner)}")
+        result = subprocess.run(
+            ["7z", "x", "-y", f"-o{dest}", inner],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            raise AvdError(f"7z failed on the inner tar: "
+                           f"{(result.stderr or result.stdout)[:400]}")
+        os.unlink(inner)
+
     avds = [d for d in os.listdir(dest) if d.endswith(".avd")]
     if not avds:
-        raise AvdError(f"no *.avd directory in {dest} after unpacking")
+        seen = sorted(os.listdir(dest))[:12]
+        raise AvdError(
+            f"no *.avd directory in {dest} after unpacking. What is there: {seen}")
     log(f"restored: {', '.join(avds)}")
     return os.path.join(dest, avds[0])
 
