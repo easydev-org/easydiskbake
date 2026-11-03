@@ -680,16 +680,14 @@ def disk_utility(d: Recovery) -> bool:
     d.wait(240, "the recovery menu draws")
 
     d.click((ROW_X, ROW_Y[3]), "Disk Utility row", settle=5)
-    d.wait_for_change(timeout=90,
-                       why="Disk Utility has to replace the recovery menu")
+    d.wait(10, "Disk Utility has to replace the recovery menu")
     d.click(CONTINUE_MENU, "recovery Continue", settle=20)
 
     # THE SIDEBAR HAS TO BE FINISHED BEFORE IT IS TOUCHED, because the next thing the
     # sequence does is press Up twice and those presses move whatever the sidebar has
     # selected. This window paints its source list in stages, and an Up arriving early
     # moves a selection that is not the one the two-press count assumes.
-    d.wait_for_change(timeout=120,
-                       why="Disk Utility has to finish drawing its sidebar")
+    d.wait(10, "Disk Utility has to finish drawing its sidebar")
     # THE RETURN IS THE ANSWER TO "DID IT OPEN", and without it this function returned
     # None, which `if not disk_utility(d)` reads as failure. Every run since that check
     # was added exited 1 immediately after Disk Utility had opened correctly - run
@@ -786,7 +784,7 @@ def leave_disk_utility(d: Recovery) -> None:
     time.sleep(5)
     # The menu is redrawn when the utility closes; the Reinstall click is the next thing
     # that happens and a click into a window that is still closing goes nowhere.
-    d.wait_for_change(timeout=120, why="the recovery menu has to come back")
+    d.wait(10, "the recovery menu has to come back")
     d.shot(f"after-{d.n:02d}-leave-disk-utility")
 
 
@@ -840,10 +838,19 @@ def reinstall(d: Recovery) -> bool:
     # wait_until_drawn asks the question that has an answer: has the picture stopped
     # changing? A window that opened and settled passes it; one that never appeared
     # fails it, because the menu it is supposed to replace is where the picture stays.
-    if not d.wait_for_change(timeout=180,
-                              why="the installer window has to open and settle"):
+    d.wait(10, "the installer window has to open and settle")
+
+    # THE PANE AFTER THE WAIT IS CHECKED ONCE, BY BRIGHTNESS, NOT BY CHANGE.
+    #
+    # A fixed wait cannot say whether the window arrived, so one cheap question is asked
+    # after it: is anything lit? The installer's welcome pane is drawn on a dark
+    # background and measures in the twenties; a black screen or the recovery menu
+    # underneath it do not look the same. This is the NOTHING_DRAWN test the rest of the
+    # file already uses, not a new opinion about what a pane looks like.
+    level = d.brightness()
+    if level is not None and level < NOTHING_DRAWN:
         log("=== THE INSTALLER WINDOW NEVER APPEARED ===")
-        log("  Reinstall and Continue were clicked and the screen never settled on it")
+        log(f"  the screen is dark (mean grey {level}) after Reinstall and Continue")
         log("  the last frame shows what is on screen")
         return False
     return True
@@ -965,16 +972,10 @@ def installer_panes(d: Recovery, seconds: int = 4 * 3600) -> bool:
     #
     # The window settled ON the welcome pane, so wait_for_change's baseline was already
     # the thing it was waiting for. There is nothing to change into.
-    if not d.wait_for_change(timeout=90, why="the welcome pane has to be on screen"):
-        log("=== THE WELCOME PANE NEVER APPEARED ===")
-        log("  the installer window opened but is not showing its first pane")
-        return False
+    d.wait(10, "the welcome pane has to be on screen")
 
     d.click(INSTALLER_CONTINUE, "welcome Continue", settle=5)
-    if not d.wait_for_change(timeout=120, why="the licence pane has to be on screen"):
-        log("=== THE WELCOME PANE DID NOT ADVANCE ===")
-        log("  Continue was clicked and the licence never appeared")
-        return False
+    d.wait(10, "the licence pane has to be on screen")
 
     log("licence: Agree")
     d.click(AGREE, "Agree", settle=5)
@@ -985,10 +986,7 @@ def installer_panes(d: Recovery, seconds: int = 4 * 3600) -> bool:
     # Confirmed before clicking it: a click on a sheet that never opened lands on the
     # licence text underneath, which does nothing and looks exactly like the sheet's
     # button being ignored.
-    if not d.wait_for_change(timeout=90, why="the licence sheet has to be on screen"):
-        log("=== THE LICENCE SHEET DID NOT OPEN ===")
-        log("  Agree was clicked and no sheet appeared over the licence")
-        return False
+    d.wait(10, "the licence sheet has to be on screen")
 
     # TEN SECONDS BETWEEN THE TWO AGREE CLICKS, which is what run 41558268694 needed.
     #
@@ -1013,13 +1011,20 @@ def installer_panes(d: Recovery, seconds: int = 4 * 3600) -> bool:
     # Those two clicks landed on a licence pane that has no such controls, the disk was
     # never written, and the failure surfaced two panes later as "the disk did not grow".
     #
-    # A wait that is not allowed to fail is not a wait.
-    if not d.wait_for_change(timeout=120,
-                              why="the destination pane has to be on screen"):
-        log("=== THE LICENCE SHEET DID NOT ADVANCE ===")
-        log("  the sheet's Agree was clicked and the destination pane never appeared")
-        log("  the last frame shows what the pane was still showing")
-        return False
+    # A FIXED WAIT, NOT A WAIT FOR CHANGE, BECAUSE THE CHANGE TEST PROVED TOO STRICT.
+    #
+    # Two runs with wait_for_change here failed everywhere, not just at this pane: the
+    # recovery menu "never changed", Disk Utility "never changed", the installer window
+    # "never changed" - because the wallpaper, the clock and the animating dialogs keep
+    # the fingerprint moving, so it never settled into the two identical samples that
+    # function wanted. A check that fails on screens that are working is worse than no
+    # check.
+    #
+    # So ten seconds, which is what this sequence used before. It is a guess about how
+    # long a pane takes - but it is a guess that has produced fifteen complete
+    # installations, and the disk-growth check below is the real proof that the
+    # destination was accepted.
+    d.wait(10, "the destination pane has to be on screen")
 
     # THE DESTINATION PANE, AND THE CLICK THAT HAS TO BE PROVEN.
     #
