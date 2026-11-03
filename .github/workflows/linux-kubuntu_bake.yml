@@ -81,14 +81,23 @@ jobs:
 
       # THE CONSOLE IS THE RECORD. subiquity draws a text interface that nobody is going
       # to photograph, so a failed run is explained by its own output or not at all.
-      - name: keep the console
+      # THE RECORDING AND THE CONSOLE, BOTH ON EVERY OUTCOME.
+      #
+      # lib/live.py keeps install.mp4 and last-frame.png current while the bake runs, so
+      # a cancelled run has them - that is the whole reason they exist. The console is
+      # here too: subiquity draws to tty1 and talks on ttyS0, and the two say different
+      # things about the same failure.
+      - name: keep the recording
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: kubuntu-console
-          path: out/console.log
+          name: kubuntu-recording
+          path: |
+            out/install.mp4
+            out/last-frame.png
+            out/console.log
           if-no-files-found: warn
-          retention-days: 7
+          retention-days: 14
 
       - name: upload the disk
         if: success()

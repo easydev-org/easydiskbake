@@ -174,17 +174,26 @@ def main(argv: list[str]) -> int:
     #   cloud-config-url=/dev/null  stops the installer re-reading the ISO as a cloud
     #                           config source, which it otherwise does and which costs
     #                           minutes of the same work twice
-    #   console=ttyS0,115200n8  AND THIS ONE WAS MISSING, which is why run 41595469908
-    #                           showed sixteen minutes of "disk 0 MiB" and not one line of
-    #                           guest output: the kernel was writing to the emulated VGA
-    #                           and the serial log stayed empty, so a working install and
-    #                           a hung one were indistinguishable.
-    #   ---                     end of the kernel's own arguments
+    #   console=ttyS0,115200n8  so the guest's output reaches the serial log at all
+    #
+    # NO `---`, AND THAT IS THE FIX FOR RUN 41602915388. Its kernel said:
+    #
+    #     Unknown kernel command line parameters
+    #       "autoinstall --- ds=nocloud-net;s=http://10.0.2.2:8000/autoinstall/ ..."
+    #
+    # `---` separates arguments the kernel handles from ones it passes to user space, and
+    # putting it BEFORE cloud-init's own variables meant cloud-init saw a command line
+    # whose first token was the separator. All three of its stages then ran and found
+    # nothing to do - the log shows cloud-config.service finishing with no seed fetch and
+    # no install, and the disk stayed at 0 MiB for six minutes.
+    #
+    # Nothing here needs the separator: every variable above is one the kernel or
+    # cloud-init reads from /proc/cmdline, which is where they have to be to be seen.
     append = (
         "autoinstall "
         f'"ds=nocloud-net;s={seed_url}" '
         "ip=dhcp cloud-config-url=/dev/null "
-        "console=ttyS0,115200n8 ---"
+        "console=ttyS0,115200n8"
     )
 
     shape = vm.Shape(

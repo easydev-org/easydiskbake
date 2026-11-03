@@ -109,15 +109,34 @@ class Serial:
         self._stop_reading = False
 
     def _drain(self) -> None:
-        """Copy the guest's console into `sink` for as long as it produces anything.
+        """Copy the guest's console into `sink` AND PRINT IT, for as long as it talks.
 
         OPENED AFTER QEMU, WHICH IS WHY THIS IS A THREAD. Opening the read side blocks
         until a writer appears, and the writer is qemu, which the caller starts between
         open() and the first command. Doing it here means the block is on a thread that
         nobody is waiting for.
-        """
-        import threading
 
+        WHY IT PRINTS, AND WHY THAT IS NOT DECORATION. The first version wrote only to
+        the sink file, so a bake that typed `nixos-install` sat for forty minutes with
+        nothing in the Actions log:
+
+            08:27:56 > sudo nixos-install ... ; echo INSTALL_RC=$?
+            08:28:36 waiting up to 3600s for the guest to power itself off
+            (nothing, for forty minutes)
+
+        The guest was talking the whole time - the console was being read and written to
+        a file that is only uploaded when the run ends. A log that goes quiet for forty
+        minutes cannot be told apart from a hang, which is the same problem the Windows
+        bake solved by printing a heartbeat, and the same one `log-stream` exists for.
+
+        ONE LINE AT A TIME, TRIMMED AND CAPPED. A serial console sends whatever the guest
+        printed, including ANSI escapes and carriage-return redraws from a curses
+        installer; printing the raw stream would fill the log with escape codes and its
+        65535-character budget with one redraw. Each line is cut at 200 characters, which
+        is enough to read a command or an error and short enough that a redraw cannot
+        crowd out the rest.
+        """
+        pending = b""
         try:
             with open(self.stdout, "rb", buffering=0) as reader, \
                     open(self.sink, "ab") as out:
@@ -133,8 +152,24 @@ class Serial:
                         continue
                     out.write(chunk)
                     out.flush()
+
+                    pending += chunk
+                    while b"\n" in pending:
+                        line, pending = pending.split(b"\n", 1)
+                        self._emit(line)
         except OSError as exc:
             log(f"  console reader stopped: {exc}")
+        finally:
+            if pending:
+                self._emit(pending)
+
+    @staticmethod
+    def _emit(raw: bytes) -> None:
+        """One console line, printed so the run is readable while it happens."""
+        text = raw.decode("utf-8", "replace").replace("\r", "").rstrip()
+        if not text:
+            return
+        print(f"[console] {text[:200]}", flush=True)
 
     def open(self, timeout: float = 30.0) -> "Serial":
         """Open the writer side, and start draining the read side.
