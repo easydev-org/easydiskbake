@@ -477,8 +477,18 @@ def main(argv: list[str]) -> int:
             stop_swtpm(work)
         if ok:
             log(f"exporting {args.out}")
-            subprocess.run(["qemu-img", "convert", "-O", "qcow2", "-c",
-                            "-o", "compression_type=zstd", disk, args.out], check=True)
+            # compress.compress(), for the same reason as windows/11/ssh.py: the bare
+            # `qemu-img` on this image's PATH is the Android SDK's, and it cannot open the
+            # compressed disk this stage is handed. Run 41586561730 failed here after a
+            # successful installation with
+            #
+            #     qemu-img: Could not open '.../disk.qcow2':
+            #     Unsupported qcow2 feature(s): compression type
+            #
+            # which read like a corrupt disk and was a shadowed binary.
+            import compress
+
+            compress.compress(disk, args.out)
             log(f"BAKED {args.out} ({os.path.getsize(args.out) >> 20} MiB)")
 
 

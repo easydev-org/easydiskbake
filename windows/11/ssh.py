@@ -485,9 +485,25 @@ def main(argv: list[str]) -> int:
             stop_swtpm(work)
         if ok:
             log(f"exporting {args.out}")
-            subprocess.run(["qemu-img", "convert", "-O", "qcow2",
-                            "-c", "-o", "compression_type=zstd", disk, args.out],
-                           check=True)
+            # compress.compress(), NOT A HAND-WRITTEN qemu-img CONVERT.
+            #
+            # This line used to spell out the conversion itself, and on run 41586561730 it
+            # failed after a completely successful installation - sshd was answering when
+            # it ran:
+            #
+            #     qemu-img: Could not open '.../disk.qcow2':
+            #     Unsupported qcow2 feature(s): compression type
+            #
+            # lib/compress.py already had the answer: the bare name `qemu-img` resolves
+            # to the Android SDK's copy on this image's PATH, and that build cannot read
+            # the compressed disk it is handed. compress.py uses the absolute
+            # /usr/bin/qemu-img, probes whether it can write zstd before claiming it did,
+            # and converts to a .part name so a failure cannot leave a truncated file
+            # under the published one. Three properties this call site was re-deriving
+            # wrongly.
+            import compress
+
+            compress.compress(disk, args.out)
             log(f"BAKED {args.out} ({os.path.getsize(args.out) >> 20} MiB)")
 
             # THIS STAGE HAS TO PUBLISH THE BOOTSTATE TOO, because bake-windows-dev
