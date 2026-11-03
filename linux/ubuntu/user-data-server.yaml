@@ -36,7 +36,7 @@ autoinstall:
     # what subiquity accepts here. A plain-text password is rejected.
     hostname: ubuntu
     username: docker
-    password: "$6$6$pd.PhdrZh4fxnXbv$7LPpeBGe1v5ssVIxdvxvvHUf6uiyJI.jd5N5pyX3/DCy00eGRQ1FJMqCt.uhrUjPWGu2lO.ELB6IOzQpFWOpI/"
+    password: "$6$pd.PhdrZh4fxnXbv$7LPpeBGe1v5ssVIxdvxvvHUf6uiyJI.jd5N5pyX3/DCy00eGRQ1FJMqCt.uhrUjPWGu2lO.ELB6IOzQpFWOpI/"
     # No ssh key: the next stage authenticates with this password over a forwarded port,
     # and a key here would be a second thing the guest trusts that nothing verifies.
 
@@ -85,7 +85,7 @@ autoinstall:
     # fresh install, and this makes the result checkable from inside the disk: the hash
     # is the same one, written with usermod, so a later stage that cannot log in can be
     # told apart from a stage that never set it.
-    - curtin in-target -- usermod -p "$6$6$pd.PhdrZh4fxnXbv$7LPpeBGe1v5ssVIxdvxvvHUf6uiyJI.jd5N5pyX3/DCy00eGRQ1FJMqCt.uhrUjPWGu2lO.ELB6IOzQpFWOpI/" docker
+    - curtin in-target -- usermod -p "$6$pd.PhdrZh4fxnXbv$7LPpeBGe1v5ssVIxdvxvvHUf6uiyJI.jd5N5pyX3/DCy00eGRQ1FJMqCt.uhrUjPWGu2lO.ELB6IOzQpFWOpI/" docker
 
     # THE REPO'S CONVENTION, RECORDED IN THE DISK. A disk that says what made it can be
     # told apart from one built by something else, without a manifest beside it.
