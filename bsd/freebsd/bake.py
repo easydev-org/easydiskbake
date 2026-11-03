@@ -181,6 +181,41 @@ def build_media(iso_path: str, work: str) -> str:
             fh.write('comconsole_port="0x3f8"\n')
         log("boot/loader.conf: autoboot, console on ttyu0")
 
+    # rc.local IS WHAT DECIDES SCRIPT MODE OR WIZARD, AND IT HAS TO NAME `primary`.
+    #
+    # The media's rc.local ends with
+    #
+    #     runconsoles /usr/libexec/bsdinstall/startbsdinstall %
+    #
+    # and startbsdinstall branches on its first argument:
+    #
+    #     if [ -f /etc/installerconfig ]; then
+    #         if [ "$1" != "primary" ]; then
+    #             msgbox "please use the primary console"
+    #         elif bsdinstall script /etc/installerconfig; then
+    #             ... install ...
+    #
+    # `runconsoles` expands % to the console's name - ttyu0 or ttyv0 - so $1 is never
+    # "primary", the script branch is never taken, and the machine sits at
+    #
+    #     Please choose the appropriate terminal type for your system.
+    #
+    # which is exactly where run 41611262160 stopped. Writing `startbsdinstall primary`
+    # straight into rc.local is the same command without the console-splitting wrapper,
+    # and the serial port is the only console this machine has.
+    rc_local = os.path.join(tree, "etc", "rc.local")
+    with open(rc_local, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("#!/bin/sh\n")
+        fh.write("# easydiskbake: install from /etc/installerconfig, no menu\n")
+        fh.write("# startbsdinstall branches on \"primary\" and reads the answer file only\n")
+        fh.write("# in that branch; runconsoles would pass the console's name instead.\n")
+        fh.write("TERM=vt100; export TERM\n")
+        # The script branch of startbsdinstall prints a "complete, rebooting" dialog and
+        # then reboots, which is what the bake waits for.
+        fh.write("/usr/libexec/bsdinstall/startbsdinstall primary\n")
+    os.chmod(rc_local, 0o755)
+    log("etc/rc.local: startbsdinstall primary (script mode)")
+
     # The repack keeps the El Torito record that makes it bootable: boot/cdboot for BIOS
     # and boot/boot1.efi for UEFI, both of which this image carries.
     #
