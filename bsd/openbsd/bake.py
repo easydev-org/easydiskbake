@@ -113,7 +113,23 @@ def answers() -> list[tuple[str, float]]:
         ("admin", 4),       # Password for root account
         ("admin", 4),       # and again
         ("yes", 4),         # Start sshd(8) by default
-        ("yes", 4),         # Start ntpd(8) by default
+        # TWO X11 QUESTIONS, AND BOTH ARE NEW IN THIS LIST.
+        #
+        # 8.0 asks them right after sshd, and neither was in the sequence before:
+        #
+        #     Do you expect to run the X Window System? [yes]
+        #     Do you want the X Window System to be started by xenodm(1)? [no]
+        #
+        # The first is yes because the medium installs the X sets and this disk is meant
+        # to have them. The second is NO, and that is the important one: xenodm is a
+        # graphical login manager that would take the console and start no session until
+        # somebody logged in, which is the opposite of a disk whose whole job is to answer
+        # on ssh. The default is already [no]; naming it says so on purpose.
+        ("yes", 4),         # Do you expect to run the X Window System
+        ("no", 4),          # start it with xenodm? no - ssh is the way in
+        # Change the default console to com0? [yes] - yes, because this guest has no
+        # usable VGA console and every subsequent boot should talk on tty00.
+        ("yes", 4),         # Change the default console to com0
         ("sd0", 5),         # Which disk is the root disk
         ("W", 5),           # Use (W)hole disk
         ("a", 5),           # Use (A)uto layout
