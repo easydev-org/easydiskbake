@@ -105,8 +105,17 @@ pkg install -y \
     curl \
     ca_root_nss \
     python3 \
-    node18 \
-    npm-node18 \
+    # node22, NOT node18. `node18` and `npm-node18` are gone from the quarterly
+    # repository: run 41647564426's log says so in two lines, after the DHCP lease and
+    # three successful repository updates had already proved the network was fine -
+    #
+    #     pkg: No packages available to install matching 'node18' have been found
+    #     pkg: No packages available to install matching 'npm-node18' have been found
+    #
+    # and one missing name fails the whole `pkg install`, taking git and python3 with it.
+    # node22 is what the repository carries now; npm comes with it, so the separate
+    # npm-nodeXX entry is gone as well.
+    node22 \
     jq \
     unzip \
     bash \
