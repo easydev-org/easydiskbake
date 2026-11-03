@@ -111,11 +111,29 @@ def build_media(iso_path: str, work: str, answers: str) -> str:
     log(f"boot record: {cdbr}")
 
     media = os.path.join(work, "openbsd-install.iso")
-    repack = subprocess.run([
+
+    # TWO BOOT RECORDS: BIOS AND UEFI, WHICH IS WHAT THE ORIGINAL HAS.
+    #
+    # The release ISO carries 8.0/amd64/cdbr for BIOS and 8.0/amd64/eficdboot for UEFI.
+    # A repack with only the first produces a medium that boots on a BIOS machine and
+    # silently does nothing under OVMF: no kernel, no console, no error - which is what
+    # run 41611273209 showed, ninety seconds of silence followed by answers typed into
+    # a machine that had never started an installer.
+    #
+    # THE MACHINE IS Q35 WITH NO FIRMWARE PAIR, so qemu uses SeaBIOS and the BIOS path is
+    # what actually runs here. The UEFI record is kept anyway: a medium that only boots
+    # one way is a medium somebody will try to boot the other way, and the warning would
+    # be a machine that does nothing rather than a message.
+    efi = f"{release}/amd64/eficdboot"
+    cmd = [
         "xorriso", "-as", "mkisofs", "-o", media,
         "-b", cdbr, "-no-emul-boot", "-c", catalog,
-        "-J", "-R", "-V", label, tree,
-    ], capture_output=True, text=True)
+    ]
+    if os.path.exists(os.path.join(tree, efi)):
+        cmd += ["-eltorito-alt-boot", "-e", efi, "-no-emul-boot"]
+        log(f"uefi record: {efi}")
+    cmd += ["-J", "-R", "-V", label, tree]
+    repack = subprocess.run(cmd, capture_output=True, text=True)
     if repack.returncode != 0:
         raise SystemExit(
             f"xorriso could not repack the ISO: {(repack.stderr or repack.stdout)[:400]}")
