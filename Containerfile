@@ -64,6 +64,12 @@ RUN set -eux; \
     apt-get update; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ffmpeg \
+        # python3-pil is what lets lib/assistant.py crop a region of a screendump before
+        # handing it to tesseract. The capacity in Disk Utility's detail pane is about ten
+        # pixels tall at 1920x1080 and unreadable full-frame; run 41691829177 lost a bake to
+        # "Pillow is not installed, so a crop cannot be taken" and then correctly refused to
+        # erase any disk, because it could not tell the 64 GB target from a 268 MB one.
+        python3-pil \
         tesseract-ocr \
         tesseract-ocr-eng \
         e2fsprogs \

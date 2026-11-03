@@ -110,8 +110,15 @@ def ocr_text_cropped(ppm: str, box: tuple[int, int, int, int],
     try:
         from PIL import Image
     except ImportError:
-        log("Pillow is not installed, so a crop cannot be taken")
-        return ""
+        # NO PILLOW, SO THE CROP IS DONE BY ffmpeg INSTEAD.
+        #
+        # The image has ffmpeg for the recordings anyway, and its crop filter takes the
+        # same rectangle. This matters because a missing Pillow must not turn into
+        # "cannot read the capacity" - run 41691829177 lost a bake to exactly that, and the
+        # correct refusal it produced (do not erase a disk you cannot identify) still cost
+        # a run that could have proceeded.
+        log("Pillow is not installed; cropping with ffmpeg instead")
+        return _ocr_cropped_ffmpeg(ppm, box, scale)
 
     try:
         with Image.open(ppm) as image:
@@ -152,6 +159,64 @@ def ocr_text_cropped(ppm: str, box: tuple[int, int, int, int],
         return ""
 
     text = result.stdout or ""
+    return " ".join(
+        " ".join(line.split()).lower()
+        for line in text.splitlines()
+        if line.strip()
+    )
+
+
+def _ocr_cropped_ffmpeg(ppm: str, box: tuple[int, int, int, int],
+                        scale: int) -> str:
+    """ocr_text_cropped() without Pillow: ffmpeg crops and scales, tesseract reads.
+
+    The rectangle is in source pixels, and the scale is applied by the same filter that
+    crops, so the result is the same picture Pillow would have produced.
+    """
+    import tempfile
+
+    left, top, right, bottom = box
+    width = max(1, (right - left) * scale)
+    height = max(1, (bottom - top) * scale)
+    # AT LEAST 4x, BECAUSE THE DECIMAL POINT IS THE THING THAT GETS LOST.
+    #
+    # Measured on a real frame: at 3x this reads "2684 MB" and at 4x and above it reads
+    # "268.4 MB". A dropped decimal turns a 268 MB disk into a 2.6 GB one, which is still
+    # refused by the 60..200 GB window - but only by luck, and the same loss on a real
+    # target would read 6872 GB and be refused too. The number has to be right, not merely
+    # on the safe side of a comparison.
+    if scale < 4:
+        scale = 4
+    width = max(1, (right - left) * scale)
+    height = max(1, (bottom - top) * scale)
+    handle, temp = tempfile.mkstemp(suffix=".png")
+    os.close(handle)
+    try:
+        crop = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+             "-i", ppm,
+             "-vf", f"crop={right - left}:{bottom - top}:{left}:{top},"
+                    f"scale={width}:{height}:flags=lanczos",
+             temp],
+            capture_output=True, text=True,
+        )
+        if crop.returncode != 0:
+            log(f"ffmpeg could not crop: {(crop.stderr or '').strip()[:160]}")
+            return ""
+        result = subprocess.run(
+            ["tesseract", temp, "stdout", "--psm", "6"],
+            capture_output=True, text=True,
+        )
+        text = result.stdout or ""
+    except (OSError, subprocess.SubprocessError) as exc:
+        log(f"the ffmpeg crop failed: {exc}")
+        return ""
+    finally:
+        try:
+            os.unlink(temp)
+        except OSError:
+            pass
+
     return " ".join(
         " ".join(line.split()).lower()
         for line in text.splitlines()
