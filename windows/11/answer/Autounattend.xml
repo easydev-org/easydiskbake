@@ -304,7 +304,16 @@
           <Value>__ADMIN_PASSWORD__</Value>
           <PlainText>true</PlainText>
         </Password>
-        <LogonCount>1</LogonCount>
+        <!-- SIXTY-FIVE THOUSAND, NOT ONE.
+             LogonCount=1 logs the account in once and then STOPS. The bake uses that
+             single logon, so every later stage - ssh, devtools, launch-windows - starts
+             at the lock screen instead of a desktop, and lib/desktop.py cannot tell a
+             lock screen from a failure: its test is a light band on top and a busier one
+             below, which is a taskbar, and a lock screen is one full-bleed wallpaper.
+
+             dockur/windows writes 65432 here, and that number is why its golden disk
+             comes back to a desktop every time. Ours said 1. -->
+        <LogonCount>65432</LogonCount>
       </AutoLogon>
 
       <Display>

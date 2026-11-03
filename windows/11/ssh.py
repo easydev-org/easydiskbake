@@ -456,7 +456,7 @@ def main(argv: list[str]) -> int:
     ok = False
     try:
         log(f"waiting up to {args.boot_timeout}s for the desktop")
-        if not wait_for_desktop(guest, shots, args.boot_timeout):
+        if not wait_for_desktop(guest, shots, args.boot_timeout, kb=kb):
             log("the guest did not reach a desktop")
             return 1
 
@@ -506,36 +506,158 @@ def main(argv: list[str]) -> int:
                     "this disk; the firmware variables were not found in " + work)
 
 
-def wait_for_desktop(guest: vm.Guest, shots: str, timeout: int) -> bool:
+# HOW BRIGHT A FRAME HAS TO BE TO BE WORTH A KEYPRESS.
+#
+# A lock screen measured 77; the firmware shell measured 1 and a blank screen 0. The
+# number only has to separate "something is painted" from "nothing is", so it sits well
+# below the lock screen and well above a text console on black.
+LIT_SCREEN = 20
+
+# THE GAP THE SEQUENCE ASKS FOR, in seconds. Long enough that the page has repainted
+# before the next keystroke: the password field is drawn by an animation, and typing into
+# it mid-fade drops characters - which reads afterwards as a wrong password.
+WAKE_SETTLE = 5.0
+
+# HOW LONG A LIT SCREEN HAS TO STAY LIT, AND STILL NOT BE A DESKTOP, BEFORE IT IS TAKEN
+# FOR A LOCK PAGE. Run 41575708286 held its lock screen for 257 seconds, so a minute is
+# not a guess about how long Windows takes - it is the answer to "has this stopped
+# changing", and it leaves the ordinary case (a desktop at 50 seconds) untouched.
+LOCK_SECONDS = 60.0
+
+
+def wake_from_lock_screen(kb: "Keyboard") -> bool:
+    """Enter, five seconds, the password, five seconds, Enter. Called once per launch.
+
+    THE LOCK SCREEN IS THE COMMON CASE, NOT A FAILURE.
+
+    Run 41575708286's recording is unambiguous once the frames are looked at instead of
+    the log. At 49 seconds the screen shows
+
+        4:06
+        Tuesday, November 3
+
+    over the Windows 11 bloom wallpaper - the lock screen - and it held that single
+    still picture for 257 seconds before Windows turned the display off. Every log line
+    said mean grey 77 and then 0, and desktop.is_desktop() said no, because its test is
+    "a light band on top and a busier one below", which is a taskbar and a desktop, not
+    a full-bleed wallpaper with a clock.
+
+    bake.py already records this exact lesson:
+
+        What had happened was a lock screen. Windows blanks the display after a minute
+        of no input, and this guest gets no input - so the common case, not the failure
+        case, was being read as a crash.
+
+    WHY THIS IS ONE UNCONDITIONAL SEQUENCE. The first version pressed a key, looked at
+    the frame, and only typed the password if that had not produced a desktop. Two
+    branches to get right, and the second one was still a guess about what the frame
+    meant. The sequence below is not a guess: Enter dismisses a lock page and focuses the
+    password field, so both steps belong to the same action. It runs once, and the frames
+    it leaves behind say what happened.
+
+    THE CALLER ONLY RUNS THIS ON A LIT SCREEN THAT HAS STAYED LIT. Enter typed into the
+    firmware shell is input to a different program; see LIT_SCREEN and LOCK_SECONDS.
+
+    The password is not printed; only the account name is.
+    """
+    log(f"lock page: Enter, {WAKE_SETTLE}s, the password for {GUEST_USER}, "
+        f"{WAKE_SETTLE}s, Enter")
+    kb.key("ret", settle=WAKE_SETTLE)
+    shot = kb.shot("after-enter")
+    if shot:
+        log(f"  after Enter: {describe_shot(shot)}")
+    type_text(kb, GUEST_PASSWORD)
+    time.sleep(WAKE_SETTLE)
+    shot = kb.shot("after-password")
+    if shot:
+        log(f"  after the password: {describe_shot(shot)}")
+    kb.key("ret", settle=WAKE_SETTLE)
+    shot = kb.shot("after-sign-in")
+    if shot:
+        log(f"  after the second Enter: {describe_shot(shot)}")
+    return True
+
+
+def wait_for_desktop(guest: vm.Guest, shots: str, timeout: int,
+                     kb: "Keyboard | None" = None, on_sample=None,
+                     say=None) -> bool:
     """Wait for frames to stop changing after boot, then for a desktop by colour.
 
     lib/desktop.py's test is the same one the bake uses: a light band at the top and a
     darker, busier one at the bottom. It is reused rather than reimplemented, because a
     second opinion about what a desktop looks like is a second thing to keep in step.
+
+    `kb` makes a stuck lock page recoverable: without it this can only wait and report,
+    which is all it did on run 41575708286, where the guest was at a lock screen from 49
+    seconds and the display went dark at 342.
+
+    `on_sample(shot, elapsed)` is called once per frame, before any judgement, for a
+    caller that has to keep the pictures - launch_windows writes one PNG per sample so a
+    cancelled run still has its whole timeline. `say` is where the narrative goes, for a
+    caller whose report is not this module's log.
     """
     import desktop
 
+    speak = say or log
     deadline = time.time() + timeout
     booted = time.time()
     last_shot: str | None = None
+    lit_since: float | None = None
+    woken = False
     while time.time() < deadline:
         if not guest.alive():
-            log("qemu exited during boot")
+            speak("qemu exited during boot")
             return False
         shot = take_shot(guest, shots)
         if shot:
             last_shot = shot
+        elapsed = time.time() - booted
+        if on_sample is not None:
+            on_sample(shot, elapsed)
         if shot and desktop.is_desktop(shot):
-            log(f"a desktop is on screen ({(time.time() - booted):.0f}s)")
+            speak(f"a desktop is on screen ({elapsed:.0f}s)")
             return True
-        if int(time.time() - booted) % 60 < 12:
+
+        # A LIT, STILL SCREEN THAT IS NOT A DESKTOP IS A LOCK PAGE.
+        #
+        # Run 41575708286 showed "4:06 / Tuesday, November 3" over the bloom wallpaper
+        # from 49 seconds, held it for 257 seconds, and then Windows turned the display
+        # off. desktop.is_desktop() said no throughout, because its test asks for a
+        # taskbar and a lock page is one full-bleed picture.
+        #
+        # THE TRIGGER IS SIXTY SECONDS OF BEING LIT, and it is brightness rather than a
+        # timer alone: a guest in the firmware shell is also not a desktop, and keystrokes
+        # there go to the shell - run 41562919683 spent nine minutes in that state. This
+        # lock page read mean grey 77; the shell read 1 and a blank screen reads 0.
+        #
+        # ONCE PER LAUNCH. The sequence presses Enter, waits, types the password, waits,
+        # presses Enter - after that the screen may legitimately be an OOBE page, and
+        # repeating it would type the password into whatever came up.
+        grey = frame_brightness(last_shot)
+        if grey is not None and grey >= LIT_SCREEN:
+            if lit_since is None:
+                lit_since = elapsed
+        else:
+            lit_since = None
+
+        if (kb is not None and not woken and lit_since is not None
+                and elapsed - lit_since >= LOCK_SECONDS):
+            woken = True
+            speak(f"{elapsed - lit_since:.0f}s of a lit screen (mean grey {grey}) that "
+                  f"is not a desktop; assuming a lock page")
+            wake_from_lock_screen(kb)
+            # The sequence leaves its own frames, and the loop judges whatever comes
+            # next: a desktop, an OOBE page, or nothing. There is no second guess here.
+            continue
+
+        if not woken and int(elapsed) % 60 < 12:
             # SAY WHAT THE SCREEN IS, not only how long it has been watched. A run that
             # times out here currently reports nothing about what it was looking at, and
             # "waited 900s" cannot distinguish a guest stuck at the firmware shell from
             # one sitting on a login screen that the desktop test does not recognise.
-            log(f"waiting {(time.time() - booted):.0f}s for a desktop"
-                + (f" (last frame {os.path.basename(last_shot)}, "
-                   f"{describe_shot(last_shot)})" if last_shot else " (no frames yet)"))
+            speak(f"waiting {elapsed:.0f}s for a desktop"
+                  + (f" (last frame {os.path.basename(last_shot)}, "
+                     f"{describe_shot(last_shot)})" if last_shot else " (no frames yet)"))
         time.sleep(12)
 
     log("=== NO DESKTOP WITHIN THE BOOT TIMEOUT ===")
@@ -546,6 +668,36 @@ def wait_for_desktop(guest: vm.Guest, shots: str, timeout: int) -> bool:
         log("  not one frame could be captured - the recorder socket never answered,")
         log("  which means qemu was not drawing at all")
     return False
+
+
+def frame_brightness(path: str | None) -> int | None:
+    """Mean grey of a PPM, or None if it cannot be read.
+
+    Only for "is anything drawn at all". What IS drawn is desktop.is_desktop()'s
+    question, and answering it twice would be two things to keep in step.
+    """
+    if not path:
+        return None
+    try:
+        with open(path, "rb") as fh:
+            if fh.readline().strip() != b"P6":
+                return None
+            line = fh.readline()
+            while line.startswith(b"#"):
+                line = fh.readline()
+            width, height = (int(v) for v in line.split())
+            fh.readline()
+            pixels = fh.read(width * height * 3)
+    except (OSError, ValueError):
+        return None
+    if not pixels:
+        return None
+    total = 0
+    count = 0
+    for i in range(0, len(pixels), 97 * 3):
+        total += pixels[i] + pixels[i + 1] + pixels[i + 2]
+        count += 3
+    return total // count if count else None
 
 
 def describe_shot(path: str | None) -> str:
@@ -565,18 +717,12 @@ def describe_shot(path: str | None) -> str:
             while line.startswith(b"#"):
                 line = fh.readline()
             width, height = (int(v) for v in line.split())
-            fh.readline()
-            pixels = fh.read(width * height * 3)
     except (OSError, ValueError):
         return "unreadable"
-    if not pixels:
+    grey = frame_brightness(path)
+    if grey is None:
         return f"{width}x{height}, empty"
-    total = 0
-    count = 0
-    for i in range(0, len(pixels), 97 * 3):
-        total += pixels[i] + pixels[i + 1] + pixels[i + 2]
-        count += 3
-    return f"{width}x{height}, mean grey {total // count if count else 0}"
+    return f"{width}x{height}, mean grey {grey}"
 
 
 def take_shot(guest: vm.Guest, shots: str, label: str = "boot") -> str | None:

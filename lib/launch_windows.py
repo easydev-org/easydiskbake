@@ -238,13 +238,21 @@ def main(argv: list[str]) -> int:
     if args.probe_shell and args.probe_after:
         wait_for = args.probe_after if args.probe_after > 0 else 0
 
+    kb = None
     try:
         if wait_for == 0:
             note("not waiting for a desktop; going straight to the firmware shell")
         shots_dir = os.path.join(args.artifacts, "frames")
         os.makedirs(shots_dir, exist_ok=True)
+        # A KEYBOARD ONLY WHEN THERE IS TIME TO USE ONE. The wake happens a minute in; a
+        # run that is going straight to the firmware shell has nothing to wake.
+        if wait_for > 60:
+            try:
+                kb = sshstage.Keyboard(guest.paths.drive, shots)
+            except (SystemExit, OSError) as exc:
+                note(f"  no keyboard, so a lock page cannot be woken: {exc}")
         arrived = sample_until(guest, shots, wait_for, note, seen,
-                               screen_dir=shots_dir)
+                               screen_dir=shots_dir, kb=kb)
 
         # THE PROBE RUNS WHILE THE MACHINE IS STILL UP. It types into the firmware
         # shell, so it cannot happen after guest.stop() - and it used to: the first
@@ -254,6 +262,8 @@ def main(argv: list[str]) -> int:
         if not arrived and args.probe_shell:
             probe_firmware_shell(guest, shots, note)
     finally:
+        if kb is not None:
+            kb.close()
         guest.stop(acpi_first=arrived)
         sshstage.stop_swtpm(work)
 
@@ -347,64 +357,53 @@ def probe_firmware_shell(guest: "vm.Guest", shots: str, note) -> None:
 
 
 def sample_until(guest: "vm.Guest", shots: str, timeout: int, note, seen: list,
-                 screen_dir: str = "") -> bool:
+                 screen_dir: str = "", kb=None) -> bool:
     """Photograph the screen until a desktop appears or the timeout runs out.
 
     Returns True when the desktop test passes. Every kept frame's path is appended to
     `seen`, so the caller can read the last one whichever way this ends.
-    """
-    import desktop
 
+    THE WAITING IS THE SSH STAGE'S LOOP, NOT A SECOND COPY OF IT. That loop already
+    knows three things this one did not: that a lit screen which stops changing is a lock
+    page and not a crash, that a keypress tells which, and that the account's password
+    goes in only after the screen is known not to be a desktop. Run 41575708286 is what
+    the old copy did with a lock page - grey 77 for 257 seconds and then a dark screen -
+    so keeping one copy is the whole point. This function now only keeps the pictures.
+    """
     # EVEN "DO NOT WAIT" WAITS A LITTLE. The firmware needs about ten seconds to reach
     # its shell, and typing before the console is up sends keys to nothing.
-    deadline = time.time() + max(timeout, 20)
-    started = time.time()
-    last_report = 0.0
+    timeout = max(timeout, 20)
     last_keep = 0.0
 
-    while time.time() < deadline:
-        if not guest.alive():
-            note("qemu exited during the boot")
-            return False
-        shot = sshstage.take_shot(guest, shots)
-        if shot:
-            seen.append(shot)
-            now = time.time()
-            # ONE PNG PER SAMPLE, NAMED BY ITS SECOND.
-            #
-            # The first version wrote a single out/screen.png, overwritten each time.
-            # That is worse than nothing on a run that ends in a black screen: run
-            # 41574255802 was cancelled at 190 seconds, and the file it left held the
-            # LAST frame - mean grey 0 - while the interesting ones, a lit screen at
-            # 49s and 159s, had already been overwritten.
-            #
-            # So every sample keeps its own file: screen-0049s.png, screen-0159s.png.
-            # The timeline survives whatever happens next, and a cancelled run uploads
-            # the whole of it.
-            if now - last_keep >= SAMPLE_KEEP_SECONDS:
-                last_keep = now
-                elapsed = int(now - started)
-                note(f"  {elapsed:4d}s  {sshstage.describe_shot(shot)}")
-                if screen_dir:
-                    try:
-                        import lastframe
-                        lastframe.convert(
-                            shot, os.path.join(screen_dir, f"screen-{elapsed:04d}s.png"))
-                    except Exception:  # noqa: BLE001 - a picture is not worth a run
-                        pass
-        else:
-            note(f"  {int(time.time() - started):4d}s  no frame yet")
+    def keep(shot, elapsed):
+        nonlocal last_keep
+        if not shot:
+            note(f"  {int(elapsed):4d}s  no frame yet")
+            return
+        seen.append(shot)
+        if elapsed - last_keep < SAMPLE_KEEP_SECONDS:
+            return
+        last_keep = elapsed
+        # ONE PNG PER SAMPLE, NAMED BY ITS SECOND.
+        #
+        # The first version wrote a single out/screen.png, overwritten each time. That is
+        # worse than nothing on a run that ends in a black screen: run 41574255802 was
+        # cancelled at 190 seconds, and the file it left held the LAST frame - mean grey 0
+        # - while the interesting ones, a lit screen at 49s and 159s, were overwritten.
+        #
+        # So every sample keeps its own file. The timeline survives whatever happens next,
+        # and a cancelled run uploads the whole of it.
+        note(f"  {int(elapsed):4d}s  {sshstage.describe_shot(shot)}")
+        if screen_dir:
+            try:
+                import lastframe
+                lastframe.convert(
+                    shot, os.path.join(screen_dir, f"screen-{int(elapsed):04d}s.png"))
+            except Exception:  # noqa: BLE001 - a picture is not worth a run
+                pass
 
-        if shot and desktop.is_desktop(shot):
-            note(f"a desktop is on screen after {time.time() - started:.0f}s")
-            return True
-
-        if time.time() - last_report >= 60:
-            last_report = time.time()
-            note(f"waiting {time.time() - started:.0f}s for a desktop")
-        time.sleep(12)
-
-    return False
+    return sshstage.wait_for_desktop(guest, shots, timeout, kb=kb,
+                                     on_sample=keep, say=note)
 
 
 def read_screen(path: str) -> str:
