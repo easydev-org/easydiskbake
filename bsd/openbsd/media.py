@@ -124,31 +124,34 @@ def build_media(iso_path: str, work: str, answers: str) -> str:
     # what actually runs here. The UEFI record is kept anyway: a medium that only boots
     # one way is a medium somebody will try to boot the other way, and the warning would
     # be a machine that does nothing rather than a message.
-    # cdboot IS THE EL TORITO IMAGE; cdbr IS A ONE-SHOT THAT FINDS IT BY LBA.
+    # THE BOOT IMAGE IS cdbr, FOUR SECTORS OF IT, AND THAT IS THE ONLY SHAPE THAT WORKS.
     #
-    # OpenBSD ships three pieces:
+    # Read out of the release ISO's El Torito catalog:
     #
-    #     cdbr        a 2 KB first-stage block whose last bytes name the LBA of cdboot.
-    #                 Those bytes are ZERO in the release image - read them - because the
-    #                 real number is written by whoever builds the ISO, and it depends on
-    #                 where cdboot lands in THAT build.
-    #     cdboot      the loader itself, 90 KB, and what actually reads /etc/boot.conf.
-    #     eficdboot   the UEFI equivalent.
+    #     bootable=True  lba=306586  sectors=4  (2048 bytes)
     #
-    # A repack changes every LBA, so a cdbr copied from the original points at whatever
-    # now sits at the old address. The result boots to nothing and says nothing, which
-    # is exactly what run 41613076306 recorded: no console output at all.
+    # Four 512-byte sectors - the size of cdbr, not of cdboot (90264 bytes, and 90264 is
+    # not even a multiple of 2048). Three attempts failed on this:
     #
-    # Naming cdboot as the boot image removes the indirection: xorriso places it and
-    # records where it went, so there is no stale number to be wrong.
+    #   1. only the BIOS record            no console output at all
+    #   2. both records                    still nothing
+    #   3. cdboot as the boot image        still nothing, because a non-sector-aligned
+    #                                      image cannot be loaded by a -no-emul-boot entry
+    #
+    # cdbr's own bytes tell the rest: it begins `31c08ed0...` and contains a far jump to
+    # 0x0740:0x0020, so it is POSITION DEPENDENT - it was assembled to sit at a particular
+    # address and to find cdboot at a particular LBA. That is why a copy of it cannot be
+    # moved, and why the ISO has to keep cdbr where xorriso puts it and let the catalog
+    # say where that is.
+    #
+    # WHAT MAKES THIS WORK IS -boot-load-size 4. Without it xorriso loads the whole file
+    # as the boot image, and 2048 bytes of cdbr followed by the rest of the volume is not
+    # what the catalog describes.
     efi = f"{release}/amd64/eficdboot"
-    boot_img = f"{release}/amd64/cdboot"
-    if not os.path.exists(os.path.join(tree, boot_img)):
-        boot_img = cdbr          # fall back to the chained form if cdboot is absent
-    log(f"boot image: {boot_img}")
+    log(f"boot image: {cdbr} (4 sectors)")
     cmd = [
         "xorriso", "-as", "mkisofs", "-o", media,
-        "-b", boot_img, "-no-emul-boot", "-c", catalog,
+        "-b", cdbr, "-no-emul-boot", "-boot-load-size", "4", "-c", catalog,
     ]
     if os.path.exists(os.path.join(tree, efi)):
         cmd += ["-eltorito-alt-boot", "-e", efi, "-no-emul-boot"]
