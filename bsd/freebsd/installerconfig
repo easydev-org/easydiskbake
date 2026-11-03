@@ -17,7 +17,64 @@
 # that is larger and slower to compress for no gain in a throwaway VM.
 
 PARTITIONS=DEFAULT
-DISTRIBUTIONS="kernel.txz base.txz"
+
+# NO DISTRIBUTIONS, BECAUSE THIS MEDIUM HAS NONE TO UNPACK.
+#
+# `DISTRIBUTIONS="kernel.txz base.txz"` was here and it is the reason every FreeBSD run
+# stopped at mount_aux with the disk stuck at 193 MiB. 15.1's disc1 is a PKGBASE image:
+#
+#     % xorriso -indev 15_1_RELEASE_AMD64_CD.iso -find /usr/freebsd-dist
+#     '/usr/freebsd-dist'
+#     '/usr/freebsd-dist/MANIFEST'          <- a manifest, and no .txz beside it
+#
+# The payload is 330 packages under /usr/freebsd-packages/offline instead, with
+# FreeBSD-set-base, FreeBSD-set-minimal, FreeBSD-kernel-generic and pkg among them.
+#
+# bsdinstall's script mode branches on exactly this - /usr/libexec/bsdinstall/script:
+#
+#     if [ -n "$COMPONENTS" -a -n "$DISTRIBUTIONS" ]; then error ...
+#     elif [ -z "$DISTRIBUTIONS" ]; then bsdinstall pkgbase --non-interactive
+#     else   exec 5>&1; BSDINSTALL_DISTDIR=$(fetchmissingdists) ...
+#
+# and fetchmissingdists goes to the mirror when a named set is not on the medium:
+#
+#     if [ ! -f $BSDINSTALL_DISTDIR/$dist ]; then FETCH_DISTRIBUTIONS="..."
+#     ...
+#     BSDINSTALL_DISTSITE=$(mirrorselect)      <- an interactive dialog
+#
+# Nothing answers that dialog. The run sat in it for fifty-two minutes - the console's
+# last line was "Running installation step: mount_aux", because mount_aux and
+# fetchmissingdists print nothing while they work, and the disk held at 193 MiB with
+# the partitions made and the filesystem mounted and not one file unpacked into it.
+#
+# Leaving the variable unset takes the pkgbase branch, which is what this image was built
+# for. COMPONENTS names what to install from it; the base set pulls in minimal, devel and
+# optional, so it is the whole system, and the generic kernel is separate in pkgbase.
+#
+#    base        everything that was in base.txz - minimal, devel, optional
+#    kernel-dbg  the debug kernel symbols, which 15.1's disc offers by default
+#
+# NO DISTRIBUTIONS AND NO COMPONENTS IS ALSO AN ANSWER: script mode then calls pkgbase
+# with no COMPONENTS, which selects "base" and "kernel-dbg" itself (pkgbase.in, the
+# non_interactive branch). Naming them is doing that deliberately rather than relying on
+# a default, and the debug symbols are 130 MiB that this disk does not need.
+#
+# BSDINSTALL_PKG_REPOS_DIR IS WHAT POINTS pkgbase AT THE MEDIUM. pkgbase.in defaults it
+# to /usr/share/bsdinstall, which holds only a network repository (FreeBSD-base.conf,
+# pkg+https://pkg.FreeBSD.org). The offline repository is
+# /usr/freebsd-packages/repos/FreeBSD-base-offline.conf, and bsdinstall's interactive
+# path sets exactly this variable when the user chooses "Offline (Limited Packages)".
+# Setting it in the preamble is the same choice, made once.
+#
+# AND BOTH HAVE TO BE EXPORTED. /usr/libexec/bsdinstall/pkgbase is a flua script, not a
+# shell function: it runs as a child process and reads these through os.getenv(). A
+# variable set but not exported in this preamble is invisible to it, and the failure
+# would be silent - pkgbase would fall back to /usr/share/bsdinstall's network
+# repository and try to reach pkg.FreeBSD.org from a guest that has an offline CD.
+COMPONENTS="base"
+BSDINSTALL_PKG_REPOS_DIR="/usr/freebsd-packages/repos/"
+export COMPONENTS
+export BSDINSTALL_PKG_REPOS_DIR
 
 # THE ROOT PASSWORD, PLAIN, BECAUSE THE INSTALLER WANTS IT THAT WAY. It accepts a
 # crypt(3) string through ROOTPASS_ENC as well; plain is used here because the hash has to

@@ -278,11 +278,31 @@ def main(argv: list[str]) -> int:
         # a filename inside it. Booting the kernel directly does not remove the need for
         # the ISO to be present.
     )
+    # -no-reboot IS WHAT MAKES "THE INSTALL FINISHED" A FACT INSTEAD OF A TIMEOUT.
+    #
+    # The autoinstall document ends with `shutdown: reboot`, and subiquity does exactly
+    # that. Without this flag the guest restarts into the installer it is still attached
+    # to - the same -kernel, the same initrd, the same ISO - and runs the install again,
+    # and again. `guest.alive()` then never becomes false, so the loop below waits out
+    # the whole of --timeout and exits through its else branch:
+    #
+    #     === THE INSTALLER DID NOT FINISH IN 3600s ===
+    #       the installer is still running; not booting the disk
+    #
+    # and boot_installed() never runs, so the second boot and the desktop are never
+    # recorded. Run 41629132156 is that: the disk stopped growing at 19,584 MiB - the
+    # install was COMPLETE - and the bake still had twenty minutes of its budget left
+    # when nothing further could happen.
+    #
+    # The docstring at the top of this file has described this flag since it was written.
+    # The argument itself was never in the list, which is why the description of the
+    # completion test and the completion test disagreed.
     drives = [
         "-kernel", kernel,
         "-initrd", initrd,
         "-drive", f"file={iso_path},media=cdrom,readonly=on",
         "-drive", f"file={disk},if=virtio,format=qcow2",
+        "-no-reboot",
     ]
     guest = vm.Guest(work, extra=drives, shape=shape,
                      stdout=os.path.join(work, "console.log"))
