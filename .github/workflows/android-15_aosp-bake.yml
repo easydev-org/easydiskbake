@@ -109,8 +109,19 @@ jobs:
             # unpacks the archive it produced, starts a guest on that /data, and reads
             # back the marker the bake wrote. Without this step the artifact is "a
             # system image we booted once"; with it, it is "this disk, which boots".
+            # THE ARCHIVE NAME IS WHATEVER THE BAKE WROTE. It cannot be a .tar.zst -
+            # 7z has no zstd method for a 7z container - so pack() names it .7z and
+            # returns that path. Finding it rather than naming it keeps this step from
+            # breaking the next time the format moves.
+            AVD=$(ls out/android15.* 2>/dev/null | head -1)
+            if [ -z "$AVD" ]; then
+              echo "=== NO AVD ARCHIVE IN out/ ==="
+              ls -la out/ || true
+              exit 1
+            fi
+            echo "validating $AVD"
             python3 android/15/validate.py \
-              --avd out/android15.tar.zst \
+              --avd "$AVD" \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
               --memory-mb "${{ inputs.memory_mb || '4096' }}"
 
@@ -160,7 +171,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: android15-avd
-          path: out/android15.tar.zst
+          # the bake names it .7z; a glob keeps this working either way
+          path: out/android15.*
           if-no-files-found: error
           retention-days: 7
           compression-level: 0   # already zstd
@@ -176,7 +188,8 @@ jobs:
             set -euo pipefail
             python3 lib/ci.py install-oras
             python3 lib/ci.py login --registry ghcr.io
-            python3 lib/publish_disk.py out/android15.tar.zst --kind android-15-aosp
+            AVD=$(ls out/android15.* | head -1)
+            python3 lib/publish_disk.py "$AVD" --kind android-15-aosp
 
       - name: what is in the package
         if: always()

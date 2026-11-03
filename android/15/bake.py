@@ -323,7 +323,10 @@ def main(argv: list[str]) -> int:
     # --- publish ------------------------------------------------------------
     log("repacking the AVD after its first boot")
     out = args.out if os.path.isabs(args.out) else os.path.join(work, "android15.tar.zst")
-    avd.pack(home, out)
+    # pack() MAY RENAME: the archive cannot be a .tar.zst made by 7z, so it returns
+    # whatever path it actually wrote. Using `out` here ignored that and reported a file
+    # that did not exist.
+    out = avd.pack(home, out)
     log(f"BAKED android15 -> {out} ({os.path.getsize(out) >> 20} MiB)")
 
     if args.publish:
