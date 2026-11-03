@@ -49,6 +49,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -56,6 +57,26 @@ import time
 
 def log(message: str) -> None:
     print(f"[live {time.strftime('%H:%M:%S')}] {message}", flush=True)
+
+
+def part_path(target: str) -> str:
+    """A temporary name ffmpeg will still recognise the format of.
+
+    THE SUFFIX GOES BEFORE THE EXTENSION. `install.mp4.part` has no extension as far as
+    ffmpeg is concerned, and it refuses to guess:
+
+        Unable to choose an output format for '.../install.mp4.part';
+        use a standard extension for the filename or specify the format manually
+
+    Every muxer in this module is chosen by extension - mp4 for the video, png for the
+    frame - so appending ".part" to the whole name breaks both. Run 41599424550 printed
+    that error every twenty seconds for the whole NixOS install, and the fix in the
+    temporary naming, not in the muxer list.
+    """
+    stem, dot, suffix = target.rpartition(".")
+    if not dot:
+        return target + ".part"
+    return f"{stem}.part.{suffix}"
 
 
 class LiveArtifacts:
@@ -155,9 +176,22 @@ class LiveArtifacts:
 
         # A frame that is still being written cannot be read; skip this round rather than
         # writing a truncated PNG over a good one.
+        #
+        # THE MODULE IS FOUND RELATIVE TO THIS FILE, NOT TO sys.path. Every caller here
+        # adds the repository root to sys.path, and lastframe lives in lib/ - so
+        # `import lastframe` resolved only in the bakes that also inserted lib/ itself.
+        # The BSD bakes do not, and run 41599358426 printed
+        #
+        #     could not update the artifacts: No module named 'lastframe'
+        #
+        # every twenty seconds for the whole install. The recording is the artifact that
+        # explains a failure, and this was silently losing half of it.
+        lib_dir = os.path.dirname(os.path.abspath(__file__))
+        if lib_dir not in sys.path:
+            sys.path.insert(0, lib_dir)
         import lastframe
 
-        tmp = self.last_frame + ".part"
+        tmp = part_path(self.last_frame)
         try:
             if not lastframe.convert(newest, tmp):
                 if os.path.exists(tmp):
@@ -199,7 +233,7 @@ class LiveArtifacts:
             if n == 0:
                 return False
 
-            tmp = self.video + ".part"
+            tmp = part_path(self.video)
             result = subprocess.run(
                 [
                     "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",

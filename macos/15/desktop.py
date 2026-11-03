@@ -44,7 +44,26 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, REPO)
 
-from lib import compress, desktop, live as livelib, machine, smoke, vm  # noqa: E402
+# `desktop` IS NOT IMPORTED FROM lib HERE, AND IT CANNOT BE BY NAME.
+#
+# This file is macos/15/desktop.py, and sys.path has macos/15 first so that `machine` and
+# `opencore` resolve - which means `from lib import desktop` finds THIS file, not
+# lib/desktop.py, and fails with "cannot import name 'machine' from 'lib'". Run
+# 41599405096 died on exactly that, before a single line of the bake.
+#
+# lib/desktop.py is the wallpaper test. It is loaded under a different name below.
+from lib import compress, live as livelib, machine, smoke, vm  # noqa: E402
+
+
+def _wallpaper_test():
+    """lib/desktop.py, loaded under a name that cannot collide with this file."""
+    import importlib.util
+
+    path = os.path.join(REPO, "lib", "desktop.py")
+    spec = importlib.util.spec_from_file_location("lib_desktop", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def log(message: str) -> None:
@@ -189,7 +208,7 @@ def wait_for_desktop(guest: vm.Guest, frames: str, timeout: int) -> bool:
         if not guest.alive():
             log("qemu exited before a desktop appeared")
             return False
-        if desktop.reached_desktop(shots):
+        if _wallpaper_test().reached_desktop(shots):
             log(f"a macOS desktop is on screen ({(time.time() - started):.0f}s)")
             settle = int(os.environ.get("DESKTOP_SETTLE_SECONDS", "30"))
             log(f"letting the guest settle for {settle}s before stopping it")

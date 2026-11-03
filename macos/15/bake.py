@@ -53,7 +53,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import compress  # noqa: E402
 import live as livelib  # noqa: E402
-import desktop  # noqa: E402
 import machine  # noqa: E402
 import images  # noqa: E402
 import iso  # noqa: E402

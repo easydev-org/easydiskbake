@@ -37,7 +37,19 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, REPO)
 
+# lib/desktop.py IS LOADED BY PATH, NOT BY NAME. macos/15 is on sys.path for `machine`,
+# and macos/15/desktop.py would resolve first - see the same note in that file.
 from lib import compress, live as livelib, machine, smoke, vm  # noqa: E402
+
+
+def _wallpaper_test():
+    import importlib.util
+
+    path = os.path.join(REPO, "lib", "desktop.py")
+    spec = importlib.util.spec_from_file_location("lib_desktop", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 # The password the desktop stage was given. Remote Login is turned on from a root shell
 # started with sudo, so this is the account's password, not root's.
@@ -159,7 +171,7 @@ def wait_for_desktop(guest: vm.Guest, frames: str, timeout: int) -> bool:
         if not guest.alive():
             log("qemu exited before a desktop appeared")
             return False
-        if desktop.reached_desktop(shots):
+        if _wallpaper_test().reached_desktop(shots):
             log(f"a macOS desktop is on screen ({(time.time() - started):.0f}s)")
             return True
         time.sleep(5)

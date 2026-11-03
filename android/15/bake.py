@@ -111,7 +111,14 @@ def main(argv: list[str]) -> int:
             # android-15_aosp-publish.yml was not run, and that is worth seeing at second ten.
             log(f"pulling {tag} from ghcr")
             try:
-                iso.fetch_iso(tag, archive)
+                # fetch_tag, NOT fetch_iso: the tag is already exact.
+                #
+                # fetch_iso prepends "iso-", which is right for the installer images
+                # (iso-ubuntu, iso-nixos) and wrong here - publish_android.py takes
+                # "sysimg:android-15-aosp" and publishes it as "sysimg-android-15-aosp"
+                # with no "iso-" anywhere. Run 41599434278 asked for
+                # "iso-sysimg-android-15-aosp" and got "no manifest for tag".
+                iso.fetch_tag(tag, archive)
             except iso.IsoError as exc:
                 raise SystemExit(
                     f"{tag} is not in this repository's ghcr package: {exc}\n\n"

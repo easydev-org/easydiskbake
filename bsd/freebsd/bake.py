@@ -96,7 +96,24 @@ def build_media(iso_path: str, work: str) -> str:
     log("unpacking the ISO")
     result = subprocess.run(["7z", "x", "-y", f"-o{tree}", iso_path],
                             capture_output=True, text=True)
-    if result.returncode != 0:
+    # A NON-ZERO EXIT IS NOT ALWAYS A FAILED UNPACK, and this one never is.
+    #
+    # FreeBSD's ISO contains symlinks that point outside their directory - etc/os-release
+    # -> ../var/run/os-release, sbin/nologin -> ../usr/sbin/nologin - and 7z refuses to
+    # create them:
+    #
+    #     ERROR: Dangerous link path was ignored : etc/os-release : ../var/run/os-release
+    #
+    # It then exits 1. Run 41599346958 stopped there, before a single file had been looked
+    # at, and the tree it had written was complete for every purpose this bake has: the
+    # mfsroot is a regular file, and the symlinks it skipped are inside the LIVE system's
+    # filesystem, which this never mounts.
+    #
+    # So the judgement is whether the tree holds what is needed, not what 7z returned.
+    # Anything else it complains about still shows up as a missing mfsroot below.
+    if "Dangerous link path was ignored" in (result.stderr or result.stdout or ""):
+        log("  7z skipped symlinks pointing outside the tree; that is expected here")
+    elif result.returncode != 0:
         raise SystemExit(
             f"could not unpack {iso_path}: {(result.stderr or result.stdout)[:400]}")
 
