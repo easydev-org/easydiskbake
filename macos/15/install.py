@@ -100,7 +100,14 @@ CONTINUE_MENU = (1142, 586)
 #
 # The last two both worked, which is what makes this a refinement rather than a fix:
 # the control's hit area is a few pixels wide in y, and 295 and 305 are both inside it.
-ERASE_BUTTON = (1290, 305)
+#
+# 305 -> 300 BY INSTRUCTION, five pixels up. 305 is the value that was in use when runs
+# 41626151499 and 41632393923 clicked Erase and the sheet did not appear; 295 is the value
+# that opened it. 300 is the midpoint of the two measurements that have worked, and it is
+# a deliberate move toward the smaller of them rather than a new guess - the control's
+# vertical extent is narrow, and the failures at 306, 309, 311 and 314 are all above it.
+# The click is still made three times, five seconds apart; see select_and_erase().
+ERASE_BUTTON = (1290, 300)
 
 # Sidebar rows under "Internal", 28px apart, x=540 inside the labels. Five rows because
 # the count differs between Show Only Volumes (one) and Show All Devices (four), and a
