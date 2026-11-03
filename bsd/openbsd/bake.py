@@ -46,11 +46,20 @@ sys.path.insert(0, REPO)
 
 from lib import bsdinstall, compress, iso as isolib, live as livelib, serial, vm  # noqa: E402
 
+sys.path.insert(0, HERE)
+from media import build_media  # noqa: E402
+
 OPENBSD_TAG = "iso-openbsd"
 
 
 def log(message: str) -> None:
     print(f"[openbsd {time.strftime('%H:%M:%S')}] {message}", flush=True)
+
+
+def installer_config() -> str:
+    """bsd/openbsd/install.conf, which goes on the medium and documents the answers."""
+    with open(os.path.join(HERE, "install.conf"), encoding="utf-8") as fh:
+        return fh.read()
 
 
 def answers() -> list[tuple[str, float]]:
@@ -122,6 +131,19 @@ def main(argv: list[str]) -> int:
                 f"Run iso-publish.yml for openbsd first.") from exc
     log(f"iso {os.path.getsize(iso_path) >> 20} MiB")
 
+    # THE MEDIUM IS REBUILT, AND IT HAS TO BE.
+    #
+    # bsd.rd prints to pc0 - the VGA - unless the MEDIA's /etc/boot.conf says
+    # `set tty com0`. Nothing on a kernel command line changes that: the boot loader reads
+    # boot.conf from the image. Run 41606534139 typed every answer into a console the
+    # installer was not listening to, and its log showed fifteen `[serial] >` lines and
+    # not one line from the guest.
+    #
+    # The same repack also puts /etc/install.conf on the medium, so a person booting it by
+    # hand gets the identical run.
+    media = build_media(iso_path, work, installer_config())
+    log(f"installer media: {media}")
+
     disk = os.path.join(work, "disk.qcow2")
     if os.path.exists(disk):
         os.unlink(disk)
@@ -137,7 +159,7 @@ def main(argv: list[str]) -> int:
         serial_pipe=ser.stdin.removesuffix(".in"),
     )
     drives = [
-        "-drive", f"file={iso_path},media=cdrom,readonly=on",
+        "-drive", f"file={media},media=cdrom,readonly=on",
         "-drive", f"file={disk},if=virtio,format=qcow2",
     ]
     guest = vm.Guest(work, extra=drives, shape=shape, stdout=os.devnull)

@@ -389,9 +389,23 @@ def main(argv: list[str]) -> int:
         # own boot takes a little under two minutes before it prints the prompt.
         log("waiting 115s for the live medium to reach a shell")
         time.sleep(115)
-        for line, wait in partition_script():
-            ser.say(line, wait=wait)
-        ser.close()
+        # THE LAST COMMAND ENDS THE MACHINE, SO THE SERIAL STAYS OPEN UNTIL IT DOES.
+        #
+        # The loop's `wait` is the gap between commands, not a deadline - and the final
+        # entry is `nixos-install ...; sync; sleep 5; poweroff`, which takes minutes.
+        # Closing the writer after its 40-second gap gave qemu EOF on the serial chardev
+        # and qemu exited there, mid-install: run 41609769569 shows the console stopping
+        # on "bu" (the start of "building ...") and `the guest powered off` fifty-one
+        # seconds later, with neither INSTALL_RC nor the disk fallback present because
+        # the command never reached its own echo.
+        #
+        # So everything but the last line is sent with its gap, the last line is sent
+        # without a further wait, and the drain thread keeps reading until the guest is
+        # gone. ser.close() happens in the finally block.
+        script = partition_script()
+        for index, (line, wait) in enumerate(script):
+            last = index == len(script) - 1
+            ser.say(line, wait=0 if last else wait)
 
         log(f"waiting up to {args.timeout}s for the guest to power itself off")
         deadline = time.time() + args.timeout
@@ -404,6 +418,9 @@ def main(argv: list[str]) -> int:
             log(f"=== THE GUEST DID NOT POWER OFF IN {args.timeout}s ===")
     finally:
         guest.stop()
+        # CLOSED AFTER THE MACHINE, NOT BEFORE IT. Closing the writer earlier sends EOF
+        # down qemu's serial chardev, which qemu treats as the console going away.
+        ser.close()
         snap.terminate()
         try:
             snap.wait(timeout=5)

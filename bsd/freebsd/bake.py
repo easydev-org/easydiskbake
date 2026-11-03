@@ -76,6 +76,30 @@ def build_installerconfig() -> str:
     return body.replace("@POST_INSTALL@", script)
 
 
+def volume_label(iso_path: str) -> str:
+    """The ISO's own volume label, read from its Primary Volume Descriptor.
+
+    THE MEDIA FINDS ITSELF BY THIS STRING. FreeBSD's loader mounts its root as
+    cd9660:/dev/iso9660/<label>, so a repack that renames it produces a machine that
+    boots to "waiting for device ... failed with error 19" and a manual-root prompt -
+    which is exactly what run 41606524055 showed.
+
+    Sector 16 holds the PVD; the label is 32 bytes at offset 40 in it. Read rather than
+    hardcoded, because the next release is a different string.
+    """
+    with open(iso_path, "rb") as fh:
+        fh.seek(16 * 2048)
+        pvd = fh.read(2048)
+    if len(pvd) < 2048 or pvd[0:1] != b"\x01":
+        raise SystemExit(
+            f"{iso_path} has no ISO9660 Primary Volume Descriptor at sector 16, so its "
+            f"volume label cannot be read - and the repack must keep that label.")
+    label = pvd[40:72].decode("ascii", "replace").strip()
+    if not label:
+        raise SystemExit(f"{iso_path}'s volume label is empty")
+    return label
+
+
 def build_media(iso_path: str, work: str) -> str:
     """The installation ISO with /etc/installerconfig added to it.
 
@@ -159,12 +183,32 @@ def build_media(iso_path: str, work: str) -> str:
 
     # The repack keeps the El Torito record that makes it bootable: boot/cdboot for BIOS
     # and boot/boot1.efi for UEFI, both of which this image carries.
+    #
+    # THE VOLUME LABEL IS THE ORIGINAL ONE, AND RUN 41606524055 IS WHY IT HAS TO BE.
+    #
+    # FreeBSD's loader is built to mount its root by LABEL:
+    #
+    #     vfs.root.mountfrom=cd9660:/dev/iso9660/15_1_RELEASE_AMD64_CD
+    #
+    # so after the repack the machine said
+    #
+    #     mountroot: waiting for device /dev/iso9660/15_1_RELEASE_AMD64_CD...
+    #     Mounting from cd9660:/dev/iso9660/15_1_RELEASE_AMD64_CD failed with error 19
+    #
+    # and stopped at the manual-root prompt. Error 19 is ENODEV: the device the loader
+    # names does not exist, because the repack had renamed it FREESD_INSTALL. The label
+    # is not a description, it is how the media finds itself.
+    #
+    # It is read from the source image rather than written here, so a new release with a
+    # new label keeps working.
+    label = volume_label(iso_path)
+    log(f"volume label: {label}")
     media = os.path.join(work, "freebsd-install.iso")
     repack = subprocess.run([
         "xorriso", "-as", "mkisofs", "-o", media,
         "-b", "boot/cdboot", "-no-emul-boot", "-c", "boot/boot.catalog",
         "-eltorito-alt-boot", "-e", "boot/boot1.efi", "-no-emul-boot",
-        "-J", "-R", "-V", "FREESD_INSTALL", tree,
+        "-J", "-R", "-V", label, tree,
     ], capture_output=True, text=True)
     if repack.returncode != 0:
         raise SystemExit(
