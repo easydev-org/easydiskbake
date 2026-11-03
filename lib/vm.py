@@ -87,7 +87,19 @@ class Shape:
     # for four runs. The Windows driver types rather than clicks, so a wrong size was
     # not fatal there - but a launch-windows recording at 1280x800 is a picture of a
     # desktop nobody will ever see.
-    resolution: tuple[int, int] | None = None
+    #
+    # 1920x1080 IS THE DEFAULT, NOT None, AND THAT IS THE FIX FOR RUN 41584280121.
+    #
+    # None meant "let the firmware choose", and OVMF chooses 1280x800. So bake.py,
+    # ssh.py and devtools.py each installed and inspected Windows at 1280x800 while
+    # launch_windows.py photographed it at 1920x1080 - four stages of one pipeline on
+    # two different screens. The frames from the ssh stage prove it: 1280x800, and the
+    # desktop failed lib/desktop.py's saturation test at 0.0966 against a 0.10
+    # threshold, because the taskbar occupies the sampled bottom band at that size.
+    #
+    # Passing None is still allowed for a caller that genuinely wants the firmware
+    # default - Windows setup's own graphics are drawn at whatever the adapter reports.
+    resolution: tuple[int, int] | None = (1920, 1080)
     # The CPU model, and "" means "-cpu host".
     #
     # macOS cannot use "host": its kernel reads the CPU's family and model and refuses
@@ -225,9 +237,16 @@ def build_args(work: str, extra: list[str] | None = None,
             "-device", "tpm-crb,tpmdev=tpm0",
         ]
 
-    # -vga and -device VGA are mutually exclusive; a caller wanting vgamem_mb
-    # passes vga="none" and its own -device.
-    if shape.resolution:
+    # -vga AND -device ARE EXCLUSIVE, AND vga="none" MEANS THE CALLER BRINGS ITS OWN.
+    #
+    # The order here is deliberate. vga="none" wins: macOS passes it and puts a
+    # virtio-vga in extra_args with its own xres/yres, and adding a second VGA from this
+    # branch would give the guest two adapters. That was harmless while resolution
+    # defaulted to None and macOS was the only caller using "none" - it is not harmless
+    # now that 1920x1080 is the default for everybody.
+    if shape.vga == "none":
+        pass
+    elif shape.resolution:
         # -device VGA, not -vga std: only the device form takes xres/yres.
         #
         # VGAMEM_MB IS NOT OPTIONAL AT THIS SIZE. -vga std and -device VGA default to
@@ -242,7 +261,7 @@ def build_args(work: str, extra: list[str] | None = None,
         # virtio-vga path in macos/15/machine.py has been using.
         width, height = shape.resolution
         args += ["-device", f"VGA,xres={width},yres={height},vgamem_mb=32"]
-    elif shape.vga != "none":
+    else:
         args += ["-vga", shape.vga]
 
     # Machine-level flags that are not a device and not a -global the caller can put in
