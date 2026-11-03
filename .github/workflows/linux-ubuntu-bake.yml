@@ -98,6 +98,11 @@ jobs:
           path: |
             out/install.mp4
             out/last-frame.png
+            # THE GUEST'S CONSOLE. It is not console.log any more: the bake now puts the
+            # serial on a fifo chardev so it can be read and driven, and lib/serial.py
+            # writes what the guest said to serial.out.log. qemu's own stdout carries
+            # only warnings, so console.log would be an almost empty file.
+            out/serial.out.log
             out/console.log
             # WHY THE FRAME CAPTURE STOPPED, WHEN IT DOES.
             #

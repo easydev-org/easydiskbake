@@ -62,7 +62,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -75,6 +74,7 @@ sys.path.insert(0, os.path.join(REPO, "lib"))
 import lastframe  # noqa: E402
 import live as livelib  # noqa: E402
 import serial  # noqa: E402
+import session  # noqa: E402
 import vm  # noqa: E402
 
 # THE SIX DESKTOPS derive.py CAN BUILD, and the only names this accepts. A tag is
@@ -110,9 +110,8 @@ SESSION_PROCESS = {
 # the configuration this bake wrote.
 BOOTED_MARKER = "Welcome to NixOS"
 
-# THE ACCOUNT, WHICH IS THE SAME ONE EVERY IMAGE IN THIS REPOSITORY USES.
-SSH_USER = "docker"
-SSH_PASSWORD = "admin"
+# THE ACCOUNT AND THE SSH CONVERSATION LIVE IN lib/session.py, because Ubuntu and Kubuntu
+# judge their second boot the same way. The password is the one every image here uses.
 
 
 def log(message: str) -> None:
@@ -183,184 +182,6 @@ def wait_for_console(console: str, marker: str, seconds: int, note) -> bool:
         time.sleep(5)
     note(f"=== THE CONSOLE NEVER SAID {marker!r} IN {seconds}s ===")
     return False
-
-
-def ssh(port: int, command: str, timeout: int = 30) -> tuple[int, str]:
-    """Run one command in the guest. Returns (exit status, combined output).
-
-    NO KEY, NO TERMINAL. The password is the one every image here uses, and sshpass is
-    what supplies it - there is no tty to prompt at.
-
-    StrictHostKeyChecking=off and UserKnownHostsFile=/dev/null because this is a fresh
-    guest on a forwarded port every run: a known-hosts file would either grow without
-    bound or refuse the connection, and neither is a fact about the disk.
-    """
-    if not shutil.which("sshpass"):
-        return 127, "sshpass is not installed"
-    argv = [
-        "sshpass", "-p", SSH_PASSWORD,
-        "ssh", "-p", str(port),
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "GlobalKnownHostsFile=/dev/null",
-        "-o", "LogLevel=ERROR",
-        "-o", "ConnectTimeout=10",
-        "-o", "PreferredAuthentications=password",
-        "-o", "PubkeyAuthentication=no",
-        f"{SSH_USER}@127.0.0.1",
-        command,
-    ]
-    try:
-        result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return 124, f"the command did not finish in {timeout}s"
-    except OSError as exc:
-        return 126, str(exc)
-    return result.returncode, (result.stdout + result.stderr).strip()
-
-
-def wait_for_ssh(port: int, seconds: int, note) -> bool:
-    """Wait until sshd answers and the account can log in.
-
-    THE BANNER IS NOT ENOUGH - this runs a command, because a socket that accepts a
-    connection and then refuses authentication is a different failure and has been one
-    here before. `true` is the smallest command that proves a shell ran.
-    """
-    deadline = time.time() + seconds
-    started = time.time()
-    while time.time() < deadline:
-        status, out = ssh(port, "true", timeout=20)
-        if status == 0:
-            note(f"ssh answers after {time.time() - started:.0f}s")
-            return True
-        time.sleep(10)
-    note(f"=== SSH DID NOT ANSWER IN {seconds}s ===")
-    note(f"  last output: {out[:300]}")
-    return False
-
-
-def check_wayland_session(port: int, desktop: str, note) -> bool:
-    """The verdict: a Wayland session exists and its compositor is running.
-
-    THREE QUESTIONS, AND ALL THREE HAVE TO BE YES.
-
-        1. loginctl lists a session whose Type is wayland
-        2. that session is a real user session, not a greeter's
-        3. the compositor process for THIS desktop is running inside it
-
-    The first alone would pass a disk where the session registered and then died; the
-    third alone would pass a compositor that started outside any session. Together they
-    say what the stage exists to say.
-
-    AN X11 SESSION IS A FAILURE. Every one of these six disks is configured for Wayland -
-    labwc, hyprland and miracle-wm are wayland-only compositors, and gnome, kde and cosmic
-    all run their Wayland session on this configuration. An `x11` type means something
-    fell back, and passing it would be passing a system that is not the one that was built.
-
-    WHICH SESSION IS WHICH IS ASKED, NOT INFERRED. `loginctl list-sessions` reports
-    SESSION, UID, USER, SEAT and TTY - and NOT the type. The type is per-session and comes
-    from `show-session <id> -p Type`, so this asks once per id. A version that adds a
-    column to list-sessions cannot break it, because only the first field is read.
-    """
-    process = SESSION_PROCESS[desktop]
-
-    # --value is what makes this a bare `wayland` rather than `Type=wayland`, and the
-    # Active check matters: a session that is registered but inactive is the shape of a
-    # greeter that logged out, which is not a desktop.
-    probe = (
-        "for s in $(loginctl list-sessions --no-legend --no-pager 2>/dev/null | awk '{print $1}'); do "
-        "  printf '%s|%s|%s|%s\\n' \"$s\" "
-        "    \"$(loginctl show-session \"$s\" -p Type --value 2>/dev/null)\" "
-        "    \"$(loginctl show-session \"$s\" -p Class --value 2>/dev/null)\" "
-        "    \"$(loginctl show-session \"$s\" -p Active --value 2>/dev/null)\"; "
-        "done"
-    )
-    status, sessions = ssh(port, probe)
-    if status != 0:
-        note(f"  loginctl could not be read: {sessions[:200]}")
-        return False
-
-    note(f"  sessions (id|type|class|active): {sessions.splitlines() or '(none)'}")
-
-    wayland = []
-    x11 = []
-    for line in sessions.splitlines():
-        fields = line.split("|")
-        if len(fields) < 4:
-            continue
-        session_id, session_type, session_class, active = fields[:4]
-        if active.strip().lower() not in ("yes", "1", "true"):
-            continue
-        kind = session_type.strip().lower()
-        # THE GREETER'S OWN SESSION IS NOT A DESKTOP. greetd, sddm and gdm each register a
-        # session of their own before any user session exists, and on this configuration
-        # the greeter's is Wayland too - so a type test alone would pass a disk sitting at
-        # a login prompt. `Class` is what separates them: logind reports `greeter` for the
-        # display manager's session and `user` for the one with the desktop in it.
-        klass = session_class.strip().lower()
-        if klass not in ("user", "manager"):
-            note(f"  ignoring session {session_id}: class {klass!r} is a greeter, not a desktop")
-            continue
-        if kind == "wayland":
-            wayland.append(session_id.strip())
-        elif kind == "x11":
-            x11.append(session_id.strip())
-
-    if x11 and not wayland:
-        note(f"=== AN X11 SESSION INSTEAD OF WAYLAND: {x11} ===")
-        note("  every disk here is configured for Wayland; an x11 session means it fell back")
-        return False
-
-    if not wayland:
-        note("=== NO ACTIVE USER WAYLAND SESSION ===")
-        note("  the system booted and answers on ssh, so this is the desktop itself")
-        status, log = ssh(
-            port,
-            "journalctl -b --no-pager -n 40 "
-            "-u greetd -u sddm -u gdm -u display-manager 2>/dev/null | tail -30 || true",
-        )
-        for line in log.splitlines()[-20:]:
-            note(f"  journal: {line}")
-        return False
-
-    # The session is there. Now the process that has to own it.
-    status, procs = ssh(port, f"pgrep -af '{process}' 2>/dev/null | head -5 || true")
-    if not procs.strip():
-        note(f"=== NO '{process}' PROCESS, THOUGH A WAYLAND SESSION EXISTS ===")
-        note("  the greeter registered a session whose compositor is not running")
-        status, log = ssh(
-            port,
-            "journalctl -b --no-pager -n 60 "
-            "-u greetd -u sddm -u gdm -u display-manager 2>/dev/null | tail -30 || true",
-        )
-        for line in log.splitlines()[-20:]:
-            note(f"  journal: {line}")
-        return False
-
-    note(f"wayland session(s) {wayland} running {process}")
-    for line in procs.splitlines()[:3]:
-        note(f"  process: {line.strip()}")
-
-    # WAYLAND_DISPLAY IN THE COMPOSITOR'S OWN ENVIRONMENT, which is the proof that a
-    # Wayland socket exists - not merely that a process with the right name is in the
-    # table. It also catches a compositor started with XWAYLAND off into an X server.
-    status, envout = ssh(
-        port,
-        "for p in $(pgrep -f '" + process + "' | head -1); do "
-        "tr '\\0' '\\n' < /proc/$p/environ 2>/dev/null "
-        "| grep -E '^(WAYLAND_DISPLAY|XDG_SESSION_TYPE)=' ; done",
-    )
-    for line in envout.splitlines():
-        note(f"  env: {line.strip()}")
-    if "XDG_SESSION_TYPE=x11" in envout:
-        note("=== THE COMPOSITOR'S OWN ENVIRONMENT SAYS X11 ===")
-        return False
-    if "WAYLAND_DISPLAY=" not in envout:
-        note("=== THE COMPOSITOR HAS NO WAYLAND_DISPLAY ===")
-        note("  a process by that name is running but is not serving a Wayland socket")
-        return False
-
-    return True
 
 
 def take_screenshot(guest, artifacts: str, note) -> str:
@@ -514,7 +335,7 @@ def main(argv: list[str]) -> int:
             take_screenshot(guest, artifacts, note)
             return finish(1)
 
-        if not wait_for_ssh(args.ssh_port, args.boot_timeout, note):
+        if not session.wait_for_ssh(args.ssh_port, min(args.boot_timeout, 600), note):
             note("  the system booted but never answered on ssh")
             take_screenshot(guest, artifacts, note)
             return finish(1)
@@ -526,7 +347,7 @@ def main(argv: list[str]) -> int:
             if not guest.alive():
                 note("qemu exited while waiting for the session")
                 break
-            if check_wayland_session(args.ssh_port, desktop, note):
+            if session.check_wayland_session(args.ssh_port, SESSION_PROCESS[desktop], note):
                 note(f"the {desktop} Wayland session is up after "
                      f"{time.time() - started:.0f}s")
                 passed = True

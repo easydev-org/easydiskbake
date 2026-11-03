@@ -47,7 +47,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, REPO)
 
-from lib import compress, iso, live as livelib, smoke, vm  # noqa: E402
+from lib import compress, iso, live as livelib, serial, session, smoke, vm  # noqa: E402
 
 CONFIG_PORT = 8000
 KUBUNTU_TAG = "iso-ubuntu"
@@ -158,19 +158,22 @@ def boot_installed(work: str, args, disk: str) -> bool:
             every=float(os.environ.get("LIVE_ARTIFACT_SECONDS", "20")),
         )
 
-        log(f"  watching the installed system for up to {args.timeout}s")
-        deadline = time.time() + args.timeout
-        started = time.time()
-        while time.time() < deadline:
-            if not guest.alive():
-                log("  the guest exited during the second boot")
-                return False
-            elapsed = int(time.time() - started)
-            if elapsed % 120 < 15:
-                log(f"  {elapsed}s since the disk was started")
-            time.sleep(15)
-        log("  the watch window ended; the frames say what it was showing")
-        return True
+        # THE DESKTOP IS VERIFIED BY ITS WAYLAND SESSION, NOT BY ITS PIXELS.
+        #
+        # This used to watch for the whole of --timeout and then return True regardless -
+        # "the watch window ended; the frames say what it was showing". Two consequences,
+        # both bad: every bake spent an hour here doing nothing, and nothing was ever
+        # verified. Run 41638400412 sat at "2640s since the disk was started" with a
+        # desktop that had been up for most of it.
+        #
+        # So this logs in and asks the running system, exactly as linux/nixos/launch.py
+        # does: an active Wayland session whose Class is not a greeter, with the desktop's
+        # compositor running and serving a WAYLAND_DISPLAY socket. A picture cannot answer
+        # that - it cannot tell a compositor that does not draw on the emulated adapter
+        # from one that never started.
+        return session.wait_for_wayland(
+            args.ssh_port, args.compositor, args.timeout, log,
+            ssh_seconds=min(args.timeout, 600))
     finally:
         guest.stop()
         if snap2 is not None:
@@ -197,6 +200,16 @@ def main(argv: list[str]) -> int:
     # workflow is the sum of both plus the encode.
     p.add_argument("--timeout", type=int, default=3600,
                    help="seconds EACH phase may run: the install, then the second boot")
+    # THE SECOND BOOT IS JUDGED OVER SSH, SO THE FORWARDED PORT AND THE COMPOSITOR'S NAME
+    # ARE INPUTS. lib/vm.py forwards 2222 -> 22 by default; the compositor is which binary
+    # proves the session is up, and it differs per flavour:
+    #     ubuntu    gnome-shell, the GNOME session's compositor
+    #     kubuntu   kwin_wayland (NOT plasmashell - kwin owns the display server and is
+    #               the process that fails when there is no DRM node)
+    p.add_argument("--ssh-port", type=int, default=2222,
+                   help="host port forwarded to the guest's 22")
+    p.add_argument("--compositor", default="kwin_wayland",
+                   help="the process that proves the Wayland session is running")
     args = p.parse_args(argv)
 
     work = args.work or os.path.dirname(os.path.abspath(args.out)) or "."
@@ -269,10 +282,22 @@ def main(argv: list[str]) -> int:
         "ip=dhcp console=ttyS0,115200n8"
     )
 
+    # A SERIAL PIPE, SO THE SECOND BOOT CAN BE DRIVEN OVER SSH AND ITS SESSION READ.
+    #
+    # The installer stage already prints to console=ttyS0 through qemu's stdio, which is
+    # enough for subiquity. The second boot needs more: the desktop is verified by logging
+    # in and asking logind whether a Wayland session exists - the same verdict
+    # linux/nixos/launch.py uses, and for the same reason. A pixel test cannot tell a
+    # compositor that does not draw on the emulated adapter from one that failed to start.
+    #
+    # The chardev is on a fifo because lib/serial.py owns the guest's console for this
+    # bake; qemu's stdout then carries only warnings. See `stdout=` on the Guest below.
+    ser = serial.Serial(work, "serial")
     shape = vm.Shape(
         cpus=args.cpus, mem_mb=args.mem, machine="q35",
         vga="std",
         kernel_append=append,
+        serial_pipe=ser.stdin.removesuffix(".in"),
         # THE ISO IS STILL ATTACHED. The autoinstall document names no package source;
         # subiquity installs from the medium it booted from, and it finds that medium by
         # a filename inside it. Booting the kernel directly does not remove the need for
@@ -304,10 +329,15 @@ def main(argv: list[str]) -> int:
         "-drive", f"file={disk},if=virtio,format=qcow2",
         "-no-reboot",
     ]
-    guest = vm.Guest(work, extra=drives, shape=shape,
-                     stdout=os.path.join(work, "console.log"))
+    # THE CONSOLE IS A CHARDDEV ON A FIFO, so qemu's own stdout carries only warnings.
+    # lib/serial.py reads the guest's side into out/serial.out.log, which the workflow
+    # uploads - see `stdout=os.devnull` and the note in linux/nixos/derive.py, where
+    # pointing stdout at a log produced an empty file that looked like a silent guest.
+    guest = vm.Guest(work, extra=drives, shape=shape, stdout=os.devnull)
     try:
         guest.start()
+        # OPENED AFTER QEMU, because a fifo has no writer until qemu starts reading.
+        ser.open(timeout=60)
 
         # THE GUEST IS A SCREEN AS WELL AS A CONSOLE, so it is recorded. A text installer
         # still draws a framebuffer - subiquity's console is on tty1 as well as ttyS0 -
@@ -361,6 +391,9 @@ def main(argv: list[str]) -> int:
                 else "=== THE INSTALLED SYSTEM DID NOT REACH A DESKTOP ===")
     finally:
         guest.stop()
+        # AFTER guest.stop(), NOT BEFORE. Closing the writer first tells qemu its console
+        # is gone, and a guest mid-shutdown then loses the line that says why.
+        ser.close()
         snap.terminate()
         try:
             snap.wait(timeout=5)

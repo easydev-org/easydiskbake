@@ -42,17 +42,64 @@ sysrc sshd_enable=YES
 sysrc ifconfig_DEFAULT=DHCP
 echo 'PasswordAuthentication yes' >> /etc/ssh/sshd_config
 
+# --- network ----------------------------------------------------------------
+#
+# SCRIPT MODE NEVER RUNS netconfig, SO THE INSTALLER HAS NO NAME RESOLUTION.
+#
+# bsdinstall's `auto` target asks the user for a network configuration and writes it into
+# the new system; `script` mode skips that menu entirely, and nothing else does it. The
+# result is a guest with a virtio NIC, an empty /etc/resolv.conf and no route - so any
+# command that reaches the internet fails with:
+#
+#     pkg: Error fetching https://pkg.FreeBSD.org/...: Non-recoverable resolver failure
+#
+# Run 41638444422 hit exactly that. Its pkgbase install had COMPLETED - 214 of 214
+# packages unpacked, bootconfig and config done - and then this script's `pkg bootstrap`
+# died on DNS, and `set -e` took the whole post-install with it.
+#
+# dhclient on the interface is what the installer's own netconfig would have run. The name
+# is looked up rather than assumed: vtnet0 on a VM, em0 on some images, and a hardcoded
+# name is a bug that only shows on the machine that is not this one.
+iface=$(ifconfig -l | tr ' ' '\n' | grep -vE '^(lo|enc|bridge|pflog|pfsync)' | head -1)
+if [ -n "$iface" ]; then
+    echo "=== easydiskbake: dhcp on $iface ==="
+    dhclient "$iface" || echo "  dhclient failed; the disk still boots, it just has no network"
+    # resolv.conf is what actually missing: dhclient writes it, but a failed lease leaves
+    # the file absent and every pkg call then reports a resolver failure rather than a
+    # network one. Naming the host's resolver is the fallback QEMU's user-mode network
+    # always answers on.
+    if [ ! -s /etc/resolv.conf ]; then
+        echo 'nameserver 10.0.2.3' > /etc/resolv.conf
+    fi
+    for i in 1 2 3 4 5; do
+        if ping -c 1 -W 2 10.0.2.2 >/dev/null 2>&1; then break; fi
+        sleep 2
+    done
+fi
+
 # --- the toolchain ----------------------------------------------------------
 #
-# pkg is FreeBSD's package manager and it needs a bootstrap on a fresh install:
-# /usr/sbin/pkg is a stub that downloads the real one. Doing it here means the disk is
-# ready to install things without a network round trip in a later stage that has less
-# time.
-ASSUME_ALWAYS_YES=yes pkg bootstrap -f
-
+# NO `pkg bootstrap` HERE, AND ITS ABSENCE IS THE FIX FOR RUN 41638444422.
+#
+# A distset install needs it: /usr/sbin/pkg is a stub and the real pkg is downloaded. A
+# PKGBASE install does not, because pkg is one of the packages - it was [214/214] in that
+# run's log:
+#
+#     [214/214] Extracting pkg-2.6.2_1: 100%
+#
+# So `pkg bootstrap -f` was re-downloading a package the installer had just written, and
+# against a guest with no resolver it failed - which, under `set -e`, ended the script
+# before sshd, the account or any of the toolchain below had been configured.
+#
 # WHAT A RUNNER NEEDS, as one list. git and curl are the basics; python3 and node are the
 # two runtimes a runner reaches for; jq and unzip are what half the actions assume exists.
 # build tools come with base (cc, make) so they are not here.
+#
+# A FAILED pkg INSTALL IS NOT FATAL ANY MORE. The disk is already a working system at this
+# point - sshd and the account are below and do not need the network - and a bake that
+# throws away a complete FreeBSD install because a mirror was unreachable is worse than one
+# that ships a disk whose toolchain a later stage can add. The failure is printed either
+# way.
 pkg install -y \
     git \
     curl \
@@ -63,7 +110,8 @@ pkg install -y \
     jq \
     unzip \
     bash \
-    sudo
+    sudo \
+    || echo "=== easydiskbake: pkg install failed; the base system is still complete ==="
 
 # --- the disk says what made it ---------------------------------------------
 echo 'built by easydiskbake bsd-freebsd' > /etc/easydiskbake
