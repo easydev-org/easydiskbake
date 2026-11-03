@@ -52,6 +52,7 @@ sys.path.insert(0, os.path.join(REPO, "lib"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import compress  # noqa: E402
+import assistant  # noqa: E402
 import live as livelib  # noqa: E402
 import machine  # noqa: E402
 import images  # noqa: E402
@@ -221,18 +222,41 @@ class Baker:
         # unchanged for 180s" - and the disk it left boots to the Setup Assistant on its
         # own. That is exactly what a setup stage should hand over.
         installed = False
+        # DECLARED BEFORE THE TRY so an exception cannot turn a boot problem into a
+        # NameError in the finally block, and so the compression step below can tell
+        # "reached the wizard" from "did not".
+        arrived = False
         try:
             installed = self.run_installer(guest)
             if installed:
                 log("=== the installation is complete ===")
-                log("  the disk boots into the Setup Assistant; the wizard is the next "
-                    "stage, not this one")
+                # AND THE WIZARD IS ON SCREEN, WHICH IS THE PROOF THE DISK BOOTS.
+                #
+                # "install.py exited 0" says the clicks landed and the copy finished. It
+                # does not say the machine can start what it wrote - and a disk that
+                # installs without booting is not a system image. Run 41606493103's
+                # recording ends on the wizard's first page:
+                #
+                #     Select Your Country or Region
+                #     Afghanistan / Aland Islands / Albania / ...
+                #
+                # so the stage now waits for that page and calls it arrival. lib/assistant
+                # reads the title with tesseract - the same tool and the same --psm 3 the
+                # Windows stage uses - because the phrase is wizard-only and a pixel test
+                # cannot tell this light page from any other light page.
+                log("waiting for the Setup Assistant to appear")
+                arrived = self.wait_for_assistant(guest, shots)
+                if not arrived:
+                    log("=== THE WIZARD NEVER APPEARED ===")
+                    log("  the installation reported success but the machine did not boot")
+                    log("  into it; no disk is published")
         finally:
-            # ACPI ONCE THE INSTALLATION IS COMPLETE. The installer reboots at this point,
-            # and asking a machine that is mid-reboot to shut down cleanly gets a timeout
-            # rather than a flush - so the disk is stopped as soon as install.py returns,
-            # which is after it saw the copy finish and sync'd.
-            guest.stop(acpi_first=False)
+            # ACPI ONLY WHEN THERE IS A SYSTEM TO FLUSH. With the wizard on screen the
+            # machine is booted into the installed system, so it is asked to shut down
+            # and what it wrote reaches the disk. A run that never got there is stopped
+            # abruptly: a machine mid-reboot does not answer the power request and the
+            # sixty-second timeout is longer than the disk is worth.
+            guest.stop(acpi_first=arrived)
             snap.terminate()
             try:
                 snap.wait(timeout=5)
@@ -254,12 +278,19 @@ class Baker:
             self.tail(os.path.join(self.work, "console.log"))
             return False
 
-        # THE COMPARISON IS ALREADY IN `installed` - there is no desktop to wait for.
+        # BOTH HALVES ARE REQUIRED: the install finished AND the machine booted into it.
         #
-        # This stage's product is a disk that boots to the Setup Assistant, so
-        # `installed` (install.py watched the copy finish and settle above
-        # MIN_FINISHED_MIB) is the whole claim. Waiting for a desktop here would need the
-        # wizard to have been driven, which is the NEXT stage's job.
+        # `installed` alone was the earlier claim, and it is a weaker one - it says the
+        # clicks landed and the copy completed, not that what was written can start. The
+        # wizard on screen is that proof, and it is what makes this a system image rather
+        # than a disk with a macOS on it.
+        if not arrived:
+            log("=== THE INSTALL COMPLETED BUT THE DISK DID NOT BOOT ===")
+            log("  nothing was written to the disk's own boot path, or the firmware")
+            log("  could not pick it; no artifact is produced from a disk that only")
+            log("  installs")
+            return False
+
         log("checking the disk holds an APFS system")
         if not smoke.check_disk(self.disk, root_fs="apfs"):
             log("=== THE DISK FAILED ITS CHECKS; refusing to produce an artifact ===")
@@ -376,6 +407,53 @@ class Baker:
 
         log("installation sequence complete")
         return True
+
+    def wait_for_assistant(self, guest: vm.Guest, shots: str) -> bool:
+        """Wait until the Setup Assistant's first page is on screen.
+
+        THE INSTALLER REBOOTS INTO THE SYSTEM IT WROTE, and that reboot is what this
+        waits through. It is long: the machine restarts, OpenCore picks the new volume,
+        the kernel boots, and the wizard paints - run 41606493103 took eleven minutes
+        from "installation complete" to the wizard, most of it the reboot and the first
+        boot's setup.
+
+        WHY OCR AND NOT A PIXEL TEST. The wizard is a light page; so is a Finder window;
+        and the point of this check is to be evidence rather than a guess. lib/assistant
+        reads the title.
+        """
+        deadline = time.time() + self.args.desktop_timeout
+        started = time.time()
+        last_report = started
+
+        while time.time() < deadline:
+            if not guest.alive():
+                log("qemu exited before the wizard appeared")
+                return False
+            if assistant.reached_assistant(shots):
+                log(f"the Setup Assistant is on screen ({(time.time() - started):.0f}s)")
+                # The wizard is the arrival; a short settle lets the page finish painting
+                # so the published disk is not stopped mid-animation.
+                settle = int(os.environ.get("ASSISTANT_SETTLE_SECONDS", "20"))
+                log(f"letting the guest settle for {settle}s")
+                time.sleep(settle)
+                if not guest.alive():
+                    log("the guest exited while settling - not keeping the disk")
+                    return False
+                return True
+
+            if time.time() - last_report >= 60:
+                last_report = time.time()
+                frames = 0
+                try:
+                    frames = len([f for f in os.listdir(shots) if f.startswith("frame-")])
+                except OSError:
+                    pass
+                log(f"waiting {time.time() - started:.0f}s for the wizard: {frames} frames")
+
+            time.sleep(10)
+
+        log(f"timed out after {self.args.desktop_timeout}s waiting for the wizard")
+        return False
 
     def tail(self, path: str, lines: int = 30) -> None:
         try:
