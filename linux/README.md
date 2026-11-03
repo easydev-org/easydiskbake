@@ -97,7 +97,7 @@ exists at all.
 
 ## Adding a distribution
 
-1. `publish-iso.yml` fetches its installer image once and pushes it to ghcr under a
+1. `iso-publish.yml` fetches its installer image once and pushes it to ghcr under a
    tag. Nothing downloads from a mirror at run time - see `lib/iso.py` for why.
 2. Create `linux/<distro>/bake.sh`. If the installer takes an answer file, it is
    roughly: fetch ISO, start guest, serve the answer file, wait for the disk, smoke

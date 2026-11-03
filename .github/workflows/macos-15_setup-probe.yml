@@ -1,4 +1,4 @@
-name: probe-macos
+name: macos-15_setup-probe
 
 # Click Continue through the macOS installer and keep the last frame of every pane.
 #

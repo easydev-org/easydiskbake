@@ -1,4 +1,4 @@
-name: bake-windows-dev
+name: windows-11_dev-bake
 
 # Turn the SSH disk into a developer disk: MSVC, the Windows SDK, the .NET SDK.
 #
@@ -121,7 +121,7 @@ jobs:
           command: |
             set -euo pipefail
             export GITHUB_TOKEN="${{ github.token }}"
-            export WINDOWS_ADMIN_PASSWORD=docker
+            export WINDOWS_ADMIN_PASSWORD=admin
             CLEAN=""
             if [ "${{ inputs.clean }}" = "true" ]; then CLEAN="--clean"; fi
             python3 windows/11/devtools.py \

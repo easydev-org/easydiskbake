@@ -1,4 +1,4 @@
-name: bake-windows
+name: windows-11_desktop-bake
 
 # Bake a Windows 11 disk in CI and publish it to ghcr.
 #

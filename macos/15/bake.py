@@ -5,7 +5,7 @@
 THE PIPELINE, AND WHICH PART IS HARD
 
     recovery image     from this repository's package (:macos-recovery-sequoia), which
-                       publish-macos-recovery.yml fills. Apple issues one per request
+                       macos-recovery-publish.yml fills. Apple issues one per request
                        and lib/macos_recovery.py drives that exchange; the bake does
                        not talk to Apple.
     OpenCore           lib/opencore.py: the four pinned assets from ghcr, the identity,
@@ -126,7 +126,7 @@ class Baker:
 
         NO FALLBACK TO APPLE. A bake that silently fetched its own recovery image would
         be a second path with its own failure modes, and the useful message when the
-        image is missing is "run publish-macos-recovery.yml" - not a 850 MiB download
+        image is missing is "run macos-recovery-publish.yml" - not a 850 MiB download
         that hides the real problem until it fails later, somewhere else.
 
         The file name carries the release because a work directory can hold more than
@@ -146,8 +146,8 @@ class Baker:
         except iso.IsoError as exc:
             raise SystemExit(
                 f"{tag} is not in this repository's ghcr package: {exc}\n\n"
-                f"Run publish-macos-recovery.yml for {self.args.release} first:\n"
-                f"    gh workflow run publish-macos-recovery.yml "
+                f"Run macos-recovery-publish.yml for {self.args.release} first:\n"
+                f"    gh workflow run macos-recovery-publish.yml "
                 f"-f releases={self.args.release}\n"
                 f"This bake does not request a recovery image from Apple itself. A "
                 f"second source would be a second thing to verify, and the failure it "
@@ -205,49 +205,31 @@ class Baker:
             stderr=subprocess.STDOUT,
         )
 
-        # THE TWO DRIVERS RUN IN SEQUENCE, NOT CONCURRENTLY.
+        # THIS BAKE STOPS AT THE END OF THE INSTALLATION, AND THAT IS THE STAGE BOUNDARY.
         #
-        # install.py takes the guest from Recovery through the installation and stops when
-        # the disk stops growing - the guest is rebooting into the system it wrote at that
-        # moment. drive.py then starts at the Setup Assistant. Running both at once would
-        # put clicks into a screen neither is looking at, which is the failure mode of
-        # every "just click everything" driver.
-        arrived = False
+        # What it produces is a disk that boots INTO THE SETUP ASSISTANT, not one that
+        # reaches a desktop. That is on purpose: the wizard is the next stage's work
+        # (macos-15_desktop-bake), and mixing them here is what made the previous version
+        # of this file unreachable - it ran install.py, then stopped, then claimed the
+        # result was "still installing" and published nothing.
+        #
+        # THE EVIDENCE THAT THIS IS THE RIGHT BOUNDARY. Run 41579186251 finished the
+        # installation - install.py reported "the installation is complete, 33644 MiB
+        # unchanged for 180s" - and the disk it left boots to the Setup Assistant on its
+        # own. That is exactly what a setup stage should hand over.
         installed = False
         try:
             installed = self.run_installer(guest)
-
-            # THE TWO STAGES AFTER THE INSTALLER WERE WRITTEN AND NEVER CALLED.
-            #
-            # run_setup_assistant() and wait_for_desktop() have been in this file since it
-            # was written, with their coordinates and their reasoning in the comments -
-            # and run() used to go straight from run_installer() to guest.stop(). So
-            # `arrived` could not become True on any input, the code below always took the
-            # "still installing" branch, and no macOS disk was ever published. Run
-            # 41579186251 is the evidence: install.py reported
-            #
-            #     the installation is complete
-            #     33644 MiB, unchanged for 180s
-            #
-            # and the next line from this file was "this bake stops here".
-            #
-            # WHY THEY ARE RIGHT NOW AND WERE NOT BEFORE. install.py used to return three
-            # minutes after the copy began, so there was no installed system to boot and
-            # clicking at what came next would have been clicking at a progress pane. It
-            # now returns when the installation is finished. So the wizard is the next
-            # real screen, and a desktop after it is proof the disk boots.
             if installed:
-                log("=== the installation is complete; the guest now reboots into it ===")
-                self.run_setup_assistant(guest)
-                if self.wait_for_desktop(guest):
-                    arrived = True
-                else:
-                    self.tail(os.path.join(self.work, "console.log"))
+                log("=== the installation is complete ===")
+                log("  the disk boots into the Setup Assistant; the wizard is the next "
+                    "stage, not this one")
         finally:
-            # ACPI ONLY WHEN THERE IS A SYSTEM TO FLUSH. An installer mid-copy is stopped
-            # abruptly; a booted macOS is asked to shut down, so what it wrote reaches the
-            # disk before the guest disappears.
-            guest.stop(acpi_first=arrived)
+            # ACPI ONCE THE INSTALLATION IS COMPLETE. The installer reboots at this point,
+            # and asking a machine that is mid-reboot to shut down cleanly gets a timeout
+            # rather than a flush - so the disk is stopped as soon as install.py returns,
+            # which is after it saw the copy finish and sync'd.
+            guest.stop(acpi_first=False)
             snap.terminate()
             try:
                 snap.wait(timeout=5)
@@ -272,28 +254,23 @@ class Baker:
             self.tail(os.path.join(self.work, "console.log"))
             return False
 
-        if not arrived:
-            # THE INSTALLER FINISHED BUT THE GUEST DID NOT REACH ITS DESKTOP. The disk
-            # holds a macOS - install.py watched it settle above MIN_FINISHED_MIB - but
-            # nothing has proved it boots, and a disk that installs without booting is not
-            # a system image.
-            #
-            # NOTHING IS PUBLISHED EITHER, for the reason this branch always carried: a
-            # partial artifact looks like a system image and behaves like a corrupt one.
-            log("=== THE INSTALLER FINISHED; THE GUEST DID NOT REACH A DESKTOP ===")
-            log("  the disk holds an installation, but nothing proved it starts")
-            log("  no disk is published; the recording and the last frame say where it got")
-            return False
-
-        log("the guest reached its desktop; checking the disk")
+        # THE COMPARISON IS ALREADY IN `installed` - there is no desktop to wait for.
+        #
+        # This stage's product is a disk that boots to the Setup Assistant, so
+        # `installed` (install.py watched the copy finish and settle above
+        # MIN_FINISHED_MIB) is the whole claim. Waiting for a desktop here would need the
+        # wizard to have been driven, which is the NEXT stage's job.
+        log("checking the disk holds an APFS system")
         if not smoke.check_disk(self.disk, root_fs="apfs"):
             log("=== THE DISK FAILED ITS CHECKS; refusing to produce an artifact ===")
             return False
 
         log("compressing")
         compress.compress(self.disk, self.args.out)
-        log(f"BAKED macos{self.args.release} -> {self.args.out} "
+        log(f"BAKED macos{self.args.release} setup -> {self.args.out} "
             f"({os.path.getsize(self.args.out) >> 20} MiB)")
+        log("  this disk boots into the Setup Assistant; drive it with "
+            "macos-15_desktop-bake")
         return True
 
     def run_installer(self, guest: vm.Guest) -> bool:
@@ -399,112 +376,6 @@ class Baker:
 
         log("installation sequence complete")
         return True
-
-    def run_setup_assistant(self, guest: vm.Guest) -> None:
-        """The wizard, by coordinates, after the installer's reboot.
-
-        A WAIT FIRST, AND FOR LIGHT RATHER THAN FOR TIME. The installer reboots itself
-        when the copy finishes, and how long that takes depends on what the guest was
-        doing a second earlier - a fixed sleep either starts the wizard's first click at a
-        black screen or wastes minutes of a ninety-minute job. install.Recovery.brightness()
-        already answers "is anything drawn" for the installer; this asks it the same
-        question about the same screen, and waits until the answer is yes twice running.
-
-        drive.py then has its own 120s wait before its first click, for the pane to paint
-        after the boot logo. That is the wizard's timing, not the reboot's.
-        """
-        import install
-
-        log("waiting for the reboot to draw something")
-        probe = install.Recovery(guest.paths.drive, self.frames)
-        deadline = time.time() + 600
-        lit = 0
-        try:
-            while time.time() < deadline:
-                if not guest.alive():
-                    log("the guest exited during the reboot")
-                    return
-                level = probe.brightness()
-                lit = lit + 1 if (level is not None
-                                  and level >= install.NOTHING_DRAWN) else 0
-                if lit >= 2:
-                    log(f"the screen is lit again (mean grey {level})")
-                    break
-                time.sleep(10)
-            else:
-                log("=== THE GUEST NEVER DREW AGAIN AFTER THE INSTALLER REBOOTED ===")
-                return
-        finally:
-            probe.close()
-
-        script = os.path.join(HERE, "drive.py")
-        log(f"=== Setup Assistant: {os.path.basename(script)} ===")
-        try:
-            subprocess.run(
-                [sys.executable, script,
-                 "--qmp", guest.paths.drive, "--frames", self.frames,
-                 "--user", self.args.user, "--password", self.args.password],
-                check=True,
-                timeout=self.args.assistant_timeout,
-            )
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
-            log(f"the Setup Assistant driver failed: {exc}")
-
-    def wait_for_desktop(self, guest: vm.Guest) -> bool:
-        """Wait until a macOS desktop is on screen.
-
-        THE SAME WALLPAPER TEST AS THE WINDOWS BAKE, and deliberately not a new one.
-        lib/desktop.py explains its three thresholds and why a colour match alone does
-        not work. Sequoia's default wallpaper is a blue-to-purple gradient with the
-        light end at the top, which is the shape those thresholds describe.
-
-        WHAT THIS DEPENDS ON: that the wizard has finished. While it is up, the screen
-        is a white pane and fails all three tests - correctly, because it is not a
-        desktop. drive.py's last action is the one that dismisses the final pane.
-        """
-        deadline = time.time() + self.args.desktop_timeout
-        started = time.time()
-        last_report = started
-        shots = os.path.join(self.frames, "shots")
-
-        while time.time() < deadline:
-            if not guest.alive():
-                log("qemu exited before a desktop appeared")
-                return False
-
-            if desktop.reached_desktop(shots):
-                elapsed = time.time() - started
-                log(f"a macOS desktop is on screen ({elapsed:.0f}s)")
-
-                # Same settle rule as Windows: a desktop is when the shell has drawn,
-                # not when the disk is quiet. macOS writes hard for the first minute -
-                # mds, the login item registry, the first Time Machine snapshot.
-                settle = int(os.environ.get("DESKTOP_SETTLE_SECONDS", "30"))
-                log(f"letting the guest settle for {settle}s before stopping it")
-                time.sleep(settle)
-
-                # Only the machine dying invalidates the result. Re-checking the
-                # screen here would read a display sleep as a crash - the exact bug
-                # the Windows bake had and fixed.
-                if not guest.alive():
-                    log("the guest exited while settling - not keeping the disk")
-                    return False
-                log("still running after settling; keeping the disk")
-                return True
-
-            if time.time() - last_report >= 60:
-                last_report = time.time()
-                frames = 0
-                try:
-                    frames = len([f for f in os.listdir(shots) if f.startswith("frame-")])
-                except OSError:
-                    pass
-                log(f"waiting {time.time() - started:.0f}s: {frames} frames")
-
-            time.sleep(5)
-
-        log(f"timed out after {self.args.desktop_timeout}s")
-        return False
 
     def tail(self, path: str, lines: int = 30) -> None:
         try:

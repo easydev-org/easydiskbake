@@ -1,4 +1,4 @@
-name: bake-android
+name: android-15_aosp-bake
 
 # Bake an Android 15 (AOSP) sandbox disk and publish it.
 #

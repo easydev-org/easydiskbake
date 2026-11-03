@@ -1,0 +1,110 @@
+#cloud-config
+# Kubuntu, installed unattended by subiquity.
+#
+# THE SAME DOCUMENT AS linux/ubuntu/user-data-server.yaml, WITH A DESKTOP ON TOP. That is
+# the whole difference between the two flavours: subiquity does not care whether the
+# medium is a server ISO or a desktop one, and the packages are what make it KDE.
+#
+# THE DESKTOP PACKAGE IS kubuntu-desktop AND NOT kde-plasma-desktop. The flavour meta
+# package pulls in the display manager, the settings modules, the icon theme and the
+# session registration as one unit, and installing the pieces separately produces a
+# system that boots to a login prompt with nothing behind it - which is the failure the
+# NixOS derive work also had to avoid by using the desktop module rather than its parts.
+#
+# THE FIRST LINE IS NOT A COMMENT. cloud-init dispatches on it, and a document that does
+# not start with `#cloud-config` is ignored - subiquity then drops to the interactive
+# installer, which on a bake with no screen is indistinguishable from a hang.
+#
+# WHAT THIS DOES NOT TRY TO DO
+#
+# It does not choose a desktop. This is the server image, and a desktop is a different
+# flavour with a different document (linux/kubuntu/user-data-kde.yaml). Keeping them
+# separate means a failure names one thing: the server install, or the desktop on top.
+#
+# WHY THE PACKAGES ARE THIS SHORT
+#
+# A GitHub Actions runner needs git, a compiler, node and python; openssh-server is what
+# the next stage talks to. Anything else is a layer somebody applies later, and a gold
+# disk that ships extra services is a gold disk that behaves differently from a plain
+# Ubuntu when something goes wrong.
+
+autoinstall:
+  version: 1
+
+  # NOT `interactive`. The default is to wait for a human at the confirmation prompt,
+  # and with no screen that wait is forever.
+  interactive-sections: []
+
+  locale: en_US.UTF-8
+  keyboard:
+    layout: us
+  timezone: Etc/UTC
+
+  identity:
+    # The account every image in this repository uses: docker, with admin as the
+    # password. The hash below is `openssl passwd -6 admin` - a SHA-512 crypt, which is
+    # what subiquity accepts here. A plain-text password is rejected.
+    hostname: ubuntu
+    username: docker
+    password: "$6$6$pd.PhdrZh4fxnXbv$7LPpeBGe1v5ssVIxdvxvvHUf6uiyJI.jd5N5pyX3/DCy00eGRQ1FJMqCt.uhrUjPWGu2lO.ELB6IOzQpFWOpI/"
+    # No ssh key: the next stage authenticates with this password over a forwarded port,
+    # and a key here would be a second thing the guest trusts that nothing verifies.
+
+  ssh:
+    install-server: true
+    # Password authentication stays on because that is how the ssh stage logs in. A disk
+    # that only accepted keys would need the key injected into the image, which is a
+    # build-time secret this pipeline does not have.
+
+  # ONE PARTITION, THE WHOLE DISK, ext4. Not LVM and not ZFS: the point of this disk is
+  # to be a plain Ubuntu, and a layout nobody asked for is a surprise in every later
+  # stage that has to mount it.
+  storage:
+    layout:
+      name: direct
+
+  updates: security
+
+  # ---------------------------------------------------------------------------
+  # THE TOOLCHAIN, AND WHY EACH ENTRY IS HERE
+  # ---------------------------------------------------------------------------
+  packages:
+    - openssh-server        # what the ssh stage talks to
+    - git                   # the runner's most basic need
+    - build-essential       # gcc/make, without which nothing compiles
+    - python3
+    - python3-pip
+    - curl
+    - ca-certificates
+    - jq
+    - unzip
+    # THE DESKTOP ITSELF. Wayland by default in 26.04, with SDDM as the display manager.
+    - kubuntu-desktop
+    # The emulated display has no GPU; these are the userspace drivers a KDE session
+    # needs to start on top of QEMU's VGA adapter.
+    - mesa-utils
+    - xserver-xorg-video-qxl
+
+  late-commands:
+    # SSH ON BOOT, WITH THE PORT THE REST OF THIS PIPELINE USES. Ubuntu's sshd listens
+    # on 22; the host forwards 2222 to it (lib/vm.py). Nothing here changes the port -
+    # this only makes sure the service is enabled, because `install-server: true`
+    # installs it without starting it on first boot in every release.
+    - curtin in-target -- systemctl enable ssh
+
+    # NO CLOUD-INIT ON THE FINISHED DISK. An installed system that still runs cloud-init
+    # looks for a datasource on every boot and waits for one that is not there. The
+    # install is done; the mechanism that did it is not part of the result.
+    - curtin in-target -- touch /etc/cloud/cloud-init.disabled
+
+    # THE PASSWORD IS SET HERE AS WELL AS IN identity. subiquity honours `identity` on a
+    # fresh install, and this makes the result checkable from inside the disk: the hash
+    # is the same one, written with usermod, so a later stage that cannot log in can be
+    # told apart from a stage that never set it.
+    - curtin in-target -- usermod -p "$6$6$pd.PhdrZh4fxnXbv$7LPpeBGe1v5ssVIxdvxvvHUf6uiyJI.jd5N5pyX3/DCy00eGRQ1FJMqCt.uhrUjPWGu2lO.ELB6IOzQpFWOpI/" docker
+
+    # THE REPO'S CONVENTION, RECORDED IN THE DISK. A disk that says what made it can be
+    # told apart from one built by something else, without a manifest beside it.
+    - curtin in-target -- sh -c "echo 'built by easydiskbake linux-ubuntu' > /etc/easydiskbake"
+
+  shutdown: reboot

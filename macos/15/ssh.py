@@ -1,0 +1,246 @@
+"""Turn a macOS desktop disk into one with Remote Login, by turning it on in Terminal.
+
+    python3 macos/15/ssh.py --disk out/macos15-desktop.qcow2 --out out/macos15-ssh.qcow2
+
+WHY THIS IS NOT AN ANSWER FILE EITHER
+
+macOS ships sshd off, and there is no configuration line to set before the system boots
+on a disk somebody else installed. There is `systemsetup -setremotelogin on`, and it needs
+root, so the bake opens Terminal on the desktop - which it can, because a desktop is what
+the previous stage produced - and types it.
+
+THE RULE THAT MAKES THIS DIFFERENT FROM CLICKING
+
+Nothing here reads the screen to decide anything. The desktop is already known to be a
+desktop, the Terminal window is opened by a keyboard shortcut whose behaviour does not
+depend on where anything is drawn, and the command is typed into whatever has focus in
+that window. What IS read is the result, from the guest's own tools: the stage ends when
+sshd answers on a forwarded port, not when a screen looks right.
+
+WHY A SECOND PORT AND NOT 2222
+
+The host half of the forward is whatever the workflow says, because this disk may be run
+next to a Windows disk that also wants 2222 on the same runner. The guest half is
+always 22 - it is macOS's own sshd and there is no reason to move it.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import socket
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(os.path.dirname(HERE))
+sys.path.insert(0, REPO)
+
+from lib import compress, machine, smoke, vm  # noqa: E402
+
+# The password the desktop stage was given. Remote Login is turned on from a root shell
+# started with sudo, so this is the account's password, not root's.
+GUEST_USER = os.environ.get("MACOS_USER", "docker")
+GUEST_PASSWORD = os.environ.get("MACOS_PASSWORD", "admin")
+
+
+def log(message: str) -> None:
+    print(f"[macos-ssh {time.strftime('%H:%M:%S')}] {message}", flush=True)
+
+
+def main(argv: list[str]) -> int:
+    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    p.add_argument("--disk", required=True, help="the desktop-stage disk")
+    p.add_argument("--out", default=None)
+    p.add_argument("--work", default=None)
+    p.add_argument("--mem", type=int, default=8192)
+    p.add_argument("--cpus", type=int, default=4)
+    p.add_argument("--ssh-port", type=int, default=2223,
+                   help="the HOST port the guest's 22 is forwarded to")
+    p.add_argument("--boot-timeout", type=int, default=900)
+    args = p.parse_args(argv)
+
+    out = args.out or args.disk.replace(".qcow2", "-ssh.qcow2")
+    work = args.work or os.path.dirname(os.path.abspath(out)) or "."
+    os.makedirs(work, exist_ok=True)
+
+    log(f"disk={args.disk} out={out}")
+    if not os.path.isfile(args.disk):
+        raise SystemExit(f"no disk at {args.disk}")
+
+    disk = os.path.join(work, "ssh.qcow2")
+    log(f"copying {args.disk} -> {disk}")
+    copied = subprocess.run(["cp", "--reflink=auto", args.disk, disk],
+                            capture_output=True, text=True)
+    if copied.returncode != 0:
+        raise SystemExit(
+            f"could not copy the disk: {(copied.stderr or copied.stdout).strip()[:300]}")
+
+    log("=== OpenCore, firmware, APFS driver ===")
+    import opencore
+
+    assets = opencore.build("15", work)
+    log(f"identity {assets['identity']['serial']} / {assets['identity']['mac']}")
+
+    shape = machine.shape(assets, cpus=args.cpus, mem_mb=args.mem)
+    # THE FORWARD, ON THE GUEST'S OWN SSHD. macOS listens on 22 and moving it would mean
+    # editing system sshd_config; the host side is what a caller needs to choose.
+    shape.ssh_port = args.ssh_port
+
+    guest = vm.Guest(
+        work,
+        extra=[
+            "-drive", f"file={assets['boot']},format=raw,if=none,id=oc",
+            "-device", "virtio-blk-pci,drive=oc,bootindex=0",
+            "-drive", f"file={disk},if=none,format=qcow2,id=target",
+            "-device", "virtio-blk-pci,drive=target,bootindex=1",
+            "-device", f"isa-applesmc,osk={machine.OSK_PLAIN}",
+        ],
+        shape=shape,
+        stdout=os.path.join(work, "console.log"),
+    ).start()
+
+    frames = os.path.join(work, "frames")
+    os.makedirs(frames, exist_ok=True)
+    snap = subprocess.Popen(
+        [sys.executable, os.path.join(REPO, "lib", "snapshots.py"),
+         guest.paths.record, frames,
+         os.environ.get("SNAPSHOT_INTERVAL", "5"), "2000"],
+        stdout=open(os.path.join(frames, "snapshots.log"), "wb"),
+        stderr=subprocess.STDOUT,
+    )
+
+    ok = False
+    try:
+        log(f"waiting up to {args.boot_timeout}s for the desktop")
+        if not wait_for_desktop(guest, frames, args.boot_timeout):
+            log("=== THE DISK DID NOT REACH A DESKTOP ===")
+            log("  this stage needs the desktop-stage disk, not the setup-stage one")
+            return 1
+
+        log("=== turning Remote Login on ===")
+        enable_remote_login(guest)
+
+        log(f"checking that the guest's sshd answers on the host's port {args.ssh_port}")
+        if not wait_for_ssh(args.ssh_port, timeout=180):
+            log("=== REMOTE LOGIN IS NOT ANSWERING ===")
+            log("  the preference was set but sshd never came up; the frames say what "
+                "Terminal showed")
+            return 1
+
+        ok = True
+        log("Remote Login is answering")
+        return 0
+    finally:
+        guest.stop(acpi_first=ok)
+        snap.terminate()
+        try:
+            snap.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            snap.kill()
+        if ok:
+            if not smoke.check_disk(disk, root_fs="apfs"):
+                log("=== THE DISK FAILED ITS CHECKS ===")
+                raise SystemExit(1)
+            log("compressing")
+            compress.compress(disk, out)
+            log(f"BAKED macos15 ssh -> {out} ({os.path.getsize(out) >> 20} MiB)")
+
+
+def wait_for_desktop(guest: vm.Guest, frames: str, timeout: int) -> bool:
+    """The wallpaper test again - see macos/15/desktop.py for why it is this one."""
+    from lib import desktop
+
+    shots = os.path.join(frames, "shots")
+    deadline = time.time() + timeout
+    started = time.time()
+    while time.time() < deadline:
+        if not guest.alive():
+            log("qemu exited before a desktop appeared")
+            return False
+        if desktop.reached_desktop(shots):
+            log(f"a macOS desktop is on screen ({(time.time() - started):.0f}s)")
+            return True
+        time.sleep(5)
+    return False
+
+
+def enable_remote_login(guest: vm.Guest) -> None:
+    """Open Terminal and set Remote Login on, as root.
+
+    SPOTLIGHT, NOT THE DOCK. Cmd-Space opens Spotlight wherever the Dock is and whatever
+    is in it, and the wizard's choices do not move it - which is why this is a keyboard
+    route rather than a click at a Dock icon whose position depends on what the user
+    pinned.
+
+    sudo READS ITS PASSWORD FROM THE TERMINAL, so it is typed after the command rather
+    than passed to it. `echo` is not used: the password would land in the guest's shell
+    history and in any frame taken while it scrolled past.
+
+    EVERY KEY COMES FROM lib/keys.py, which is also what the Windows stage types with -
+    a second table here is a second place for ":" to mean the wrong thing, and that
+    failure reads as a shell syntax error rather than as a keyboard bug.
+    """
+    import qmp as qmpmod
+    from lib import keys
+
+    kb_work = guest.paths.drive
+    deadline = time.time() + 120
+    while not os.path.exists(kb_work):
+        if time.time() > deadline:
+            raise SystemExit(f"no QMP socket at {kb_work}")
+        time.sleep(1)
+
+    q = qmpmod.QMP(kb_work)
+    try:
+        # Escape first: a notification or an update overlay swallows the next chord.
+        qmpmod.key(q, "esc")
+        time.sleep(1)
+        qmpmod.key_combo(q, "meta_l", "spc")   # Spotlight
+        time.sleep(3)
+        keys.type_into(q, "terminal")
+        qmpmod.key(q, "ret")
+        time.sleep(8)
+
+        keys.type_into(q, "sudo systemsetup -setremotelogin on")
+        qmpmod.key(q, "ret")
+        # sudo's prompt. Typed after the command, not as an argument to it.
+        time.sleep(4)
+        keys.type_into(q, GUEST_PASSWORD)
+        qmpmod.key(q, "ret")
+        time.sleep(6)
+
+        # SETREMOTELOGIN PRINTS ONLY ON REFUSAL, so the preference is read back rather
+        # than trusted: -getremotelogin answers "Remote Login: On" when it took.
+        keys.type_into(q, "sudo systemsetup -getremotelogin")
+        qmpmod.key(q, "ret")
+        time.sleep(5)
+    finally:
+        q.close()
+
+
+def wait_for_ssh(port: int, timeout: int = 180) -> bool:
+    """Poll the host port until the SSH banner arrives.
+
+    THE BANNER, NOT A CONNECT. A TCP connect succeeds against anything listening; the
+    first bytes say whether it is sshd.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
+                sock.settimeout(10)
+                banner = sock.recv(256).decode("utf-8", "replace").strip()
+            if banner.startswith("SSH-2.0"):
+                log(f"  banner: {banner}")
+                return True
+            log(f"  something answered, but not sshd: {banner[:60]}")
+        except OSError:
+            pass
+        time.sleep(10)
+    return False
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

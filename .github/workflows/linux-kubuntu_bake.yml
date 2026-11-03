@@ -1,0 +1,114 @@
+name: linux-kubuntu_bake
+
+# Install Kubuntu unattended with subiquity's autoinstall, in this job's container.
+#
+# NO SCREEN IS READ AT ANY POINT. The ISO's own kernel is booted with -kernel/-initrd and
+# one kernel argument carries the address of the autoinstall document; the installer
+# fetches it, partitions, installs, enables ssh and reboots. That is a different
+# mechanism from MX's (a wizard clicked by coordinates) and the same one as NixOS's (a
+# kernel booted directly with a command line), for the opposite reason: NixOS has no
+# answer file, Ubuntu's whole installer is one.
+#
+# THE COMPLETION TEST IS THE DISK. subiquity's console scrolls and its last act is a
+# reboot; -no-reboot / the guest exiting is the fact, and lib/smoke.py checks that an
+# ext4 root is actually there before anything is published.
+#
+# MANUAL ONLY.
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Push the disk to ghcr"
+        type: boolean
+        default: true
+      disk_size:
+        description: "Guest disk size"
+        default: "24G"
+      install_timeout:
+        description: "Seconds the installer may run"
+        default: "3600"
+
+concurrency:
+  group: linux-kubuntu-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bake:
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: kubuntu-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            # the ISO, the disk, and the compressed copy made from it
+            python3 lib/ci.py free-disk --need 30
+            python3 lib/ci.py tags --prefix iso-kubuntu
+
+      - name: install
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: kubuntu-install
+          interval: "15"
+          command: |
+            set -euo pipefail
+            mkdir -p out
+            export GITHUB_TOKEN="${{ github.token }}"
+            python3 linux/kubuntu/bake.py \
+              --out out/kubuntu.qcow2 \
+              --disk-size "${{ inputs.disk_size || '24G' }}" \
+              --timeout "${{ inputs.install_timeout || '3600' }}"
+
+      # THE CONSOLE IS THE RECORD. subiquity draws a text interface that nobody is going
+      # to photograph, so a failed run is explained by its own output or not at all.
+      - name: keep the console
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kubuntu-console
+          path: out/console.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: upload the disk
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kubuntu-qcow2
+          path: out/kubuntu.qcow2
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: push the disk
+        if: ${{ success() && (inputs.publish == true || inputs.publish == null) }}
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: kubuntu-publish
+          interval: "15"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py install-oras
+            python3 lib/ci.py login --registry ghcr.io
+            python3 lib/publish_disk.py out/kubuntu.qcow2 --kind linux-kubuntu

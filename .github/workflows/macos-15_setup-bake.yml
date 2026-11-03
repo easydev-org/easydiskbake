@@ -1,4 +1,4 @@
-name: bake-macos
+name: macos-15_setup-bake
 
 # Bake a macOS disk in CI and publish it to ghcr.
 #
@@ -138,7 +138,7 @@ jobs:
             export SNAPSHOT_INTERVAL="${{ inputs.snapshot_interval || '5' }}"
             export RECORD_FPS=1
             export MACOS_USER=docker
-            export MACOS_PASSWORD=docker
+            export MACOS_PASSWORD=admin
             python3 macos/${{ inputs.release || '15' }}/bake.py \
               --out "out/macos${{ inputs.release || '15' }}.qcow2" \
               --release "${{ inputs.release || '15' }}" \

@@ -154,7 +154,7 @@ class Baker:
         # ONE SOURCE: this repository's package, and nothing else.
         #
         # There is no fallback to Microsoft's URL. A fallback sounds helpful and is not:
-        # when the image is missing from the package the cause is that publish-iso.yml
+        # when the image is missing from the package the cause is that iso-publish.yml
         # was never run or failed, and the useful outcome is a message saying so at
         # second ten instead of a 7.2 GiB download that hides the real problem - and
         # then fails later, in the bake, on a different step.
@@ -167,8 +167,8 @@ class Baker:
         except iso.IsoError as exc:
             raise SystemExit(
                 f"{tag} is not in this repository's ghcr package: {exc}\n\n"
-                f"Run publish-iso.yml for {tag} first:\n"
-                f"    gh workflow run publish-iso.yml -f which={tag}\n"
+                f"Run iso-publish.yml for {tag} first:\n"
+                f"    gh workflow run iso-publish.yml -f which={tag}\n"
                 f"This bake does not download from the vendor. A second source would\n"
                 f"be a second thing to verify, and the failure it hides is exactly the\n"
                 f"one worth seeing."
@@ -194,8 +194,8 @@ class Baker:
         except iso.IsoError as exc:
             raise SystemExit(
                 f"{tag} is not in this repository's ghcr package: {exc}\n\n"
-                f"Run publish-iso.yml for {tag} first:\n"
-                f"    gh workflow run publish-iso.yml -f which={tag}\n"
+                f"Run iso-publish.yml for {tag} first:\n"
+                f"    gh workflow run iso-publish.yml -f which={tag}\n"
                 f"Without the driver CD setup cannot see the disk it is installing to."
             ) from exc
 
@@ -222,7 +222,7 @@ class Baker:
         staging = os.path.join(self.work, "answer")
         os.makedirs(staging, exist_ok=True)
 
-        password = os.environ.get("WINDOWS_ADMIN_PASSWORD", "docker")
+        password = os.environ.get("WINDOWS_ADMIN_PASSWORD", "admin")
         name = os.environ.get("WINDOWS_COMPUTER_NAME", "sandbox")
         pin = images.pin_for_bake(self.args.image)
 

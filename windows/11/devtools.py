@@ -70,7 +70,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 SSH_PORT = 2222
 SSH_USER = "docker"
-SSH_PASSWORD = os.environ.get("WINDOWS_ADMIN_PASSWORD", "docker")
+SSH_PASSWORD = os.environ.get("WINDOWS_ADMIN_PASSWORD", "admin")
 
 # The workload is the slow part: a fresh machine takes about twenty minutes, and the
 # allowance covers a cold Windows Update check on top.

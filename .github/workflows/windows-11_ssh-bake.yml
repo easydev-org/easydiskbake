@@ -1,4 +1,4 @@
-name: bake-windows-ssh
+name: windows-11_ssh-bake
 
 # Take the published gold disk and give it an SSH server.
 #
@@ -117,7 +117,7 @@ jobs:
           command: |
             set -euo pipefail
             export GITHUB_TOKEN="${{ github.token }}"
-            export WINDOWS_ADMIN_PASSWORD=docker
+            export WINDOWS_ADMIN_PASSWORD=admin
             python3 windows/11/ssh.py \
               --gold out/windows11-gold.qcow2 \
               --out out/windows11-ssh.qcow2 \

@@ -1,4 +1,4 @@
-name: publish-macos-assets
+name: macos-assets-publish
 
 # Fetch the four pinned macOS boot assets, verify them, and push each to this
 # repository's own ghcr package.

@@ -17,7 +17,7 @@ shared:
 
 | stage | Windows / macOS / Linux | Android |
 |---|---|---|
-| fetch | an ISO from ghcr | a **system image** from ghcr, published by `publish-android.yml` |
+| fetch | an ISO from ghcr | a **system image** from ghcr, published by `android-15_aosp-publish.yml` |
 | install | an installer writes a disk | **none** - the image already is the disk |
 | boot | `lib/vm.py` builds a qemu argv | `lib/emulator.py` builds an emulator argv |
 | drive | QMP: `lib/qmp.py`, `lib/ocr.py` | **the same** - the emulator speaks QMP |
@@ -46,8 +46,8 @@ driver and recording code is shared even though the launcher is not.
 ## What is published, and why it is an AVD rather than a qcow2
 
 ```
-ghcr.io/easydev-org/easydiskbake:sysimg-android-15-aosp    the AVD input  (publish-android.yml)
-ghcr.io/easydev-org/easydiskbake:android-15-aosp           the baked AVD  (bake-android.yml)
+ghcr.io/easydev-org/easydiskbake:sysimg-android-15-aosp    the AVD input  (android-15_aosp-publish.yml)
+ghcr.io/easydev-org/easydiskbake:android-15-aosp           the baked AVD  (android-15_aosp-bake.yml)
 ```
 
 The runtime consumes `emulator -avd sandbox`, so the artifact is an AVD directory
@@ -55,7 +55,7 @@ tarred with zstd (`--sparse`, because the 4 GiB data partition is mostly holes).
 qcow2 of an ext4 system image is not something the emulator can boot.
 
 Two artifacts rather than one because creating an AVD needs `cmdline-tools` and a JDK.
-Doing that once in `publish-android.yml` means the bake image carries neither - it
+Doing that once in `android-15_aosp-publish.yml` means the bake image carries neither - it
 carries only the emulator and adb, and pulls a finished AVD.
 
 ## The system image, and what it is pinned to

@@ -1,4 +1,4 @@
-name: launch-windows
+name: windows-11_desktop-launch
 
 # Start a published Windows disk on KVM and photograph the screen.
 #

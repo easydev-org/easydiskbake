@@ -1,4 +1,4 @@
-name: launch-android
+name: android-15_aosp-launch
 
 # Start the published AVD on a real KVM machine and take pictures of it.
 #

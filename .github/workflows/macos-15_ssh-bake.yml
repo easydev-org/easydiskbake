@@ -1,0 +1,141 @@
+name: macos-15_ssh-bake
+
+# Turn Remote Login on in a macOS desktop disk, and prove it answers.
+#
+# WHY THIS IS A STAGE AND NOT A LINE IN THE DESKTOP BAKE
+#
+# It has to run on a booted desktop, and the desktop stage's own machine is gone by the
+# time it finishes. Doing it there would also mix two kinds of work - coordinates and a
+# wizard, then ssh and a package manager - in one script whose failures would be
+# indistinguishable.
+#
+# THE PROOF IS THE GUEST'S sshd, NOT THE SCREEN. The stage turns the preference on in
+# Terminal and then reads the banner off a forwarded port. `systemsetup -setremotelogin
+# on` prints nothing when it works, so a screen is not evidence either way.
+#
+# MANUAL ONLY.
+
+on:
+  workflow_dispatch:
+    inputs:
+      desktop_tag:
+        description: "The desktop-stage disk in this package"
+        default: "macos15-desktop"
+      publish_tag:
+        description: "Tag to publish under, or empty for a timestamped one"
+        default: ""
+      ssh_port:
+        description: "Host port to forward the guest's 22 to"
+        default: "2223"
+      boot_timeout:
+        description: "Seconds to wait for the desktop"
+        default: "900"
+
+concurrency:
+  group: macos-15-ssh-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ssh:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: ssh-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            python3 lib/ci.py free-disk --need 80
+            python3 lib/ci.py tags --prefix macos-asset-
+
+      - name: pull the desktop disk
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: ssh-pull
+          interval: "10"
+          command: |
+            set -euo pipefail
+            mkdir -p out
+            python3 lib/ci.py install-oras
+            python3 lib/ci.py login --registry ghcr.io
+            cd out && oras pull \
+              "ghcr.io/${{ github.repository }}:${{ inputs.desktop_tag || 'macos15-desktop' }}" \
+              && ls -la
+
+      - name: enable Remote Login
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: ssh-enable
+          interval: "15"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            export SNAPSHOT_INTERVAL=5
+            export MACOS_USER=docker
+            export MACOS_PASSWORD=admin
+            DISK=$(ls out/*.qcow2 | head -1)
+            echo "desktop disk: $DISK"
+            python3 macos/15/ssh.py \
+              --disk "$DISK" \
+              --out out/macos15-ssh.qcow2 \
+              --ssh-port "${{ inputs.ssh_port || '2223' }}" \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}"
+
+      - name: keep the recording
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-ssh-recording
+          path: |
+            out/install.mp4
+            out/last-frame.png
+            out/console.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: upload the disk
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos15-ssh-qcow2
+          path: out/macos15-ssh.qcow2
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: push the disk
+        if: ${{ success() }}
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: ssh-publish
+          interval: "15"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py install-oras
+            python3 lib/ci.py login --registry ghcr.io
+            TAG="${{ inputs.publish_tag }}"
+            if [ -z "$TAG" ]; then
+              python3 lib/publish_disk.py out/macos15-ssh.qcow2 --kind macos15-ssh
+            else
+              python3 lib/publish_disk.py out/macos15-ssh.qcow2 --tag "$TAG" \
+                --kind macos15-ssh
+            fi

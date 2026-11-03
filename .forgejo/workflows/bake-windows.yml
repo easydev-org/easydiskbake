@@ -1,8 +1,8 @@
-name: bake-windows
+name: windows-11_desktop-bake
 
 # Bake a Windows 11 disk, on Forgejo.
 #
-# WHAT DIFFERS FROM .github/workflows/bake-windows.yml
+# WHAT DIFFERS FROM .github/workflows/windows-11_desktop-bake.yml
 #
 #   the path                    .forgejo/workflows/ - Forgejo does not read .github/
 #   the registry credentials    ghcr.io is pulled anonymously (the package is public);

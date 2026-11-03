@@ -255,7 +255,7 @@ def main(argv: list[str]) -> int:
         except iso.IsoError as exc:
             raise SystemExit(
                 f"{NIXOS_TAG} is not published: {exc}\n\n"
-                f"Run publish-iso.yml for nixos first. Nothing here downloads from a "
+                f"Run iso-publish.yml for nixos first. Nothing here downloads from a "
                 f"mirror at run time - see lib/iso.py."
             ) from exc
     log(f"iso {os.path.getsize(iso_path) >> 20} MiB")

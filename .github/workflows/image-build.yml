@@ -1,4 +1,4 @@
-name: image
+name: image-build
 
 # Build the easydiskbake image and publish it to this repository's ghcr package.
 #

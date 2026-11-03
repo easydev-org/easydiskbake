@@ -98,7 +98,7 @@ WINGET_PACKAGE = "Microsoft.OpenSSH.Preview"
 
 # The account the answer file creates.
 GUEST_USER = "docker"
-GUEST_PASSWORD = os.environ.get("WINDOWS_ADMIN_PASSWORD", "docker")
+GUEST_PASSWORD = os.environ.get("WINDOWS_ADMIN_PASSWORD", "admin")
 
 
 def log(msg: str) -> None:

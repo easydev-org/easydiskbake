@@ -1,4 +1,4 @@
-name: publish-macos-recovery
+name: macos-recovery-publish
 
 # Fetch macOS recovery images from Apple and publish them to this repository's ghcr.
 #

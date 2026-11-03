@@ -11,7 +11,7 @@ confused:
 
     the recovery image    Apple issues one per request, so there is nothing to pin.
                           lib/macos_recovery.py drives that exchange and
-                          publish-macos-recovery.yml stores the result under
+                          macos-recovery-publish.yml stores the result under
                           :macos-recovery-<name>.
 
     these four            fixed, versioned URLs. An OpenCore release, a template
@@ -21,7 +21,7 @@ confused:
 
 Putting the four in the package moves an 27 MiB transfer with its own failure modes out
 of the bake's first minute, and - more importantly - makes the bake fail with "run
-publish-macos-assets.yml" rather than with a GitHub CDN hiccup that looks like a broken
+macos-assets-publish.yml" rather than with a GitHub CDN hiccup that looks like a broken
 firmware.
 
 WHY THE VERIFICATION DIFFERS PER FILE

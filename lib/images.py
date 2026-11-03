@@ -15,7 +15,7 @@ that does not match the pin - which nothing else would notice.
 
 WHY WINDOWS IS DIFFERENT FROM THE LINUX DISTRIBUTIONS
 
-Linux ISOs are redistributable, so publish-iso.yml can cache them indefinitely and
+Linux ISOs are redistributable, so iso-publish.yml can cache them indefinitely and
 lib/iso.py refuses to fall back to a mirror on principle. A Windows ISO cannot be
 redistributed at all: putting it in this repository's package is a private cache, not
 a publication, and Microsoft rotates the URL and the file with every release.
@@ -95,7 +95,7 @@ VIRTIO = {
 }
 
 # Linux installer images. Redistributable, so these are a real cache rather than a
-# private one: publish-iso.yml fetches each once and every bake pulls it back.
+# private one: iso-publish.yml fetches each once and every bake pulls it back.
 #
 # These have no sha256 because the distributions rotate their mirrors and their
 # filenames carry the version, which is the pin. The ISO9660 check in
@@ -147,6 +147,18 @@ LINUX = {
         "url": "https://releases.ubuntu.com/26.04/"
                "ubuntu-26.04.1-live-server-amd64.iso",
         "sha256": "cc8a95cde20f6ced61a322420de00f10cc3c90ced545daa46cb9c1a117f1d927",
+        "size": None,
+    },
+    # KUBUNTU IS THE DESKTOP FLAVOUR, and it is a different image - the server ISO's
+    # autoinstall cannot produce KDE, and a desktop ISO is what carries it. Its casper/
+    # layout is the same, so linux/kubuntu/bake.py is linux/ubuntu/bake.py with a
+    # different user-data and a different tag.
+    "kubuntu": {
+        "url": "https://cdimage.ubuntu.com/kubuntu/releases/26.04/release/"
+               "kubuntu-26.04.1-desktop-amd64.iso",
+        # The vendor publishes SHA256SUMS beside the images; this has to be refreshed
+        # with the URL when the point release moves.
+        "sha256": None,
         "size": None,
     },
     "debian": {

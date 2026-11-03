@@ -163,7 +163,7 @@ def fetch_pinned(name: str, dest: str) -> str:
     FROM ghcr, NOT FROM THE VENDOR. The URLs in images.MACOS_ASSETS are real and were
     used once, to derive the pins - but a bake that fetches them at run time is a bake
     whose first step is a transfer from GitHub's release CDN with the job clock
-    running, which is the thing publish-iso.yml exists to avoid for every other image
+    running, which is the thing iso-publish.yml exists to avoid for every other image
     here. lib/publish_macos_assets.py puts the four files in the package once; this
     pulls them back with the same three registry calls as an ISO.
 
@@ -197,8 +197,8 @@ def fetch_pinned(name: str, dest: str) -> str:
     except iso.IsoError as exc:
         raise OpenCoreError(
             f"{tag} is not in this repository's ghcr package: {exc}\n\n"
-            f"Run publish-macos-assets.yml for {tag} first:\n"
-            f"    gh workflow run publish-macos-assets.yml -f which={tag}\n"
+            f"Run macos-assets-publish.yml for {tag} first:\n"
+            f"    gh workflow run macos-assets-publish.yml -f which={tag}\n"
             f"This bake does not download from the vendor. A second source would be a\n"
             f"second thing to verify, and the failure it hides is exactly the one worth\n"
             f"seeing: an OpenCore archive that changed under a tag."

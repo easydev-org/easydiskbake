@@ -1,4 +1,4 @@
-name: publish-android
+name: android-15_aosp-publish
 
 # Build an AVD from Google's AOSP system image and publish it.
 #

@@ -1,0 +1,40 @@
+# /etc/installerconfig, for FreeBSD's bsdinstall in script mode.
+#
+# TWO PARTS, AND THE SEPARATOR IS THE `#!` LINE. Everything above it is the preamble,
+# read as sh by the installer to set how the disk is prepared; everything below it is a
+# script run under chroot in the new system before bsdinstall exits.
+#
+# WHY THIS IS THE WHOLE INSTALLER
+#
+# bsdinstall's `auto` target is a menu wizard. `script` is the same steps driven from
+# this file - and it is not a subset: the manual lists the two as identical paths, with
+# script mode skipping the prompts. So a bake needs no screen, no coordinates and no
+# driver, which is why BSD is closer to the Ubuntu answer-file model than to MX's.
+#
+# PARTITIONS=DEFAULT IS ONE UFS PARTITION AND THE BOOT BLOCKS. ZFS would be the other
+# choice (ZFSBOOT_DISKS plus ZFSBOOT_VDEV_TYPE instead of PARTITIONS); UFS is what a
+# qcow2 worth copying around wants, because a pool's metadata and its ARC make a disk
+# that is larger and slower to compress for no gain in a throwaway VM.
+
+PARTITIONS=DEFAULT
+DISTRIBUTIONS="kernel.txz base.txz"
+
+# THE ROOT PASSWORD, PLAIN, BECAUSE THE INSTALLER WANTS IT THAT WAY. It accepts a
+# crypt(3) string through ROOTPASS_ENC as well; plain is used here because the hash has to
+# match `admin` and a literal in the file is checkable by eye.
+ROOTPASS_PLAIN=admin
+
+# NO SWAP PARTITION. PARTITIONS=DEFAULT would add one; a VM with 2 GiB of RAM and no
+# hibernation does not need it, and it is disk that has to be compressed and shipped.
+
+# NOT nonInteractive=YES. That variable belongs to the ZFS path; setting it here is
+# ignored, and setting it in the belief that it silences prompts hides the fact that
+# script mode has no prompts to silence.
+
+#!/bin/sh
+# The post-install script is fetched rather than inlined, so the same file can be read and
+# tested on its own. linux/../bsd/freebsd/bake.py replaces the @POST_INSTALL@ marker with
+# the contents of installerconfig.sh at bake time, and refuses to start if the marker is
+# missing - a preamble with no setup script installs a system with no ssh, which is a
+# failure that only shows up in the next stage.
+@POST_INSTALL@

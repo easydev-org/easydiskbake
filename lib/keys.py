@@ -1,77 +1,94 @@
-"""Type text into a guest through QMP, one key at a time.
+"""QEMU key codes, and typing text with them.
 
-    from keys import type_text
-    type_text(q, "docker")          # as if typed at the keyboard
+    qcodes = keys.for_text("sudo systemsetup -setremotelogin on")
+    for kind, code in qcodes:            # ("key", "s") or ("combo", ("shift","semicolon"))
+        ...
 
-WHY A MAPPING IS NEEDED
+WHY THIS IS IN lib/ AND NOT IN A GUEST DRIVER
 
-QMP's input-send-event takes a QKeyCode - "a", "shift-a", "spc", "ret" - not a
-character. There is no "send the string" command. So each character has to be turned
-into the key that produces it plus, where necessary, shift.
+windows/11/ssh.py had the only copy, and the macOS ssh stage needs the same table. A
+second copy is a second place for ":" to mean the wrong thing, and the failure it
+produces - a colon typed as a semicolon - reads as a shell syntax error rather than as a
+keyboard bug. So the table lives here and both drivers import it.
 
-WHY THE SHIFTED FORMS ARE SPELLED OUT
-
-QEMU accepts "shift-a" and also "A"; both work, but the explicit form is what the
-documentation shows and what the existing key_combo() in qmp.py composes. Being
-consistent about that matters more than the extra table entry, because the one wrong
-entry here shows up as a typo in a username written to disk.
+THE SHIFTED FORM IS A COMBO, NOT A NAME. lib/qmp.key() sends one down/up pair, so a
+character that needs shift is two keys held at once and has to go through key_combo.
+`for_text` therefore returns the shape of each keystroke rather than a single string,
+which is the only way a caller can send it correctly without deciding for itself.
 """
 
-# Plain characters. QEMU's qcodes are the PC scancode names.
-PLAIN = {
-    " ": "spc", "-": "minus", "_": "shift-minus", ".": "dot", ",": "comma",
-    "/": "slash", "\\": "backslash", "=": "equal", "+": "shift-equal",
-    ":": "shift-semicolon", ";": "semicolon", "'": "apostrophe",
-    '"': "shift-apostrophe", "@": "shift-2", "!": "shift-1", "#": "shift-3",
-    "$": "shift-4", "%": "shift-5", "^": "shift-6", "&": "shift-7",
-    "*": "shift-8", "(": "shift-9", ")": "shift-0",
+from __future__ import annotations
+
+# Characters QEMU names differently from the letter on the key.
+NAMED = {
+    " ": "spc", "-": "minus", "=": "equal", "[": "bracket_left",
+    "]": "bracket_right", "\\": "backslash", ";": "semicolon", "'": "apostrophe",
+    ",": "comma", ".": "dot", "/": "slash", "`": "grave_accent",
 }
 
-for _c in "abcdefghijklmnopqrstuvwxyz":
-    PLAIN[_c] = _c
-for _d in "0123456789":
-    PLAIN[_d] = _d
-for _c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
-    PLAIN[_c] = "shift-" + _c.lower()
+# The same characters when shift is held: the qcode names the UNSHIFTED key.
+SHIFTED = {
+    "!": "1", "@": "2", "#": "3", "$": "4", "%": "5", "^": "6", "&": "7",
+    "*": "8", "(": "9", ")": "0", "_": "minus", "+": "equal", "{": "bracket_left",
+    "}": "bracket_right", "|": "backslash", ":": "semicolon", '"': "apostrophe",
+    "<": "comma", ">": "dot", "?": "slash", "~": "grave_accent",
+}
 
 
-def qcodes_for(ch):
-    """The qcode for one character, or None if it cannot be typed.
+def qcode_for(ch: str) -> str:
+    """The qcode for one character that needs no shift.
 
-    Returning None rather than guessing is deliberate: a username with a character that
-    silently produces nothing is a bake that creates the wrong account, and the failure
-    surfaces much later as 'the password does not work'.
+    Raises rather than guessing: an unshifted character that has no qcode is a gap in
+    the table, and typing something else silently is worse than stopping.
     """
-    return PLAIN.get(ch)
+    if ch.isdigit() or (ch.islower() and ch.isalpha()):
+        return ch
+    if ch.isupper() and ch.isalpha():
+        raise ValueError(
+            f"{ch!r} needs shift; for_text() returns it as a combo, qcode_for() does not"
+        )
+    if ch in NAMED:
+        return NAMED[ch]
+    raise ValueError(f"no qcode for {ch!r}")
 
 
-def type_text(q, text, delay=0.06):
-    """Type `text` into the focused widget."""
-    import time
-    unsupported = []
+def for_text(text: str) -> list[tuple[str, object]]:
+    """Every keystroke for `text`, as ('key', qcode) or ('combo', (qcodes...)).
+
+    NEWLINES AND TABS ARE REFUSED. lib/qmp.key() cannot produce either, and a caller
+    that passes one has a command that needs splitting - a decision, not a retry. The
+    Windows stage learned this as "cannot map newline" after typing nothing at all.
+    """
+    out: list[tuple[str, object]] = []
     for ch in text:
-        code = qcodes_for(ch)
-        if code is None:
-            unsupported.append(ch)
-            continue
-        q.execute("input-send-event", events=[
-            {"type": "key", "data": {"down": True,
-                                     "key": {"type": "qcode", "data": code}}}])
-        time.sleep(0.02)
-        q.execute("input-send-event", events=[
-            {"type": "key", "data": {"down": False,
-                                     "key": {"type": "qcode", "data": code}}}])
-        time.sleep(delay)
-    return unsupported
+        if ch in "\r\n\t":
+            raise ValueError(
+                f"cannot type {ch!r}; split the command and send it as separate lines"
+            )
+        if ch.isupper() and ch.isalpha():
+            out.append(("combo", ("shift", ch.lower())))
+        elif ch in SHIFTED:
+            out.append(("combo", ("shift", SHIFTED[ch])))
+        else:
+            out.append(("key", qcode_for(ch)))
+    return out
 
 
-def press(q, code, delay=0.08):
-    import time
-    q.execute("input-send-event", events=[
-        {"type": "key", "data": {"down": True,
-                                 "key": {"type": "qcode", "data": code}}}])
-    time.sleep(0.02)
-    q.execute("input-send-event", events=[
-        {"type": "key", "data": {"down": False,
-                                 "key": {"type": "qcode", "data": code}}}])
-    time.sleep(delay)
+def type_into(q, text: str, per_char: float = 0.03, sleep=None) -> None:
+    """Send `text` to a QMP connection one keystroke at a time.
+
+    `per_char` is the gap between keystrokes. 0.03s is what the Windows stage uses for a
+    shell command; a form that validates as it is typed needs more - drive.py uses 0.4 -
+    which is why this is a parameter and not a constant.
+    """
+    import time as _time
+
+    import qmp as qmpmod
+
+    wait = sleep or _time.sleep
+    for kind, payload in for_text(text):
+        if kind == "combo":
+            qmpmod.key_combo(q, *payload)          # type: ignore[arg-type]
+        else:
+            qmpmod.key(q, payload)                 # type: ignore[arg-type]
+        wait(per_char)

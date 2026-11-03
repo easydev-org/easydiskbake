@@ -1,0 +1,133 @@
+name: macos-15_dev-bake
+
+# Install the developer toolchain into a macOS disk that already answers on ssh.
+#
+# ORDER IS THE REASON. This stage needs ssh, so it runs after the ssh stage - and that is
+# what makes it ordinary remote work instead of a package manager driven through a GUI.
+# Homebrew, node, python, cmake, jq and gh are what a GitHub Actions runner reaches for;
+# git and the compilers come with the Xcode command line tools that Homebrew itself
+# requires, so they are not separate entries.
+#
+# MANUAL ONLY.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ssh_tag:
+        description: "The ssh-stage disk in this package"
+        default: "macos15-ssh"
+      publish_tag:
+        description: "Tag to publish under, or empty for a timestamped one"
+        default: ""
+      ssh_port:
+        description: "Host port the guest's 22 is forwarded to"
+        default: "2223"
+      clean:
+        description: "Remove this run's caches and zero free space before exporting"
+        type: boolean
+        default: true
+
+concurrency:
+  group: macos-15-dev-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  dev:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: dev-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            # the disk, its copy, and the compressed output
+            python3 lib/ci.py free-disk --need 90
+            python3 lib/ci.py tags --prefix macos-asset-
+            # sshpass is how this stage answers the password prompt. It is in the bake
+            # image for the Windows stages; assert it here rather than assume, because
+            # the failure without it is a silent hang at an ssh prompt with no terminal.
+            if ! command -v sshpass >/dev/null 2>&1; then
+              apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
+                apt-get install -y -qq sshpass
+            fi
+            sshpass -V | head -1
+
+      - name: pull the ssh disk
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: dev-pull
+          interval: "10"
+          command: |
+            set -euo pipefail
+            mkdir -p out
+            python3 lib/ci.py install-oras
+            python3 lib/ci.py login --registry ghcr.io
+            cd out && oras pull \
+              "ghcr.io/${{ github.repository }}:${{ inputs.ssh_tag || 'macos15-ssh' }}" \
+              && ls -la
+
+      - name: install the toolchain
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: dev-install
+          interval: "15"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            DISK=$(ls out/*.qcow2 | head -1)
+            echo "ssh disk: $DISK"
+            CLEAN=""
+            if [ "${{ inputs.clean }}" = "true" ]; then CLEAN="--clean"; fi
+            python3 macos/15/dev.py \
+              --disk "$DISK" \
+              --out out/macos15-dev.qcow2 \
+              --ssh-port "${{ inputs.ssh_port || '2223' }}" \
+              $CLEAN
+
+      - name: upload the disk
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos15-dev-qcow2
+          path: out/macos15-dev.qcow2
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: push the disk
+        if: ${{ success() }}
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: dev-publish
+          interval: "15"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py install-oras
+            python3 lib/ci.py login --registry ghcr.io
+            TAG="${{ inputs.publish_tag }}"
+            if [ -z "$TAG" ]; then
+              python3 lib/publish_disk.py out/macos15-dev.qcow2 --kind macos15-dev
+            else
+              python3 lib/publish_disk.py out/macos15-dev.qcow2 --tag "$TAG" \
+                --kind macos15-dev
+            fi

@@ -184,7 +184,7 @@ def main(argv: list[str]) -> int:
     #
     # It used to be an unconditional tempfile.mkdtemp(), and the bake inside it wrote
     # install.mp4 and last-frame.png beside the AVD archive. Both were then deleted by
-    # the rmtree below, inside a container, and publish-android.yml uploaded no artifact
+    # the rmtree below, inside a container, and android-15_aosp-publish.yml uploaded no artifact
     # at all - so every Android run so far produced no picture of itself. The only way to
     # see what the emulator drew was to add a screendump step and run it again.
     #

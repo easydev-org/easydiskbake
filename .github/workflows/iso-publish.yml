@@ -1,4 +1,4 @@
-name: publish-iso
+name: iso-publish
 
 # Download the pinned installer images once, verify them, and push each to this
 # repository's own ghcr package.
