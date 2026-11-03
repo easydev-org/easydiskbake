@@ -1,55 +1,68 @@
-"""Boot a published NixOS desktop disk and photograph what it draws.
+"""Boot a published NixOS desktop disk and prove its Wayland session is running.
 
-    python3 linux/nixos/launch.py --tag nixos-kde --out out/nixos-kde-launch
-    python3 linux/nixos/launch.py --disk out/nixos-kde.qcow2 --desktop kde
+    python3 linux/nixos/launch.py --tag nixos-kde
+    python3 linux/nixos/launch.py --disk out/nixos-labwc.qcow2 --desktop labwc
 
 WHAT THIS ANSWERS, AND WHY THE BAKE CANNOT ANSWER IT
 
-linux/nixos/derive.py rebuilds a disk and reads DERIVE_RC from the serial console. That
-says nixos-rebuild succeeded: a generation was built and made the default. It does NOT
-say the generation can start - a display manager whose assertion passes at build time can
-still fail to come up, a compositor can abort on a missing DRM node, and a session can
-start and paint nothing. Those are the three ways a derived nixos disk has actually
-failed in easysandbox-vm, and all three exit nixos-rebuild cleanly.
+linux/nixos/derive.py reads DERIVE_RC from the serial console, which says nixos-rebuild
+built a generation and made it the default. It does not say the generation starts, and
+the three ways a derived disk has failed are all silent at build time:
 
-So this boots the artifact by itself, from the same published tag a deployment would
-pull, and records what appears.
+    a display manager whose assertion passed but which cannot start
+    a compositor that aborts with "Failed to find any DRM render node"
+    a session that starts and paints nothing
 
-THE TWO EVIDENCE STREAMS, AND WHY BOTH
+So this boots the published artifact by itself and asks the running system whether its
+Wayland session exists.
 
-    the screen   every desktop here ends on a framebuffer, and the recording is what a
-                 person looks at to decide whether "it started" is true
-    the serial   NixOS prints to console=ttyS0 on every one of these disks. A guest whose
-                 display manager died still reaches a login prompt there, which is the
-                 difference between "booted but no session" and "did not boot"
+WHY SSH, AND WHY NOT THE SCREEN
 
-Neither alone is enough. A frame of a black screen is also what a guest looks like while
-gdm is still starting, and a login prompt is also what a desktop that failed to start
-leaves behind. The verdict below requires the screen to have LIT UP - not to match any
-particular wallpaper, because six desktops do not share one.
+The first version of this file judged a desktop by its pixels: a frame with colour in it
+counted as "drawn". Two of the six desktops broke that test for reasons that have nothing
+to do with whether they work:
 
-WHY NOT lib/desktop.py
+    labwc    mean  0.0  chroma 0.0     the whole screen stayed black
+    miracle  mean 50.7  chroma 8.0     a flat backdrop, no colour to measure
 
-That module's test is Windows-shaped: a light upper half, a dark lower half with a
-taskbar and icons, measured on Windows 11's wallpaper. One of these six is GNOME, one is
-Plasma, one is COSMIC, and three are bare compositors whose whole screen is a wallpaper
-and nothing else. A gradient-and-taskbar test would call a working labwc session a
-failure. What IS common to all six is that something drew: the frame is not black and not
-the firmware's text console.
+Both had in fact booted - the console showed `nixos login: docker (automatic login)` - and
+a pixel test can never tell "this compositor does not draw on the emulated VGA adapter"
+from "this compositor failed to start". The screen is evidence about the adapter, not
+about the session.
 
-WHAT A LAUNCH IS EXPECTED TO LEAVE BEHIND
+So the verdict is the SESSION, read from inside the guest over ssh:
 
-    out/nixos-<desktop>-launch/install.mp4     the recording, kept current while it runs
-    out/nixos-<desktop>-launch/last-frame.png  the newest frame, for a cancelled run
-    out/nixos-<desktop>-launch/screen-*.png    samples, named by the second
-    out/nixos-<desktop>-launch/launch.txt      the verdict, one line
-    out/nixos-<desktop>-launch/console.log     the guest's serial console
+    a Wayland session exists in loginctl
+    its compositor process is running
+    that session is a Wayland one, not an X11 one
+
+The screenshot is still taken and still uploaded - it is the thing a person looks at -
+but it is an artifact, not the verdict.
+
+WHY WAYLAND AND NOT "ANY SESSION"
+
+Five of these six desktops are Wayland-only by construction (labwc, hyprland, miracle-wm,
+cosmic and GNOME's default), and KDE on this configuration runs a Wayland session too.
+Accepting an X11 session would pass a disk that had silently fallen back to something the
+configuration does not ask for, which is exactly the kind of "it started" that is not the
+thing being tested. `loginctl` reports the type as `wayland` or `x11`, so the check is a
+string comparison rather than an inference.
+
+HOW SSH GETS IN
+
+lib/vm.py forwards host:2222 to guest:22 on every guest it builds, and
+configuration-minimal.nix enables sshd with password authentication for the account
+docker/admin. Nothing here needs a key.
+
+sshpass is used because the password is known and there is no terminal to type it at; it
+is in the bake image for the Windows and macOS dev stages, and the workflow asserts it.
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -68,6 +81,28 @@ import vm  # noqa: E402
 # nixos-<desktop>, so the name is also how a caller names the artifact.
 DESKTOPS = ["labwc", "gnome", "kde", "cosmic", "hyprland", "miracle"]
 
+# THE PROCESS NAME THAT PROVES EACH SESSION IS UP. These are not guesses: they are the
+# binaries the modules in configuration-desktop.nix install and run.
+#
+#   labwc        programs.labwc / services.greetd's exec ${pkgs.labwc}/bin/labwc
+#   gnome        gnome-shell, the compositor gdm starts for the GNOME session
+#   kde          kwin_wayland (NOT plasmashell - kwin is what owns the session's display
+#                server, and it is the process that fails when there is no DRM node)
+#   cosmic       cosmic-comp, the COSMIC compositor
+#   hyprland     Hyprland, whose binary is capitalised
+#   miracle      miracle-wm
+#
+# pgrep -f, not pgrep -x: Hyprland's binary is `Hyprland`, kwin's is `kwin_wayland`, and a
+# full command line match is what catches a session started by a wrapper script.
+SESSION_PROCESS = {
+    "labwc": "labwc",
+    "gnome": "gnome-shell",
+    "kde": "kwin_wayland",
+    "cosmic": "cosmic-comp",
+    "hyprland": "Hyprland",
+    "miracle": "miracle-wm",
+}
+
 # WHAT PROVES THE SYSTEM BOOTED, independently of what it draws. NixOS prints this on
 # ttyS0 once the kernel has mounted root and handed over to userspace. Every one of these
 # disks carries boot.kernelParams = [ "console=ttyS0,115200n8" ] from
@@ -75,39 +110,9 @@ DESKTOPS = ["labwc", "gnome", "kde", "cosmic", "hyprland", "miracle"]
 # the configuration this bake wrote.
 BOOTED_MARKER = "Welcome to NixOS"
 
-# A DESKTOP THAT DREW IS A FRAME WITH COLOUR IN IT. The floor is deliberately the same
-# value lib/install.py uses for "nothing is drawn there" (NOTHING_DRAWN = 8) but a little
-# higher: the firmware's own text console is readable at a mean grey of 10-15 and that is
-# exactly the state this must NOT accept as a desktop. A wallpaper, a greeter or a
-# compositor all measure far above this; the darkest of the six is a labwc session with
-# the default background, which is a grey-blue that measures in the thirties.
-DRAWN_MEAN = 24
-
-# AND IT HAS TO BE COLOUR, NOT JUST LIGHT. A console full of text is white-on-black: all
-# three channels move together. A desktop has a wallpaper, and the mean spread between the
-# channels is what separates the two without knowing which desktop it is.
-#
-# THE NUMBERS ARE MEASURED, NOT CHOSEN. Runs of frames from this repository, plus flat
-# colours standing in for each of the six wallpapers:
-#
-#     a real Windows 11 desktop       mean 152.3  chroma 106.9   <- drawn
-#     a KDE blue wallpaper            mean  80.3  chroma 103.0   <- drawn
-#     a GNOME purple wallpaper        mean  83.0  chroma  48.0   <- drawn
-#     labwc's default grey-blue       mean  58.3  chroma  22.0   <- drawn
-#     macOS's dark installer panes    mean  26.5  chroma   1.6   <- NOT drawn
-#     Disk Utility                    mean  26.1  chroma   0.6   <- NOT drawn
-#     a plain grey greeter            mean  60.0  chroma   0.0   <- NOT drawn
-#     a white-on-black text console   mean 230.0  chroma   0.0   <- NOT drawn
-#
-# The two groups do not overlap on chroma: every drawn frame is above 20 and every
-# not-drawn one below 3. Twelve is the middle of that gap, and it is the test that
-# matters - a bright console scores a MEAN of 230 and would pass a brightness test alone.
-#
-# WHY A GREY GREETER IS A FAILURE AND NOT A DESKTOP. It means the session did not start,
-# and that is the thing this stage exists to catch. The old measure in easysandbox-vm was
-# a screenshot the smoke test rejected if it was blank; this is that idea with the
-# brightness test made explicit.
-DRAWN_CHROMA = 12
+# THE ACCOUNT, WHICH IS THE SAME ONE EVERY IMAGE IN THIS REPOSITORY USES.
+SSH_USER = "docker"
+SSH_PASSWORD = "admin"
 
 
 def log(message: str) -> None:
@@ -117,9 +122,8 @@ def log(message: str) -> None:
 def read_ppm(path: str) -> tuple[int, int, bytes] | None:
     """The pixels of a binary PPM, or None if it cannot be read.
 
-    Same shape as lib/desktop.read_ppm and lib/install.py's capture(), and for the same
-    reason: a screendump goes through a file the emulator wrote, so this is one read and
-    one pass over the bytes - no image library, and no interpretation of what is drawn.
+    Kept because the screenshot is still taken - it is just no longer the verdict. Same
+    shape as lib/desktop.read_ppm: one read, one pass over the bytes, no image library.
     """
     try:
         with open(path, "rb") as fh:
@@ -138,46 +142,24 @@ def read_ppm(path: str) -> tuple[int, int, bytes] | None:
         return None
 
 
-def screen_stats(path: str) -> dict | None:
-    """Mean grey and mean channel spread of a frame.
+def screen_mean(path: str) -> float | None:
+    """Mean grey of a frame, for the record only.
 
-    SAMPLED, NOT COMPLETE. Every 97th pixel, which is the stride lib/install.py already
-    uses for the same question, and it is far finer than "did a desktop appear" needs.
+    NOT A VERDICT. It is written into launch.txt so a reader can tell at a glance whether
+    the screenshot is a desktop, a greeter or a black screen - but a black screen is a
+    valid PASS if the session is running, because two of these six compositors do not draw
+    on the emulated adapter at all.
     """
     shot = read_ppm(path)
     if shot is None:
         return None
     width, height, pixels = shot
     total = 0
-    spread = 0
     count = 0
     for index in range(0, len(pixels), 97 * 3):
-        r, g, b = pixels[index], pixels[index + 1], pixels[index + 2]
-        total += r + g + b
-        spread += max(r, g, b) - min(r, g, b)
+        total += pixels[index] + pixels[index + 1] + pixels[index + 2]
         count += 1
-    if not count:
-        return None
-    return {
-        "width": width,
-        "height": height,
-        "mean": total / (count * 3),
-        "chroma": spread / count,
-    }
-
-
-def is_desktop(path: str) -> tuple[bool, str]:
-    """Whether this frame shows something drawn, and the sentence why.
-
-    A tuple rather than a bool because the log is read to decide what to do next, and
-    "mean 12.4, chroma 1.8" says which of the two tests failed.
-    """
-    stats = screen_stats(path)
-    if stats is None:
-        return False, "the frame could not be read"
-    drawn = stats["mean"] >= DRAWN_MEAN and stats["chroma"] >= DRAWN_CHROMA
-    return drawn, (f"mean {stats['mean']:.1f} chroma {stats['chroma']:.1f} "
-                   f"at {stats['width']}x{stats['height']}")
+    return total / (count * 3) if count else None
 
 
 def wait_for_console(console: str, marker: str, seconds: int, note) -> bool:
@@ -203,61 +185,213 @@ def wait_for_console(console: str, marker: str, seconds: int, note) -> bool:
     return False
 
 
-def sample_until(guest, work: str, timeout: int, note, seen: list) -> bool:
-    """Photograph the screen every few seconds until one of them is a desktop.
+def ssh(port: int, command: str, timeout: int = 30) -> tuple[int, str]:
+    """Run one command in the guest. Returns (exit status, combined output).
 
-    PNG, not PPM, because these are uploaded and a PPM is 6 MiB each. lib/lastframe.py
-    converts a screendump the same way for the same reason.
+    NO KEY, NO TERMINAL. The password is the one every image here uses, and sshpass is
+    what supplies it - there is no tty to prompt at.
 
-    The recording is kept current by lib/live.py independently of this loop, so a run
-    that is cancelled mid-wait still has an mp4 and a last frame.
+    StrictHostKeyChecking=off and UserKnownHostsFile=/dev/null because this is a fresh
+    guest on a forwarded port every run: a known-hosts file would either grow without
+    bound or refuse the connection, and neither is a fact about the disk.
+    """
+    if not shutil.which("sshpass"):
+        return 127, "sshpass is not installed"
+    argv = [
+        "sshpass", "-p", SSH_PASSWORD,
+        "ssh", "-p", str(port),
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "GlobalKnownHostsFile=/dev/null",
+        "-o", "LogLevel=ERROR",
+        "-o", "ConnectTimeout=10",
+        "-o", "PreferredAuthentications=password",
+        "-o", "PubkeyAuthentication=no",
+        f"{SSH_USER}@127.0.0.1",
+        command,
+    ]
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return 124, f"the command did not finish in {timeout}s"
+    except OSError as exc:
+        return 126, str(exc)
+    return result.returncode, (result.stdout + result.stderr).strip()
 
-    ONE QMP CONNECTION, OPENED HERE AND CLOSED WITH THE GUEST. lib/vm.py does not hand
-    out a client - it only uses one internally for the ACPI power button - so the
-    screendump goes through a client of this function's own, exactly as
-    macos/15/install.py's Recovery class does.
+
+def wait_for_ssh(port: int, seconds: int, note) -> bool:
+    """Wait until sshd answers and the account can log in.
+
+    THE BANNER IS NOT ENOUGH - this runs a command, because a socket that accepts a
+    connection and then refuses authentication is a different failure and has been one
+    here before. `true` is the smallest command that proves a shell ran.
+    """
+    deadline = time.time() + seconds
+    started = time.time()
+    while time.time() < deadline:
+        status, out = ssh(port, "true", timeout=20)
+        if status == 0:
+            note(f"ssh answers after {time.time() - started:.0f}s")
+            return True
+        time.sleep(10)
+    note(f"=== SSH DID NOT ANSWER IN {seconds}s ===")
+    note(f"  last output: {out[:300]}")
+    return False
+
+
+def check_wayland_session(port: int, desktop: str, note) -> bool:
+    """The verdict: a Wayland session exists and its compositor is running.
+
+    THREE QUESTIONS, AND ALL THREE HAVE TO BE YES.
+
+        1. loginctl lists a session whose Type is wayland
+        2. that session is a real user session, not a greeter's
+        3. the compositor process for THIS desktop is running inside it
+
+    The first alone would pass a disk where the session registered and then died; the
+    third alone would pass a compositor that started outside any session. Together they
+    say what the stage exists to say.
+
+    AN X11 SESSION IS A FAILURE. Every one of these six disks is configured for Wayland -
+    labwc, hyprland and miracle-wm are wayland-only compositors, and gnome, kde and cosmic
+    all run their Wayland session on this configuration. An `x11` type means something
+    fell back, and passing it would be passing a system that is not the one that was built.
+
+    WHICH SESSION IS WHICH IS ASKED, NOT INFERRED. `loginctl list-sessions` reports
+    SESSION, UID, USER, SEAT and TTY - and NOT the type. The type is per-session and comes
+    from `show-session <id> -p Type`, so this asks once per id. A version that adds a
+    column to list-sessions cannot break it, because only the first field is read.
+    """
+    process = SESSION_PROCESS[desktop]
+
+    # --value is what makes this a bare `wayland` rather than `Type=wayland`, and the
+    # Active check matters: a session that is registered but inactive is the shape of a
+    # greeter that logged out, which is not a desktop.
+    probe = (
+        "for s in $(loginctl list-sessions --no-legend --no-pager 2>/dev/null | awk '{print $1}'); do "
+        "  printf '%s|%s|%s|%s\\n' \"$s\" "
+        "    \"$(loginctl show-session \"$s\" -p Type --value 2>/dev/null)\" "
+        "    \"$(loginctl show-session \"$s\" -p Class --value 2>/dev/null)\" "
+        "    \"$(loginctl show-session \"$s\" -p Active --value 2>/dev/null)\"; "
+        "done"
+    )
+    status, sessions = ssh(port, probe)
+    if status != 0:
+        note(f"  loginctl could not be read: {sessions[:200]}")
+        return False
+
+    note(f"  sessions (id|type|class|active): {sessions.splitlines() or '(none)'}")
+
+    wayland = []
+    x11 = []
+    for line in sessions.splitlines():
+        fields = line.split("|")
+        if len(fields) < 4:
+            continue
+        session_id, session_type, session_class, active = fields[:4]
+        if active.strip().lower() not in ("yes", "1", "true"):
+            continue
+        kind = session_type.strip().lower()
+        # THE GREETER'S OWN SESSION IS NOT A DESKTOP. greetd, sddm and gdm each register a
+        # session of their own before any user session exists, and on this configuration
+        # the greeter's is Wayland too - so a type test alone would pass a disk sitting at
+        # a login prompt. `Class` is what separates them: logind reports `greeter` for the
+        # display manager's session and `user` for the one with the desktop in it.
+        klass = session_class.strip().lower()
+        if klass not in ("user", "manager"):
+            note(f"  ignoring session {session_id}: class {klass!r} is a greeter, not a desktop")
+            continue
+        if kind == "wayland":
+            wayland.append(session_id.strip())
+        elif kind == "x11":
+            x11.append(session_id.strip())
+
+    if x11 and not wayland:
+        note(f"=== AN X11 SESSION INSTEAD OF WAYLAND: {x11} ===")
+        note("  every disk here is configured for Wayland; an x11 session means it fell back")
+        return False
+
+    if not wayland:
+        note("=== NO ACTIVE USER WAYLAND SESSION ===")
+        note("  the system booted and answers on ssh, so this is the desktop itself")
+        status, log = ssh(
+            port,
+            "journalctl -b --no-pager -n 40 "
+            "-u greetd -u sddm -u gdm -u display-manager 2>/dev/null | tail -30 || true",
+        )
+        for line in log.splitlines()[-20:]:
+            note(f"  journal: {line}")
+        return False
+
+    # The session is there. Now the process that has to own it.
+    status, procs = ssh(port, f"pgrep -af '{process}' 2>/dev/null | head -5 || true")
+    if not procs.strip():
+        note(f"=== NO '{process}' PROCESS, THOUGH A WAYLAND SESSION EXISTS ===")
+        note("  the greeter registered a session whose compositor is not running")
+        status, log = ssh(
+            port,
+            "journalctl -b --no-pager -n 60 "
+            "-u greetd -u sddm -u gdm -u display-manager 2>/dev/null | tail -30 || true",
+        )
+        for line in log.splitlines()[-20:]:
+            note(f"  journal: {line}")
+        return False
+
+    note(f"wayland session(s) {wayland} running {process}")
+    for line in procs.splitlines()[:3]:
+        note(f"  process: {line.strip()}")
+
+    # WAYLAND_DISPLAY IN THE COMPOSITOR'S OWN ENVIRONMENT, which is the proof that a
+    # Wayland socket exists - not merely that a process with the right name is in the
+    # table. It also catches a compositor started with XWAYLAND off into an X server.
+    status, envout = ssh(
+        port,
+        "for p in $(pgrep -f '" + process + "' | head -1); do "
+        "tr '\\0' '\\n' < /proc/$p/environ 2>/dev/null "
+        "| grep -E '^(WAYLAND_DISPLAY|XDG_SESSION_TYPE)=' ; done",
+    )
+    for line in envout.splitlines():
+        note(f"  env: {line.strip()}")
+    if "XDG_SESSION_TYPE=x11" in envout:
+        note("=== THE COMPOSITOR'S OWN ENVIRONMENT SAYS X11 ===")
+        return False
+    if "WAYLAND_DISPLAY=" not in envout:
+        note("=== THE COMPOSITOR HAS NO WAYLAND_DISPLAY ===")
+        note("  a process by that name is running but is not serving a Wayland socket")
+        return False
+
+    return True
+
+
+def take_screenshot(guest, artifacts: str, note) -> str:
+    """One full-size screendump, converted to PNG. Returns the path or "".
+
+    ALWAYS TAKEN, PASS OR FAIL. It is the artifact a person looks at; the verdict is the
+    session, but a picture is what turns "the session is running" into something reviewable
+    and what explains a failure at a glance.
     """
     import qmp as qmpmod
 
-    deadline = time.time() + timeout
-    started = time.time()
-    interval = 10
-    shot = os.path.join(work, "probe.ppm")
+    shot = os.path.join(artifacts, "screen.ppm")
+    png = os.path.join(artifacts, "screen.png")
     client = qmpmod.QMP(guest.paths.drive)
     try:
-        while time.time() < deadline:
-            if not guest.alive():
-                note("qemu exited while waiting for a desktop")
-                return False
-            try:
-                client.execute("screendump", filename=shot)
-            except (OSError, RuntimeError) as exc:
-                note(f"the screendump failed: {exc}")
-                time.sleep(interval)
-                continue
-
-            elapsed = int(time.time() - started)
-            png = os.path.join(work, f"screen-{elapsed:04d}.png")
-            try:
-                lastframe.convert(shot, png)
-            except (OSError, subprocess.SubprocessError):
-                png = ""
-
-            drawn, why = is_desktop(shot)
-            if drawn:
-                note(f"a desktop is on screen after {elapsed}s ({why})")
-                seen.append((elapsed, png, why))
-                return True
-            if elapsed % 60 < interval:
-                note(f"  {elapsed}s: nothing drawn yet ({why})")
-            if png and elapsed % 30 < interval:
-                seen.append((elapsed, png, why))
-            time.sleep(interval)
-
-        note(f"=== NO DESKTOP APPEARED IN {timeout}s ===")
-        return False
+        client.execute("screendump", filename=shot)
+    except (OSError, RuntimeError) as exc:
+        note(f"  the screendump failed: {exc}")
+        return ""
     finally:
         client.close()
+
+    mean = screen_mean(shot)
+    if mean is not None:
+        note(f"  the screenshot's mean grey is {mean:.1f} (for the record, not the verdict)")
+    try:
+        lastframe.convert(shot, png)
+    except (OSError, subprocess.SubprocessError) as exc:
+        note(f"  could not convert the screenshot: {exc}")
+        return ""
+    return png
 
 
 def main(argv: list[str]) -> int:
@@ -273,7 +407,9 @@ def main(argv: list[str]) -> int:
     p.add_argument("--work", default=None,
                    help="qemu's own directory (defaults to --artifacts)")
     p.add_argument("--boot-timeout", type=int, default=900,
-                   help="seconds to wait for a desktop")
+                   help="seconds to wait for the Wayland session")
+    p.add_argument("--ssh-port", type=int, default=2222,
+                   help="host port forwarded to the guest's 22 (lib/vm.py's default)")
     p.add_argument("--mem", type=int, default=6144)
     p.add_argument("--cpus", type=int, default=4)
     p.add_argument("--resolution", default="1920x1080")
@@ -296,7 +432,7 @@ def main(argv: list[str]) -> int:
             desktop = candidate
     if not desktop:
         print(f"=== CANNOT TELL WHICH DESKTOP THIS IS ===\n"
-              f"  -f tag is {args.tag!r} and no --desktop was given. It has to be one of "
+              f"  --tag is {args.tag!r} and no --desktop was given. It has to be one of "
               f"{', '.join(DESKTOPS)}.", flush=True)
         return 2
 
@@ -318,8 +454,6 @@ def main(argv: list[str]) -> int:
              f"tag={args.tag or args.disk}")
         return code
 
-    # A LOCAL DISK IS THE CALLER'S; a tag is pulled here so the artifact under test is the
-    # published one rather than a file left on a runner.
     disk = args.disk
     if not disk:
         disk = os.path.join(work, f"nixos-{desktop}.qcow2")
@@ -337,21 +471,19 @@ def main(argv: list[str]) -> int:
         return finish(2)
     note(f"disk {disk} ({os.path.getsize(disk) >> 20} MiB)")
 
-    # THE CONSOLE IS A CHARDDEV ON A FIFO, as in derive.py, because NixOS talks on ttyS0
-    # and that is the only evidence a guest which draws nothing still gives off.
     console_path = os.path.join(artifacts, "console.log")
     ser = serial.Serial(work, "serial", sink=console_path)
     shape = vm.Shape(
         cpus=args.cpus, mem_mb=args.mem, machine="q35",
         vga="std", serial_pipe=ser.stdin.removesuffix(".in"),
         resolution=(width, height),
+        ssh_port=args.ssh_port,
     )
     drives = ["-drive", f"file={disk},if=virtio,format=qcow2"]
     guest = vm.Guest(work, extra=drives, shape=shape, stdout=os.devnull)
 
     shots = os.path.join(work, "frames")
     os.makedirs(shots, exist_ok=True)
-    seen: list = []
     snap = None
     live = None
     try:
@@ -371,25 +503,42 @@ def main(argv: list[str]) -> int:
             every=float(os.environ.get("LIVE_ARTIFACT_SECONDS", "20")),
         )
 
-        # THE SYSTEM BOOTED, THEN THE DESKTOP DREW. Both, in that order, because a
-        # desktop cannot be on screen before the kernel has handed over - and if the
-        # marker never arrives, waiting the full boot budget for a picture that cannot
-        # come is nine minutes of nothing.
+        # THE SYSTEM BOOTED, THEN SSH, THEN THE SESSION. Each is a precondition of the
+        # next, and stopping at the first that fails says which layer is broken:
+        #   no BOOTED_MARKER   the disk does not start
+        #   no ssh             the system started and its network or sshd did not
+        #   no wayland session the system is reachable and its desktop did not come up
         boot_seconds = min(args.boot_timeout, 600)
         if not wait_for_console(console_path, BOOTED_MARKER, boot_seconds, note):
             note("  the disk did not reach userspace; the console log is uploaded")
+            take_screenshot(guest, artifacts, note)
             return finish(1)
 
-        if not sample_until(guest, artifacts, args.boot_timeout, note, seen):
-            # SAY WHICH FAILURE THIS IS. A guest that booted and drew nothing is a
-            # display-manager problem; one that never booted is a disk problem, and the
-            # console marker above has already told the two apart.
-            note("  the system booted but no desktop was drawn")
-            note("  the console log shows what the display manager did")
+        if not wait_for_ssh(args.ssh_port, args.boot_timeout, note):
+            note("  the system booted but never answered on ssh")
+            take_screenshot(guest, artifacts, note)
             return finish(1)
 
-        note(f"desktop {desktop} started")
-        return finish(0)
+        deadline = time.time() + args.boot_timeout
+        started = time.time()
+        passed = False
+        while time.time() < deadline:
+            if not guest.alive():
+                note("qemu exited while waiting for the session")
+                break
+            if check_wayland_session(args.ssh_port, desktop, note):
+                note(f"the {desktop} Wayland session is up after "
+                     f"{time.time() - started:.0f}s")
+                passed = True
+                break
+            note(f"  {time.time() - started:.0f}s: no session yet")
+            time.sleep(20)
+
+        # THE PICTURE IS AN ARTIFACT, NOT THE VERDICT. Taken either way.
+        png = take_screenshot(guest, artifacts, note)
+        if png:
+            note(f"screenshot {png}")
+        return finish(0 if passed else 1)
     finally:
         guest.stop()
         ser.close()

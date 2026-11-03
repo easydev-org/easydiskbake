@@ -85,6 +85,14 @@ jobs:
             python3 lib/ci.py kvm
             # The disk in, the recording, and a copy while it is being read.
             python3 lib/ci.py free-disk --need 30
+            # THE VERDICT IS READ OVER SSH, so the client that supplies the password has
+            # to exist. It is in the bake image for the Windows and macOS dev stages;
+            # assert it here rather than discover its absence as a timeout.
+            if ! command -v sshpass >/dev/null 2>&1; then
+              apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
+                apt-get install -y -qq sshpass
+            fi
+            sshpass -V | head -1
             # Say which tags exist before spending minutes discovering one does not.
             python3 lib/ci.py tags --prefix nixos-
 
@@ -106,19 +114,21 @@ jobs:
               --resolution "${{ inputs.resolution || '1920x1080' }}" \
               --mem "${{ inputs.mem || '6144' }}"
 
-      # THE FRAMES ARE THE RESULT. A launch that reports "no desktop" and shows nothing has
-      # not said where it stopped; the picture is what turns "nothing appeared" into "SDDM
-      # is on screen and nothing logged in".
-      - name: keep the screenshots
+      # THE SCREENSHOT IS THE ARTIFACT, NOT THE VERDICT. The verdict is the Wayland
+      # session, read over ssh - a pixel test cannot tell "this compositor does not draw
+      # on the emulated VGA adapter" from "this compositor failed to start", and two of the
+      # six (labwc, miracle) drew nothing at all while working. So the picture is uploaded
+      # for a person to look at, and launch.txt carries the reasoning.
+      - name: keep the screenshot and the verdict
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: nixos-${{ matrix.desktop }}-launch-screenshots
+          name: nixos-${{ matrix.desktop }}-launch
           path: |
+            out/nixos-${{ matrix.desktop }}-launch/screen.png
+            out/nixos-${{ matrix.desktop }}-launch/launch.txt
             out/nixos-${{ matrix.desktop }}-launch/install.mp4
             out/nixos-${{ matrix.desktop }}-launch/last-frame.png
-            out/nixos-${{ matrix.desktop }}-launch/screen-*.png
-            out/nixos-${{ matrix.desktop }}-launch/launch.txt
             out/nixos-${{ matrix.desktop }}-launch/console.log
           if-no-files-found: warn
           retention-days: 14
