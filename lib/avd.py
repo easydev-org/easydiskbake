@@ -268,22 +268,41 @@ def pack(avd_home_dir: str, out: str) -> str:
         os.unlink(out)
 
     log(f"packing {avd_home_dir} -> {out}")
-    # 7z, NOT `tar -I "zstd"`, AND RUN 41600044258 IS WHY.
+    # 7z, NOT `tar -I "zstd"`, AND TWO RUNS SHAPED THIS.
     #
-    # tar's -I names a PROGRAM to pipe through, and the bake image has no `zstd`
-    # binary:
+    # tar's -I names a PROGRAM to pipe through, and the bake image has no `zstd` binary:
     #
     #     tar (child): zstd -d -T0: Cannot exec: No such file or directory
     #
-    # 7z carries its own zstd codec, so it needs nothing on PATH. It also handles the
-    # sparse data partition by compressing the zeros, which is what the holes were
-    # worth anyway - `tar --sparse` saved disk, not bytes in the archive.
+    # 7z carries its own codecs, so it needs nothing on PATH. But `-t7z -m0=zstd` is not
+    # a valid pair - the 7z CONTAINER has no zstd method, only its own LZMA family:
+    #
+    #     System ERROR: E_INVALIDARG : One or more arguments are invalid
+    #
+    # which is what run 41608601382 hit after a successful boot and a written gold
+    # marker. 7z can DECOMPRESS a .tar.zst, which is why unpack works; what it cannot do
+    # is PRODUCE one through -t7z.
+    #
+    # So the output is a real 7z archive with its default method. The AVD's images are
+    # mostly sparse zeros, and LZMA2 handles those about as well as zstd does - the
+    # difference this repository cares about is that the file can be made at all.
+    archive = out
+    if not archive.endswith(".7z"):
+        archive = archive[:-len(".tar.zst")] + ".7z" if archive.endswith(".tar.zst") \
+            else archive + ".7z"
+    if os.path.exists(archive):
+        os.unlink(archive)
+
     result = subprocess.run(
-        ["7z", "a", "-t7z", "-m0=zstd", "-mx=3", out, "."],
+        ["7z", "a", "-mx=3", archive, "."],
         cwd=avd_home_dir, capture_output=True, text=True,
     )
     if result.returncode != 0:
-        raise AvdError(f"7z failed: {(result.stderr or result.stdout)[:400]}")
+        raise AvdError(
+            f"7z failed ({result.returncode}): "
+            f"{(result.stderr or result.stdout)[:400]}")
+    log(f"{os.path.getsize(archive) >> 20} MiB -> {archive}")
+    return archive
 
     log(f"{os.path.getsize(out) >> 20} MiB")
     return out

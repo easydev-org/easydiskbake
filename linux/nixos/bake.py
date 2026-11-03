@@ -223,8 +223,23 @@ def partition_script() -> list[tuple[str, float]]:
         # semicolons matter: a failure in nixos-install must still print INSTALL_RC
         # and still power off, or the run sits until the outer timeout with a finished
         # or failed install nobody can see.
+        # THE VERDICT GOES TO A FILE AS WELL AS THE CONSOLE.
+        #
+        # Run 41608440365 finished the install - the log stops on "b", the first letter
+        # of nixos-install's closing "booting the system..." - and then the machine was
+        # gone, so INSTALL_RC never reached the serial console. The exit status is the
+        # only thing that says whether the install worked, and it was the one line that
+        # did not survive the shutdown.
+        #
+        # So it is written to the new system's own /mnt/easydiskbake-rc first, where it
+        # is on the disk this bake is about to compress. install_status() reads that file
+        # back through the qcow2 if the console did not carry it.
+        #
+        # The sleep before poweroff gives the serial drain time to flush; without it the
+        # last line can be lost between the write and qemu noticing the machine stopped.
         ("sudo nixos-install --root /mnt --no-root-password --no-channel-copy 2>&1; "
-         "echo INSTALL_RC=$?; sync; sudo poweroff -f", 30),
+         "echo INSTALL_RC=$? | sudo tee /mnt/easydiskbake-rc; "
+         "sync; sleep 5; sudo poweroff -f", 40),
     ]
 
 
@@ -417,7 +432,7 @@ def main(argv: list[str]) -> int:
         log(f"could not copy the console to {console}: {exc}")
         console = ser.sink
 
-    rc = install_status(console)
+    rc = install_status(console, disk)
     log(f"nixos-install exit status: {rc if rc is not None else '<never returned>'}")
     if rc != 0:
         log("=== THE INSTALL FAILED ===")
@@ -434,20 +449,53 @@ def main(argv: list[str]) -> int:
     return 0
 
 
-def install_status(console: str) -> int | None:
-    """The guest's own exit status, as it printed it.
+def install_status(console: str, disk: str | None = None) -> int | None:
+    """The guest's own exit status, from the console or from the disk it wrote.
 
     THE LAST ONE, because a retried install prints the line twice and it is the second
-    that decided. None means the line never appeared, which is itself a failure - the
-    command ends with it unconditionally.
+    that decided.
+
+    THE DISK IS THE FALLBACK, AND RUN 41608440365 IS WHY IT EXISTS. That run finished
+    nixos-install - the guest's last output is "b", the first letter of the closing
+    "booting the system..." - and then the machine was gone with INSTALL_RC never
+    reaching the serial port. The status line is the whole verdict, and it was the one
+    line that did not survive `poweroff -f`.
+
+    So the bake also writes it to /mnt/easydiskbake-rc in the NEW SYSTEM, which is on
+    the disk about to be compressed. Reading it back needs the qcow2 mounted, which
+    debugfs can do for ext4 without root.
     """
     try:
         with open(console, "rb") as fh:
             text = fh.read().decode("utf-8", "replace")
     except OSError:
-        return None
+        text = ""
     found = re.findall(r"INSTALL_RC=(\d+)", text)
-    return int(found[-1]) if found else None
+    if found:
+        return int(found[-1])
+
+    if disk is None:
+        return None
+
+    # The console did not carry it. Ask the disk.
+    import subprocess
+
+    log("  the console carries no INSTALL_RC; reading it off the disk")
+    for path in ("/easydiskbake-rc", "/mnt/easydiskbake-rc"):
+        for tool in ("debugfs",):
+            try:
+                result = subprocess.run(
+                    [tool, "-R", f"cat {path}", disk],
+                    capture_output=True, text=True, timeout=120,
+                )
+            except (OSError, subprocess.SubprocessError):
+                continue
+            match = re.search(r"INSTALL_RC=(\d+)", result.stdout or "")
+            if match:
+                log(f"  {path} on the disk says INSTALL_RC={match.group(1)}")
+                return int(match.group(1))
+    log("  the disk carries no INSTALL_RC either")
+    return None
 
 
 def first_error(console: str, context: int = 25) -> None:
