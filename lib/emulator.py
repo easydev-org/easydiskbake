@@ -218,12 +218,36 @@ class Emulator:
         that had been re-wiped would not have it, and a disk that was never written
         would not either. The value is the bake's own timestamp, so two runs cannot be
         confused for each other.
+
+        AN EMPTY ANSWER IS ITS OWN SENTENCE. Run 41606351135 reported
+
+            could not write the gold marker:
+
+        with nothing after the colon, because the check was `not result.endswith(token)`
+        and "" satisfies it while printing an empty string. That is the least useful
+        possible message about a write that either did not happen or happened somewhere
+        this did not look, so the three outcomes are named separately below: the shell
+        said FAILED, the shell said nothing, or the shell said something else.
         """
         result = self.adb("shell", "sh", "-c",
                           f"echo '{token}' > /data/local/tmp/bake-gold && "
                           f"sync && cat /data/local/tmp/bake-gold")
-        if result == f"FAILED:" or not result.endswith(token):
-            log(f"could not write the gold marker: {result[:200]}")
+        if result.startswith("FAILED:"):
+            log(f"could not write the gold marker: {result[:300]}")
+            return False
+        if not result:
+            # NO OUTPUT FROM A SUCCEEDING SHELL is not the same as a refused write. It
+            # usually means adb reached the device but the shell's stdout was not
+            # captured, so the file is asked for directly rather than assumed absent.
+            back = self.read_mark()
+            if back == token:
+                log(f"gold marker written: {token} (read back to confirm)")
+                return True
+            log("could not write the gold marker: the shell produced no output, and "
+                f"reading it back gave {back!r}")
+            return False
+        if not result.endswith(token):
+            log(f"could not write the gold marker: the shell said {result[:300]!r}")
             return False
         log(f"gold marker written: {token}")
         return True

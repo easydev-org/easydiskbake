@@ -311,16 +311,29 @@ def main(argv: list[str]) -> int:
         serial_pipe=ser.stdin.removesuffix(".in"),
         # THE COMMAND LINE THE MEDIA'S OWN ENTRY WOULD HAVE BUILT, MINUS GRUB.
         #
-        # init= is the closure the initrd is supposed to mount, and without it the boot
-        # stops in "Find NixOS closure" and drops to emergency mode. The rest is the
-        # entry's own text: nohibernate, root=fstab, loglevel and the security modules
-        # are what the image asks for, and a bake that invented a different list would be
-        # testing a system the image does not ship.
+        # `init=` IS THE WHOLE FIX, AND I WROTE IT WITHOUT THE PREFIX ONCE. The first
+        # attempt passed the closure path as a bare argument:
         #
-        # console= is ADDED, because this runs headless and the media's entry does not
-        # name a console at all - it expects the GRUB gfxterm it was written for.
+        #     /nix/store/...-nixos-system-.../init edd=off nohibernate ...
+        #
+        # which the kernel treats as an unknown token. initrd-find-nixos-closure then
+        # read /proc/cmdline, found no init=, and failed exactly as before - so the fix
+        # looked like it had not worked, when it had never been applied.
+        #
+        # NO findiso=, AND THE INITRD'S OWN fstab SAYS WHY. It contains
+        #
+        #     /dev/disk/by-label/nixos-minimal-26.05-x86_64  /iso  iso9660
+        #     /sysroot/iso/nix-store.squashfs  /nix/.ro-store  squashfs loop
+        #
+        # so the medium is found by the ISO's VOLUME LABEL, which this image sets to
+        # exactly that string - verified by reading sector 16 of the ISO. The ${isoboot}
+        # GRUB expands to `findiso=<path>` is for booting the ISO from a FILE on another
+        # filesystem, which is not what attaching it as a cdrom does.
+        #
+        # console= is added because this runs headless and the entry names none.
         kernel_append=(
-            f"{init_path} edd=off nohibernate root=fstab loglevel=4 "
+            f"init={init_path} "
+            "edd=off nohibernate root=fstab loglevel=4 "
             "lsm=landlock,yama,bpf console=ttyS0,115200n8"
         ),
     )
