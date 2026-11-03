@@ -65,59 +65,72 @@ def installer_config() -> str:
 def answers() -> list[tuple[str, float]]:
     """The installer's questions, in order, with the time each answer needs.
 
-    THE ORDER IS bsd.rd's OWN, READ OFF A CAPTURED SESSION, not a script's idea of one.
+    READ OFF THE CONSOLE, NOT FROM MEMORY. Run 41660285262's transcript is the source:
 
-    The list this replaces was written from memory and was wrong at its first entry - it
-    assumed a keyboard-layout question, but 8.0's install80.iso asks for the TERMINAL TYPE
-    first, and everything after it was therefore one answer behind. That was invisible
-    while the console was dead (see the stty order in bsd/openbsd/media.py, which was the
-    larger bug), and it is what would have kept the run failing after the console was
-    fixed.
+        Welcome to the OpenBSD/amd64 8.0 installation program.
+        (I)nstall, (U)pgrade, (A)utoinstall or (S)hell? vt220
+        (I)nstall, (U)pgrade, (A)utoinstall or (S)hell? openbsd
+        ...
+        (I)nstall, (U)pgrade, (A)utoinstall or (S)hell? sd0
+        # W
+        sh: W: not found
 
-    The order below is from the session a working OpenBSD 8.0 install prints, and each
-    answer is the one that session took:
+    Two things that list makes plain:
 
-        Terminal type?                  vt220, which is what the ramdisk offers
-        System hostname?                openbsd
-        Available network interfaces    vio0 - the virtio NIC on this qemu machine
-        IPv4 address for vio0?          dhcp; lib/vm.py's user-mode network answers
-        IPv6 address for vio0?          none
-        (interface again)               done - there is only one
-        Start sshd by default?          yes, which is the point of this stage
-        Start ntpd by default?          yes, the default
-        Which disk is the root disk?    sd0, the only disk; the cdrom is not offered
-        Use (W)hole disk?               W, the whole disk in one OpenBSD area
-        Use (A)uto layout?              a, the auto layout this disk wants
-        Location of sets?               cd0 - the medium the machine booted from
-        Set name(s)?                    * , every set on the medium, X11 included
-        What timezone are you in?       UTC
-        Password for root?              admin
-        Password for root (again)?      admin
+    1. THE FIRST QUESTION IS (I)nstall, NOT THE TERMINAL TYPE. A CD boot does not ask
+       for one - the console was already set by boot.conf, and bsd.rd only asks that
+       question on a netboot. The old list started with "vt220", so every answer after it
+       was one question behind, which is why "openbsd" was read as the install mode.
 
-    THE PASSWORD COMES LAST. 8.0 asks for the timezone before the root password; the old
-    list had it the other way round.
+    2. THAT IS ALSO WHY IT ENDED IN A SHELL. By the time the real prompts arrived the
+       answers were six questions out of step, and "sd0" landed on something that took it
+       as a command - `# W` and `sh: W: not found` are the installer having given up.
 
-    EVERY WAIT IS MEASURED FROM THAT SESSION, and the two long ones are the two that
-    actually take time: the DHCP exchange, and unpacking the sets.
+    So this list starts with I, and every answer after it is the one a working 8.0 CD
+    install takes:
+
+        I        install, not upgrade or autoinstall
+        (blank)  keyboard layout: the default, us
+        openbsd  system hostname
+        vio0     the virtio NIC on this qemu machine
+        dhcp     IPv4; lib/vm.py's user-mode network answers
+        none     IPv6
+        done     no second interface
+        yes      start sshd at boot - the point of this stage
+        yes      start ntpd at boot
+        (blank)  root password prompt is skipped when one is set below? no - see below
+        sd0      the only disk
+        W        use the whole disk
+        a        auto layout
+        cd0      location of sets: the medium it booted from
+        *        every set on it, X11 included
+        UTC      timezone
+        admin    root password
+        admin    and again
+
+    THE ROOT PASSWORD COMES AFTER THE TIMEZONE on 8.0, and the set location is `cd0`
+    because the machine installed from the CD. Both were wrong in the old list, which had
+    the password before the timezone and never named a set location.
     """
     return [
-        ("vt220", 4),       # terminal type - THE FIRST QUESTION ON AN 8.0 CD
+        ("I", 5),           # install, not upgrade/autoinstall
+        ("", 4),            # keyboard layout: default (us)
         ("openbsd", 4),     # system hostname
         ("vio0", 4),        # which interface to configure
-        ("dhcp", 30),       # IPv4: DHCP, and the lease takes a moment
+        ("dhcp", 30),       # IPv4 - the DHCP exchange takes a moment
         ("none", 4),        # IPv6
         ("done", 4),        # no second interface
-        ("yes", 4),         # start sshd by default
-        ("yes", 4),         # start ntpd by default
+        ("yes", 4),         # start sshd at boot
+        ("yes", 4),         # start ntpd at boot
         ("sd0", 5),         # which disk is the root disk
         ("W", 5),           # use the whole disk
         ("a", 5),           # auto layout
-        ("cd0", 5),         # location of sets: the medium
+        ("cd0", 5),         # location of sets: the CD
         ("*", 5),           # every set, X11 included
         ("UTC", 4),         # timezone
         ("admin", 4),       # root password
         ("admin", 4),       # and again
-        ("", 120),          # unpacking the sets - the long wait
+        ("", 120),          # unpacking the sets
         ("", 10),           # done; the installer reboots
     ]
 

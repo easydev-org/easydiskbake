@@ -90,8 +90,23 @@ ROOTPASS_PLAIN=admin
 
 #!/bin/sh
 # The post-install script is fetched rather than inlined, so the same file can be read and
-# tested on its own. linux/../bsd/freebsd/bake.py replaces the @POST_INSTALL@ marker with
-# the contents of installerconfig.sh at bake time, and refuses to start if the marker is
-# missing - a preamble with no setup script installs a system with no ssh, which is a
-# failure that only shows up in the next stage.
+# tested on its own. bsd/freebsd/bake.py replaces the placeholder below with the contents
+# of installerconfig.sh at bake time, and refuses to start if it is missing - a preamble
+# with no setup script installs a system with no ssh, which is a failure that only shows
+# up in the next stage.
+#
+# THE PLACEHOLDER IS SPELLED OUT ONCE, AND THAT MATTERS.
+#
+# The comment above used to contain the token literally, to name it. bake.py substitutes
+# with str.replace, which replaces EVERY occurrence - so the token inside this comment was
+# replaced too, and the comment's tail became live script:
+#
+#     # tested on its own. ... replaces the #!/bin/sh
+#     # the contents of installerconfig.sh at bake time, and refuses to start if the
+#       marker is
+#     # missing - a preamble with no setup script ...
+#
+# The middle line is the damage: `marker is` is no longer a comment, so the chroot ran it
+# and printed `/tmp/installscript: marker: not found`. It was harmless to the install and
+# it looked like a real failure in the console, which is worse than either.
 @POST_INSTALL@

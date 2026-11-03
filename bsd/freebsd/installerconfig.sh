@@ -100,21 +100,34 @@ fi
 # throws away a complete FreeBSD install because a mirror was unreachable is worse than one
 # that ships a disk whose toolchain a later stage can add. The failure is printed either
 # way.
+# node22, NOT node18, AND THE COMMENT IS ABOVE THE COMMAND FOR A REASON.
+#
+# `node18` and `npm-node18` are gone from the quarterly repository. Run 41647564426's log
+# says so in two lines, after the DHCP lease and three successful repository updates had
+# already proved the network was fine:
+#
+#     pkg: No packages available to install matching 'node18' have been found
+#     pkg: No packages available to install matching 'npm-node18' have been found
+#
+# node22 is what the repository carries now; npm comes with it, so the separate npm-nodeXX
+# entry is gone as well.
+#
+# THE COMMENT USED TO SIT INSIDE THE CONTINUATION, between `python3 \` and `node22 \`,
+# and that broke the command in a way that reads as a missing package rather than a broken
+# line. A backslash continues to the NEXT PHYSICAL LINE - a `#` comment there ends the
+# command, so `pkg install -y git curl ca_root_nss python3` ran on its own and `node22`
+# became a separate command that does not exist:
+#
+#     /tmp/installscript: node22: not found
+#     === easydiskbake: pkg install failed; the base system is still complete ===
+#
+# That is run 41660262298, which also showed why the `|| echo` from the previous commit
+# matters: the disk was a complete FreeBSD with no toolchain, instead of no disk at all.
 pkg install -y \
     git \
     curl \
     ca_root_nss \
     python3 \
-    # node22, NOT node18. `node18` and `npm-node18` are gone from the quarterly
-    # repository: run 41647564426's log says so in two lines, after the DHCP lease and
-    # three successful repository updates had already proved the network was fine -
-    #
-    #     pkg: No packages available to install matching 'node18' have been found
-    #     pkg: No packages available to install matching 'npm-node18' have been found
-    #
-    # and one missing name fails the whole `pkg install`, taking git and python3 with it.
-    # node22 is what the repository carries now; npm comes with it, so the separate
-    # npm-nodeXX entry is gone as well.
     node22 \
     jq \
     unzip \
