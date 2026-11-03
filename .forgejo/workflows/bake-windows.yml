@@ -30,7 +30,6 @@ on:
         type: choice
         options:
           - windows11
-          - windows11-enterprise-eval
         default: windows11
       disk_size:
         description: "Guest disk size"

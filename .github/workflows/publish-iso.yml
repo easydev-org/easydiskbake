@@ -4,7 +4,6 @@ name: publish-iso
 # repository's own ghcr package.
 #
 #     ghcr.io/easydev-org/easydiskbake:iso-windows11
-#     ghcr.io/easydev-org/easydiskbake:iso-windows11-enterprise-eval
 #     ghcr.io/easydev-org/easydiskbake:iso-virtio-win
 #     ghcr.io/easydev-org/easydiskbake:iso-<distribution>
 #
@@ -47,7 +46,6 @@ on:
         options:
           - iso-windows11
           - iso-virtio-win
-          - iso-windows11-enterprise-eval
           - iso-ubuntu
           - iso-debian
           - iso-fedora
