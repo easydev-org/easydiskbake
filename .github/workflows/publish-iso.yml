@@ -6,8 +6,10 @@ name: publish-iso
 #     ghcr.io/easydev-org/easydiskbake:iso-windows11
 #     ghcr.io/easydev-org/easydiskbake:iso-windows11-enterprise-eval
 #     ghcr.io/easydev-org/easydiskbake:iso-virtio-win
-#     ghcr.io/easydev-org/easydiskbake:iso-mx
-#     ghcr.io/easydev-org/easydiskbake:iso-alpine
+#     ghcr.io/easydev-org/easydiskbake:iso-<distribution>
+#
+# The Linux and BSD entries are the ones a sandbox is asked for by name - the
+# DistroWatch major list and its page-hit ranking. lib/images.py is the table.
 #
 # One workflow for every platform, because lib/iso.py pulls all of them with the same
 # three registry calls and the same tag scheme. Splitting by platform would mean two
@@ -46,8 +48,23 @@ on:
           - iso-windows11
           - iso-virtio-win
           - iso-windows11-enterprise-eval
+          - iso-ubuntu
+          - iso-debian
+          - iso-fedora
+          - iso-arch
+          - iso-popos
+          - iso-cachyos
+          - iso-endeavouros
+          - iso-nixos
+          - iso-mint
+          - iso-alma
+          - iso-rocky
+          - iso-manjaro
+          - iso-opensuse
           - iso-mx
           - iso-alpine
+          - iso-freebsd
+          - iso-openbsd
           - all
         # Not "all" by default: that is 18 GiB of downloads, and the two images a
         # Windows bake needs are the first two. "all" is there for a deliberate refresh.

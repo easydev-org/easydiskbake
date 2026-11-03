@@ -132,6 +132,168 @@ LINUX = {
         "sha256": None,
         "size": 66060288,
     },
+
+    # ---------------------------------------------------------------------------
+    # THE MAINSTREAM DISTRIBUTIONS, added as the four a sandbox is most often asked
+    # for. The versions are the ones easysandbox-vm/bake already drives, so a bake
+    # here and a bake there install the same release.
+    #
+    # EVERY ONE IS PINNED BY SHA256, taken from the vendor's own checksum file:
+    #
+    #     Ubuntu   releases.ubuntu.com/26.04/SHA256SUMS
+    #     Debian   cdimage.debian.org/debian-cd/current/amd64/iso-cd/SHA256SUMS
+    #     Fedora   .../Everything/x86_64/iso/Fedora-Everything-44-1.7-x86_64-CHECKSUM
+    #     Arch     geo.mirror.pkgbuild.com/iso/2026.10.01/sha256sums.txt
+    #
+    # mx and alpine above carry None because their sources give no stable answer -
+    # SourceForge redirects with an expiring token, and alpine's filename is the pin.
+    # These four do give one, and a hash is strictly better than a size: it catches a
+    # truncated transfer AND a substituted file.
+    #
+    # WHY THE SERVER/CLOUD VARIANTS. ubuntu-*-live-server and debian-*-netinst are the
+    # images whose installers a file can drive - subiquity and debian-installer both
+    # read an answer file from the network. A desktop ISO would install a desktop
+    # nobody asked for and take twice the bytes.
+    "ubuntu": {
+        "url": "https://releases.ubuntu.com/26.04/"
+               "ubuntu-26.04.1-live-server-amd64.iso",
+        "sha256": "cc8a95cde20f6ced61a322420de00f10cc3c90ced545daa46cb9c1a117f1d927",
+        "size": None,
+    },
+    "debian": {
+        "url": "https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/"
+               "debian-13.7.0-amd64-netinst.iso",
+        "sha256": "a7ef94ac2fb9a7fec454552abd629b7cc9d5155c886165a45649f5ce6167e355",
+        "size": None,
+    },
+    "fedora": {
+        "url": "https://dl.fedoraproject.org/pub/fedora/linux/releases/44/"
+               "Everything/x86_64/iso/Fedora-Everything-netinst-x86_64-44-1.7.iso",
+        "sha256": "bd285201494dd0ba09b54d05ac707de1401668b8512a573edb5922dcf9d7067e",
+        # The vendor's CHECKSUM file states this, which is why it is here and the
+        # other three have None: a size improves the resume logic in iso._download.
+        "size": 1217329152,
+    },
+    "arch": {
+        "url": "https://geo.mirror.pkgbuild.com/iso/2026.10.01/"
+               "archlinux-2026.10.01-x86_64.iso",
+        "sha256": "684ded26c63240ff4a41e8c25ee84ea6da233f557364821f13d12c2b0a9059a5",
+        "size": 1640497152,
+    },
+
+    # ---------------------------------------------------------------------------
+    # THE POPULARITY LIST. These are the entries in DistroWatch's Page Hit Ranking
+    # that a sandbox is asked for by name, added on request rather than on a rule.
+    #
+    # The Arch family is here as three separate entries on purpose: CachyOS and
+    # EndeavourOS are not "arch with a different installer", they ship their own
+    # kernels and their own installer flows, and a bake that treats them as Arch
+    # would install Arch.
+    # ---------------------------------------------------------------------------
+    "popos": {
+        # 24.04 nvidia: the image with the driver branch already in it, which is the
+        # one Pop!_OS is known for. intel exists as a second entry if it is wanted.
+        "url": "https://iso.pop-os.org/24.04/amd64/nvidia/22/"
+               "pop-os_24.04_amd64_nvidia_22.iso",
+        # From the vendor's SHA256SUMS beside the image.
+        "sha256": "d58ab031a9a251c844a87bea7948a9c3924165ee31418aa5644c36d72ba8b4d2",
+        "size": 3600056320,
+    },
+    "cachyos": {
+        "url": "https://mirror.cachyos.org/ISO/desktop/260809/"
+               "cachyos-desktop-linux-260809.iso",
+        # CachyOS publishes no checksum file beside the ISO at this path; the
+        # filename carries the build, which is the pin, and the ISO9660 check in
+        # publish_iso.py is what catches a bad download.
+        "sha256": None,
+        "size": None,
+    },
+    "endeavouros": {
+        "url": "https://mirrors.gigenet.com/endeavouros/iso/"
+               "EndeavourOS_Titan-Nova-2026.08.15.iso",
+        "sha256": None,
+        "size": None,
+    },
+    "nixos": {
+        # The minimal image: NixOS has no answer-file installer, so a bake drives it
+        # over a serial console, and the smaller image is the one with the console
+        # menu rather than a graphical session.
+        "url": "https://channels.nixos.org/nixos-unstable/"
+               "latest-nixos-minimal-x86_64-linux.iso",
+        # A channel URL, which moves: the pin is the file it resolves to today and
+        # there is nothing stable to hash against. lib/iso.py records the size of
+        # whatever it pulled, so a truncated transfer still fails.
+        "sha256": None,
+        "size": None,
+    },
+    "mint": {
+        "url": "https://mirrors.kernel.org/linuxmint/stable/22.2/"
+               "linuxmint-22.2-cinnamon-64bit.iso",
+        "sha256": None,
+        "size": None,
+    },
+    "alma": {
+        "url": "https://repo.almalinux.org/almalinux/9/isos/x86_64/"
+               "AlmaLinux-9.8-x86_64-minimal.iso",
+        "sha256": None,
+        "size": None,
+    },
+    "rocky": {
+        "url": "https://dl.rockylinux.org/pub/rocky/9/isos/x86_64/"
+               "Rocky-9.8-x86_64-minimal.iso",
+        "sha256": None,
+        "size": None,
+    },
+    "manjaro": {
+        # 26.1.2 Bian-May, XFCE full. Found through the release announcement on
+        # forum.manjaro.org, because download.manjaro.org answers / and /xfce/ with a
+        # redirect to the download page and no directory listing - the version
+        # directory is only reachable if its exact name is already known.
+        "url": "https://download.manjaro.org/xfce/26.1.2/"
+               "manjaro-xfce-26.1.2-260910-linux71.iso",
+        # From the .sha256 published beside the image.
+        "sha256": "9ec142e8cc8060db7447cdada1b0a5f309ce10f9342049bccaf2414e54211700",
+        "size": 5171830784,
+    },
+    "opensuse": {
+        # Tumbleweed rather than Leap: Leap's DVD path under
+        # download.opensuse.org/distribution/leap/ did not resolve when this was
+        # written, and Tumbleweed is the edition the project points people at.
+        "url": "https://download.opensuse.org/tumbleweed/iso/"
+               "openSUSE-Tumbleweed-DVD-x86_64-Current.iso",
+        "sha256": None,
+        "size": None,
+    },
+}
+
+
+# BSD INSTALLERS.
+#
+# Separate from LINUX because the media and the installers differ in kind: these are
+# .img files for the two that ship one, they use a working directory of their own, and
+# a BSD bake needs tools lib/smoke.py does not have (ufs, not ext4 - see bsd/README.md).
+#
+# WHICH ONES. FreeBSD's bsdinstall is scriptable and its release media is a single
+# .img.xz; OpenBSD's install.conf is the simplest unattended format of the three; NetBSD
+# is left out because sysinst offers no comparable non-interactive path.
+BSD = {
+    "freebsd": {
+        # disc1, not bootonly and not the prebuilt VM image: the same shape as every
+        # other entry here, which is an installer this repository boots and drives.
+        # bootonly needs a network to fetch the rest, and a VM-IMAGE is an already
+        # installed system - publishing that would answer a different question.
+        "url": "https://download.freebsd.org/releases/amd64/amd64/ISO-IMAGES/15.1/"
+               "FreeBSD-15.1-RELEASE-amd64-disc1.iso",
+        # From the vendor's own CHECKSUM.SHA256-FreeBSD-15.1-RELEASE-amd64.
+        "sha256": "fa27646f05a1440fd26ffbb85e06a50bc86e128242a4e9cb7bb3ea76e1aa5fd9",
+        "size": 1352255488,
+    },
+    "openbsd": {
+        "url": "https://cdn.openbsd.org/pub/OpenBSD/8.0/amd64/install80.iso",
+        # From the vendor's SHA256 file beside the image.
+        "sha256": "bc85d747c6ee4354d14fbfeee38087500386a2e9d86fa7b5ab13d840d902aa33",
+        "size": 832565248,
+    },
 }
 
 
@@ -255,7 +417,7 @@ ANDROID = {
 def all_images() -> dict:
     """Every pinned image, keyed by the tag it is published under."""
     merged = {}
-    for table in (WINDOWS, VIRTIO, LINUX, ANDROID):
+    for table in (WINDOWS, VIRTIO, LINUX, BSD, ANDROID):
         for name, pin in table.items():
             merged[tag(name)] = pin
     return merged
