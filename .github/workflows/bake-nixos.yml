@@ -26,7 +26,7 @@ on:
   workflow_dispatch:
     inputs:
       desktops:
-        description: "Comma-separated desktops to derive (labwc,gnome,kde,cosmic,hyprland,miracle), or empty for the base only"
+        description: "Which desktops to derive, as a JSON array, e.g. [\"kde\",\"gnome\"]. Empty means all six."
         default: ""
       publish:
         description: "Push the disks to ghcr"
@@ -141,17 +141,14 @@ jobs:
       # is a fact about that desktop, and the other five are still worth building.
       fail-fast: false
       matrix:
-        # THE INPUT IS A COMMA-SEPARATED LIST, AND EMPTY MEANS ALL SIX.
+        # THE INPUT IS A JSON ARRAY, AND EMPTY MEANS ALL SIX.
         #
-        # GitHub's expression language has no `replace` (it has join and split), so a
-        # list is cut with split and rebuilt with join. `desktops` is split on ",", and an
-        # empty input yields [""] - which join turns back into "" and the comparison
-        # catches. That is why the default branch is tested before the split.
-        desktop: ${{ fromJSON(
-          github.event.inputs.desktops == ''
-            && '["labwc","gnome","kde","cosmic","hyprland","miracle"]'
-            || format('["{0}"]', join(split(github.event.inputs.desktops, ','), '","'))
-        ) }}
+        # A comma-separated string would need splitting and rebuilding inside an
+        # expression, and GitHub's expression language has no `replace` - the first
+        # dispatch of this workflow failed with "Unrecognized function: 'replace'" and
+        # never started a run. Asking for JSON means the input goes straight to
+        # fromJSON, and the only expression left is a default.
+        desktop: ${{ fromJSON(github.event.inputs.desktops == '' && '["labwc","gnome","kde","cosmic","hyprland","miracle"]' || github.event.inputs.desktops) }}
 
     steps:
       - uses: actions/checkout@v4
