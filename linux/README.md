@@ -7,12 +7,46 @@ prove the disk it produced starts.
 ```
 linux/
   mx/          MX Linux 25.3 (Xfce) - GUI driven, no working unattended mode
+  nixos/       NixOS - typed at a serial console, the one exception below
   debian/      (not yet) preseed
   ubuntu/      (not yet) autoinstall (subiquity)
   fedora/      (not yet) kickstart
   arch/        (not yet) pacstrap
   ...
 ```
+
+## Two ways to answer an installer, and why only one distribution takes the second
+
+| how | which | why |
+|---|---|---|
+| an answer file, or a GUI driver | everything except NixOS | the installer has a wizard, with or without an unattended mode |
+| commands typed at a serial console | **NixOS only** | `nixos-install` is run by hand at a root shell; there is no wizard to answer |
+
+NixOS is the exception and is likely to stay the only one. Its installer is
+`nixos-install`, which partitions nothing and asks nothing - the documented way to install
+from a live medium is to partition the disk yourself and run it. So `linux/nixos/bake.py`
+writes the commands to the guest's serial console, exactly as easysandbox-vm's
+`bake-nixos-minimal.sh` does, and judges the result from the exit status the guest prints.
+
+**MX and Mint stay on the GUI path.** `minstall` and `ubiquity` are wizards; MX's
+unattended modes were measured and all three stop (`mx/minstall.conf` records them), so
+`mx/drive-mx.py` clicks measured coordinates. Nothing about the NixOS work changes that,
+and `lib/vm.py` keeps `-serial mon:stdio` as the default so every other bake is untouched.
+
+## NixOS is two steps
+
+```
+bake.py     ISO -> plain NixOS. No desktop. ~5 minutes. -> nixos-base.qcow2
+derive.py   boot the base, nixos-rebuild boot, nix-collect-garbage -d
+            -> one disk per desktop (labwc, gnome, kde, cosmic, hyprland, miracle)
+```
+
+`nixos-install` pays the partition-format-unpack cost every time; `nixos-rebuild` on an
+already-installed system only adds the desktop. They also differ in what they need:
+`nixos-install` reads the ISO's own store and needs no network, while `nixos-rebuild`
+downloads the desktop closure from cache.nixos.org - so a bake that cannot reach the
+cache fails in the derive and not in the base.
+
 
 ## What a distribution directory has to provide
 

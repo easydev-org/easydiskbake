@@ -123,6 +123,38 @@ class Shape:
     # exactly what it was before this field existed - see lib/share.py for why SMB
     # rather than virtiofs or 9p.
     share_path: str = ""
+    # HOW THE GUEST's SERIAL PORT IS WIRED.
+    #
+    # The default is "-serial mon:stdio", which multiplexes the monitor and the console
+    # onto the process's own stdio. That is right for a bake whose guest says everything
+    # once and is then photographed: the console lands in console.log and nothing ever
+    # writes back.
+    #
+    # ONLY NIXOS USES THE OTHER MODE, AND THAT IS DELIBERATE.
+    #
+    # NixOS has no unattended answer file. Its installer is nixos-install, run by hand at
+    # a root shell, so its bake types whole commands at the serial console - the way
+    # easysandbox-vm's bake-nixos-minimal.sh works and why that script needs a fifo.
+    #
+    # EVERY OTHER DISTRIBUTION HERE IS DRIVEN THROUGH THE SCREEN. MX 25.3's minstall has
+    # no working unattended mode (three were measured and rejected, recorded in
+    # linux/mx/minstall.conf), and Mint's ubiquity is the same kind of wizard. Those go
+    # through the GUI: QMP clicks at measured coordinates, with OCR to confirm a pane
+    # arrived. That is linux/mx/drive-mx.py's design and it does not change.
+    #
+    # So this stays "" unless a caller is installing something that is answered at a
+    # shell. Setting it to a path makes qemu's serial a chardev on that pipe instead, and
+    # the caller writes the script into it - see lib/serial.py.
+    #
+    # "" means the default above. Anything else is a path to a fifo, and the caller owns
+    # creating and opening it: qemu opens the writer side, so the file must exist or the
+    # guest has no console at all.
+    serial_pipe: str = ""
+    # THE GUEST's KERNEL COMMAND LINE, for a boot that supplies -kernel/-initrd itself.
+    #
+    # Only meaningful together with those two flags in `extra`; qemu ignores -append
+    # otherwise, so an empty value is the normal case and changes nothing.
+    kernel_append: str = ""
 
     @classmethod
     def from_env(cls) -> "Shape":
@@ -190,8 +222,27 @@ def build_args(work: str, extra: list[str] | None = None,
         "-monitor", f"unix:{paths.monitor},server=on,wait=off",
         "-qmp", f"unix:{paths.drive},server=on,wait=off",
         "-qmp", f"unix:{paths.record},server=on,wait=off",
-        "-serial", "mon:stdio",
     ]
+
+    # THE CONSOLE, TWO WAYS. See Shape.serial_pipe: "" is the multiplexed stdio every
+    # photographed bake uses, and a path is a chardev for a guest that is installed by
+    # typing at it - NixOS only.
+    #
+    # THE MONITOR SOCKET IS UNTOUCHED. It is on its own unix socket above, so a guest
+    # whose console is a pipe still has QMP and the human monitor exactly as before. The
+    # only thing that changes is where the SERIAL port goes.
+    if shape.serial_pipe:
+        args += [
+            "-chardev", f"pipe,id=serial0,path={shape.serial_pipe}",
+            "-serial", "chardev:serial0",
+        ]
+    else:
+        args += ["-serial", "mon:stdio"]
+
+    # THE KERNEL COMMAND LINE, when the caller supplies -kernel/-initrd in `extra`.
+    # qemu ignores -append without them, so both orderings are safe.
+    if shape.kernel_append:
+        args += ["-append", shape.kernel_append]
 
     # Networking, with or without a share. A share adds `smb=<dir>` to the same
     # user-mode netdev, which makes qemu fork its own smbd; the guest reaches it at
