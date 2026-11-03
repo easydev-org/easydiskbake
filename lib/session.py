@@ -100,7 +100,18 @@ def wait_for_ssh(port: int, seconds: int, note=log, settle: int = 10) -> bool:
     A BANNER IS NOT ENOUGH - this runs a command, because a socket that accepts a
     connection and then refuses authentication is a different failure and has been one
     here before. `true` is the smallest command that proves a shell ran.
+
+    A MISSING CLIENT FAILS IMMEDIATELY. ssh() returns 127 and the string "sshpass is not
+    installed" when the binary is absent, and waiting minutes for a program that will
+    never appear turns a one-line configuration mistake into a timeout that reads like a
+    network problem. Run 41660216876 lost its whole 600-second budget that way.
     """
+    if not shutil.which("sshpass"):
+        note("=== sshpass IS NOT INSTALLED IN THIS CONTAINER ===")
+        note("  the verdict is read over ssh, so the client has to be here before the")
+        note("  wait begins. Install it in the workflow's prepare step.")
+        return False
+
     deadline = time.time() + seconds
     started = time.time()
     out = ""

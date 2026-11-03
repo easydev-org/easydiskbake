@@ -65,6 +65,16 @@ jobs:
             python3 lib/ci.py kvm
             # the ISO, the disk, and the compressed copy made from it
             python3 lib/ci.py free-disk --need 30
+            # THE SECOND BOOT IS VERIFIED OVER SSH, so the client that supplies the
+            # password has to be here. Its absence is not an error at the point of use -
+            # lib/session.ssh() returns 127 and says "sshpass is not installed" - but the
+            # caller sees only a timeout. Run 41660216876 spent its whole 600-second ssh
+            # budget that way and then published the disk as "did not reach a desktop".
+            if ! command -v sshpass >/dev/null 2>&1; then
+              apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
+                apt-get install -y -qq sshpass
+            fi
+            sshpass -V | head -1
             python3 lib/ci.py tags --prefix iso-kubuntu
 
       - name: install
