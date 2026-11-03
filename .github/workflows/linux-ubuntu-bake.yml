@@ -82,35 +82,28 @@ jobs:
               --disk-size "${{ inputs.disk_size || '24G' }}" \
               --timeout "${{ inputs.install_timeout || '3600' }}"
 
-      # THE CONSOLE IS THE RECORD. subiquity draws a text interface that nobody is going
-      # to photograph, so a failed run is explained by its own output or not at all.
-      # THE RECORDING AND THE CONSOLE, BOTH ON EVERY OUTCOME.
+      # THE CONSOLE IS THE RECORD. THERE IS NO VIDEO, AND THAT IS DELIBERATE.
       #
-      # lib/live.py keeps install.mp4 and last-frame.png current while the bake runs, so
-      # a cancelled run has them - that is the whole reason they exist. The console is
-      # here too: subiquity draws to tty1 and talks on ttyS0, and the two say different
-      # things about the same failure.
-      - name: keep the recording
+      # This used to upload install.mp4 and last-frame.png. What those held was 12 MiB of
+      # `curtin command in-target` scrolling past at 720x400, every character smeared by
+      # the yuv420p encode into something unreadable - because `console=ttyS0` moves the
+      # kernel's console to the serial port and the VGA adapter only ever shows a mirror of
+      # that text at 80x25. A recording of a text console nobody can read is not evidence.
+      #
+      # The serial console carries all of it, line by line, and lib/serial.py prints it as
+      # it arrives. That is uploaded below, and it is what a failed run is explained by.
+      - name: keep the console
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ubuntu-recording
+          name: ubuntu-console
           path: |
-            out/install.mp4
-            out/last-frame.png
             # THE GUEST'S CONSOLE. It is not console.log any more: the bake now puts the
             # serial on a fifo chardev so it can be read and driven, and lib/serial.py
             # writes what the guest said to serial.out.log. qemu's own stdout carries
             # only warnings, so console.log would be an almost empty file.
             out/serial.out.log
             out/console.log
-            # WHY THE FRAME CAPTURE STOPPED, WHEN IT DOES.
-            #
-            # Run 41613617754's recording is 29 seconds of a twenty-minute install, and
-            # the artifact held no way to tell why: snapshots.py prints one line per
-            # frame and per failure, and that file was not uploaded. A short video with
-            # no explanation is the same problem as a silent log.
-            out/frames/shots/snapshots.log
           if-no-files-found: warn
           retention-days: 14
 

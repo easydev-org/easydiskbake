@@ -83,14 +83,21 @@ jobs:
               --disk-size "${{ inputs.disk_size || '24G' }}" \
               --timeout "${{ inputs.install_timeout || '3600' }}"
 
-      - name: keep the recording
+      # THE CONSOLE IS THE RECORD. THERE IS NO VIDEO, AND THAT IS DELIBERATE.
+      #
+      # This used to upload install.mp4. What it held was 731 frames and 64 KiB - an entire
+      # hour of black with one white pixel in the corner - because bsdinstall is a text
+      # console on ttyS0 and the framebuffer is never drawn to.
+      #
+      # The serial console carries the whole install line by line, including the 214
+      # packages' progress, and lib/serial.py prints it as it arrives. That is this file.
+      - name: keep the console
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: freebsd-recording
+          name: freebsd-console
           path: |
-            out/install.mp4
-            out/last-frame.png
+            out/serial.out.log
             out/console.log
           if-no-files-found: warn
           retention-days: 14

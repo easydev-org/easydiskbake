@@ -47,7 +47,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, REPO)
 
-from lib import compress, iso, live as livelib, serial, session, smoke, vm  # noqa: E402
+from lib import compress, iso, serial, session, smoke, vm  # noqa: E402
 
 CONFIG_PORT = 8000
 KUBUNTU_TAG = "iso-ubuntu"
@@ -137,27 +137,9 @@ def boot_installed(work: str, args, disk: str) -> bool:
                      shape=shape, stdout=os.devnull)
     shots2 = os.path.join(work, "frames2")
     os.makedirs(shots2, exist_ok=True)
-    snap2 = None
-    live2 = None
     try:
         guest.start()
-        snap2 = subprocess.Popen(
-            [sys.executable, os.path.join(REPO, "lib", "snapshots.py"),
-             guest.paths.record, shots2,
-             os.environ.get("SNAPSHOT_INTERVAL", "5"), "2000"],
-            stdout=open(os.path.join(shots2, "snapshots.log"), "wb"),
-            stderr=subprocess.STDOUT,
-        )
-        # ONE MP4 FOR BOTH BOOTS. lib/live.py takes a list of frame directories for
-        # exactly this: the artifact a person downloads should show the install and then
-        # the desktop, not one or the other.
-        live2 = livelib.start(
-            [os.path.join(work, "frames", "shots"), shots2],
-            os.path.join(work, "install.mp4"),
-            os.path.join(work, "last-frame.png"),
-            every=float(os.environ.get("LIVE_ARTIFACT_SECONDS", "20")),
-        )
-
+        # NO RECORDING HERE. See the note at the installer's own capture below.
         # THE DESKTOP IS VERIFIED BY ITS WAYLAND SESSION, NOT BY ITS PIXELS.
         #
         # This used to watch for the whole of --timeout and then return True regardless -
@@ -176,14 +158,6 @@ def boot_installed(work: str, args, disk: str) -> bool:
             ssh_seconds=min(args.timeout, 600))
     finally:
         guest.stop()
-        if snap2 is not None:
-            snap2.terminate()
-            try:
-                snap2.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                snap2.kill()
-        if live2 is not None:
-            live2.stop(final=True)
 
 
 def main(argv: list[str]) -> int:
@@ -344,18 +318,18 @@ def main(argv: list[str]) -> int:
         # and a cancelled run's last frame is what says which pane it was on.
         shots = os.path.join(work, "frames")
         os.makedirs(shots, exist_ok=True)
-        snap = subprocess.Popen(
-            [sys.executable, os.path.join(REPO, "lib", "snapshots.py"),
-             guest.paths.record, shots,
-             os.environ.get("SNAPSHOT_INTERVAL", "5"), "2000"],
-            stdout=open(os.path.join(shots, "snapshots.log"), "wb"),
-            stderr=subprocess.STDOUT,
-        )
-        live = livelib.start(
-            [shots], os.path.join(work, "install.mp4"),
-            os.path.join(work, "last-frame.png"),
-            every=float(os.environ.get("LIVE_ARTIFACT_SECONDS", "20")),
-        )
+        # NO MP4 FOR THIS INSTALLER. A subiquity install has no GUI to record.
+        #
+        # The framebuffer shows a text console: `console=ttyS0` moved the kernel's console
+        # to the serial port, and what reaches the VGA adapter is a mirror of that text at
+        # 80x25. The recordings that were uploaded proved it - 12 MiB of
+        # `curtin command in-target` scrolling past at 720x400, every character smeared by
+        # the yuv420p encode into something nobody could read.
+        #
+        # The serial console already carries all of it, line by line, and lib/serial.py
+        # prints those lines as they arrive. So the video added nothing but time and 12 MiB
+        # of artifact per run, and the proof that the disk works is the ssh session in
+        # boot_installed() - not a picture.
 
         # TWO PHASES, BECAUSE "THE INSTALLER EXITED" IS NOT "THE DISK BOOTS".
         #
@@ -394,12 +368,6 @@ def main(argv: list[str]) -> int:
         # AFTER guest.stop(), NOT BEFORE. Closing the writer first tells qemu its console
         # is gone, and a guest mid-shutdown then loses the line that says why.
         ser.close()
-        snap.terminate()
-        try:
-            snap.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            snap.kill()
-        live.stop(final=True)
         server.terminate()
         try:
             server.wait(timeout=10)

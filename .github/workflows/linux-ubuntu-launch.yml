@@ -1,0 +1,127 @@
+name: linux-ubuntu-launch
+
+# Start a published Ubuntu disk on KVM and prove it boots.
+#
+# WHAT THIS ANSWERS
+#
+#     does the tag in ghcr actually start
+#
+# linux-ubuntu-bake proves its own install - the installer exited, the disk holds a filesystem -
+# and none of that proves the disk BOOTS. A disk whose bootloader was never written, or
+# whose root filesystem cannot be found, installs perfectly and then does nothing. The only
+# way to see that is to start the artifact with no installer attached.
+#
+# THE QUESTIONS, EACH A PRECONDITION OF THE NEXT
+#
+#     1. the serial console reaches userspace     the kernel and init ran
+#     2. sshd answers and accepts the account     the system is up and configured
+#     3. the desktop's Wayland session is running    the desktop came up, Wayland not X11
+#
+# WHAT THIS DELIBERATELY DOES NOT DO
+#
+# It does not record video, and neither does the bake. A subiquity install draws to ttyS0 and the framebuffer only mirrors
+# it, so the video was 12 MiB of unreadable 80x25 text.
+# The serial console is the record, and lib/launch_linux.py prints it as it arrives.
+#
+# MANUAL ONLY, like every other workflow here.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The disk to start (a tag in this package)"
+        default: "linux-ubuntu"
+      boot_timeout:
+        description: "Seconds to wait for the system and its session"
+        default: "900"
+      resolution:
+        description: "Guest screen as WxH"
+        default: "1920x1080"
+      mem:
+        description: "Guest memory in MB"
+        default: "6144"
+
+concurrency:
+  group: launch-ubuntu-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  launch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      packages: read
+      checks: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: launch-ubuntu-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            python3 lib/ci.py free-disk --need 30
+            # THE VERDICT IS READ OVER SSH, so the client that supplies the password has
+            # to exist. Assert it here rather than discover its absence as a timeout.
+            if ! command -v sshpass >/dev/null 2>&1; then
+              apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
+                apt-get install -y -qq sshpass
+            fi
+            sshpass -V | head -1
+            python3 lib/ci.py tags --prefix linux-
+
+      - name: launch it
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: launch-ubuntu
+          interval: "20"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            python3 lib/launch_linux.py \
+              --tag "${{ inputs.tag || 'linux-ubuntu' }}" \
+              --kind ubuntu \
+              --artifacts "out/ubuntu-launch" \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --resolution "${{ inputs.resolution || '1920x1080' }}" \
+              --mem "${{ inputs.mem || '6144' }}"
+
+      # THE CONSOLE AND THE VERDICT ARE THE RESULT. launch.txt says what was asked and what
+      # answered; the console says what the guest did before it could answer anything.
+      - name: keep the verdict
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-launch
+          path: |
+            out/ubuntu-launch/launch.txt
+            out/ubuntu-launch/console.log
+            out/ubuntu-launch/screen.png
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: the verdict
+        if: always()
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: launch-ubuntu-verdict
+          interval: "10"
+          command: |
+            set -euo pipefail
+            F="out/ubuntu-launch/launch.txt"
+            echo "=== linux-ubuntu ==="
+            if [ -f "$F" ]; then cat "$F"; else echo "no verdict was written"; fi

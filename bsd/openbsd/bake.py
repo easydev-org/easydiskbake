@@ -44,7 +44,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, REPO)
 
-from lib import bsdinstall, compress, iso as isolib, live as livelib, serial, vm  # noqa: E402
+from lib import bsdinstall, compress, iso as isolib, serial, vm  # noqa: E402
 
 sys.path.insert(0, HERE)
 from media import build_media  # noqa: E402
@@ -194,20 +194,14 @@ def main(argv: list[str]) -> int:
         guest.start()
         ser.open(timeout=60)
 
-        shots = os.path.join(work, "frames")
-        os.makedirs(shots, exist_ok=True)
-        snap = subprocess.Popen(
-            [sys.executable, os.path.join(REPO, "lib", "snapshots.py"),
-             guest.paths.record, shots,
-             os.environ.get("SNAPSHOT_INTERVAL", "5"), "2000"],
-            stdout=open(os.path.join(shots, "snapshots.log"), "wb"),
-            stderr=subprocess.STDOUT,
-        )
-        live = livelib.start(
-            [shots], os.path.join(work, "install.mp4"),
-            os.path.join(work, "last-frame.png"),
-            every=float(os.environ.get("LIVE_ARTIFACT_SECONDS", "20")),
-        )
+        # NO MP4 FOR THIS INSTALLER. bsdinstall is a text console on ttyS0, so the
+        # framebuffer holds nothing but a blank screen and a cursor. The recording that was
+        # uploaded proved it: 731 frames, 64 KiB, mean grey 0.08 - an entire hour of black
+        # with one white pixel in the corner.
+        #
+        # The serial console already carries the whole install line by line, including the
+        # 214 packages' progress, and lib/serial.py prints it as it arrives. A video of an
+        # empty framebuffer adds no information.
 
         log(f"waiting {args.boot_seconds}s for the installer's console")
         time.sleep(args.boot_seconds)
@@ -228,12 +222,6 @@ def main(argv: list[str]) -> int:
             log(f"=== THE INSTALLER DID NOT FINISH IN {args.timeout}s ===")
     finally:
         guest.stop()
-        snap.terminate()
-        try:
-            snap.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            snap.kill()
-        live.stop(final=True)
 
     if not bsdinstall.check_disk_ufs(disk):
         log("=== THE DISK HOLDS NO FFS FILESYSTEM ===")
