@@ -157,7 +157,17 @@ def main(argv: list[str]) -> int:
         # OpenBSD's installer is on tty00 by default and every answer goes through here.
         serial_pipe=ser.stdin.removesuffix(".in"),
     )
+    # -boot d IS WHAT MAKES THE FIRMWARE LOOK AT THE CD AT ALL.
+    #
+    # SeaBIOS takes its boot order from qemu, and the default is the hard disk. The disk
+    # here is a freshly created, empty qcow2 - nothing on it to start - so a machine with
+    # no explicit order tries the disk, finds nothing, and the run watches a guest that
+    # never draws anything. Every OpenBSD run so far did exactly that, and the medium was
+    # rebuilt four times looking for the fault in the wrong place.
+    #
+    # `d` is the first CD-ROM, which is the media above.
     drives = [
+        "-boot", "d",
         "-drive", f"file={media},media=cdrom,readonly=on",
         "-drive", f"file={disk},if=virtio,format=qcow2",
     ]

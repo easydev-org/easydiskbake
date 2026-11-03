@@ -296,7 +296,13 @@ def main(argv: list[str]) -> int:
     ser = serial.Serial(work, "serial")
     shape = vm.Shape(cpus=args.cpus, mem_mb=args.mem, machine="q35", vga="std",
                      serial_pipe=ser.stdin.removesuffix(".in"))
+    # -boot d: TRY THE CD FIRST, EXPLICITLY. The disk is empty, so a firmware that
+    # starts with the hard disk would find nothing - and this machine has no boot entry
+    # to fall through to. FreeBSD happened to reach its loader anyway; OpenBSD, whose
+    # cdbr is position-dependent and whose media has one boot entry rather than two, did
+    # not. Naming the order removes the difference between them.
     drives = [
+        "-boot", "d",
         "-drive", f"file={media},media=cdrom,readonly=on",
         "-drive", f"file={disk},if=virtio,format=qcow2",
     ]
