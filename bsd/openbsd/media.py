@@ -175,6 +175,21 @@ def build_media(iso_path: str, work: str, answers: str) -> str:
     # what the catalog describes.
     efi = f"{release}/amd64/eficdboot"
     log(f"boot image: {cdbr} (4 sectors)")
+    # NO -J AND NO -R, AND THE OFFICIAL ISO IS WHY.
+    #
+    # Reading the release medium's Primary Volume Descriptor at sector 16 gives an empty
+    # escape-sequence field (bytes 88..120 all zero), which means it carries NO Joliet
+    # (which would be `%/E` or `%/C`) and NO Rock Ridge. It is plain ISO9660 with 8.3 names
+    # and nothing layered on top.
+    #
+    # The repack added both, and that is what kept the console silent through two fixes.
+    # `-J` writes a second directory tree for Joliet and `-R` writes Rock Ridge entries
+    # into the ISO9660 one; OpenBSD's cdboot and boot(8) read the ISO9660 tree with their
+    # own parser and look for /etc/boot.conf by an exact name. A repacked medium whose
+    # directory records carry extension entries is not the medium they were written for.
+    #
+    # The volume label is still preserved, because that is a PVD string rather than a
+    # directory feature and FreeBSD's loader depends on it. See the note above.
     cmd = [
         "xorriso", "-as", "mkisofs", "-o", media,
         "-b", cdbr, "-no-emul-boot", "-boot-load-size", "4", "-c", catalog,
@@ -182,7 +197,13 @@ def build_media(iso_path: str, work: str, answers: str) -> str:
     if os.path.exists(os.path.join(tree, efi)):
         cmd += ["-eltorito-alt-boot", "-e", efi, "-no-emul-boot"]
         log(f"uefi record: {efi}")
-    cmd += ["-J", "-R", "-V", label, tree]
+    # `-iso-level 2` IS PLAIN ISO9660 WITH NAMES UP TO 30 CHARACTERS - no Joliet, no Rock
+    # Ridge, no extension records of any kind.
+    #
+    # NOT level 1, which is 8.3: the medium carries `install80.iso` - nine characters
+    # before the dot - so level 1 refuses it outright. Level 2 is what the release media
+    # uses, and it is still nothing but ISO9660.
+    cmd += ["-iso-level", "2", "-V", label, tree]
     repack = subprocess.run(cmd, capture_output=True, text=True)
     if repack.returncode != 0:
         raise SystemExit(
