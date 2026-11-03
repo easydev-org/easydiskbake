@@ -160,6 +160,17 @@ jobs:
             out/last-frame.png
             out/console.log
             out/frames/shots/frames.txt
+            # THE FRAMES THE CAPACITY CHECK ACTUALLY READ.
+            #
+            # selected_disk_gb() crops Disk Utility's detail pane and OCRs it, and when a
+            # reading fails the picture is the only thing that says why: a blank pane, a
+            # transitional repaint, or a window in a state nobody expected. Run
+            # 41694038193 read 2.88 GB once and nothing eight times after, with no frame
+            # kept to explain the difference.
+            #
+            # Three per attempt, so a run that steps through eight rows uploads about
+            # twenty-four small PPMs rather than a recording of the whole screen.
+            out/frames/shots/ocr-*.ppm
           if-no-files-found: warn
           retention-days: 14
 

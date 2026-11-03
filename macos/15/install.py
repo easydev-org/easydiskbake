@@ -478,26 +478,38 @@ class Recovery:
         and returns the number; the caller decides whether it is the right order of
         magnitude.
         """
-        path = self.screenshot("probe-ocr")
-        if not path:
-            return None
         # THE PANE IS CROPPED AND ENLARGED BEFORE OCR, BECAUSE THE CHARACTERS ARE SMALL.
         #
         # Read whole, the screendump gives "Apple Inc. VirtIO Block Media" and loses the
-        # capacity line entirely - the numbers are about ten pixels tall at 1920x1080. The
-        # detail pane occupies a fixed rectangle in this window, and enlarging it three
-        # times is what makes "Capacity: 268.4 MB" readable at all.
+        # capacity line entirely - the numbers are about ten pixels tall at 1920x1080.
         #
         # MEASURED ON A 1920x1080 SCREENDump, NOT GUESSED. The crop was found by locating
-        # the table's own separator lines in the pixels - they are the bright rows between
-        # y=545 and y=670 - and then read back to confirm:
+        # the table's own separator lines in the pixels - the bright rows between y=545 and
+        # y=670 - and read back to confirm:
         #
-        #     ocr_text_cropped(path, (690, 540, 1490, 680), scale=3)
+        #     (690, 540, 1490, 680) at 4x
         #     -> 'location: internal capacity: 268.4 mb connection: unknown child ...'
         #
-        # The crop is generous on purpose. A missed capacity is a retry; a MISREAD one
-        # would erase the wrong disk, so the parsing below refuses anything ambiguous.
-        text = assistant.ocr_text_cropped(path, (690, 540, 1490, 680), scale=3)
+        # 4x, NOT 3x: at 3x the decimal point is lost and "268.4 MB" reads as "2684 MB".
+        #
+        # THREE TRIES, BECAUSE THE PANE IS STILL PAINTING. The first read after a selection
+        # change frequently lands on a frame where the detail pane is blank or half drawn -
+        # the tables arrive after the sidebar's highlight does. Run 41694038193 read 2.88 GB
+        # on its first sample and nothing on the eight after it, which is the signature of
+        # reading too early rather than of a missing number.
+        text = ""
+        for attempt in range(3):
+            path = self.screenshot(f"probe-ocr-{attempt}")
+            if not path:
+                time.sleep(2)
+                continue
+            candidate = assistant.ocr_text_cropped(
+                path, (690, 540, 1490, 680), scale=4)
+            if candidate and re.search(r"\d+(?:\.\d+)?\s*(?:gb|mb)\b", candidate):
+                text = candidate
+                break
+            log(f"  the pane read nothing usable on try {attempt + 1}")
+            time.sleep(2)
         if not text:
             return None
 
