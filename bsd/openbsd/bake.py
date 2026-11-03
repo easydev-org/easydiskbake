@@ -113,46 +113,39 @@ def answers() -> list[tuple[str, float]]:
         ("admin", 4),       # Password for root account
         ("admin", 4),       # and again
         ("yes", 4),         # Start sshd(8) by default
-        # TWO X11 QUESTIONS, AND BOTH ARE NEW IN THIS LIST.
-        #
-        # 8.0 asks them right after sshd, and neither was in the sequence before:
-        #
-        #     Do you expect to run the X Window System? [yes]
-        #     Do you want the X Window System to be started by xenodm(1)? [no]
-        #
-        # The first is yes because the medium installs the X sets and this disk is meant
-        # to have them. The second is NO, and that is the important one: xenodm is a
-        # graphical login manager that would take the console and start no session until
-        # somebody logged in, which is the opposite of a disk whose whole job is to answer
-        # on ssh. The default is already [no]; naming it says so on purpose.
         ("yes", 4),         # Do you expect to run the X Window System
         ("no", 4),          # start it with xenodm? no - ssh is the way in
-        # Change the default console to com0? [yes] - yes, because this guest has no
-        # usable VGA console and every subsequent boot should talk on tty00.
-        #
-        # AND THEN IT ASKS FOR THE SPEED, which the list did not know about. Run
-        # 41667774351 got here and every answer after it went into that one prompt:
-        #
-        #     Change the default console to com0? [yes] yes
-        #     Which speed should com0 use? (or 'done') [115200] sd0
-        #     'sd0' is not a valid choice.
-        #     Available speeds are: 9600 19200 38400 57600 115200.
-        #
-        # 115200 is what lib/serial.py carries and what boot.conf sets, so agreeing with
-        # the default keeps the installed system's console at the speed the bake reads.
         ("yes", 4),         # Change the default console to com0
         ("115200", 4),      # Which speed should com0 use
-        # Setup a user? [no] - no, and this is deliberate. The bake adds docker itself in
-        # finish_install(), with the same password and doas rule every other image here
-        # has; letting the installer create one would duplicate that with a second set of
-        # choices this list cannot express.
         ("no", 4),          # Setup a user
+        # ALLOW ROOT SSH LOGIN, AND THIS IS THE ONLY WAY IN ON THIS DISK.
+        #
+        # 8.0 asks this immediately after "Setup a user" when no user was created, and it
+        # had no answer in the list - so `sd0` went into it, was rejected, and everything
+        # after it was one question behind. The disk was never selected:
+        #
+        #     Allow root ssh login? (yes, no, prohibit-password) [no] sd0
+        #     'sd0' is not a valid choice.
+        #     ...
+        #     Which disk is the root disk? ('?' for details) [sd0]
+        #     Encrypt the root disk with a (p)assphrase or (k)eydisk? [no]
+        #     No valid MBR or GPT.
+        #
+        # `yes` rather than the default `no`: finish_install() logs in as root to add the
+        # docker account and the toolchain, and this media has no other account. The
+        # warning the installer prints after this is about a password being guessable on
+        # a network-exposed host; this disk has no exposure, and root's password is the
+        # same `admin` every image here uses.
+        ("yes", 4),         # Allow root ssh login
+        # THE TIMEZONE COMES BEFORE THE DISK, not after it. 8.0's order here is
+        # timezone -> root disk -> layout -> sets, and the list had the timezone last.
+        ("UTC", 4),         # What timezone are you in
         ("sd0", 5),         # Which disk is the root disk
+        ("no", 4),          # Encrypt the root disk? (p)assphrase or (k)eydisk -> no
         ("W", 5),           # Use (W)hole disk
         ("a", 5),           # Use (A)uto layout
         ("cd0", 5),         # Location of sets
         ("*", 5),           # Set name(s): all of them
-        ("UTC", 4),         # What timezone
         ("", 120),          # unpacking the sets
         ("", 10),           # done; the installer reboots
     ]
