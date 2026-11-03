@@ -763,41 +763,25 @@ def select_and_erase(d: Recovery) -> None:
     # recovery volume selected, two Ups land on disk0. Five seconds apart: the detail
     # pane repaints between them and a second Up during that repaint is lost.
     #
-    # THIRTY SECONDS BEFORE THE SECOND UP, BY INSTRUCTION. The two runs that failed to
-    # raise the erase sheet both had the target correctly selected in their frames - disk0,
-    # 68.72 GB, "Uninitialized", Child count 0 - and the Erase button lit. What neither had
-    # was a settled window: the detail pane repaints for a long time after the first Up
-    # arrives, because that is when Disk Utility goes and reads the disk's partition table.
-    # Five seconds was measured between two Ups on the run that worked, and it is enough
-    # for the *selection* to move; it is not necessarily enough for the pane to finish
-    # being rebuilt from the newly selected device, and the Erase control is part of what
-    # gets rebuilt.
+    # THE UPS ARE FIVE SECONDS APART; THE WAIT GOES AFTER THE SECOND ONE.
     #
-    # So the first Up is followed immediately by the second only after the window has had
-    # a full thirty seconds to settle. It costs half a minute and it removes the one
-    # difference between the runs that worked and the runs that did not.
+    # The rebuild this has to survive is triggered by the selection CHANGING, and the
+    # selection that matters is disk0 - reached by the second Up. That is when Disk Utility
+    # reads the newly selected disk's partition table and rebuilds the detail pane and the
+    # toolbar's enabled states, and an Erase click arriving inside that rebuild lands on a
+    # control that is not available yet. 41645873209 proved it: three attempts in a row at
+    # the same point, none of which raised the sheet, is a disabled control rather than a
+    # swallowed click.
+    #
+    # FIVE SECONDS BETWEEN THE UPS, THIRTY-FIVE BETWEEN THE SECOND UP AND ERASE - by
+    # instruction. The 5 comes from key()'s own settle; the 30 is the wait below. One
+    # click, at the coordinate that is known to have opened the sheet.
     for i in range(2):
         d.key("up", settle=5.0)
         log(f"  up {i + 1}/2")
-        if i == 0:
-            d.wait(30, "the detail pane has to rebuild for the newly selected disk")
-    d.wait(5, "the detail pane repaints")
 
-    # ERASE IS CLICKED ONCE, BY INSTRUCTION, AND THE THIRTY-SECOND WAIT ABOVE IS WHY ONE
-    # IS NOW ENOUGH.
-    #
-    # Three attempts were added because 41626151499 and 41632393923 clicked here once and
-    # the sheet never appeared. What that diagnosis missed was that 41645873209 then
-    # clicked three times at (1290, 300) and none of them worked either - three failures
-    # at the same point is not a swallowed click, it is a control that stayed unavailable
-    # for all three. The fault was upstream: the first Up makes Disk Utility read the
-    # newly selected disk's partition table, and both the detail pane and the toolbar's
-    # enabled states are rebuilt while it does. Five seconds between the two Ups put the
-    # second Up and the Erase inside that rebuild.
-    #
-    # Thirty seconds between the Ups removes that, so the click below arrives at a window
-    # that has finished settling - which is the state 04c1123 was in when a single click
-    # at this coordinate opened the sheet and the whole seventeen-step sequence ran.
+    d.wait(30, "the detail pane has to rebuild for the newly selected disk")
+
     d.click(ERASE_BUTTON, "Erase", settle=5)
 
     # ONE BACKSPACE, because the name field arrives holding the disk's own name with the
