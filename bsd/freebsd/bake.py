@@ -99,6 +99,24 @@ def volume_label(iso_path: str) -> str:
     return label
 
 
+def console_says_umount(ser) -> bool:
+    """Has bsdinstall reached its last step? Read from the console sink it writes to.
+
+    `umount` is the final entry in /usr/libexec/bsdinstall's script sequence. After it the
+    only things left are a bsddialog --pause and a reboot, and neither touches the disk -
+    so this is the last moment at which waiting tells you anything.
+
+    Read from the sink rather than from `guest.alive()` because the machine does not
+    always stop: see the note where this is called.
+    """
+    try:
+        with open(ser.sink, "rb") as fh:
+            text = fh.read().decode("utf-8", "replace")
+    except OSError:
+        return False
+    return "Running installation step: umount" in text
+
+
 def build_media(iso_path: str, work: str) -> str:
     """The installation ISO with /etc/installerconfig added to it.
 
@@ -371,6 +389,26 @@ def main(argv: list[str]) -> int:
                 log("the guest exited (bsdinstall reboots when it is done)")
                 exited = True
                 break
+
+            # THE CONSOLE CAN SAY THE INSTALL IS DONE EVEN WHEN THE MACHINE WILL NOT STOP.
+            #
+            # bsdinstall's `script` target ends with `umount`, and then startbsdinstall
+            # shows a bsddialog --pause ("Installation complete! Rebooting in 10
+            # seconds") before calling reboot. On this guest that dialog never appears and
+            # the machine never reboots - run 41663564002 and 41667748898 both end their
+            # console at `Running installation step: umount` and sit there until the
+            # timeout, with the disk finished at 2056 MiB.
+            #
+            # So `umount` in the console is taken as the end of the install as well. It is
+            # bsdinstall's own last step: after it, the only work left is a dialog and a
+            # reboot, and nothing about the disk changes. Waiting for a machine to stop
+            # that is only waiting to show a message is waiting on the wrong thing.
+            if console_says_umount(ser):
+                log("the console reached installation step 'umount' - bsdinstall is done")
+                log("  the machine is not rebooting, so it is stopped here instead")
+                exited = True
+                break
+
             elapsed = int(args.timeout - (deadline - time.time()))
             if elapsed % 120 < 15:
                 log(f"  {elapsed}s, disk {os.stat(disk).st_blocks * 512 >> 20} MiB")

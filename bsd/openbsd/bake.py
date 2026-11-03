@@ -141,6 +141,21 @@ def answers() -> list[tuple[str, float]]:
     ]
 
 
+def console_says_complete(ser) -> bool:
+    """Has bsd.rd finished unpacking and reached its own end?
+
+    OpenBSD prints `Installation complete` and then reboots. This reads the console sink
+    for that line, so a machine that does not reboot still ends the wait rather than
+    burning the whole --timeout - the failure mode FreeBSD's run 41667748898 showed.
+    """
+    try:
+        with open(ser.sink, "rb") as fh:
+            text = fh.read().decode("utf-8", "replace")
+    except OSError:
+        return False
+    return "Installation complete" in text or "CONGRATULATIONS" in text
+
+
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--out", default="out/openbsd.qcow2")
@@ -249,6 +264,17 @@ def main(argv: list[str]) -> int:
         while time.time() < deadline:
             if not guest.alive():
                 log("the guest exited (the installer reboots when it is done)")
+                exited = True
+                break
+            # THE SETS ARE UNPACKED AND THE INSTALLER IS PAST ITS LAST WRITE.
+            #
+            # `Installation complete` is what bsd.rd prints immediately before rebooting.
+            # OpenBSD does reboot on its own, so this is a fallback rather than the
+            # expected path - but the same fallback exists in the FreeBSD bake because a
+            # machine that will not stop must not turn a finished install into a timeout,
+            # and that is exactly what 41667748898 did.
+            if console_says_complete(ser):
+                log("the console says the installation is complete; stopping the guest")
                 exited = True
                 break
             time.sleep(15)

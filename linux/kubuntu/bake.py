@@ -371,8 +371,21 @@ def main(argv: list[str]) -> int:
             # tests the disk, and it is where the desktop appears.
             log("=== the installed system: booting the disk alone ===")
             arrived = boot_installed(work, args, disk)
-            log("a desktop is on screen" if arrived
-                else "=== THE INSTALLED SYSTEM DID NOT REACH A DESKTOP ===")
+            if not arrived:
+                # A DISK THAT DOES NOT COME UP IS NOT A GOLD DISK, AND RUN 41665165958 WAS
+                # PUBLISHED ANYWAY.
+                #
+                # That run's second boot said
+                #
+                #     === SSH DID NOT ANSWER IN 600s ===
+                #       last output: Permission denied, please try again.
+                #
+                # and the bake still compressed the disk and the workflow reported
+                # success, because `arrived` was only logged. The whole point of the
+                # second boot is to refuse a disk nobody has seen start.
+                log("=== THE INSTALLED SYSTEM DID NOT COME UP; nothing is published ===")
+                return 1
+            log("the installed system answers on ssh")
     finally:
         guest.stop()
         # AFTER guest.stop(), NOT BEFORE. Closing the writer first tells qemu its console
