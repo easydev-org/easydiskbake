@@ -757,7 +757,29 @@ def select_and_erase(d: Recovery) -> None:
         log(f"  up {i + 1}/2")
     d.wait(5, "the detail pane repaints")
 
-    d.click(ERASE_BUTTON, "Erase", settle=5)
+    # ERASE IS CLICKED THREE TIMES, FIVE SECONDS APART, AND RUNS 41626151499 AND 41632393923
+    # ARE WHY. Both of them clicked Erase once at this exact coordinate and the sheet
+    # never appeared: the frames show the target correctly selected (disk0, 68.72 GB,
+    # "Uninitialized", Child count 0), the Erase button lit in the toolbar, and then the
+    # picture unchanged for the next two minutes while #6 typed 'main' into nothing and
+    # #8 clicked the licence pane's position on an empty screen.
+    #
+    # 04c1123 - the run that installed - clicked here once and the sheet did appear. The
+    # coordinate is the same in both and the button was lit in both, so the difference is
+    # not where the click went but whether the window was ready to receive it. Disk
+    # Utility animates this toolbar and enables Erase as part of finishing the pane; a
+    # click that arrives during that repaint is swallowed, which is the failure mode this
+    # whole file already carries fixed waits for.
+    #
+    # So: three attempts, five seconds apart. The first is the one that usually works. The
+    # second and third cost ten seconds and are what turn "the window was still settling"
+    # from a lost run into a slower one. A sheet that is already up ignores the extra
+    # clicks - the pointer is on Erase, which the sheet covers, so the later presses land
+    # on the sheet's own backdrop and do nothing.
+    for attempt in range(3):
+        d.click(ERASE_BUTTON, f"Erase (attempt {attempt + 1}/3)", settle=5)
+        if attempt < 2:
+            d.wait(5, "Disk Utility has to raise the erase sheet")
 
     # ONE BACKSPACE, because the name field arrives holding the disk's own name with the
     # text selected. Without this the typed name appends instead of replacing.
