@@ -241,7 +241,8 @@ def main(argv: list[str]) -> int:
     try:
         if wait_for == 0:
             note("not waiting for a desktop; going straight to the firmware shell")
-        arrived = sample_until(guest, shots, wait_for, note, seen)
+        arrived = sample_until(guest, shots, wait_for, note, seen,
+                               screen_png=os.path.join(args.artifacts, "screen.png"))
 
         # THE PROBE RUNS WHILE THE MACHINE IS STILL UP. It types into the firmware
         # shell, so it cannot happen after guest.stop() - and it used to: the first
@@ -343,7 +344,8 @@ def probe_firmware_shell(guest: "vm.Guest", shots: str, note) -> None:
         kb.close()
 
 
-def sample_until(guest: "vm.Guest", shots: str, timeout: int, note, seen: list) -> bool:
+def sample_until(guest: "vm.Guest", shots: str, timeout: int, note, seen: list,
+                 screen_png: str = "") -> bool:
     """Photograph the screen until a desktop appears or the timeout runs out.
 
     Returns True when the desktop test passes. Every kept frame's path is appended to
@@ -366,9 +368,26 @@ def sample_until(guest: "vm.Guest", shots: str, timeout: int, note, seen: list) 
         if shot:
             seen.append(shot)
             now = time.time()
+            # A PICTURE IS WRITTEN EVERY TIME, NOT ONLY AT THE END.
+            #
+            # The caller writes out/screen.png once, after this returns - so a run that
+            # is cancelled (as run 41572289021 was, at 631 of 1200 seconds) uploads an
+            # artifact with nothing in it. That run had 50 frames on disk and the useful
+            # one was the 48-second frame showing a lit screen that later went black.
+            #
+            # PNG rather than the PPM it was captured as: 300 KiB instead of 6 MiB, and
+            # this happens once per sample.
             if now - last_keep >= SAMPLE_KEEP_SECONDS:
                 last_keep = now
                 note(f"  {int(now - started):4d}s  {sshstage.describe_shot(shot)}")
+                if screen_png:
+                    # The frame just taken, not a search through the directory: this
+                    # runs once per sample and the newest file is the one in hand.
+                    try:
+                        import lastframe
+                        lastframe.convert(shot, screen_png)
+                    except Exception:  # noqa: BLE001 - a picture is not worth a run
+                        pass
         else:
             note(f"  {int(time.time() - started):4d}s  no frame yet")
 
