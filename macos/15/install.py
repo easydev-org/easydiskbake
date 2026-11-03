@@ -783,29 +783,22 @@ def select_and_erase(d: Recovery) -> None:
             d.wait(30, "the detail pane has to rebuild for the newly selected disk")
     d.wait(5, "the detail pane repaints")
 
-    # ERASE IS CLICKED THREE TIMES, FIVE SECONDS APART, AND RUNS 41626151499 AND 41632393923
-    # ARE WHY. Both of them clicked Erase once at this exact coordinate and the sheet
-    # never appeared: the frames show the target correctly selected (disk0, 68.72 GB,
-    # "Uninitialized", Child count 0), the Erase button lit in the toolbar, and then the
-    # picture unchanged for the next two minutes while #6 typed 'main' into nothing and
-    # #8 clicked the licence pane's position on an empty screen.
+    # ERASE IS CLICKED ONCE, BY INSTRUCTION, AND THE THIRTY-SECOND WAIT ABOVE IS WHY ONE
+    # IS NOW ENOUGH.
     #
-    # 04c1123 - the run that installed - clicked here once and the sheet did appear. The
-    # coordinate is the same in both and the button was lit in both, so the difference is
-    # not where the click went but whether the window was ready to receive it. Disk
-    # Utility animates this toolbar and enables Erase as part of finishing the pane; a
-    # click that arrives during that repaint is swallowed, which is the failure mode this
-    # whole file already carries fixed waits for.
+    # Three attempts were added because 41626151499 and 41632393923 clicked here once and
+    # the sheet never appeared. What that diagnosis missed was that 41645873209 then
+    # clicked three times at (1290, 300) and none of them worked either - three failures
+    # at the same point is not a swallowed click, it is a control that stayed unavailable
+    # for all three. The fault was upstream: the first Up makes Disk Utility read the
+    # newly selected disk's partition table, and both the detail pane and the toolbar's
+    # enabled states are rebuilt while it does. Five seconds between the two Ups put the
+    # second Up and the Erase inside that rebuild.
     #
-    # So: three attempts, five seconds apart. The first is the one that usually works. The
-    # second and third cost ten seconds and are what turn "the window was still settling"
-    # from a lost run into a slower one. A sheet that is already up ignores the extra
-    # clicks - the pointer is on Erase, which the sheet covers, so the later presses land
-    # on the sheet's own backdrop and do nothing.
-    for attempt in range(3):
-        d.click(ERASE_BUTTON, f"Erase (attempt {attempt + 1}/3)", settle=5)
-        if attempt < 2:
-            d.wait(5, "Disk Utility has to raise the erase sheet")
+    # Thirty seconds between the Ups removes that, so the click below arrives at a window
+    # that has finished settling - which is the state 04c1123 was in when a single click
+    # at this coordinate opened the sheet and the whole seventeen-step sequence ran.
+    d.click(ERASE_BUTTON, "Erase", settle=5)
 
     # ONE BACKSPACE, because the name field arrives holding the disk's own name with the
     # text selected. Without this the typed name appends instead of replacing.
