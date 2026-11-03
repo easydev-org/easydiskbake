@@ -120,6 +120,69 @@ def serve(work: str, flavour: str) -> subprocess.Popen:
     )
 
 
+def boot_installed(work: str, args, disk: str) -> bool:
+    """Boot the disk the installer wrote, with no medium attached, and watch it.
+
+    NO CDROM. That is what makes this a test of the disk rather than of the installer:
+    the machine is the system it wrote, and the firmware's own boot order.
+
+    IT WATCHES FOR A BOUNDED TIME AND THEN REPORTS WHAT THE FRAMES SHOW. The desktop
+    arrival test is deliberately NOT here yet - a colour test has to be measured against
+    a real KDE screen, and guessing one from a Windows desktop is the
+    mistake this repository keeps recording. This boot's job is to produce the recording
+    and the frames that measurement will be taken from.
+    """
+    shape = vm.Shape(cpus=args.cpus, mem_mb=args.mem, machine="q35", vga="std")
+    guest = vm.Guest(work, extra=["-drive", f"file={disk},if=virtio,format=qcow2"],
+                     shape=shape, stdout=os.devnull)
+    shots2 = os.path.join(work, "frames2")
+    os.makedirs(shots2, exist_ok=True)
+    snap2 = None
+    live2 = None
+    try:
+        guest.start()
+        snap2 = subprocess.Popen(
+            [sys.executable, os.path.join(REPO, "lib", "snapshots.py"),
+             guest.paths.record, shots2,
+             os.environ.get("SNAPSHOT_INTERVAL", "5"), "2000"],
+            stdout=open(os.path.join(shots2, "snapshots.log"), "wb"),
+            stderr=subprocess.STDOUT,
+        )
+        # ONE MP4 FOR BOTH BOOTS. lib/live.py takes a list of frame directories for
+        # exactly this: the artifact a person downloads should show the install and then
+        # the desktop, not one or the other.
+        live2 = livelib.start(
+            [os.path.join(work, "frames", "shots"), shots2],
+            os.path.join(work, "install.mp4"),
+            os.path.join(work, "last-frame.png"),
+            every=float(os.environ.get("LIVE_ARTIFACT_SECONDS", "20")),
+        )
+
+        log(f"  watching the installed system for up to {args.timeout}s")
+        deadline = time.time() + args.timeout
+        started = time.time()
+        while time.time() < deadline:
+            if not guest.alive():
+                log("  the guest exited during the second boot")
+                return False
+            elapsed = int(time.time() - started)
+            if elapsed % 120 < 15:
+                log(f"  {elapsed}s since the disk was started")
+            time.sleep(15)
+        log("  the watch window ended; the frames say what it was showing")
+        return True
+    finally:
+        guest.stop()
+        if snap2 is not None:
+            snap2.terminate()
+            try:
+                snap2.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                snap2.kill()
+        if live2 is not None:
+            live2.stop(final=True)
+
+
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--out", default="out/kubuntu.qcow2")
@@ -129,7 +192,11 @@ def main(argv: list[str]) -> int:
     p.add_argument("--mem", type=int, default=4096)
     p.add_argument("--cpus", type=int, default=4)
     p.add_argument("--disk-size", default="24G")
-    p.add_argument("--timeout", type=int, default=3600)
+    # ONE NUMBER, TWO PHASES. The installer gets this, and so does the boot of the
+    # installed disk that follows it - see boot_installed(). The job's ceiling in the
+    # workflow is the sum of both plus the encode.
+    p.add_argument("--timeout", type=int, default=3600,
+                   help="seconds EACH phase may run: the install, then the second boot")
     args = p.parse_args(argv)
 
     work = args.work or os.path.dirname(os.path.abspath(args.out)) or "."
@@ -241,11 +308,21 @@ def main(argv: list[str]) -> int:
             every=float(os.environ.get("LIVE_ARTIFACT_SECONDS", "20")),
         )
 
+        # TWO PHASES, BECAUSE "THE INSTALLER EXITED" IS NOT "THE DISK BOOTS".
+        #
+        # subiquity's `shutdown: reboot` ends this machine, so the guest exiting means
+        # the INSTALL is done - not that the system it wrote comes up. Publishing on that
+        # alone is publishing a disk nobody has seen start.
+        #
+        # So the bake runs for the install, then starts the installed disk and watches it
+        # arrive. That second boot is also what the recording needs: run 41613617754's
+        # video is 29 seconds of a twenty-minute install, and the desktop - the thing
+        # worth looking at - was never in it.
         log(f"waiting up to {args.timeout}s for the installer to finish and reboot")
         deadline = time.time() + args.timeout
         while time.time() < deadline:
             if not guest.alive():
-                log("the guest exited (the installer rebooted)")
+                log("the guest exited (the installer finished)")
                 break
             elapsed = int(time.time() - deadline + args.timeout)
             if elapsed % 120 < 15:
@@ -253,6 +330,16 @@ def main(argv: list[str]) -> int:
             time.sleep(15)
         else:
             log(f"=== THE INSTALLER DID NOT FINISH IN {args.timeout}s ===")
+
+        if guest.alive():
+            log("  the installer is still running; not booting the disk")
+        else:
+            # THE INSTALLED SYSTEM, WITH NO MEDIUM ATTACHED. This is the only boot that
+            # tests the disk, and it is where the desktop appears.
+            log("=== the installed system: booting the disk alone ===")
+            arrived = boot_installed(work, args, disk)
+            log("a desktop is on screen" if arrived
+                else "=== THE INSTALLED SYSTEM DID NOT REACH A DESKTOP ===")
     finally:
         guest.stop()
         snap.terminate()

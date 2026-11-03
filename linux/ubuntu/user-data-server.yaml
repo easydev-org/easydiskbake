@@ -68,6 +68,32 @@ autoinstall:
     - ca-certificates
     - jq
     - unzip
+    # --- the desktop ---------------------------------------------------------
+    #
+    # THIS USED TO BE A SERVER AND THAT WAS THE WRONG ANSWER TO "bake a disk you can
+    # look at". A plain Ubuntu Server finishes at a text login prompt - there is no
+    # GNOME, no display manager, nothing for a screenshot test to find - so a bake that
+    # waited for a desktop would wait for ever, and one that accepted "the installer
+    # rebooted" was accepting a disk nobody had ever seen run.
+    #
+    # ubuntu-desktop-minimal rather than ubuntu-desktop: the minimal metapackage is
+    # GNOME, gdm3, the session and the settings modules, without the office suite and
+    # the games. The difference is about 1.2 GiB of packages for nothing this disk needs.
+    - ubuntu-desktop-minimal
+    # THE DISPLAY DRIVER HAS TO MATCH THE ADAPTER, AND IT DID NOT.
+    #
+    # lib/vm.py gives this guest `-device VGA,xres=...,yres=...,vgamem_mb=32` - a
+    # standard VGA adapter. KDE's document asked for xserver-xorg-video-qxl, which is
+    # the driver for QXL, a different card. With no driver for the card it has, X falls
+    # back to whatever it can find or fails to start at all, and the symptom is a black
+    # screen after a login prompt that never arrives.
+    #
+    # vesa and fbdev both drive a standard VGA adapter; vesa is the one that works
+    # before any kernel mode setting is available, fbdev after. Having both means X
+    # comes up whichever path it takes.
+    - xserver-xorg-video-vesa
+    - xserver-xorg-video-fbdev
+    - mesa-utils
 
   late-commands:
     # SSH ON BOOT, WITH THE PORT THE REST OF THIS PIPELINE USES. Ubuntu's sshd listens

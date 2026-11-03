@@ -26,7 +26,10 @@ on:
         description: "Guest disk size"
         default: "24G"
       install_timeout:
-        description: "Seconds the installer may run"
+        description: "Seconds EACH phase may run - the install, then the boot of the installed disk"
+        # TWO PHASES USE THIS NUMBER, so it is a budget per phase and not for the job.
+        # The install takes twenty to thirty minutes with a desktop; the second boot
+        # needs several more to reach gdm or sddm. The job's own ceiling is below.
         default: "3600"
 
 concurrency:
@@ -42,7 +45,7 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
       options: --device /dev/kvm
-    timeout-minutes: 120
+    timeout-minutes: 200
     permissions:
       contents: read
       checks: write
@@ -96,6 +99,13 @@ jobs:
             out/install.mp4
             out/last-frame.png
             out/console.log
+            # WHY THE FRAME CAPTURE STOPPED, WHEN IT DOES.
+            #
+            # Run 41613617754's recording is 29 seconds of a twenty-minute install, and
+            # the artifact held no way to tell why: snapshots.py prints one line per
+            # frame and per failure, and that file was not uploaded. A short video with
+            # no explanation is the same problem as a silent log.
+            out/frames/shots/snapshots.log
           if-no-files-found: warn
           retention-days: 14
 

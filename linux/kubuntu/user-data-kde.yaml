@@ -83,7 +83,14 @@ autoinstall:
     # The emulated display has no GPU; these are the userspace drivers a KDE session
     # needs to start on top of QEMU's VGA adapter.
     - mesa-utils
-    - xserver-xorg-video-qxl
+    # THE DRIVER HAS TO MATCH THE ADAPTER, AND THIS ONE DID NOT.
+    #
+    # The guest gets `-device VGA,xres=...,yres=...,vgamem_mb=32` from lib/vm.py - a
+    # standard VGA adapter. xserver-xorg-video-qxl is the driver for QXL, a different
+    # card, so X had nothing to drive it with. vesa and fbdev both handle a standard VGA
+    # adapter, one before kernel mode setting and one after.
+    - xserver-xorg-video-vesa
+    - xserver-xorg-video-fbdev
 
   late-commands:
     # SSH ON BOOT, WITH THE PORT THE REST OF THIS PIPELINE USES. Ubuntu's sshd listens
