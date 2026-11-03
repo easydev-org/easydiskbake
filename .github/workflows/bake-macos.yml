@@ -65,7 +65,17 @@ on:
         description: "Seconds the installation may run before it is called stuck"
         # dockur-macos records 3120s to a settled disk; this is that with room for a
         # slower runner and the reboot that follows.
+        #
+        # THIS NOW COVERS ONLY THE INSTALLER. The Setup Assistant and the wait for a
+        # desktop have their own budgets below, because the installer can legitimately
+        # use all of this one.
         default: "7200"
+      assistant_timeout:
+        description: "Seconds the Setup Assistant may run"
+        default: "2700"
+      desktop_timeout:
+        description: "Seconds to wait for a desktop after the wizard"
+        default: "1800"
 
 concurrency:
   group: bake-macos-${{ github.ref }}
@@ -80,9 +90,12 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
       options: --device /dev/kvm
-    # The installation, the wizard and the recording encode, with room for one slow
-    # recovery download at the start.
-    timeout-minutes: 240
+    # THE THREE STAGES NOW HAVE THEIR OWN BUDGETS, AND THEY ADD UP. The installer may run
+    # for --timeout (7200s = 120 min), the Setup Assistant for --assistant-timeout (45),
+    # and the desktop wait for --desktop-timeout (30). That is 195 minutes of guest work,
+    # and the recovery download, the compression and the publish ride on top. 240 left no
+    # room; 300 does and is still under GitHub's 360 ceiling.
+    timeout-minutes: 300
     permissions:
       contents: read
       checks: write
@@ -100,9 +113,14 @@ jobs:
           command: |
             set -euo pipefail
             python3 lib/ci.py kvm
-            # 850 MiB recovery + 64 GiB sparse disk + a compressed copy. A check, not a
-            # cleanup.
-            python3 lib/ci.py free-disk --need 45
+            # 850 MiB recovery + the disk itself + the compressed copy made from it.
+            #
+            # THE DISK IS NOT SPARSE ONCE IT IS INSTALLED, so this is no longer "a 64 GiB
+            # file of which a few GiB are allocated". Run 41579186251 left the target at
+            # 33.6 GiB of real blocks, and compress writes a second file beside it while
+            # the first still exists - about 70 GiB at the moment they overlap. The old
+            # number was 45, which described the three-minutes-and-stop bake.
+            python3 lib/ci.py free-disk --need 80
             # Say which assets exist before spending minutes discovering one does not.
             python3 lib/ci.py tags --prefix macos-asset-
             python3 lib/ci.py tags --prefix macos-recovery-
@@ -125,7 +143,9 @@ jobs:
               --out "out/macos${{ inputs.release || '15' }}.qcow2" \
               --release "${{ inputs.release || '15' }}" \
               --disk-size "${{ inputs.disk_size || '64G' }}" \
-              --timeout "${{ inputs.install_timeout || '7200' }}"
+              --timeout "${{ inputs.install_timeout || '7200' }}" \
+              --assistant-timeout "${{ inputs.assistant_timeout || '2700' }}" \
+              --desktop-timeout "${{ inputs.desktop_timeout || '1800' }}"
 
       # The recording is what explains a failure. A wizard pane waiting for a click and
       # a hung kernel look identical in a log, and a macOS bake has no serial console to

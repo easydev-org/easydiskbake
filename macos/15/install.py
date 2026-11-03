@@ -228,19 +228,20 @@ NOTHING_DRAWN = 8
 DISK_SAMPLE_SECONDS = 30
 
 
-# HOW LONG THE DRIVER KEEPS WATCHING AFTER THE LAST ACTION.
-#
-# The full installation is 40-70 minutes and this driver no longer waits for it: the
-# point of a bake right now is to see whether the sequence LANDS, and the recording is
-# what answers that. Three minutes is long enough for the first gigabytes to be written,
-# which is the difference between "the installer accepted the disk" and "it did not",
-# and short enough to read the result while it is still fresh.
 # HOW LONG THE COPY MAY PAUSE BEFORE IT COUNTS AS FINISHED.
 #
 # dockur-macos records the real numbers in its verify-golden.yml: "storage settled at
 # 27306 MiB after 3120 s". 52 minutes. The rule here is the same shape - wait for growth
 # to stop - with a pause long enough that a slow write is not mistaken for the end.
-SETTLE_SECONDS = 180
+#
+# TEN MINUTES, NOT THREE, AND RUN 41579186251 IS WHY. With 180s the disk was declared
+# finished twice at 33,088 and 31,644 MiB, and both times it started growing again inside
+# the window: macOS writes in stages, and the gap between the base system and the next
+# volume is longer than three minutes. The run happened to reach its real end afterwards,
+# but it had already said "the installation is complete" about a disk that was not. A
+# wrong answer that is sometimes right afterwards is the shape of failure this bake can
+# least afford, because the next stage boots the disk.
+SETTLE_SECONDS = 600
 
 # A FINISHED macOS 15 OCCUPIES ABOUT 26 GiB. Growth that stops below this is an
 # installation that failed, not one that finished, and the two look identical on a disk
@@ -958,18 +959,19 @@ def installer_panes(d: Recovery, seconds: int = 4 * 3600) -> bool:
         log("  the last frame shows what the pane was offering")
         return False
 
-    # THAT IS THE WHOLE SEQUENCE. The driver now watches for three more minutes and
-    # stops, rather than sitting through the installation.
+    # THAT IS THE WHOLE SEQUENCE - EVERY CLICK THAT CHOOSES ANYTHING HAS BEEN MADE.
     #
-    # WHY THIS IS THE RIGHT SHAPE FOR THIS BAKE. The question the sequence has to answer
-    # is "did every click land on the pane it was aimed at" - and the answer is visible
-    # in the first three minutes: the disk grows by gigabytes as soon as the installer
-    # accepts the destination, and a run that got the clicks wrong writes nothing. The
-    # remaining 40-70 minutes add no information about the sequence, and they are what
-    # every recent run spent its time on before being cancelled.
+    # What follows is not more clicking. It is waiting for the copy the installer has
+    # already committed to, and it returns when the disk stops growing, which is the end
+    # of the installation and the point at which the guest reboots into the system it
+    # wrote. bake.py then drives the Setup Assistant against that system.
     #
-    # The recording is what came out of it, and the recording is what has found every
-    # real failure in this file.
+    # THIS USED TO STOP THREE MINUTES IN and call the sequence verified, on the argument
+    # that the remaining forty minutes added no information. That argument was right about
+    # the CLICKS and wrong about the BAKE: a disk three minutes into a copy is not a
+    # macOS, so nothing could be published and run 41579186251 ended with a verified
+    # sequence and no artifact. The size floor below is what makes stopping here mean
+    # "finished" rather than "stalled".
     log("the installation is running; waiting for the disk to stop growing")
     baseline = d.disk_allocated()
     if baseline is None:
