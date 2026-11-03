@@ -71,9 +71,30 @@ import vm  # noqa: E402
 GUEST_SSH_PORT = 22
 HOST_SSH_PORT = 2222
 
-# How long winget may take before this gives up. Measured under a minute every time; the
-# allowance is for a cold Windows Update metadata refresh, which happens once.
-WINGET_TIMEOUT = 600
+# HOW LONG TO WAIT AFTER winget install BEFORE TOUCHING sshd.
+#
+# A FIXED WAIT, NOT A POLL FOR THE PROMPT, AND RUN 41587909137 IS WHY.
+#
+# The previous version watched the screen for "PS C:\...>" to come back and called that
+# success. winget prints that prompt whether it installed the package or not, so the stage
+# went on to configure a service that did not exist:
+#
+#     Get-Content : Cannot find path 'C:\ProgramData\ssh\sshd_config'
+#     Start-Service : Cannot find any service with service name 'sshd'
+#
+# and then waited two minutes for an sshd that was never going to answer. The run before
+# it installed in 51 seconds and worked; this one took 54 and did not, so there is nothing
+# in the prompt to distinguish them.
+#
+# 120 seconds, because that is how long the install takes when it takes its time: the
+# measured ones are 51 and 54 seconds, and winget's own first-run metadata refresh on this
+# image has been seen to add most of a minute. Waiting is free here; the guest is a KVM VM
+# with nothing else to do, and the alternative was a check that cannot tell success from
+# failure. Whether it worked is asked of the machine afterwards, not of its screen.
+WINGET_SETTLE_SECONDS = 120
+
+# The id in the winget index. Not .Beta and not .Server: neither exists.
+WINGET_PACKAGE = "Microsoft.OpenSSH.Preview"
 
 # The account the answer file creates.
 GUEST_USER = "docker"
@@ -288,31 +309,47 @@ def open_powershell(kb: Keyboard) -> None:
 
 
 def install(kb: Keyboard) -> bool:
-    """winget install, then wait for the prompt rather than a fixed delay."""
-    log("winget install Microsoft.OpenSSH.Preview")
+    """winget install, then wait 120 seconds and ask the machine whether it worked.
+
+    THE VERDICT IS THE GUEST'S, NOT THE SCREEN'S. See WINGET_SETTLE_SECONDS for the run
+    that made it so: winget prints a prompt whether it installed anything, and this stage
+    acted on a prompt that meant failure. So the fixed wait comes first, and then one
+    command asks for the file winget would have created and the service it would have
+    registered. Both must answer.
+    """
+    log(f"winget install {WINGET_PACKAGE}")
     type_text(kb, WINGET_INSTALL)
     kb.key("ret", settle=5.0)
 
-    # Poll the screen for the prompt coming back. winget has finished in under a minute
-    # every time this has been run; the deadline is for a cold metadata refresh.
-    deadline = time.time() + WINGET_TIMEOUT
-    last = None
-    while time.time() < deadline:
-        time.sleep(20)
-        shot = kb.shot("winget")
-        if shot is None:
-            continue
-        text = ocr(shot)
-        # The prompt (PS C:\...>) at the end means winget returned. Anything else is still
-        # working, and the frame is kept either way.
-        if text and re.search(r"PS [A-Z]:\\", text):
-            log("winget returned to the prompt")
-            return True
-        if text != last:
-            log(f"  winget: {text[:100]}")
-            last = text
-    log(f"winget did not return within {WINGET_TIMEOUT}s")
-    return False
+    log(f"waiting {WINGET_SETTLE_SECONDS}s for winget to finish")
+    time.sleep(WINGET_SETTLE_SECONDS)
+    kb.shot("winget")
+
+    # ASKED OF THE GUEST. Test-Path and Get-Service are the two facts configure_sshd()
+    # needs before it can do anything, so checking them here means a failed install stops
+    # the stage at the sentence that says so instead of four red errors later.
+    probe = (
+        f"Test-Path 'C:\\ProgramData\\ssh\\sshd_config'; "
+        "(Get-Service sshd -ErrorAction SilentlyContinue).Status"
+    )
+    log("asking the guest whether OpenSSH is installed")
+    type_text(kb, probe)
+    kb.key("ret", settle=8.0)
+    shot = kb.shot("winget-verify")
+    text = ocr(shot) if shot else ""
+
+    # True and Running, or the install did not take. A missing service prints nothing on
+    # the second statement, so the absence of "Running" is itself the answer.
+    installed = "True" in text and "Running" in text
+    if not installed:
+        log("=== OPENSSH DID NOT INSTALL ===")
+        log("  the prompt came back but C:\\ProgramData\\ssh\\sshd_config is absent or")
+        log("  the sshd service is not registered, so nothing below can work")
+        if text:
+            log(f"  the guest said: {text[:300]}")
+        return False
+    log("OpenSSH is installed and sshd is Running")
+    return True
 
 
 def ocr(path: str) -> str:
