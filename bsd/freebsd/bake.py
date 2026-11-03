@@ -300,10 +300,23 @@ def main(argv: list[str]) -> int:
     # to fall through to. FreeBSD happened to reach its loader anyway; OpenBSD, whose
     # cdbr is position-dependent and whose media has one boot entry rather than two, did
     # not. Naming the order removes the difference between them.
+    # -no-reboot, WHICH THE DOCSTRING ABOVE HAS NAMED SINCE THE FILE WAS WRITTEN AND
+    # WHICH WAS NEVER IN THE ARGUMENT LIST.
+    #
+    # bsdinstall's script target ends with `reboot` once the post-install script returns,
+    # and without this flag the guest restarts into the medium it is still attached to -
+    # the same CD, the same installer - and starts over. `guest.alive()` then never becomes
+    # false, so the wait loop runs out its whole --timeout while the disk sits unchanged.
+    #
+    # Run 41663564002 is that: `Running installation step: umount` was the last thing the
+    # console said, and the disk held at 2057 MiB for the remaining twenty minutes. With
+    # the new timeout gate that is now a clean failure instead of a published partial
+    # install, but the install itself was already complete - it just never stopped.
     drives = [
         "-boot", "d",
         "-drive", f"file={media},media=cdrom,readonly=on",
         "-drive", f"file={disk},if=virtio,format=qcow2",
+        "-no-reboot",
     ]
     guest = vm.Guest(work, extra=drives, shape=shape, stdout=os.devnull)
     try:

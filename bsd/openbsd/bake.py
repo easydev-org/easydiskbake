@@ -203,10 +203,22 @@ def main(argv: list[str]) -> int:
     # rebuilt four times looking for the fault in the wrong place.
     #
     # `d` is the first CD-ROM, which is the media above.
+    # -no-reboot, FOR THE SAME REASON AS FREEDSD, AND ONE MORE OF ITS OWN.
+    #
+    # The installer reboots when it finishes, and the CD is still attached - so without
+    # this flag the guest boots the installer again and `guest.alive()` never becomes
+    # false. The wait loop then runs out its whole --timeout while the disk stops growing,
+    # which is exactly the shape FreeBSD's run 41663564002 showed.
+    #
+    # OpenBSD has a second reason: the system is not finished by the installer at all. The
+    # toolchain and the docker account are added afterwards by finish_install(), which
+    # boots the disk ALONE. That boot can only happen once this one has ended, so the
+    # reboot has to end it.
     drives = [
         "-boot", "d",
         "-drive", f"file={media},media=cdrom,readonly=on",
         "-drive", f"file={disk},if=virtio,format=qcow2",
+        "-no-reboot",
     ]
     guest = vm.Guest(work, extra=drives, shape=shape, stdout=os.devnull)
     try:
