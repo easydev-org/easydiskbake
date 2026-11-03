@@ -47,7 +47,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, REPO)
 
-from lib import compress, iso, serial, session, smoke, vm  # noqa: E402
+from lib import compress, install_evidence, iso, serial, session, smoke, vm  # noqa: E402
 
 CONFIG_PORT = 8000
 UBUNTU_TAG = "iso-ubuntu"
@@ -342,20 +342,30 @@ def main(argv: list[str]) -> int:
         # video is 29 seconds of a twenty-minute install, and the desktop - the thing
         # worth looking at - was never in it.
         log(f"waiting up to {args.timeout}s for the installer to finish and reboot")
-        deadline = time.time() + args.timeout
+        install_started = time.time()
+        deadline = install_started + args.timeout
+        exited = False
         while time.time() < deadline:
             if not guest.alive():
                 log("the guest exited (the installer finished)")
+                exited = True
                 break
             elapsed = int(time.time() - deadline + args.timeout)
             if elapsed % 120 < 15:
                 log(f"  {elapsed}s, disk {os.stat(disk).st_blocks * 512 >> 20} MiB")
             time.sleep(15)
-        else:
-            log(f"=== THE INSTALLER DID NOT FINISH IN {args.timeout}s ===")
+
+        # A TIMEOUT IS A FAILURE, NOT A WARNING FOLLOWED BY A PUBLISH.
+        #
+        # See lib/install_evidence.py: this loop used to fall through on the clock and
+        # carry on to the disk check, which passes on a partition table alone.
+        if not install_evidence.finished_cleanly(
+                exited, time.time() - install_started, args.timeout, log):
+            return 1
 
         if guest.alive():
             log("  the installer is still running; not booting the disk")
+            return 1
         else:
             # THE INSTALLED SYSTEM, WITH NO MEDIUM ATTACHED. This is the only boot that
             # tests the disk, and it is where the desktop appears.
@@ -374,7 +384,10 @@ def main(argv: list[str]) -> int:
         except subprocess.TimeoutExpired:
             server.kill()
 
-    log(f"disk is {os.stat(disk).st_blocks * 512 >> 20} MiB")
+    log(f"disk is {install_evidence.disk_mib(disk)} MiB")
+    if not install_evidence.above_floor(
+            disk, install_evidence.floor_for("ubuntu"), log, "ubuntu"):
+        return 1
     if not smoke.check_disk(disk, root_fs="ext4"):
         log("=== THE DISK FAILED ITS CHECKS; refusing to produce an artifact ===")
         return 1

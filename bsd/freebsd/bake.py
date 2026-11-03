@@ -42,7 +42,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, REPO)
 
-from lib import bsdinstall, compress, iso as isolib, serial, vm  # noqa: E402
+from lib import bsdinstall, compress, install_evidence, iso as isolib, serial, vm  # noqa: E402
 
 FREESD_TAG = "iso-freebsd"
 CONFIG_PORT = 8000
@@ -350,22 +350,41 @@ def main(argv: list[str]) -> int:
         ser.say("", wait=10)
 
         log(f"waiting up to {args.timeout}s for bsdinstall to finish and reboot")
-        deadline = time.time() + args.timeout
+        install_started = time.time()
+        deadline = install_started + args.timeout
+        exited = False
         while time.time() < deadline:
             if not guest.alive():
                 log("the guest exited (bsdinstall reboots when it is done)")
+                exited = True
                 break
             elapsed = int(args.timeout - (deadline - time.time()))
             if elapsed % 120 < 15:
                 log(f"  {elapsed}s, disk {os.stat(disk).st_blocks * 512 >> 20} MiB")
             time.sleep(15)
-        else:
-            log(f"=== BSDINSTALL DID NOT FINISH IN {args.timeout}s ===")
     finally:
         guest.stop()
         ser.close()
 
-    log(f"disk is {os.stat(disk).st_blocks * 512 >> 20} MiB")
+    # A TIMEOUT IS A FAILURE, AND RUN 41638444422 IS THE PROOF IT WAS NOT TREATED AS ONE.
+    #
+    # That run's console says the install never finished:
+    #
+    #     13:48:42  === BSDINSTALL DID NOT FINISH IN 3600s ===
+    #     13:48:44  [bsd   UFS magic at offset 364407: 19015419]
+    #     13:48:48  BAKED freebsd -> out/freebsd.qcow2 (319 MiB)
+    #
+    # A superblock written in the first minute made the disk check pass, and the workflow
+    # reported success on a partial install. Both halves are required now - see
+    # lib/install_evidence.py.
+    if not install_evidence.finished_cleanly(
+            exited, time.time() - install_started, args.timeout, log):
+        return 1
+
+    log(f"disk is {install_evidence.disk_mib(disk)} MiB")
+    if not install_evidence.above_floor(
+            disk, install_evidence.floor_for("freebsd"), log, "freebsd"):
+        return 1
     if not bsdinstall.check_disk_ufs(disk):
         log("=== THE DISK HOLDS NO UFS FILESYSTEM ===")
         log("  a failed bsdinstall leaves a partition table and nothing on it")

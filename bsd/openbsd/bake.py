@@ -44,7 +44,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, REPO)
 
-from lib import bsdinstall, compress, iso as isolib, serial, vm  # noqa: E402
+from lib import bsdinstall, compress, install_evidence, iso as isolib, serial, vm  # noqa: E402
 
 sys.path.insert(0, HERE)
 from media import build_media  # noqa: E402
@@ -212,17 +212,28 @@ def main(argv: list[str]) -> int:
         ser.close()
 
         log(f"waiting up to {args.timeout}s for the installer to finish")
-        deadline = time.time() + args.timeout
+        install_started = time.time()
+        deadline = install_started + args.timeout
+        exited = False
         while time.time() < deadline:
             if not guest.alive():
                 log("the guest exited (the installer reboots when it is done)")
+                exited = True
                 break
             time.sleep(15)
-        else:
-            log(f"=== THE INSTALLER DID NOT FINISH IN {args.timeout}s ===")
     finally:
         guest.stop()
 
+    # A TIMEOUT IS A FAILURE. See lib/install_evidence.py and the FreeBSD note: a UFS
+    # superblock alone is what let run 41638444422 publish a partial install.
+    if not install_evidence.finished_cleanly(
+            exited, time.time() - install_started, args.timeout, log):
+        return 1
+
+    log(f"disk is {install_evidence.disk_mib(disk)} MiB")
+    if not install_evidence.above_floor(
+            disk, install_evidence.floor_for("openbsd"), log, "openbsd"):
+        return 1
     if not bsdinstall.check_disk_ufs(disk):
         log("=== THE DISK HOLDS NO FFS FILESYSTEM ===")
         log("  the answers landed somewhere other than the questions")
