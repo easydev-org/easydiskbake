@@ -143,6 +143,9 @@ jobs:
           path: |
             out/install.mp4
             out/screen.png
+            # One PNG per sample, named by the second it was taken: a cancelled run
+            # uploads the whole timeline instead of only the last frame.
+            out/frames/screen-*.png
             out/launch.txt
             out/launch-work/console.log
             out/launch-work/swtpm.log

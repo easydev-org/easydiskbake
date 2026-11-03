@@ -241,8 +241,10 @@ def main(argv: list[str]) -> int:
     try:
         if wait_for == 0:
             note("not waiting for a desktop; going straight to the firmware shell")
+        shots_dir = os.path.join(args.artifacts, "frames")
+        os.makedirs(shots_dir, exist_ok=True)
         arrived = sample_until(guest, shots, wait_for, note, seen,
-                               screen_png=os.path.join(args.artifacts, "screen.png"))
+                               screen_dir=shots_dir)
 
         # THE PROBE RUNS WHILE THE MACHINE IS STILL UP. It types into the firmware
         # shell, so it cannot happen after guest.stop() - and it used to: the first
@@ -345,7 +347,7 @@ def probe_firmware_shell(guest: "vm.Guest", shots: str, note) -> None:
 
 
 def sample_until(guest: "vm.Guest", shots: str, timeout: int, note, seen: list,
-                 screen_png: str = "") -> bool:
+                 screen_dir: str = "") -> bool:
     """Photograph the screen until a desktop appears or the timeout runs out.
 
     Returns True when the desktop test passes. Every kept frame's path is appended to
@@ -368,24 +370,26 @@ def sample_until(guest: "vm.Guest", shots: str, timeout: int, note, seen: list,
         if shot:
             seen.append(shot)
             now = time.time()
-            # A PICTURE IS WRITTEN EVERY TIME, NOT ONLY AT THE END.
+            # ONE PNG PER SAMPLE, NAMED BY ITS SECOND.
             #
-            # The caller writes out/screen.png once, after this returns - so a run that
-            # is cancelled (as run 41572289021 was, at 631 of 1200 seconds) uploads an
-            # artifact with nothing in it. That run had 50 frames on disk and the useful
-            # one was the 48-second frame showing a lit screen that later went black.
+            # The first version wrote a single out/screen.png, overwritten each time.
+            # That is worse than nothing on a run that ends in a black screen: run
+            # 41574255802 was cancelled at 190 seconds, and the file it left held the
+            # LAST frame - mean grey 0 - while the interesting ones, a lit screen at
+            # 49s and 159s, had already been overwritten.
             #
-            # PNG rather than the PPM it was captured as: 300 KiB instead of 6 MiB, and
-            # this happens once per sample.
+            # So every sample keeps its own file: screen-0049s.png, screen-0159s.png.
+            # The timeline survives whatever happens next, and a cancelled run uploads
+            # the whole of it.
             if now - last_keep >= SAMPLE_KEEP_SECONDS:
                 last_keep = now
-                note(f"  {int(now - started):4d}s  {sshstage.describe_shot(shot)}")
-                if screen_png:
-                    # The frame just taken, not a search through the directory: this
-                    # runs once per sample and the newest file is the one in hand.
+                elapsed = int(now - started)
+                note(f"  {elapsed:4d}s  {sshstage.describe_shot(shot)}")
+                if screen_dir:
                     try:
                         import lastframe
-                        lastframe.convert(shot, screen_png)
+                        lastframe.convert(
+                            shot, os.path.join(screen_dir, f"screen-{elapsed:04d}s.png"))
                     except Exception:  # noqa: BLE001 - a picture is not worth a run
                         pass
         else:
