@@ -898,7 +898,21 @@ def installer_panes(d: Recovery, seconds: int = 4 * 3600) -> bool:
         log("  Agree was clicked and no sheet appeared over the licence")
         return False
 
+    # TEN SECONDS BETWEEN THE TWO AGREE CLICKS, which is what run 41558268694 needed.
+    #
+    # The sequence is: the licence pane's own Agree raises a smaller sheet, and THAT
+    # sheet's Agree is the one that matters. Measured on that run:
+    #
+    #     01:22:17  #14 click (1005, 713) Agree          the pane's
+    #     01:22:43    the sheet was on screen (20s)
+    #     01:22:43  #15 click (1060, 530) Agree in sheet  the sheet's, same second
+    #
+    # The wait above confirmed the sheet had SETTLED, and the click went out in the same
+    # second it settled. A sheet that has stopped repainting its picture is not
+    # necessarily one that has finished becoming clickable - macOS animates these in, and
+    # the button is disabled until the animation ends.
     log("licence sheet: Agree")
+    d.wait(10, "the sheet finishes becoming clickable")
     d.click(AGREE_SHEET, "Agree in the sheet", settle=5)
 
     # A PANE THAT DID NOT ARRIVE ENDS THE SEQUENCE. Run 41493723813 is the reason: the
