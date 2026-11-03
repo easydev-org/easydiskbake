@@ -91,31 +91,45 @@ CONTINUE_MENU = (1142, 586)
 # itself is the icon ABOVE the label, which is why clicking the label's centre does
 # nothing and y=306 is what opens the sheet.
 #
-# MEASURED FROM A FULL-RESOLUTION FRAME, WHICH IS THE ONLY KIND THAT ANSWERS THIS.
+# THE GLYPH'S TOP THIRD, NOT THE MIDDLE OF THE CONTROL.
 #
-# Four runs tried four values and opened no sheet:
+# Five runs tried five values and opened no sheet:
 #
 #   run 41506477596 @ 306
 #   run 41511491789 @ 296
 #   run 41510118982 @ 296   (never reached it - the driver had a NameError)
 #   run 41514056068 @ 311
+#   run 41564236483 @ 314
 #
-# The measurements before this one came from a video frame, and the video is encoded at
-# 640x480 and scaled back up - which blurs exactly the 12 pixels this coordinate lives
-# in. 311 looked like the glyph's centre in that blur and was still wrong.
+# Every one of them was aimed at the MIDDLE of something. That is the mistake: macOS
+# toolbar items are drawn with the icon ABOVE its label, and the control's hit area
+# covers the pair. Aiming at the vertical centre of the pair lands between them, on
+# neither.
 #
-# So it was measured on a 1920x1080 capture instead. At x=1289 the toolbar reads:
+# Measured on a 1920x1080 capture, x=1285..1301:
 #
-#     y=294         60   the control's top border
-#     y=295..308    38   inside the control, above the drawing
-#     y=309..320  130-166 the GLYPH, brightest at 314-320
-#     y=321..331    38   inside the control, below the drawing
-#     y=332..339   147   the "Erase" label, a separate thing
-#     y=346          0   the control's bottom border
+#     y=294          the control's top border
+#     y=295..308     empty
+#     y=309  ..+#######+..       the glyph STARTS here
+#     y=310  .+#+++++++#+.
+#     y=311  .#+.......+#.
+#     y=312  +#.........#+
+#     y=313  +#.........+#        <- the glyph's upper half
+#     y=314  ++++##########+       <- thick horizontal stroke
+#     y=315  +####++++++++++##
+#     y=316  ######.......+++#
+#     y=317  ##++##+......##.#      the glyph's lower half
+#     y=318  ##++##+........+#
+#     y=319  ######+#########+
+#     y=320  ####+.+++++++
+#     y=321..331     empty
+#     y=332..339     the "Erase" LABEL
+#     y=346          the control's bottom border
 #
-# The glyph's vertical centre is 314. The control spans 294..346, so 314 is also its
-# middle - which is what a toolbar button drawn inside a 52px box should be.
-ERASE_BUTTON = (1290, 314)
+# The glyph occupies 309..320 and its dense upper part is 309..313, which is where a
+# pointer belongs. 314 was the middle of the whole control and sat on the stroke
+# between the two halves of the drawing.
+ERASE_BUTTON = (1290, 309)
 
 # Sidebar rows under "Internal", 28px apart, x=540 inside the labels. Five rows because
 # the count differs between Show Only Volumes (one) and Show All Devices (four), and a

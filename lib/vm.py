@@ -229,8 +229,19 @@ def build_args(work: str, extra: list[str] | None = None,
     # passes vga="none" and its own -device.
     if shape.resolution:
         # -device VGA, not -vga std: only the device form takes xres/yres.
+        #
+        # VGAMEM_MB IS NOT OPTIONAL AT THIS SIZE. -vga std and -device VGA default to
+        # 8 MiB of video memory, and 1920x1080 at 32 bits per pixel is 7.91 MiB before
+        # double buffering - so the default is just too small and the adapter comes up
+        # unable to hold a frame at the requested mode. The symptom is not an error:
+        # the screen is black from the first captured frame, which is what
+        # launch-windows run 41565960604 reported (1920x1080, mean grey 0, for 521
+        # seconds) after the same disk had drawn a firmware menu at 1280x800.
+        #
+        # 32 MiB is four frames of headroom at this size, and it is the value the
+        # virtio-vga path in macos/15/machine.py has been using.
         width, height = shape.resolution
-        args += ["-device", f"VGA,xres={width},yres={height}"]
+        args += ["-device", f"VGA,xres={width},yres={height},vgamem_mb=32"]
     elif shape.vga != "none":
         args += ["-vga", shape.vga]
 
