@@ -232,7 +232,20 @@ def _download(url: str, dest: str, *, scope: str, expected_size: int | None) -> 
             os.unlink(part)
             have = 0
 
-        req = urllib.request.Request(url)
+        # A USER-AGENT, BECAUSE SOME MIRRORS REFUSE PYTHON'S.
+        #
+        # CachyOS's mirror answers 403 to urllib's default header and 200 to curl,
+        # which is what publish-iso run 41567486415 hit five times in a row:
+        #
+        #     [iso]   attempt 1/5 failed: HTTP Error 403: Forbidden
+        #     ...
+        #     [publish] FAILED iso-cachyos: could not download ... in 5 attempts
+        #
+        # The file is public; the header is the only difference. A UA that names this
+        # repository is honest about who is asking and satisfies the check.
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "easydiskbake/1.0 (+https://github.com/easydev-org/easydiskbake)",
+        })
         # scope="" means a vendor URL, not this registry: no credentials go with it.
         if scope:
             for key, value in _AUTH.headers(scope).items():

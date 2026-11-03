@@ -126,7 +126,14 @@ jobs:
             # resolved in Python so the workflow has no branching of its own.
             export GITHUB_TOKEN="${{ github.token }}"
             export PUBLISH_WHICH="${{ inputs.which || 'all' }}"
-            python3 lib/publish_iso.py --repository "${{ github.repository }}"
+            # KEEP GOING, BECAUSE ONE MIRROR SHOULD NOT COST THE OTHER NINETEEN.
+            #
+            # Run 41567486415 stopped at iso-cachyos on a 403 and never published
+            # debian, fedora, arch, or anything after it in the table. The failure of
+            # one vendor is a fact about that vendor; the job still reports failed, and
+            # the images that did arrive are the ones a bake will look for.
+            python3 lib/publish_iso.py --keep-going \
+              --repository "${{ github.repository }}"
 
       - name: what is in the package
         if: always()

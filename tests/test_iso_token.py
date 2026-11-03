@@ -125,12 +125,15 @@ class VendorUrls(unittest.TestCase):
         added = []
 
         class FakeReq:
-            def __init__(self, url, method=None, data=None):
+            def __init__(self, url, method=None, data=None, headers=None):
                 self.full_url = url
+                # _download now passes a User-Agent; the fake has to accept it or the
+                # request is never created and this test cannot inspect anything.
+                self.headers = dict(headers or {})
                 added.append(self)
 
             def add_header(self, key, value):
-                self.__dict__.setdefault("headers", {})[key] = value
+                self.headers[key] = value
 
         # A download that fails is retried DOWNLOAD_ATTEMPTS times with a backoff; the
         # retrying is not what this test is about, and sleeping through it is 30 seconds

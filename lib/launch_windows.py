@@ -208,8 +208,15 @@ def main(argv: list[str]) -> int:
     seen: list[str] = []
     started = time.time()
     try:
-        arrived = sample_until(guest, shots, args.boot_timeout, note, seen,
-                               probe_shell=args.probe_shell)
+        arrived = sample_until(guest, shots, args.boot_timeout, note, seen)
+
+        # THE PROBE RUNS WHILE THE MACHINE IS STILL UP. It types into the firmware
+        # shell, so it cannot happen after guest.stop() - and it used to: the first
+        # version called it below the finally block, so the keyboard would have been
+        # attached to a dead qemu. Run 41565960604 never got that far, because the
+        # flag was also spelled without `args.` and raised NameError first.
+        if not arrived and args.probe_shell:
+            probe_firmware_shell(guest, shots, note)
     finally:
         guest.stop(acpi_first=arrived)
         sshstage.stop_swtpm(work)
@@ -228,9 +235,6 @@ def main(argv: list[str]) -> int:
     if arrived:
         note("OK: the published disk reached its desktop")
         return finish(0)
-
-    if probe_shell:
-        probe_firmware_shell(guest, shots, note)
 
     note("the guest did not reach a desktop; the frames say where it stopped")
     return finish(1)
@@ -306,8 +310,7 @@ def probe_firmware_shell(guest: "vm.Guest", shots: str, note) -> None:
         kb.close()
 
 
-def sample_until(guest: "vm.Guest", shots: str, timeout: int, note, seen: list,
-                 probe_shell: bool = False) -> bool:
+def sample_until(guest: "vm.Guest", shots: str, timeout: int, note, seen: list) -> bool:
     """Photograph the screen until a desktop appears or the timeout runs out.
 
     Returns True when the desktop test passes. Every kept frame's path is appended to
