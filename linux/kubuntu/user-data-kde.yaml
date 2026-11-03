@@ -125,11 +125,32 @@ autoinstall:
     # install is done; the mechanism that did it is not part of the result.
     - curtin in-target -- touch /etc/cloud/cloud-init.disabled
 
-    # THE PASSWORD IS SET HERE AS WELL AS IN identity. subiquity honours `identity` on a
-    # fresh install, and this makes the result checkable from inside the disk: the hash
-    # is the same one, written with usermod, so a later stage that cannot log in can be
-    # told apart from a stage that never set it.
-    - curtin in-target -- usermod -p "$6$pd.PhdrZh4fxnXbv$7LPpeBGe1v5ssVIxdvxvvHUf6uiyJI.jd5N5pyX3/DCy00eGRQ1FJMqCt.uhrUjPWGu2lO.ELB6IOzQpFWOpI/" docker
+    # THE PASSWORD IS NOT SET HERE, AND THAT LINE USED TO BREAK THE ONE IN identity.
+    #
+    # It read:
+    #
+    #     - curtin in-target -- usermod -p "$6$pd.PhdrZh...$7LPpeBGe..." docker
+    #
+    # late-commands are run by a SHELL, and a double-quoted crypt hash is full of `$`
+    # signs that the shell reads as variables. All three of `$6`, `$pd` and
+    # `$7LPpeBGe1v5ssVIxdvxvvHUf6uiyJI` expand to nothing, so usermod was handed
+    #
+    #     .PhdrZh4fxnXbvLPpeBGe1v5ssVIxdvxvvHUf6uiyJI.jd5N5pyX3/...
+    #
+    # and that became docker's password. The `identity` block above was correct all
+    # along; this line overwrote it with a hash of nothing.
+    #
+    # The symptom is exactly what run 41665165958 saw on its second boot:
+    #
+    #     === SSH DID NOT ANSWER IN 600s ===
+    #       last output: Permission denied, please try again.
+    #
+    # sshd was up, the network was up, the account existed - and its password was wrong.
+    # That reads as a network problem and was a quoting problem.
+    #
+    # Removing the line rather than quoting it: `identity` already sets the password, and
+    # a second write of the same value is a second thing that can disagree. If a future
+    # release stops honouring `identity`, the bake's ssh check will say so directly.
 
     # THE REPO'S CONVENTION, RECORDED IN THE DISK. A disk that says what made it can be
     # told apart from one built by something else, without a manifest beside it.
