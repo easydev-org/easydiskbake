@@ -77,12 +77,38 @@ def build_media(iso_path: str, work: str, answers: str) -> str:
     os.makedirs(etc, exist_ok=True)
 
     # THE CONSOLE. com0 at 115200 is what lib/serial.py's fifo carries.
+    #
+    # stty COMES FIRST, AND THAT ORDER IS THE WHOLE BUG BEHIND RUN 41629412933.
+    #
+    # boot.conf is read line by line and executed as if typed at the boot> prompt. The
+    # default speed for a serial console is 9600, and openbsd.org's own serial-console
+    # documentation is explicit that a different speed has to be set BEFORE switching
+    # console devices:
+    #
+    #     If you want to run your console device at a different speed, you must configure
+    #     it before switching console devices.
+    #
+    #     stty com0 115200
+    #     set tty com0
+    #
+    # This file had the two lines the other way round. `set tty com0` therefore switched
+    # the bootloader and bsd.rd to com0 at 9600, and the following `stty com0 115200` set a
+    # speed for a device that was already the active console - which boot(8) handles by
+    # offering five seconds of grace time rather than by reconfiguring what is running.
+    #
+    # The result was a run with no console output at all: 41629412933's artifact held
+    # `console.log (0 KiB)`. Not because the guest was silent - because it was talking at
+    # 9600 into a fifo being read as 115200, and every answer written into that fifo was
+    # arriving at the guest as noise. The installer sat at its first question for the whole
+    # hour, the disk held no filesystem, and the bake reported "the answers landed
+    # somewhere other than the questions" - which was true and was not the fault of the
+    # answers.
     boot_conf = os.path.join(etc, "boot.conf")
     with open(boot_conf, "w", encoding="utf-8", newline="\n") as fh:
         fh.write("# easydiskbake: the console is the serial port, not the VGA\n")
-        fh.write("set tty com0\n")
         fh.write("stty com0 115200\n")
-    log("etc/boot.conf: set tty com0")
+        fh.write("set tty com0\n")
+    log("etc/boot.conf: stty com0 115200, then set tty com0")
 
     install_conf = os.path.join(etc, "install.conf")
     with open(install_conf, "w", encoding="utf-8", newline="\n") as fh:

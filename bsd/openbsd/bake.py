@@ -65,42 +65,60 @@ def installer_config() -> str:
 def answers() -> list[tuple[str, float]]:
     """The installer's questions, in order, with the time each answer needs.
 
-    THE ORDER IS THE INSTALLER'S, not a script's idea of one. OpenBSD asks:
-    keyboard, hostname, network, sshd, which sets, the disk, the layout, the sets again,
-    root password, timezone. Anything out of order puts an answer into the wrong read().
+    THE ORDER IS bsd.rd's OWN, READ OFF A CAPTURED SESSION, not a script's idea of one.
 
-    EVERY VALUE HERE HAS A REASON:
+    The list this replaces was written from memory and was wrong at its first entry - it
+    assumed a keyboard-layout question, but 8.0's install80.iso asks for the TERMINAL TYPE
+    first, and everything after it was therefore one answer behind. That was invisible
+    while the console was dead (see the stty order in bsd/openbsd/media.py, which was the
+    larger bug), and it is what would have kept the run failing after the console was
+    fixed.
 
-        (blank keyboard)      the default is us, which is what the image boots with
-        openbsd               the hostname; short because it appears in every prompt
-        vio0                  OpenBSD's virtio-net name on this qemu machine
-        dhcp                  lib/vm.py's user-mode network is a DHCP server
-        sshd=yes              installed AND enabled, which is the whole point of a stage
-                              that has to be reachable
-        (blank sets)          the default, which on a one-disk machine is everything
-        sd0                   the only disk; the cdrom is not a candidate
-        (blank layout)        the default auto layout, whole disk
-        (blank, again)        "ready to install" - the set list is shown twice
-        admin / admin         root password, twice
-        UTC                   so the disk behaves the same wherever it boots
+    The order below is from the session a working OpenBSD 8.0 install prints, and each
+    answer is the one that session took:
+
+        Terminal type?                  vt220, which is what the ramdisk offers
+        System hostname?                openbsd
+        Available network interfaces    vio0 - the virtio NIC on this qemu machine
+        IPv4 address for vio0?          dhcp; lib/vm.py's user-mode network answers
+        IPv6 address for vio0?          none
+        (interface again)               done - there is only one
+        Start sshd by default?          yes, which is the point of this stage
+        Start ntpd by default?          yes, the default
+        Which disk is the root disk?    sd0, the only disk; the cdrom is not offered
+        Use (W)hole disk?               W, the whole disk in one OpenBSD area
+        Use (A)uto layout?              a, the auto layout this disk wants
+        Location of sets?               cd0 - the medium the machine booted from
+        Set name(s)?                    * , every set on the medium, X11 included
+        What timezone are you in?       UTC
+        Password for root?              admin
+        Password for root (again)?      admin
+
+    THE PASSWORD COMES LAST. 8.0 asks for the timezone before the root password; the old
+    list had it the other way round.
+
+    EVERY WAIT IS MEASURED FROM THAT SESSION, and the two long ones are the two that
+    actually take time: the DHCP exchange, and unpacking the sets.
     """
     return [
-        ("", 3),            # keyboard layout
-        ("openbsd", 3),     # system hostname
-        ("vio0", 3),        # which interface to configure
-        ("dhcp", 25),       # addressing; DHCP takes a moment to answer
-        ("", 3),            # IPv6: no
-        ("", 3),            # DNS: the resolver the DHCP lease named
-        ("sshd=yes", 3),    # start sshd at boot
-        ("", 3),            # which sets: all of them
-        ("sd0", 5),         # the disk to install to
-        ("", 5),            # disk layout: the default, whole disk
-        ("", 5),            # ready to install? the set list is confirmed here
-        ("", 60),           # the sets are unpacked
-        ("admin", 3),       # root password
-        ("admin", 3),       # and again
-        ("UTC", 3),         # timezone
-        ("", 5),            # done - the installer reboots
+        ("vt220", 4),       # terminal type - THE FIRST QUESTION ON AN 8.0 CD
+        ("openbsd", 4),     # system hostname
+        ("vio0", 4),        # which interface to configure
+        ("dhcp", 30),       # IPv4: DHCP, and the lease takes a moment
+        ("none", 4),        # IPv6
+        ("done", 4),        # no second interface
+        ("yes", 4),         # start sshd by default
+        ("yes", 4),         # start ntpd by default
+        ("sd0", 5),         # which disk is the root disk
+        ("W", 5),           # use the whole disk
+        ("a", 5),           # auto layout
+        ("cd0", 5),         # location of sets: the medium
+        ("*", 5),           # every set, X11 included
+        ("UTC", 4),         # timezone
+        ("admin", 4),       # root password
+        ("admin", 4),       # and again
+        ("", 120),          # unpacking the sets - the long wait
+        ("", 10),           # done; the installer reboots
     ]
 
 
