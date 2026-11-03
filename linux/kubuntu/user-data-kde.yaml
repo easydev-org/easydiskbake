@@ -120,6 +120,23 @@ autoinstall:
     # installs it without starting it on first boot in every release.
     - curtin in-target -- systemctl enable ssh
 
+    # AUTOLOGIN, BECAUSE A DISK THAT STOPS AT A GREETER HAS NO DESKTOP ON IT.
+    #
+    # Run 41671061784's second boot reached sddm and stopped there:
+    #
+    #     sddm[1235]: Greeter session started successfully
+    #     pam_unix(sddm-greeter:session): session opened for user sddm(uid=108)
+    #
+    # and never started a Plasma session, because nobody typed a password. The launch
+    # check wants a Wayland session belonging to docker; a greeter session is not one.
+    #
+    # SDDM reads /etc/sddm.conf.d/*.conf and the section is [Autologin] with User and
+    # Session. Session=plasma names the desktop entry sddm will start; on 26.04 it is
+    # `plasma`, and the file it refers to is /usr/share/xsessions/plasma.desktop or the
+    # wayland-sessions equivalent. Naming it avoids sddm picking the first entry, which is
+    # not guaranteed to be Plasma.
+    - curtin in-target -- sh -c 'mkdir -p /etc/sddm.conf.d && printf "%s\n" "[Autologin]" "User=docker" "Session=plasma" "Relogin=false" > /etc/sddm.conf.d/autologin.conf'
+
     # NO CLOUD-INIT ON THE FINISHED DISK. An installed system that still runs cloud-init
     # looks for a datasource on every boot and waits for one that is not there. The
     # install is done; the mechanism that did it is not part of the result.

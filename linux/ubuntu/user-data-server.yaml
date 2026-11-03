@@ -123,6 +123,26 @@ autoinstall:
     # installs it without starting it on first boot in every release.
     - curtin in-target -- systemctl enable ssh
 
+    # AUTOLOGIN, BECAUSE A DISK THAT STOPS AT A GREETER HAS NO DESKTOP ON IT.
+    #
+    # Run 41671039091's second boot was healthy in every other way:
+    #
+    #     ssh answers after 21s
+    #     sessions (id|type|class|active):
+    #         ['1|unspecified|manager-early|yes', '72|tty|user|yes',
+    #          '73|unspecified|manager|yes', 'c1|wayland|greeter|yes']
+    #     === NO ACTIVE USER WAYLAND SESSION ===
+    #
+    # That `c1|wayland|greeter` is gdm sitting on its login screen. The Wayland session it
+    # runs belongs to the greeter, not to docker, so the launch check correctly refused it
+    # - the desktop had not started because nobody had logged in.
+    #
+    # GDM reads its configuration from /etc/gdm3/custom.conf and the keys are
+    # [daemon] AutomaticLogin{,Enable}. Written with a here-doc rather than an echo so the
+    # section header and the two keys cannot be mangled by quoting, and with `install` so
+    # the mode is right for a file gdm reads at boot.
+    - curtin in-target -- sh -c 'printf "%s\n" "[daemon]" "AutomaticLoginEnable=True" "AutomaticLogin=docker" > /etc/gdm3/custom.conf'
+
     # NO CLOUD-INIT ON THE FINISHED DISK. An installed system that still runs cloud-init
     # looks for a datasource on every boot and waits for one that is not there. The
     # install is done; the mechanism that did it is not part of the result.
