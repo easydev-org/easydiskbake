@@ -235,6 +235,10 @@ def main(argv: list[str]) -> int:
     note(f"qemu started, waiting up to {args.boot_timeout}s for a desktop")
 
     arrived = False
+    # DECLARED HERE, NOT INSIDE THE TRY. A name first bound in a try block is unbound
+    # after an exception in it, and this one is read after the finally - so an early
+    # failure would turn a boot problem into a NameError. None means "not asked".
+    ssh_ok: bool | None = None
     seen: list[str] = []
     started = time.time()
     # HOW LONG TO WAIT BEFORE GIVING UP ON A DESKTOP.
@@ -274,6 +278,22 @@ def main(argv: list[str]) -> int:
         # flag was also spelled without `args.` and raised NameError first.
         if not arrived and args.probe_shell:
             probe_firmware_shell(guest, shots, note)
+
+        # AND THE SSHD CHECK, FOR THE SAME REASON AND WITH THE SAME PREVIOUS MISTAKE.
+        #
+        # The forward is a property of the running qemu: 2222 is a host port that exists
+        # only while this machine does. Run 41595773313 put this call after the finally
+        # block, so `guest.stop()` had already run and the check reported
+        #
+        #     SSHD DID NOT ANSWER on 127.0.0.1:2222: [Errno 111] Connection refused
+        #
+        # about a disk that had booted, in 74 seconds, to a desktop. The block's own
+        # comment said "it happens BEFORE the machine is stopped", which was true of the
+        # sentence and false of the code.
+        #
+        # SO IT RUNS HERE, inside the try, before the finally that stops the machine.
+        if arrived and args.check_ssh:
+            ssh_ok = check_sshd(note) == 0
     finally:
         if kb is not None:
             kb.close()
@@ -293,13 +313,15 @@ def main(argv: list[str]) -> int:
 
     if arrived:
         note("OK: the published disk reached its desktop")
-        # AND SSHD, WHEN THE CALLER ASKS. A disk reaching a desktop says nothing about
-        # whether the stage that installed OpenSSH actually left it working - the run
-        # that proved this needed run 41589685920's banner line to know. So the check is
-        # opt-in and it happens BEFORE the machine is stopped, because the port forward
-        # is what is being tested and it dies with qemu.
+        # THE RESULT OF THE CHECK THAT ALREADY RAN, not a second attempt. It cannot be a
+        # second attempt: the machine is stopped by now, and the forward with it.
         if args.check_ssh:
-            return finish(check_sshd(note))
+            if ssh_ok:
+                note("OK: sshd answered on the forwarded port")
+                return finish(0)
+            note("=== A DESKTOP, BUT NOT SSHD ===")
+            note("  the boot is fine; what failed is the stage that installed OpenSSH")
+            return finish(1)
         return finish(0)
 
     note("the guest did not reach a desktop; the frames say where it stopped")
