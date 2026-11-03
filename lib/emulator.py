@@ -229,7 +229,21 @@ class Emulator:
         this did not look, so the three outcomes are named separately below: the shell
         said FAILED, the shell said nothing, or the shell said something else.
         """
-        result = self.adb("shell", "sh", "-c",
+        # ONE STRING, NOT `sh -c` WITH SEPARATE ARGUMENTS.
+        #
+        # `adb shell` joins its arguments with spaces and hands the result to the
+        # device's shell, so `adb shell sh -c "echo x > f && cat f"` arrives as
+        # `sh -c echo x > f && cat f` - the redirect and the && are interpreted by the
+        # LOCAL shell's argv splitting, not by the device. The visible result is a
+        # command that produces no output at all, which is what run 41607312325
+        # reported:
+        #
+        #     could not write the gold marker: the shell produced no output, and
+        #     reading it back gave ''
+        #
+        # easysandbox-android's entrypoint.sh writes it the other way - a single quoted
+        # command string - and that is what works.
+        result = self.adb("shell",
                           f"echo '{token}' > /data/local/tmp/bake-gold && "
                           f"sync && cat /data/local/tmp/bake-gold")
         if result.startswith("FAILED:"):
