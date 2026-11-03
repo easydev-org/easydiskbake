@@ -89,7 +89,10 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    timeout-minutes: 120
+    # SEVENTEEN ISO IMAGES, ABOUT 46 GiB. At the ~60 MB/s a GitHub runner sustains
+    # from these mirrors that is 13 minutes of transfer and much more of unpacking,
+    # hashing and pushing - the 120 that was here was sized for Windows alone.
+    timeout-minutes: 300
     permissions:
       contents: read
       packages: write
