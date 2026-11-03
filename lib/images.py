@@ -255,6 +255,16 @@ LINUX = {
         "sha256": "9ec142e8cc8060db7447cdada1b0a5f309ce10f9342049bccaf2414e54211700",
         "size": 5171830784,
     },
+    "zorin": {
+        # 18.1 Core. zorin.com/os/download/18/core/ is a page, not a file, but the
+        # mirror URLs are in its source - which is how this one was found, without
+        # answering the mailing-list form the page also offers.
+        "url": "https://distro.ibiblio.org/zorinos/18/"
+               "Zorin-OS-18.1-Core-64-bit.iso",
+        # From SHA256SUMS.txt in the same directory.
+        "sha256": "44649b97bd307fc4c8529205d098ebbf98575a1e1ba2ee7d7005b697af1721d5",
+        "size": 3909091328,
+    },
     "opensuse": {
         # Tumbleweed rather than Leap: Leap's DVD path under
         # download.opensuse.org/distribution/leap/ did not resolve when this was

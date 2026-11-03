@@ -60,6 +60,7 @@ on:
           - iso-alma
           - iso-rocky
           - iso-manjaro
+          - iso-zorin
           - iso-opensuse
           - iso-mx
           - iso-alpine
