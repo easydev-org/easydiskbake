@@ -91,30 +91,19 @@ CONTINUE_MENU = (1142, 586)
 # itself is the icon ABOVE the label, which is why clicking the label's centre does
 # nothing and y=306 is what opens the sheet.
 #
-# THE GLYPH, WHICH SITS ABOVE ITS LABEL - AND EVERY EARLIER VALUE MISSED BOTH.
+# SET BY THE OPERATOR, FROM THE LIVE SCREEN.
 #
-# Six runs tried six values and opened no sheet:
+# Seven values have now been tried, and the history is worth keeping because each one
+# failed differently:
 #
-#   run 41506477596 @ 306    run 41511491789 @ 296    run 41510118982 @ 296
-#   run 41514056068 @ 311    run 41564236483 @ 314    run 41567438310 @ 309
+#     306, 296, 311, 314, 309   nothing happened; the sheet never opened
+#     (1255, 278)               the sheet DID open - backspace, "main" and Done all ran -
+#                               but the pointer was on the glyph's upper-left corner
 #
-# Every one of them was a guess at where the control is. This one was read off a frame
-# instead: tesseract's TSV output gives the LABEL's box exactly, and the surrounding
-# pixels give the glyph.
-#
-# From the recording of run 41565758898, frame at 1:04, 1920x1080:
-#
-#     y=270..283   the GLYPH           x 1247..1263
-#     y=293..302   the "Erase" LABEL   x 1243..1271   (tesseract: left=1243 top=293
-#                                                      width=28 height=10)
-#
-# The glyph's weighted centre is (1254.7, 277.6). The label is 20 pixels BELOW it, which
-# is the opposite of what an earlier comment in this file claimed - that comment was
-# written from a different screenshot and was wrong about the arrangement, and every
-# value derived from it landed on empty toolbar.
-#
-# X WAS OFF BY 35 TOO. All six attempts used x=1290; the glyph is at 1247..1263.
-ERASE_BUTTON = (1255, 278)
+# The last one is the useful one: it proves the control is reachable, and that the
+# remaining error is a few pixels, not a wrong control. (1290, 295) is the value given
+# for this attempt.
+ERASE_BUTTON = (1290, 295)
 
 # Sidebar rows under "Internal", 28px apart, x=540 inside the labels. Five rows because
 # the count differs between Show Only Volumes (one) and Show All Devices (four), and a

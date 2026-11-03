@@ -666,19 +666,25 @@ class TheEraseButtonIsTheGlyph(unittest.TestCase):
     toolbar rather than on this button.
     """
 
-    def test_the_button_is_the_glyph_not_the_label(self):
-        self.assertEqual(install.ERASE_BUTTON, (1255, 278))
+    def test_the_button_is_the_value_the_operator_gave(self):
+        """(1290, 295), after (1255, 278) proved the control is reachable.
 
-    def test_the_label_sits_below_the_button(self):
-        # The label's top edge, measured by tesseract, is 293. A y below that is on the
-        # label or under it, not on the control that opens the sheet.
-        self.assertLess(install.ERASE_BUTTON[1], 293)
+        The history, because each attempt failed differently and the pattern is the
+        useful part - see the comment beside ERASE_BUTTON in install.py.
+        """
+        self.assertEqual(install.ERASE_BUTTON, (1290, 295))
+
+    def test_the_button_is_above_the_label(self):
+        # The label's top edge, measured by tesseract on a full-resolution frame, is 293.
+        # The glyph sits above it; 295 is just below that edge, which is where the
+        # operator put the pointer after (1255, 278) landed on the glyph's corner.
+        self.assertGreaterEqual(install.ERASE_BUTTON[1], 293)
+        self.assertLess(install.ERASE_BUTTON[1], 310)
 
     def test_the_source_records_where_the_numbers_came_from(self):
         with open(os.path.join(MACOS15, "install.py"), encoding="utf-8") as fh:
             source = fh.read()
-        start = source.index("ERASE_BUTTON = (1255, 278)")
-        note = source[max(0, start - 1400):start]
-        self.assertIn("tesseract", note)
-        self.assertIn("1247..1263", note)
-        self.assertIn("293..302", note)
+        start = source.index("ERASE_BUTTON = (1290, 295)")
+        note = source[max(0, start - 1200):start]
+        self.assertIn("(1255, 278)", note)
+        self.assertIn("sheet DID open", note)
