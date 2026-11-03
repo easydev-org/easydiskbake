@@ -235,7 +235,20 @@ DISK_SAMPLE_SECONDS = 30
 # what answers that. Three minutes is long enough for the first gigabytes to be written,
 # which is the difference between "the installer accepted the disk" and "it did not",
 # and short enough to read the result while it is still fresh.
-AFTER_LAST_ACTION_SECONDS = 180
+# HOW LONG THE COPY MAY PAUSE BEFORE IT COUNTS AS FINISHED.
+#
+# dockur-macos records the real numbers in its verify-golden.yml: "storage settled at
+# 27306 MiB after 3120 s". 52 minutes. The rule here is the same shape - wait for growth
+# to stop - with a pause long enough that a slow write is not mistaken for the end.
+SETTLE_SECONDS = 180
+
+# A FINISHED macOS 15 OCCUPIES ABOUT 26 GiB. Growth that stops below this is an
+# installation that failed, not one that finished, and the two look identical on a disk
+# that simply stopped changing.
+MIN_FINISHED_MIB = 20000
+
+# THE BACKSTOP. A copy that never settles must not hold a runner for three hours.
+MAX_INSTALL_SECONDS = 7200
 
 # The forward control is pressed no faster than a pane can redraw: the installer takes
 # several seconds per pane and a click arriving during a redraw is lost.
@@ -957,21 +970,65 @@ def installer_panes(d: Recovery, seconds: int = 4 * 3600) -> bool:
     #
     # The recording is what came out of it, and the recording is what has found every
     # real failure in this file.
-    log(f"the installation is running; watching the disk for "
-        f"{AFTER_LAST_ACTION_SECONDS}s and then reporting")
+    log("the installation is running; waiting for the disk to stop growing")
     baseline = d.disk_allocated()
-    finish = time.time() + AFTER_LAST_ACTION_SECONDS
-    while time.time() < finish:
+    if baseline is None:
+        log("  no disk to measure, so the end of the copy cannot be detected")
+        return False
+
+    # THE INSTALLATION IS FINISHED WHEN THE DISK STOPS GROWING.
+    #
+    # Not after a fixed number of minutes. dockur-macos states its own measurement in
+    # verify-golden.yml:
+    #
+    #     storage settled at 27306 MiB after 3120 s
+    #
+    # 52 minutes and 26.7 GiB. A fixed 180 seconds - what this used to wait - stops at
+    # 5.7 GiB, which is 4% of the way in.
+    #
+    # The settle rule: no growth for SETTLE_SECONDS while the disk is above
+    # MIN_FINISHED_MIB. Both halves matter. Growth stopping early means the install
+    # failed and the disk is idle; growth stopping late is the normal end. The size
+    # floor separates them without needing to know what macOS draws.
+    last = baseline
+    settled_since = None
+    finish_by = time.time() + MAX_INSTALL_SECONDS
+
+    while time.time() < finish_by:
         time.sleep(DISK_SAMPLE_SECONDS)
         size = d.disk_allocated()
-        if size is not None and baseline is not None and size > baseline:
-            log(f"  the disk is at {size >> 20} MiB "
-                f"(+{(size - baseline) >> 20} MiB since the sequence finished)")
-            baseline = size
+        if size is None:
+            continue
+        if size > last:
+            log(f"  {size >> 20} MiB (+{(size - last) >> 20} MiB)")
+            last = size
+            settled_since = None
+            continue
 
-    log("=== THE SEQUENCE RAN TO THE END ===")
-    log(f"  the disk holds {d.disk_allocated() >> 20 if d.disk_allocated() else 0} MiB")
-    log("  the installer is still copying; this run stops here on purpose")
+        if settled_since is None:
+            settled_since = time.time()
+            log(f"  no growth at {size >> 20} MiB; "
+                f"waiting {SETTLE_SECONDS}s to see whether it is done")
+            continue
+
+        if time.time() - settled_since < SETTLE_SECONDS:
+            continue
+
+        elapsed = time.time() - settled_since
+        big_enough = (size >> 20) >= MIN_FINISHED_MIB
+        log(f"=== THE DISK HAS STOPPED GROWING ===")
+        log(f"  {size >> 20} MiB, unchanged for {elapsed:.0f}s")
+        if not big_enough:
+            log(f"  that is below the {MIN_FINISHED_MIB} MiB a finished macOS occupies,")
+            log("  so the installer stopped early rather than completing")
+            return False
+        log("  the installation is complete")
+        return True
+
+    log(f"=== THE DISK NEVER SETTLED IN {MAX_INSTALL_SECONDS // 60} MINUTES ===")
+    log(f"  it holds {d.disk_allocated() >> 20} MiB and was still changing")
+    return False
+
     return True
 
 
@@ -993,9 +1050,10 @@ def run_installation(qmp_path: str, frames_dir: str | None,
         if not reinstall(d):
             return 1
         if not installer_panes(d):
-            log("the installer did not reach a reboot")
+            log("the installation did not finish")
             return 1
-        log(f"installation driven, {d.n} actions; the guest should now be rebooting")
+        log(f"installation complete after {d.n} actions; the guest should now reboot "
+            f"into the installed system")
         return 0
     finally:
         d.close()

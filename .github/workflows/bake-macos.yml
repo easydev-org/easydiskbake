@@ -62,8 +62,10 @@ on:
         description: "Seconds between recorded frames (lower = bigger video)"
         default: "5"
       install_timeout:
-        description: "Seconds the installation may run before Setup Assistant"
-        default: "5400"
+        description: "Seconds the installation may run before it is called stuck"
+        # dockur-macos records 3120s to a settled disk; this is that with room for a
+        # slower runner and the reboot that follows.
+        default: "7200"
 
 concurrency:
   group: bake-macos-${{ github.ref }}
@@ -123,7 +125,7 @@ jobs:
               --out "out/macos${{ inputs.release || '15' }}.qcow2" \
               --release "${{ inputs.release || '15' }}" \
               --disk-size "${{ inputs.disk_size || '64G' }}" \
-              --timeout "${{ inputs.install_timeout || '5400' }}"
+              --timeout "${{ inputs.install_timeout || '7200' }}"
 
       # The recording is what explains a failure. A wizard pane waiting for a click and
       # a hung kernel look identical in a log, and a macOS bake has no serial console to
