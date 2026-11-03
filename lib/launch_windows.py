@@ -82,6 +82,10 @@ def main(argv: list[str]) -> int:
     p.add_argument("--artifacts", default="out")
     p.add_argument("--work", default=None)
     p.add_argument("--boot-timeout", type=int, default=900)
+    p.add_argument("--probe-after", type=int, default=0,
+                   help="seconds to wait for a desktop before probing the firmware "
+                        "shell. 0 means the whole boot timeout; -1 means do not wait "
+                        "at all")
     p.add_argument("--probe-shell", action="store_true",
                    help="when the firmware drops into its own shell, type into it: list "
                         "the EFI partition and try the loader by hand. Answers whether "
@@ -207,8 +211,24 @@ def main(argv: list[str]) -> int:
     arrived = False
     seen: list[str] = []
     started = time.time()
+    # HOW LONG TO WAIT BEFORE GIVING UP ON A DESKTOP.
+    #
+    # --probe-after exists because 900 seconds of a screen that has been black since
+    # frame one tells nobody anything. The firmware reaches its shell in about ten
+    # seconds; if there is no desktop by then, waiting is not going to produce one, and
+    # the useful thing is to ask the shell directly.
+    #
+    #     --probe-after -1   do not wait at all: probe as soon as qemu is up
+    #     --probe-after 60   give it a minute
+    #     0 (default)        the whole --boot-timeout, the old behaviour
+    wait_for = args.boot_timeout
+    if args.probe_shell and args.probe_after:
+        wait_for = args.probe_after if args.probe_after > 0 else 0
+
     try:
-        arrived = sample_until(guest, shots, args.boot_timeout, note, seen)
+        if wait_for == 0:
+            note("not waiting for a desktop; going straight to the firmware shell")
+        arrived = sample_until(guest, shots, wait_for, note, seen)
 
         # THE PROBE RUNS WHILE THE MACHINE IS STILL UP. It types into the firmware
         # shell, so it cannot happen after guest.stop() - and it used to: the first
@@ -318,7 +338,9 @@ def sample_until(guest: "vm.Guest", shots: str, timeout: int, note, seen: list) 
     """
     import desktop
 
-    deadline = time.time() + timeout
+    # EVEN "DO NOT WAIT" WAITS A LITTLE. The firmware needs about ten seconds to reach
+    # its shell, and typing before the console is up sends keys to nothing.
+    deadline = time.time() + max(timeout, 20)
     started = time.time()
     last_report = 0.0
     last_keep = 0.0

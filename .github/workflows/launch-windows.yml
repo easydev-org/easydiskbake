@@ -51,6 +51,9 @@ on:
         description: "If the firmware drops to its shell, type into it to find out why"
         type: boolean
         default: true
+      probe_after:
+        description: "Seconds to wait for a desktop before probing (-1 = immediately)"
+        default: "-1"
 
 concurrency:
   group: launch-windows-${{ github.ref }}
@@ -117,7 +120,9 @@ jobs:
             USE_TPM=""
             if [ "${{ inputs.tpm }}" = "true" ]; then USE_TPM="--tpm"; fi
             PROBE=""
-            if [ "${{ inputs.probe_shell }}" = "true" ]; then PROBE="--probe-shell"; fi
+            if [ "${{ inputs.probe_shell }}" = "true" ]; then
+              PROBE="--probe-shell --probe-after ${{ inputs.probe_after || '-1' }}"
+            fi
             python3 lib/launch_windows.py \
               --tag "${{ inputs.tag }}" \
               $USE_TPM \
