@@ -211,3 +211,31 @@ jobs:
             out/derive.log
           if-no-files-found: warn
           retention-days: 7
+
+      # A DERIVED DISK THAT IS NOT PUSHED IS NOT AN ARTIFACT ANYBODY CAN USE.
+      #
+      # The base job had this step and the derive job did not, so run 41629720829 built
+      # a KDE disk, uploaded it as an Actions artifact, and left the package with exactly
+      # one tag for NixOS - nixos-base. The six desktops this workflow exists to produce
+      # were all local files on a runner that then went away.
+      #
+      # SAME SHAPE AS THE BASE: a fixed tag per desktop (nixos-kde, nixos-gnome, ...),
+      # because the derive stage is a flavour of one known thing rather than a dated
+      # release, and a consumer (a deployment YAML, a launch script) needs a name that
+      # does not change with every run. The dated timestamped tags stay reserved for the
+      # install stages, where "which build of Windows is this" has to be answerable.
+      - name: push the disk
+        if: ${{ success() && (inputs.publish == true || inputs.publish == null) }}
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: derive-publish-${{ matrix.desktop }}
+          interval: "15"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py install-oras
+            python3 lib/ci.py login --registry ghcr.io
+            python3 lib/publish_disk.py \
+              "out/nixos-${{ matrix.desktop }}.qcow2" \
+              --kind "nixos-${{ matrix.desktop }}" \
+              --tag "nixos-${{ matrix.desktop }}"

@@ -78,9 +78,31 @@
   system.stateVersion = "26.05";
 
   # --- basics every image needs, desktop or not ------------------------------
+  #
+  # THE SAME TOOLCHAIN EVERY OTHER DISK HERE CARRIES, and the reason is the next stage,
+  # not taste. A disk from this repository is driven over ssh afterwards - bsd-freebsd's
+  # installerconfig.sh installs git, curl, python3, node and jq for that reason, and
+  # Ubuntu's answer file names them in its package list. NixOS had curl and no git, so a
+  # runner that reached it could not clone anything.
+  #
+  # git      the runner's most basic need, and what the derive stage itself uses
+  #          indirectly through nix flakes
+  # python3  jq and the many actions that shell out to python3
+  # nodejs   the other runtime; nodejs rather than a pinned nodejs_22, so the channel
+  #          decides, which is what an unstable-based image should follow
+  # jq       half the actions parse JSON with it
+  # unzip    the other half unpack archives with it
+  #
+  # bash is NOT listed: it is in NixOS's own base profile already, and naming it here
+  # would suggest it needed adding.
   environment.systemPackages = with pkgs; [
     curl vim htop
     findutils gnugrep gawk which
+    git
+    python3
+    nodejs
+    jq
+    unzip
   ];
 
   # Deliberately absent, and each for a reason:
