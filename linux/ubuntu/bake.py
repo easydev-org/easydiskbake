@@ -167,33 +167,40 @@ def main(argv: list[str]) -> int:
     # THE KERNEL COMMAND LINE, and each part of it is load-bearing:
     #
     #   autoinstall             subiquity, do an unattended install
-    #   ds=nocloud-net;s=URL    where the seed is. The QUOTES matter: without them the
-    #                           semicolon ends the argument and everything after it is
-    #                           dropped, which reads later as "the seed was not found".
+    #   ds=nocloud-net;s=URL    where the seed is. NO QUOTES AROUND IT - see below.
     #   ip=dhcp                 bring the network up before cloud-init looks for it
-    #   cloud-config-url=/dev/null  stops the installer re-reading the ISO as a cloud
-    #                           config source, which it otherwise does and which costs
-    #                           minutes of the same work twice
     #   console=ttyS0,115200n8  so the guest's output reaches the serial log at all
     #
-    # NO `---`, AND THAT IS THE FIX FOR RUN 41602915388. Its kernel said:
+    # NO QUOTES AROUND ds=, AND THAT IS THE FIX FOR RUNS 41602915388 AND 41606512682.
     #
-    #     Unknown kernel command line parameters
-    #       "autoinstall --- ds=nocloud-net;s=http://10.0.2.2:8000/autoinstall/ ..."
+    # Every example of this on the internet writes
     #
-    # `---` separates arguments the kernel handles from ones it passes to user space, and
-    # putting it BEFORE cloud-init's own variables meant cloud-init saw a command line
-    # whose first token was the separator. All three of its stages then ran and found
-    # nothing to do - the log shows cloud-config.service finishing with no seed fetch and
-    # no install, and the disk stayed at 0 MiB for six minutes.
+    #     -append 'autoinstall ds=nocloud-net;s=http://host:port/'
     #
-    # Nothing here needs the separator: every variable above is one the kernel or
-    # cloud-init reads from /proc/cmdline, which is where they have to be to be seen.
+    # where the quote belongs to the SHELL - it tells bash to keep the semicolon inside
+    # one argument. This append is already one argv element handed straight to qemu, with
+    # no shell anywhere, so quoting it put literal quotation marks into /proc/cmdline:
+    #
+    #     Command line: autoinstall "ds=nocloud-net;s=http://10.0.2.2:8000/autoinstall/" ...
+    #
+    # cloud-init splits that on spaces and gets the token `"ds=nocloud-net;s=http://...`
+    # starting with a quotation mark, so it recognises no datasource, runs all three of
+    # its stages, finds nothing to do, and the disk stays at 0 MiB for as long as the
+    # bake watches it.
+    #
+    # NO `---` EITHER, AND NO cloud-config-url. The media's own menu entry is
+    #
+    #     linux /casper/vmlinuz ---
+    #
+    # with nothing after the separator, because `---` there is casper's end-of-kernel-
+    # arguments marker and the autoinstall parameters are meant to be typed in front of
+    # it by whoever boots with them. cloud-config-url=/dev/null belongs to a PXE setup
+    # that fetches the ISO over the network; with a local cdrom it suppresses the very
+    # lookup this needs.
     append = (
         "autoinstall "
-        f'"ds=nocloud-net;s={seed_url}" '
-        "ip=dhcp cloud-config-url=/dev/null "
-        "console=ttyS0,115200n8"
+        f"ds=nocloud-net;s={seed_url} "
+        "ip=dhcp console=ttyS0,115200n8"
     )
 
     shape = vm.Shape(
