@@ -124,10 +124,31 @@ def build_media(iso_path: str, work: str, answers: str) -> str:
     # what actually runs here. The UEFI record is kept anyway: a medium that only boots
     # one way is a medium somebody will try to boot the other way, and the warning would
     # be a machine that does nothing rather than a message.
+    # cdboot IS THE EL TORITO IMAGE; cdbr IS A ONE-SHOT THAT FINDS IT BY LBA.
+    #
+    # OpenBSD ships three pieces:
+    #
+    #     cdbr        a 2 KB first-stage block whose last bytes name the LBA of cdboot.
+    #                 Those bytes are ZERO in the release image - read them - because the
+    #                 real number is written by whoever builds the ISO, and it depends on
+    #                 where cdboot lands in THAT build.
+    #     cdboot      the loader itself, 90 KB, and what actually reads /etc/boot.conf.
+    #     eficdboot   the UEFI equivalent.
+    #
+    # A repack changes every LBA, so a cdbr copied from the original points at whatever
+    # now sits at the old address. The result boots to nothing and says nothing, which
+    # is exactly what run 41613076306 recorded: no console output at all.
+    #
+    # Naming cdboot as the boot image removes the indirection: xorriso places it and
+    # records where it went, so there is no stale number to be wrong.
     efi = f"{release}/amd64/eficdboot"
+    boot_img = f"{release}/amd64/cdboot"
+    if not os.path.exists(os.path.join(tree, boot_img)):
+        boot_img = cdbr          # fall back to the chained form if cdboot is absent
+    log(f"boot image: {boot_img}")
     cmd = [
         "xorriso", "-as", "mkisofs", "-o", media,
-        "-b", cdbr, "-no-emul-boot", "-c", catalog,
+        "-b", boot_img, "-no-emul-boot", "-c", catalog,
     ]
     if os.path.exists(os.path.join(tree, efi)):
         cmd += ["-eltorito-alt-boot", "-e", efi, "-no-emul-boot"]

@@ -179,42 +179,45 @@ def build_media(iso_path: str, work: str) -> str:
             fh.write('boot_serial="YES"\n')
             fh.write('comconsole_speed="115200"\n')
             fh.write('comconsole_port="0x3f8"\n')
+            fh.write('# run the scripted installer instead of the menu wizard\n')
+            fh.write('init_script="/etc/easydiskbake-install"\n')
         log("boot/loader.conf: autoboot, console on ttyu0")
 
-    # rc.local IS WHAT DECIDES SCRIPT MODE OR WIZARD, AND IT HAS TO NAME `primary`.
+    # rc.local DOES NOT RUN ON THIS MEDIUM, AND THAT IS WHY THE ANSWER FILE WAS IGNORED.
     #
-    # The media's rc.local ends with
+    # The media's root is the ISO itself, mounted read-only - the boot log says so:
     #
-    #     runconsoles /usr/libexec/bsdinstall/startbsdinstall %
+    #     Updating motd:ln: /etc/motd: Read-only file system
     #
-    # and startbsdinstall branches on its first argument:
-    #
-    #     if [ -f /etc/installerconfig ]; then
-    #         if [ "$1" != "primary" ]; then
-    #             msgbox "please use the primary console"
-    #         elif bsdinstall script /etc/installerconfig; then
-    #             ... install ...
-    #
-    # `runconsoles` expands % to the console's name - ttyu0 or ttyv0 - so $1 is never
-    # "primary", the script branch is never taken, and the machine sits at
+    # and FreeBSD's /etc/rc does not execute /etc/rc.local: it runs rcorder over
+    # $local_startup, which is /usr/local/etc/rc.d. The file on the ISO is a document,
+    # not a hook, so the edit made no difference and run 41612049061 stopped at
     #
     #     Please choose the appropriate terminal type for your system.
     #
-    # which is exactly where run 41611262160 stopped. Writing `startbsdinstall primary`
-    # straight into rc.local is the same command without the console-splitting wrapper,
-    # and the serial port is the only console this machine has.
-    rc_local = os.path.join(tree, "etc", "rc.local")
-    with open(rc_local, "w", encoding="utf-8", newline="\n") as fh:
+    # exactly as the run before it had.
+    #
+    # THE HOOK THAT DOES WORK IS init_script: loader(8) runs it before init(8), and its
+    # value travels in the kernel environment, so it needs no writable filesystem.
+    #
+    # What it runs is a script this bake writes into the media's own tree, and that
+    # script is also where startbsdinstall has to be named `primary` - its first argument
+    # decides script mode, and runconsoles would pass the console's name instead.
+    answer_script = os.path.join(tree, "etc", "easydiskbake-install")
+    with open(answer_script, "w", encoding="utf-8", newline="\n") as fh:
         fh.write("#!/bin/sh\n")
-        fh.write("# easydiskbake: install from /etc/installerconfig, no menu\n")
-        fh.write("# startbsdinstall branches on \"primary\" and reads the answer file only\n")
-        fh.write("# in that branch; runconsoles would pass the console's name instead.\n")
+        fh.write("# run by loader(8) via init_script=, before init(8)\n")
         fh.write("TERM=vt100; export TERM\n")
-        # The script branch of startbsdinstall prints a "complete, rebooting" dialog and
-        # then reboots, which is what the bake waits for.
+        fh.write("# 'primary' is what makes startbsdinstall read /etc/installerconfig;\n")
+        fh.write("# runconsoles would hand it the console's name and it would prompt\n")
+        fh.write("# for a terminal type instead of installing.\n")
         fh.write("/usr/libexec/bsdinstall/startbsdinstall primary\n")
-    os.chmod(rc_local, 0o755)
-    log("etc/rc.local: startbsdinstall primary (script mode)")
+    os.chmod(answer_script, 0o755)
+    log("etc/easydiskbake-install: startbsdinstall primary (script mode)")
+
+    # AND THE LOADER IS TOLD TO RUN IT. init_script is documented in loader.conf(5) as
+    # the initial script init(8) runs before chrooting - for this media that is before
+    # anything is mounted, which is early enough and needs nothing writable.
 
     # The repack keeps the El Torito record that makes it bootable: boot/cdboot for BIOS
     # and boot/boot1.efi for UEFI, both of which this image carries.
