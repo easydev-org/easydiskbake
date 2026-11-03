@@ -131,4 +131,16 @@ jobs:
             set -euo pipefail
             python3 lib/ci.py install-oras
             python3 lib/ci.py login --registry ghcr.io
-            python3 lib/publish_disk.py out/openbsd.qcow2 --kind bsd-openbsd
+            # A FIXED TAG, SO A LAUNCH STAGE CAN NAME WHAT IT IS TESTING.
+            #
+            # Without --tag this pushes bsd-openbsd-<timestamp>, which is right for an install
+            # that is a dated release and wrong for a disk a launch workflow has to find.
+            # bsd-openbsd-launch asks for ":bsd-openbsd" by name; a timestamped-only tag made it fail
+            # with "no manifest for tag 'bsd-openbsd'" on all four of 6e26b2d's launches.
+            #
+            # This is the same choice linux-nixos-bake makes for nixos-base and the six
+            # desktops: the moving tag is the identity, and the OCI annotations still
+            # carry org.opencontainers.image.revision and .created, so "which build is
+            # this" stays answerable without a second tag.
+            python3 lib/publish_disk.py out/openbsd.qcow2 --kind bsd-openbsd \
+              --tag bsd-openbsd
