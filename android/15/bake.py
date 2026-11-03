@@ -137,6 +137,25 @@ def main(argv: list[str]) -> int:
     name = names[0]
     log(f"AVD: {name}")
 
+    # THE SYSTEM IMAGE IS A SECOND ARTIFACT, AND THIS BAKE FORGOT IT.
+    #
+    # A published AVD holds config.ini, userdata, cache and an initrd - not the system
+    # partition. That comes from $ANDROID_SDK_ROOT/system-images/<api>/<tag>/<abi>/, the
+    # path the AVD's own config.ini names as image.sysdir.1, and run 41605230808 started
+    # an emulator without it:
+    #
+    #     WARNING | /opt/android-sdk/system-images/android-35/default/x86_64/ is not a
+    #               valid directory
+    #     FATAL   | Broken AVD system path. Check your ANDROID_SDK_ROOT value
+    #
+    # lib/launch_android.py HAS ALWAYS DONE THIS - that is why launch-android succeeded
+    # on 41494640366 while this bake failed: the launch installed the system image from
+    # its pin before starting the emulator, and the bake never did. ensure_system_image
+    # is that same function, moved to be callable from here rather than copied.
+    from lib import launch_android
+
+    launch_android.ensure_system_image(home, name, log)
+
     # --- run it -------------------------------------------------------------
     shots = os.path.join(frames, "shots")
     os.makedirs(shots, exist_ok=True)
