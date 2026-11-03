@@ -291,7 +291,7 @@ def check_efi_bootloader(disk: str) -> bool:
         return False
 
     log(f"the EFI system partition holds {loader} "
-        f"({esp['first_lba']}..{esp['last_lba']} LBA)")
+        f"({esp['first_lba']}..{esp['last_lba']} LBA, GUID {esp['unique']})")
     return True
 
 
@@ -328,8 +328,24 @@ def _gpt_partitions(disk: str) -> list[dict]:
         d = entry[8:10].hex()
         e = entry[10:16].hex()
         guid = f"{a:08x}-{b:04x}-{c:04x}-{d}-{e}"
+        # THE PARTITION'S OWN GUID, which is not the type GUID. UEFI boot entries
+        # address a partition by THIS value, so a boot entry recovered from one disk and
+        # applied to another finds nothing - measured on launch-windows run 41518782273,
+        # where the firmware reported
+        #
+        #     failed to load Boot000A "Windows Boot Manager" from
+        #     HD(1,GPT,D8AC67A6-BD6D-46A3-9AAD-57C0B50BC178,0x800,0x82000)
+        #     /\EFI\Microsoft\Bootootmgfw.efi: Not Found
+        #
+        # for a disk whose ESP this module had just read successfully.
+        ua = int.from_bytes(entry[16:20], "little")
+        ub = int.from_bytes(entry[20:22], "little")
+        uc = int.from_bytes(entry[22:24], "little")
+        unique = (f"{ua:08x}-{ub:04x}-{uc:04x}-{entry[24:26].hex()}-"
+                  f"{entry[26:32].hex()}")
         out.append({
             "type": guid,
+            "unique": unique,
             "first_lba": int.from_bytes(entry[32:40], "little"),
             "last_lba": int.from_bytes(entry[40:48], "little"),
         })

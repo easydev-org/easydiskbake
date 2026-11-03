@@ -40,6 +40,10 @@ on:
       boot_timeout:
         description: "Seconds to wait for a desktop"
         default: "900"
+      no_tpm:
+        description: "Start WITHOUT a TPM, the way dockur-windows does"
+        type: boolean
+        default: false
 
 concurrency:
   group: launch-windows-${{ github.ref }}
@@ -103,8 +107,11 @@ jobs:
           command: |
             set -euo pipefail
             export GITHUB_TOKEN="${{ github.token }}"
+            NO_TPM=""
+            if [ "${{ inputs.no_tpm }}" = "true" ]; then NO_TPM="--no-tpm"; fi
             python3 lib/launch_windows.py \
               --tag "${{ inputs.tag }}" \
+              $NO_TPM \
               --bootstate out/windows11.qcow2.bootstate.tar.gz \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
               --artifacts out

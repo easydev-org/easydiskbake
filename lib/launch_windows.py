@@ -82,6 +82,9 @@ def main(argv: list[str]) -> int:
     p.add_argument("--artifacts", default="out")
     p.add_argument("--work", default=None)
     p.add_argument("--boot-timeout", type=int, default=900)
+    p.add_argument("--no-tpm", action="store_true",
+                   help="start without a TPM; dockur-windows does this and relies on "
+                        "the answer file's BypassTPMCheck instead")
     p.add_argument("--mem", type=int, default=6144)
     p.add_argument("--cpus", type=int, default=4)
     args = p.parse_args(argv)
@@ -163,7 +166,23 @@ def main(argv: list[str]) -> int:
                                   "/usr/share/OVMF/OVMF_VARS_4M.fd")
         shutil.copyfile(template, firmware_vars)
 
-    tpm = sshstage.start_swtpm(work)
+    # DOCKUR-WINDOWS DOES NOT GIVE WINDOWS A TPM AT ALL, and it installs and boots
+    # Windows 11. Its answer file bypasses the check in WinPE:
+    #
+    #     reg.exe add "HKLM\SYSTEM\Setup\LabConfig" /v BypassTPMCheck ...
+    #     reg.exe add "HKLM\SYSTEM\Setup\LabConfig" /v BypassSecureBootCheck ...
+    #
+    # Ours does the same, AND provides a TPM. That is the difference: with a TPM present
+    # Windows seals state against it, so the disk and the TPM become a pair that cannot
+    # be separated - and every way of getting the pair wrong shows up as the firmware
+    # failing to find a boot loader, or as CMD_INIT 0x9, rather than as anything about a
+    # TPM.
+    #
+    # --no-tpm starts the disk the way dockur starts one. If it boots, the TPM is the
+    # thing to remove rather than to keep repairing.
+    tpm = "" if args.no_tpm else sshstage.start_swtpm(work)
+    if args.no_tpm:
+        note("starting WITHOUT a TPM, the way dockur-windows does")
     shape = vm.Shape(
         cpus=args.cpus, mem_mb=args.mem, machine="q35",
         firmware_code=firmware_code, firmware_vars=firmware_vars,
