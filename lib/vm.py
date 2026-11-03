@@ -74,6 +74,20 @@ class Shape:
     firmware_vars: str = ""      # a WRITABLE copy per guest; boot state accumulates
     tpm_socket: str = ""         # swtpm chardev socket, or "" for no TPM
     vga: str = "std"             # "std" (default), "vmware", "none"
+    # A RESOLUTION, IN PIXELS, FOR THE GUEST'S PRIMARY SCREEN.
+    #
+    # Empty means -vga <vga>, which is what every guest had before this existed: a
+    # Bochs VGA adapter at whatever mode the firmware picks, 1280x800 on the OVMF
+    # image used here. Non-empty replaces that with -device VGA,xres=,yres=, because
+    # -vga and -device are exclusive and -vga has no size option.
+    #
+    # WHY IT MATTERS FOR A BAKE. Every coordinate in the drivers is a pixel position
+    # measured on a particular screen. macos/15/install.py already learned this: with
+    # vmware-svga's 1280x800 default its coordinates were off the edge of the screen
+    # for four runs. The Windows driver types rather than clicks, so a wrong size was
+    # not fatal there - but a launch-windows recording at 1280x800 is a picture of a
+    # desktop nobody will ever see.
+    resolution: tuple[int, int] | None = None
     # The CPU model, and "" means "-cpu host".
     #
     # macOS cannot use "host": its kernel reads the CPU's family and model and refuses
@@ -213,7 +227,11 @@ def build_args(work: str, extra: list[str] | None = None,
 
     # -vga and -device VGA are mutually exclusive; a caller wanting vgamem_mb
     # passes vga="none" and its own -device.
-    if shape.vga != "none":
+    if shape.resolution:
+        # -device VGA, not -vga std: only the device form takes xres/yres.
+        width, height = shape.resolution
+        args += ["-device", f"VGA,xres={width},yres={height}"]
+    elif shape.vga != "none":
         args += ["-vga", shape.vga]
 
     # Machine-level flags that are not a device and not a -global the caller can put in

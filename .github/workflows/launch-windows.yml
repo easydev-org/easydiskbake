@@ -44,6 +44,13 @@ on:
         description: "Provide a TPM 2.0 (off by default, like dockur-windows)"
         type: boolean
         default: false
+      resolution:
+        description: "Guest screen as WxH"
+        default: "1920x1080"
+      probe_shell:
+        description: "If the firmware drops to its shell, type into it to find out why"
+        type: boolean
+        default: true
 
 concurrency:
   group: launch-windows-${{ github.ref }}
@@ -109,11 +116,15 @@ jobs:
             export GITHUB_TOKEN="${{ github.token }}"
             USE_TPM=""
             if [ "${{ inputs.tpm }}" = "true" ]; then USE_TPM="--tpm"; fi
+            PROBE=""
+            if [ "${{ inputs.probe_shell }}" = "true" ]; then PROBE="--probe-shell"; fi
             python3 lib/launch_windows.py \
               --tag "${{ inputs.tag }}" \
               $USE_TPM \
               --bootstate out/windows11.qcow2.bootstate.tar.gz \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --resolution "${{ inputs.resolution || '1920x1080' }}" \
+              $PROBE \
               --artifacts out
 
       # THE FRAME IS THE RESULT. A launch that reports "no desktop" and shows nothing has
@@ -125,9 +136,11 @@ jobs:
         with:
           name: windows-launch-screenshots
           path: |
+            out/install.mp4
             out/screen.png
             out/launch.txt
             out/launch-work/console.log
+            out/launch-work/swtpm.log
             out/launch-work/swtpm.log
           if-no-files-found: warn
           retention-days: 14

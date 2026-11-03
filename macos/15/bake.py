@@ -286,38 +286,64 @@ class Baker:
         result: dict[str, object] = {}
 
         def drive() -> None:
-            # STDERR IS KEPT, BECAUSE THE EXIT CODE DOES NOT SAY WHY.
+            # THE DRIVER'S OUTPUT IS FORWARDED AS IT ARRIVES, NOT COLLECTED.
             #
-            # `check=True` on its own records "exit status 1" and nothing else, so a
-            # traceback in the driver - a NameError, a QMP error, a missing import - is
-            # thrown away and the report says only that the script failed. Run 41485902304
-            # was diagnosed from the exception's own text; run 41503359709 was not,
-            # because by then it had been swallowed.
-            # WHAT LANDED IN result["error"] BEFORE THIS
+            # capture_output=True waits for the process to exit before handing anything
+            # back, so a forty-minute sequence produced a log containing one line:
             #
-            #     the installer driver failed: exit status 1
+            #     === installation: install.py ===
             #
-            # and the driver had been fourteen seconds past "the sidebar is drawn".
+            # and nothing else until it finished. Run 41564236483 sat like that for ten
+            # minutes and looked hung; whether it was, nobody could tell.
+            #
+            # Popen with a reader thread keeps the diagnosis and loses the silence. Every
+            # line is prefixed [install], so it is distinguishable from the baker's own.
+            # NOT a new local: the outer result is what the caller reads.
+            result["stdout"] = []
+            result["stderr"] = []
             try:
-                completed = subprocess.run(
-                    [sys.executable, script,
+                proc = subprocess.Popen(
+                    [sys.executable, "-u", script,
                      "--qmp", guest.paths.drive, "--frames", self.frames,
                      # The disk is what tells "copying" from "hung" while the screen is
                      # black. Passed here because only the baker knows the path.
                      "--disk", self.disk],
-                    check=True,
-                    capture_output=True, text=True,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, bufsize=1,
                 )
-                result["ok"] = True
-                result["stdout"] = completed.stdout
-            except subprocess.CalledProcessError as exc:
-                result["ok"] = False
-                result["error"] = f"exit status {exc.returncode}"
-                result["stdout"] = exc.stdout
-                result["stderr"] = exc.stderr
             except OSError as exc:
                 result["ok"] = False
                 result["error"] = str(exc)
+                return
+
+            def pump(stream, key: str, prefix: str) -> None:
+                try:
+                    for line in stream:
+                        line = line.rstrip("\n")
+                        if not line:
+                            continue
+                        log(f"{prefix} [install] {line}")
+                        result[key].append(line)  # type: ignore[union-attr]
+                except (OSError, ValueError):
+                    pass
+
+            readers = [
+                threading.Thread(target=pump, args=(proc.stdout, "stdout", " "),
+                                 daemon=True),
+                threading.Thread(target=pump, args=(proc.stderr, "stderr", "!"),
+                                 daemon=True),
+            ]
+            for reader in readers:
+                reader.start()
+            code = proc.wait()
+            for reader in readers:
+                reader.join(timeout=10)
+
+            if code != 0:
+                result["ok"] = False
+                result["error"] = f"exit status {code}"
+            else:
+                result["ok"] = True
 
         thread = threading.Thread(target=drive, daemon=True)
         thread.start()

@@ -82,6 +82,14 @@ def main(argv: list[str]) -> int:
     p.add_argument("--artifacts", default="out")
     p.add_argument("--work", default=None)
     p.add_argument("--boot-timeout", type=int, default=900)
+    p.add_argument("--probe-shell", action="store_true",
+                   help="when the firmware drops into its own shell, type into it: list "
+                        "the EFI partition and try the loader by hand. Answers whether "
+                        "the file is unreadable or the boot entry is wrong")
+    p.add_argument("--resolution", default="1920x1080",
+                   help="the guest screen, as WxH. The recording is what this launch "
+                        "produces, so it is taken at the size a desktop is actually "
+                        "looked at - not at OVMF's 1280x800 default")
     p.add_argument("--tpm", action="store_true",
                    help="provide a TPM 2.0; off by default, which is how dockur-windows "
                         "runs Windows 11 - its answer file bypasses the check, and ours "
@@ -110,6 +118,7 @@ def main(argv: list[str]) -> int:
         with open(report, "w", encoding="utf-8") as fh:
             fh.write("\n".join(lines) + "\n")
         keep_last_frame(shots, os.path.join(args.artifacts, "screen.png"), note)
+        encode_recording(shots, os.path.join(args.artifacts, "install.mp4"), note)
         return code
 
     # --- 1. the disk -----------------------------------------------------------
@@ -189,6 +198,7 @@ def main(argv: list[str]) -> int:
         cpus=args.cpus, mem_mb=args.mem, machine="q35",
         firmware_code=firmware_code, firmware_vars=firmware_vars,
         tpm_socket=tpm, vga="std", ssh_port=2222,
+        resolution=parse_resolution(args.resolution),
     )
     console = os.path.join(work, "console.log")
     guest = vm.Guest(work, extra=[], shape=shape, stdout=console).start()
@@ -198,7 +208,8 @@ def main(argv: list[str]) -> int:
     seen: list[str] = []
     started = time.time()
     try:
-        arrived = sample_until(guest, shots, args.boot_timeout, note, seen)
+        arrived = sample_until(guest, shots, args.boot_timeout, note, seen,
+                               probe_shell=args.probe_shell)
     finally:
         guest.stop(acpi_first=arrived)
         sshstage.stop_swtpm(work)
@@ -218,11 +229,85 @@ def main(argv: list[str]) -> int:
         note("OK: the published disk reached its desktop")
         return finish(0)
 
+    if probe_shell:
+        probe_firmware_shell(guest, shots, note)
+
     note("the guest did not reach a desktop; the frames say where it stopped")
     return finish(1)
 
 
-def sample_until(guest: "vm.Guest", shots: str, timeout: int, note, seen: list) -> bool:
+def parse_resolution(text: str) -> tuple[int, int] | None:
+    """WxH -> (w, h), or None for the firmware default.
+
+    A malformed value is fatal rather than ignored: it would silently fall back to
+    1280x800 and produce a recording at a size nobody asked for, which is the thing
+    this option exists to prevent.
+    """
+    if not text:
+        return None
+    try:
+        width, height = (int(v) for v in text.lower().split("x"))
+    except ValueError:
+        raise SystemExit(f"--resolution {text!r} is not WxH, e.g. 1920x1080")
+    if width < 640 or height < 480:
+        raise SystemExit(f"--resolution {text!r} is too small for a desktop")
+    return (width, height)
+
+
+def probe_firmware_shell(guest: "vm.Guest", shots: str, note) -> None:
+    """Type into the UEFI shell and report what it says.
+
+    WHY THIS EXISTS. Run 41562919683 had every fact the disk could offer:
+
+        the ESP at 2048..534527 LBA, GUID 34a2eca8-e45b-4e9e-9915-23053919245b
+        mtools reads \\EFI\\Microsoft\\Boot\\bootmgfw.efi inside it
+        the firmware's own Boot000A names that same GUID and range
+
+    and the firmware still said "Not Found". Two explanations fit and they need
+    different fixes: the file is not readable through the firmware's file protocol, or
+    the boot entry's path is. Asking the shell separates them - `dir` uses the same
+    protocol the boot entry uses, and running the loader by hand proves whether it can
+    start at all.
+
+    Typing is the ssh stage's Keyboard, reused: it already waits for the QMP socket and
+    settles after every key.
+    """
+    import time as _time
+
+    sys.path.insert(0, os.path.join(REPO, "windows", "11"))
+    import ssh as sshstage  # noqa: E402
+
+    try:
+        kb = sshstage.Keyboard(guest.paths.drive, shots)
+    except (SystemExit, OSError) as exc:
+        note(f"  could not attach a keyboard: {exc}")
+        return
+
+    note("  probing the firmware shell")
+    commands = [
+        ("map -r", "list the mapped devices"),
+        ("fs0:", "select the first filesystem"),
+        (r"dir \EFI\Microsoft\Boot", "the directory the boot entry names"),
+        (r"\EFI\Microsoft\Boot\bootmgfw.efi", "run it by hand"),
+    ]
+    try:
+        for text, why in commands:
+            note(f"    > {text}   ({why})")
+            sshstage.type_text(kb, text)
+            kb.key("ret", settle=6.0)
+            shot = sshstage.take_shot(guest, shots, label="probe")
+            if shot:
+                reading = read_screen(shot)
+                if reading:
+                    for line in reading.splitlines()[:10]:
+                        note(f"      {line}")
+            _time.sleep(2)
+    finally:
+        kb.close()
+
+
+def sample_until(guest: "vm.Guest", shots: str, timeout: int, note, seen: list,
+                 probe_shell: bool = False) -> bool:
     """Photograph the screen until a desktop appears or the timeout runs out.
 
     Returns True when the desktop test passes. Every kept frame's path is appended to
@@ -278,6 +363,27 @@ def read_screen(path: str) -> str:
     except (OSError, subprocess.SubprocessError):
         return ""
     return "\n".join(line for line in (result.stdout or "").splitlines() if line.strip())
+
+
+def encode_recording(shots: str, dest: str, note) -> None:
+    """The whole sampled sequence as an mp4. Never fatal.
+
+    THE LAUNCH SAMPLES EVERY TWELVE SECONDS AND WAS THROWING THAT AWAY. Run 41562919683
+    captured 74 frames over 905s and uploaded one of them - so a firmware shell that
+    appeared at 12s and a black screen that appeared at 265s were indistinguishable in
+    the artifact, and the only way to see the difference was to run it again.
+
+    The recording is what explains a failure here. lib/vm.record_many() is the same
+    encoder the bakes use, so the file plays like theirs.
+    """
+    try:
+        import vm
+        if vm.record_many(dest, shots, fps=int(os.environ.get("RECORD_FPS", "1"))):
+            note(f"recording: {dest} ({os.path.getsize(dest) >> 20} MiB)")
+        else:
+            note("recording: nothing to encode")
+    except Exception as exc:  # noqa: BLE001 - a recording is not worth a failure
+        note(f"could not encode the recording: {exc}")
 
 
 def keep_last_frame(shots: str, dest: str, note) -> None:
