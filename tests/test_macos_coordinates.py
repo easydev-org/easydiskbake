@@ -637,3 +637,48 @@ class ReinstallMustOpenTheWindow(unittest.TestCase):
         end = body.index("def main(")
         panes = body[start:end]
         self.assertNotIn('wait(25, "the installer window opens")', panes)
+
+
+class TheEraseButtonIsTheGlyph(unittest.TestCase):
+    """Erase is a GLYPH at (1255, 278), and the label sits below it.
+
+    SIX RUNS, SIX VALUES, NO SHEET:
+
+        41506477596 @ (1290, 306)
+        41511491789 @ (1290, 296)
+        41510118982 @ (1290, 296)   never reached it
+        41514056068 @ (1290, 311)
+        41564236483 @ (1290, 314)
+        41567438310 @ (1290, 309)
+
+    Every one of them was a guess, and every one was wrong in two ways at once.
+
+    From the recording of run 41565758898, frame at 1:04, read with tesseract's TSV
+    output and a pixel scan of the toolbar:
+
+        y=270..283   the GLYPH           x 1247..1263
+        y=293..302   the "Erase" LABEL   x 1243..1271
+
+    So the label is BELOW the glyph - the opposite of the arrangement an older comment
+    in install.py described - and the glyph's centre is (1255, 278).
+
+    X WAS OFF BY 35 AS WELL. All six attempts used x=1290, which is in the middle of the
+    toolbar rather than on this button.
+    """
+
+    def test_the_button_is_the_glyph_not_the_label(self):
+        self.assertEqual(install.ERASE_BUTTON, (1255, 278))
+
+    def test_the_label_sits_below_the_button(self):
+        # The label's top edge, measured by tesseract, is 293. A y below that is on the
+        # label or under it, not on the control that opens the sheet.
+        self.assertLess(install.ERASE_BUTTON[1], 293)
+
+    def test_the_source_records_where_the_numbers_came_from(self):
+        with open(os.path.join(MACOS15, "install.py"), encoding="utf-8") as fh:
+            source = fh.read()
+        start = source.index("ERASE_BUTTON = (1255, 278)")
+        note = source[max(0, start - 1400):start]
+        self.assertIn("tesseract", note)
+        self.assertIn("1247..1263", note)
+        self.assertIn("293..302", note)
