@@ -468,3 +468,77 @@ class QmpSocketIsNotInstant(unittest.TestCase):
         with open(os.path.join(WINDOWS11, "ssh.py"), encoding="utf-8") as fh:
             source = fh.read()
         self.assertIn("no QMP socket at", source)
+
+
+class NoTpmByDefault(unittest.TestCase):
+    """Every Windows stage starts without a TPM, the way dockur-windows does.
+
+    WHY THIS IS THE DEFAULT NOW
+
+    dockur/windows installs and runs Windows 11 with no TPM at all. Its answer file
+    bypasses the check in WinPE, and its own install.sh says the secure/TPM path exists
+    only for an install that was ABORTED - that one has no answer file to bypass with:
+
+        # Aborted Win11 installs boot without any answer file present,
+        # so enable Secure Boot and TPM to satisfy its hardware checks.
+
+    This repository's answer file carries the same three bypass keys. Providing a TPM on
+    top of that makes the disk and its state an inseparable pair, and five runs went into
+    two failure modes that never mentioned a TPM:
+
+        CMD_INIT 0x9                            a TPM that will not initialise
+        Boot000A ... bootmgfw.efi: Not Found    a boot entry addressing a partition
+                                                GUID the restored state remembers and
+                                                the disk does not have
+
+    So the default is no TPM, and --tpm is for the case that wants the pairing on purpose.
+    """
+
+    STAGES = ("bake.py", "ssh.py", "devtools.py")
+    LAUNCHER = os.path.join(HERE, "lib", "launch_windows.py")
+
+    def read(self, name):
+        with open(os.path.join(HERE, "windows", "11", name), encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_each_stage_takes_an_opt_in_tpm_flag(self):
+        for name in self.STAGES:
+            source = self.read(name)
+            self.assertIn('add_argument("--tpm", action="store_true"', source, name)
+
+    def test_each_stage_only_starts_one_when_asked(self):
+        """bake.py asks self.args.tpm because it is a class; the others ask args.tpm.
+
+        bake.py early-returns an empty socket, the others use a conditional expression
+        around start_swtpm(). Both mean the same thing: no flag, no TPM.
+        """
+        for name in self.STAGES:
+            source = self.read(name)
+            if name == "bake.py":
+                # A class method: it returns an empty socket instead of starting one.
+                self.assertIn("if not self.args.tpm", source)
+                self.assertIn('return ""', source)
+            else:
+                # A conditional expression around start_swtpm().
+                self.assertIn("if args.tpm else", source, name)
+
+    def test_the_launcher_defaults_to_no_tpm(self):
+        with open(self.LAUNCHER, encoding="utf-8") as fh:
+            source = fh.read()
+        self.assertIn("if args.tpm else", source)
+        self.assertNotIn("--no-tpm", source)
+
+    def test_the_answer_file_keeps_the_bypasses(self):
+        """Removing them would make a TPM mandatory, which is the opposite change."""
+        path = os.path.join(HERE, "windows", "11", "answer", "Autounattend.xml")
+        with open(path, encoding="utf-8") as fh:
+            source = fh.read()
+        for key in ("BypassTPMCheck", "BypassSecureBootCheck", "BypassRAMCheck"):
+            self.assertIn(key, source, key)
+
+    def test_the_workflow_does_not_ask_for_one(self):
+        path = os.path.join(HERE, ".github", "workflows", "bake-windows.yml")
+        with open(path, encoding="utf-8") as fh:
+            source = fh.read()
+        self.assertNotIn("--tpm", source,
+                         "the bake workflow must not opt into a TPM")

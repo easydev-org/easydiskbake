@@ -159,8 +159,10 @@
            These run in windowsPE, before the edition is chosen, which is why they work
            here and not in a later pass. -->
       <RunSynchronous>
-        <!-- TPM check. A real TPM 2.0 is attached, so this is belt and braces; it
-             costs nothing and removes a class of failure. -->
+        <!-- TPM check. NO TPM IS ATTACHED BY DEFAULT and this is what makes that work.
+             dockur/windows installs and runs Windows 11 the same way; its own install.sh
+             says the secure/TPM path exists only for an install that was aborted, since
+             that one has no answer file to bypass with. -->
         <RunSynchronousCommand wcm:action="add">
           <Order>1</Order>
           <Path>reg.exe add "HKLM\SYSTEM\Setup\LabConfig" /v BypassTPMCheck /t REG_DWORD /d 1 /f</Path>

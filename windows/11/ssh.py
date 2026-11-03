@@ -337,6 +337,9 @@ def main(argv: list[str]) -> int:
     p.add_argument("--mem", type=int, default=6144)
     p.add_argument("--cpus", type=int, default=4)
     p.add_argument("--boot-timeout", type=int, default=900)
+    p.add_argument("--tpm", action="store_true",
+                   help="provide a TPM 2.0; off by default, because the answer file "
+                        "bypasses the check and the disk boots without one")
     p.add_argument("--bootstate", default=None,
                    help="the .bootstate.tar.gz published with the disk; "
                         "without it the firmware has no boot entry")
@@ -423,7 +426,10 @@ def main(argv: list[str]) -> int:
         )
     log(f"bootstate restored into {work}")
 
-    tpm = start_swtpm(work)
+    # NO TPM BY DEFAULT - see the note in bake.py's swtpm(). A published Windows disk
+    # from this repository is installed with the answer file's BypassTPMCheck keys, so it
+    # boots without one, and a TPM makes the disk and its state an inseparable pair.
+    tpm = start_swtpm(work) if args.tpm else ""
 
     shape = vm.Shape(
         cpus=args.cpus, mem_mb=args.mem, machine="q35",
@@ -462,7 +468,8 @@ def main(argv: list[str]) -> int:
     finally:
         guest.stop(acpi_first=ok)
         kb.close()
-        stop_swtpm(work)
+        if args.tpm:
+            stop_swtpm(work)
         if ok:
             log(f"exporting {args.out}")
             subprocess.run(["qemu-img", "convert", "-O", "qcow2",

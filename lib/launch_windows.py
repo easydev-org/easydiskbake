@@ -82,9 +82,10 @@ def main(argv: list[str]) -> int:
     p.add_argument("--artifacts", default="out")
     p.add_argument("--work", default=None)
     p.add_argument("--boot-timeout", type=int, default=900)
-    p.add_argument("--no-tpm", action="store_true",
-                   help="start without a TPM; dockur-windows does this and relies on "
-                        "the answer file's BypassTPMCheck instead")
+    p.add_argument("--tpm", action="store_true",
+                   help="provide a TPM 2.0; off by default, which is how dockur-windows "
+                        "runs Windows 11 - its answer file bypasses the check, and ours "
+                        "does too")
     p.add_argument("--mem", type=int, default=6144)
     p.add_argument("--cpus", type=int, default=4)
     args = p.parse_args(argv)
@@ -178,11 +179,12 @@ def main(argv: list[str]) -> int:
     # failing to find a boot loader, or as CMD_INIT 0x9, rather than as anything about a
     # TPM.
     #
-    # --no-tpm starts the disk the way dockur starts one. If it boots, the TPM is the
-    # thing to remove rather than to keep repairing.
-    tpm = "" if args.no_tpm else sshstage.start_swtpm(work)
-    if args.no_tpm:
-        note("starting WITHOUT a TPM, the way dockur-windows does")
+    # THE DEFAULT IS NO TPM, the way dockur-windows runs Windows 11. --tpm is for the
+    # case that wants the pairing on purpose, and then the state has to travel with the
+    # disk and be restored before every boot - see lib/bootstate.py.
+    tpm = sshstage.start_swtpm(work) if args.tpm else ""
+    note("starting WITHOUT a TPM, the way dockur-windows does"
+         if not args.tpm else "starting WITH a TPM and the state from the archive")
     shape = vm.Shape(
         cpus=args.cpus, mem_mb=args.mem, machine="q35",
         firmware_code=firmware_code, firmware_vars=firmware_vars,

@@ -117,6 +117,10 @@ def parse(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--rdp-port", type=int, default=3389,
                    help="host port forwarded to the guest's 3389; the arrival check")
     p.add_argument("--answer", default=ANSWER)
+    p.add_argument("--tpm", action="store_true",
+                   help="provide a TPM 2.0. Off by default, the way dockur/windows does "
+                        "it: the answer file bypasses the check, and a TPM turns the "
+                        "disk into half of a pair that cannot be separated")
     p.add_argument("--iso", default="", help="use an ISO already on disk instead of downloading")
     p.add_argument("--keep-work", action="store_true")
     return p.parse_args(argv)
@@ -296,25 +300,50 @@ class Baker:
         return code, vars_copy
 
     def swtpm(self) -> str:
-        """Start swtpm and return its chardev socket.
+        """Start swtpm and return its chardev socket - unless the bake has no TPM.
 
-        It is a separate process because it owns state that has to outlive one
-        boot; starting it inside vm.py would make stop() the only thing that ever
-        cleaned it up, and a bake that fails leaves the state behind for the next
-        one to inherit.
+        NO TPM BY DEFAULT, THE WAY dockur/windows DOES IT.
+        -------------------------------------------------------------------
 
-        A missing swtpm is fatal. Windows 11 checks for a TPM 2.0 during windowsPE
-        and stops with "This PC can't run Windows 11"; the answer file's bypass keys
-        are deliberately not set, because using them would hide exactly this kind of
-        misconfiguration and install a system nobody can update.
+        dockur/windows installs and runs Windows 11 without a TPM. Its answer file
+        bypasses the check in WinPE:
+
+            reg.exe add "HKLM\\SYSTEM\\Setup\\LabConfig" /v BypassTPMCheck ...
+            reg.exe add "HKLM\\SYSTEM\\Setup\\LabConfig" /v BypassSecureBootCheck ...
+            reg.exe add "HKLM\\SYSTEM\\Setup\\LabConfig" /v BypassRAMCheck ...
+
+        and its own install.sh says the secure/TPM path exists only for an install that
+        was ABORTED, because that one has no answer file to bypass with:
+
+            # Aborted Win11 installs boot without any answer file present,
+            # so enable Secure Boot and TPM to satisfy its hardware checks.
+
+        Why this bake now does the same. Windows seals state against whatever TPM it
+        finds. A disk and its TPM then become a pair that cannot be separated, and every
+        way of getting the pair wrong presents somewhere else entirely:
+
+            CMD_INIT 0x9                      a TPM that will not initialise
+            Boot000A ... bootmgfw.efi: Not Found   a boot entry addressing a partition
+                                                   GUID that the restored state remembers
+                                                   and the disk does not have
+
+        Five runs went into those two messages. Neither says "TPM", and the disk boots
+        without one - the answer file already removes the requirement.
+
+        WITH a TPM stays available for the case that needs it: the state has to be
+        published beside the disk and restored before every boot, which bootstate.py
+        does, and a bake that sets this is asking for that pairing on purpose.
         """
+        if not self.args.tpm:
+            return ""
         state = os.path.join(self.work, "tpm")
         os.makedirs(state, exist_ok=True)
         sock = os.path.join(state, "swtpm.sock")
 
         if not __import__("shutil").which("swtpm"):
             raise SystemExit(
-                "swtpm is not installed; Windows 11 will not install without a TPM 2.0."
+                "swtpm is not installed and --tpm was asked for; Windows 11 installs "
+                "without one because the answer file carries the BypassTPMCheck keys."
             )
 
         subprocess.run(

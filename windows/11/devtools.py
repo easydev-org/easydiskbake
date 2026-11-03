@@ -326,6 +326,9 @@ def main(argv: list[str]) -> int:
                    help="MB; the BuildTools installer is what needs this")
     p.add_argument("--cpus", type=int, default=4)
     p.add_argument("--boot-timeout", type=int, default=900)
+    p.add_argument("--tpm", action="store_true",
+                   help="provide a TPM 2.0; off by default, because the answer file "
+                        "bypasses the check and the disk boots without one")
     p.add_argument("--bootstate", default=None,
                    help="the .bootstate.tar.gz published with the disk; "
                         "without it the firmware has no boot entry")
@@ -416,7 +419,8 @@ def main(argv: list[str]) -> int:
         )
     log(f"bootstate restored into {work}")
 
-    tpm = start_swtpm(work)
+    # NO TPM BY DEFAULT, the same as bake.py and ssh.py.
+    tpm = start_swtpm(work) if args.tpm else ""
 
     shape = vm.Shape(
         cpus=args.cpus, mem_mb=args.mem, machine="q35",
@@ -465,7 +469,8 @@ def main(argv: list[str]) -> int:
         return 0
     finally:
         guest.stop(acpi_first=ok)
-        stop_swtpm(work)
+        if args.tpm:
+            stop_swtpm(work)
         if ok:
             log(f"exporting {args.out}")
             subprocess.run(["qemu-img", "convert", "-O", "qcow2", "-c",
