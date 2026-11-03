@@ -975,7 +975,36 @@ def installer_panes(d: Recovery, seconds: int = 4 * 3600) -> bool:
     d.wait(10, "the welcome pane has to be on screen")
 
     d.click(INSTALLER_CONTINUE, "welcome Continue", settle=5)
-    d.wait(10, "the licence pane has to be on screen")
+
+    # SIXTY SECONDS, NOT TEN, AND RUN 41626151499 IS THE MEASUREMENT.
+    #
+    # Ten seconds was not merely short - it was short by a factor that moved every
+    # click one pane out of step, and the run still looked like it was working:
+    #
+    #     11:45:12  #13 click (960, 712) welcome Continue
+    #     11:45:28  #14 click (1005, 713) Agree      the welcome pane was STILL THERE
+    #     11:45:34  f97  the licence pane appears     six seconds after the Agree
+    #     11:45:53  #15 click (1060, 530) sheet Agree on licence text - no sheet yet
+    #     11:46:09  #16 click (850, 550) disk card    on licence text
+    #     11:46:14  #17 click (1005, 712) Continue    this landed on Agree and
+    #     11:46:19  f106 the licence sheet finally appears
+    #     11:48:35  the disk did not grow in 120s (still 157 MiB)
+    #
+    # So the sheet was raised by #17 and nothing clicked it: #14 had already spent the
+    # one click meant for Agree on the welcome pane, at (1005, 713) - fifteen pixels to
+    # the right of that pane's Continue - and the two clicks after it fell on licence
+    # text that reacts to nothing. The mouse never moved between #14 and #17 because
+    # both land within a pixel of the same point. What looked like "the sheet's Agree
+    # is dead" was this sequence being one step behind from #14 onward.
+    #
+    # The measurement is the gap itself: Continue at 11:45:12, licence drawn by
+    # 11:45:34. Twenty-two seconds, and the run that worked waited 35 (04c1123's log,
+    # "the screen settled after 35s - the licence pane has to be on screen"). Sixty is
+    # that with room, and it is a fixed wait because every dynamic wait in this file has
+    # been tried here: wait_for_change never settles on a macOS screen (the wallpaper
+    # and the clock keep the fingerprint moving) and wait_until_drawn returns while the
+    # OLD pane is still up, which is exactly the pane #14 must not click.
+    d.wait(60, "the licence pane has to be on screen")
 
     log("licence: Agree")
     d.click(AGREE, "Agree", settle=5)
