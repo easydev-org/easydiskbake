@@ -412,7 +412,15 @@ ANDROID = {
                "x86_64-35_r02.zip",
         "sha1": "2d857d170c0d1b827149565da34b3383e5306f7f",
         "sha256": None,
-        "size": 782_336_000,
+        # 782_336_000 WAS WRONG BY 66 KiB and made every download fail:
+        #
+        #     attempt 1/5 ended short: 746 MiB of 746 MiB
+        #     discarding an oversized part (782404023 > 782336000)
+        #
+        # Five attempts, five full downloads of 746 MiB, thrown away each time. The
+        # right number is in Google's own sys-img2-3.xml beside the checksum, which had
+        # been copied correctly - only the size was stale.
+        "size": 782_404_023,
         # api-level, not marketing version: 35 is Android 15.
         "api": 35,
         "abi": "x86_64",

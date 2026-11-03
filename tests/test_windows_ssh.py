@@ -542,3 +542,55 @@ class NoTpmByDefault(unittest.TestCase):
             source = fh.read()
         self.assertNotIn("--tpm", source,
                          "the bake workflow must not opt into a TPM")
+
+
+class TheDiskIsAttached(unittest.TestCase):
+    """Every stage that starts a published Windows disk must attach it to qemu.
+
+    THE SIX-RUN BUG, AND WHY IT LOOKED LIKE SOMETHING ELSE
+
+    ssh.py, devtools.py and launch_windows.py all did this:
+
+        shape = vm.Shape(..., vga="std", ssh_port=2222)
+        guest = vm.Guest(work, extra=[], shape=shape, ...).start()
+
+    `extra` is where the drives go - bake.py passes its three CDs and the virtio disk
+    through it. These three stages passed nothing, so every run started a machine with
+    no hard disk at all, having just copied and restored one.
+
+    Everything downstream then described an empty machine, and each symptom was read as
+    a separate problem:
+
+        BdsDxe: failed to load Boot000A "Windows Boot Manager" ... bootmgfw.efi: Not
+        Found
+        map -r  ->  BLK0 only, no FS0:      the firmware's own variable store
+
+    Six runs, a TPM that was removed for no reason, a bootstate archive rebuilt twice,
+    and a probe added to interrogate a firmware shell - all because the disk was not on
+    the bus.
+    """
+
+    def read(self, relative):
+        with open(os.path.join(HERE, relative), encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_each_stage_passes_a_drive(self):
+        for name in ("windows/11/ssh.py", "windows/11/devtools.py",
+                     "lib/launch_windows.py"):
+            source = self.read(name)
+            # The comments quote the old `extra=[]` to explain it, so look for the call
+            # itself rather than the string.
+            self.assertNotIn("vm.Guest(work, extra=[]", source,
+                             f"{name} starts a machine with no disk")
+            self.assertIn("-drive", source, name)
+            self.assertIn("if=virtio", source, name)
+
+    def test_the_drive_names_the_disk_it_copied(self):
+        """The drive must be the working copy, not the published one."""
+        for name in ("windows/11/ssh.py", "windows/11/devtools.py",
+                     "lib/launch_windows.py"):
+            source = self.read(name)
+            start = source.index("-drive")
+            nearby = source[max(0, start - 300):start + 200]
+            self.assertIn("disk", nearby,
+                          f"{name}: the -drive does not mention the disk")

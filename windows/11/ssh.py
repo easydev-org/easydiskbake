@@ -437,7 +437,20 @@ def main(argv: list[str]) -> int:
         tpm_socket=tpm, vga="std", ssh_port=2222,
     )
     console = os.path.join(work, "console.log")
-    guest = vm.Guest(work, extra=[], shape=shape, stdout=console).start()
+    # THE DISK HAS TO BE ATTACHED, AND FOR SIX RUNS IT WAS NOT.
+    #
+    # This stage copies the published disk, restores its firmware state, and then started
+    # a machine with `extra=[]` - no drive at all. Every symptom that followed was read
+    # as something else:
+    #
+    #     Boot000A "Windows Boot Manager" ... bootmgfw.efi: Not Found
+    #     map -r  ->  BLK0 only, no FS0:
+    #
+    # The firmware could not find a boot loader because there was no Windows disk to
+    # find it on: BLK0 was the firmware's own variable store. bake.py passes its drives
+    # through `extra`, and this stage never did.
+    drives = ["-drive", f"file={disk},if=virtio,format=qcow2"]
+    guest = vm.Guest(work, extra=drives, shape=shape, stdout=console).start()
 
     kb = Keyboard(guest.paths.drive, shots)
     ok = False

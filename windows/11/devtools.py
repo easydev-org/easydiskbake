@@ -427,7 +427,11 @@ def main(argv: list[str]) -> int:
         firmware_code=firmware_code, firmware_vars=firmware_vars,
         tpm_socket=tpm, vga="std", ssh_port=SSH_PORT,
     )
-    guest = vm.Guest(work, extra=[], shape=shape,
+    # THE DISK HAS TO BE ATTACHED - see the longer note in ssh.py. This stage had the
+    # same `extra=[]`, so it started a machine with no drive and every later symptom
+    # (bootmgfw.efi Not Found, no FS0 in the firmware map) described an empty machine.
+    drives = ["-drive", f"file={disk},if=virtio,format=qcow2"]
+    guest = vm.Guest(work, extra=drives, shape=shape,
                      stdout=os.path.join(work, "console.log")).start()
 
     ok = False
