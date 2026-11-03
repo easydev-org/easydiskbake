@@ -87,6 +87,78 @@ def ocr_text(ppm: str) -> str:
     )
 
 
+def ocr_text_cropped(ppm: str, box: tuple[int, int, int, int],
+                     scale: int = 3) -> str:
+    """OCR one rectangle of a frame, enlarged. Same contract as ocr_text().
+
+    WHY A CROP IS NECESSARY. Reading a whole 1920x1080 screendump gives the large labels
+    and loses the small ones: Disk Utility's detail pane prints "Capacity: 268.4 MB" at
+    about ten pixels tall, and tesseract's page segmentation treats it as part of the
+    surrounding furniture. Enlarging the pane and reading only it makes the numbers
+    legible, which is the difference between choosing the right disk and erasing the
+    wrong one.
+
+    NEEDS Pillow. It is in the bake image (lib/lastframe.py already imports it for the
+    PPM-to-PNG conversion), and a missing import here returns "" rather than raising -
+    this is diagnostic reading, not the thing that decides whether a run continues.
+    """
+    if not ppm or not os.path.isfile(ppm):
+        return ""
+    if not shutil.which("tesseract"):
+        log("tesseract is not installed, so this cannot be read")
+        return ""
+    try:
+        from PIL import Image
+    except ImportError:
+        log("Pillow is not installed, so a crop cannot be taken")
+        return ""
+
+    try:
+        with Image.open(ppm) as image:
+            width, height = image.size
+            left, top, right, bottom = box
+            # Clamp rather than refuse: a caller passing a rect for a larger screen than
+            # the guest actually has should get the part that exists, not nothing.
+            left = max(0, min(left, width))
+            right = max(0, min(right, width))
+            top = max(0, min(top, height))
+            bottom = max(0, min(bottom, height))
+            if right <= left or bottom <= top:
+                return ""
+            crop = image.crop((left, top, right, bottom))
+            crop = crop.resize((crop.width * scale, crop.height * scale), Image.LANCZOS)
+            # THE CROP GOES TO A FILE, because tesseract reads images from paths - it does
+            # not decode a stream of bytes on stdin or it would need the format spelled
+            # out. Temporary and removed immediately; the caller's frame is untouched.
+            import tempfile
+            handle, temp = tempfile.mkstemp(suffix=".png")
+            os.close(handle)
+            try:
+                crop.save(temp)
+                # PSM 6 IS "ASSUME A SINGLE UNIFORM BLOCK OF TEXT", which is what a detail
+                # pane is. PSM 3 (used for whole pages) split this pane into columns and
+                # joined them in the wrong order.
+                result = subprocess.run(
+                    ["tesseract", temp, "stdout", "--psm", "6"],
+                    capture_output=True, text=True,
+                )
+            finally:
+                try:
+                    os.unlink(temp)
+                except OSError:
+                    pass
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        log(f"the cropped read failed: {exc}")
+        return ""
+
+    text = result.stdout or ""
+    return " ".join(
+        " ".join(line.split()).lower()
+        for line in text.splitlines()
+        if line.strip()
+    )
+
+
 def normalise(text: str) -> str:
     """Lower case, punctuation to spaces, runs of spaces collapsed.
 

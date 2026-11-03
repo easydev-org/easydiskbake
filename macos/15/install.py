@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 import time
@@ -421,6 +422,102 @@ class Recovery:
                 return fh.read(width * height * 3) or None
         except (OSError, ValueError):
             return None
+
+    def screenshot(self, name: str = "ocr") -> str | None:
+        """A screendump saved as a PPM, for OCR to read. The path, or None.
+
+        DIFFERENT FROM capture() ON PURPOSE. capture() reads pixels for brightness and
+        fingerprints; this hands a file to tesseract, which needs a path. Both go through
+        one screendump and nothing is interpreted here.
+        """
+        if not self.frames:
+            return None
+        path = os.path.join(self.frames, f"{name}.ppm")
+        try:
+            self.q.execute("screendump", filename=path)
+        except (OSError, RuntimeError) as exc:
+            log(f"screendump failed for {name}: {exc}")
+            return None
+        return path if os.path.exists(path) else None
+
+    def erase_sheet_is_open(self) -> bool:
+        """Is the erase confirmation sheet on screen?
+
+        THE SHEET IS THE PROOF THAT THE CLICK LANDED, and its words are unique to it: it
+        asks for a Name and shows Format and Scheme pickers. The licence pane, the
+        destination pane and Disk Utility itself show none of those together.
+
+        Reading it means a click that did nothing can be retried deliberately instead of
+        being followed by a backspace and a typed name into a field that is not there.
+        """
+        path = self.screenshot("probe-sheet")
+        if not path:
+            return False
+        text = assistant.ocr_text(path)
+        if not text:
+            return False
+        # "scheme" and "format" are the two picker labels; either alone is enough, since
+        # Disk Utility's main window has neither on this screen.
+        return "scheme" in text or "guid partition map" in text
+
+    def selected_disk_gb(self) -> float | None:
+        """The capacity Disk Utility is showing for the selected disk, in GB, or None.
+
+        READ FROM THE DETAIL PANE, WHICH IS THE ONLY PLACE THE ANSWER IS A NUMBER.
+
+        The sidebar shows rows, not sizes, and the row that is highlighted is whatever the
+        last Up landed on - which is a runtime state, not a property of the disk. Two runs
+        with identical clicks selected different disks, and one of them erased the 268 MB
+        boot image and then spent fifty minutes installing macOS into it:
+
+            macOS Base System   2.88 GB total
+            main                268.4 MB total      <- what main turned out to be
+
+        The detail pane, by contrast, prints the selected device's real capacity, and
+        `Child count: 0` plus `Uninitialized` say it is a bare disk. So this reads the pane
+        and returns the number; the caller decides whether it is the right order of
+        magnitude.
+        """
+        path = self.screenshot("probe-ocr")
+        if not path:
+            return None
+        # THE PANE IS CROPPED AND ENLARGED BEFORE OCR, BECAUSE THE CHARACTERS ARE SMALL.
+        #
+        # Read whole, the screendump gives "Apple Inc. VirtIO Block Media" and loses the
+        # capacity line entirely - the numbers are about ten pixels tall at 1920x1080. The
+        # detail pane occupies a fixed rectangle in this window, and enlarging it three
+        # times is what makes "Capacity: 268.4 MB" readable at all.
+        #
+        # MEASURED ON A 1920x1080 SCREENDump, NOT GUESSED. The crop was found by locating
+        # the table's own separator lines in the pixels - they are the bright rows between
+        # y=545 and y=670 - and then read back to confirm:
+        #
+        #     ocr_text_cropped(path, (690, 540, 1490, 680), scale=3)
+        #     -> 'location: internal capacity: 268.4 mb connection: unknown child ...'
+        #
+        # The crop is generous on purpose. A missed capacity is a retry; a MISREAD one
+        # would erase the wrong disk, so the parsing below refuses anything ambiguous.
+        text = assistant.ocr_text_cropped(path, (690, 540, 1490, 680), scale=3)
+        if not text:
+            return None
+
+        # MB AND GB BOTH, THEN COMPARE IN GB.
+        #
+        # The first version matched only "NNN.N GB" and the disk it was pointed at reports
+        # "Capacity: 268.4 MB" - so the boot image, the one disk this must never select,
+        # produced no reading at all and the loop would have kept stepping. The unit is
+        # part of the number, not decoration.
+        best: float | None = None
+        for match in re.finditer(r"(\d+(?:\.\d+)?)\s*(gb|mb)\b", text):
+            try:
+                value = float(match.group(1))
+            except ValueError:
+                continue
+            if match.group(2) == "mb":
+                value /= 1024.0
+            if best is None or value > best:
+                best = value
+        return best
 
     def brightness(self) -> int | None:
         """The mean grey level of a fresh screendump, or None if it cannot be read."""
@@ -801,11 +898,52 @@ def select_and_erase(d: Recovery) -> None:
     # FIVE SECONDS BETWEEN THE UPS, THIRTY-FIVE BETWEEN THE SECOND UP AND ERASE - by
     # instruction. The 5 comes from key()'s own settle; the 30 is the wait below. One
     # click, at the coordinate that is known to have opened the sheet.
-    for i in range(2):
-        d.key("up", settle=5.0)
-        log(f"  up {i + 1}/2")
+    # THE DISK IS CHOSEN BY READING ITS CAPACITY, NOT BY COUNTING KEYPRESSES.
+    #
+    # A fixed number of Ups was the earlier design and it was wrong, because the row it
+    # starts from is a runtime state. Run 41685628982 ended with this on the destination
+    # pane:
+    #
+    #     macOS Base System   2.88 GB total
+    #     main                268.4 MB total
+    #
+    # `main` was the 268 MB boot image, not the 64 GB target. Two Ups from wherever the
+    # sidebar happened to be selected landed one row short, and the install then spent
+    # fifty minutes writing macOS into a volume smaller than the system.
+    #
+    # The detail pane prints the selected disk's real capacity, so this steps up one row at
+    # a time and asks until the number is one a target disk could have. The window is wide
+    # on purpose - 60 to 200 GB - because the disk size is an input to the bake
+    # (`--disk-size`, 64G by default): pinning a literal would break the day somebody baked
+    # a 128 GB disk. What it excludes is everything else this installer can select: the
+    # 2.88 GB recovery volume and the 268 MB boot image.
+    TARGET_MIN_GB = 60.0
+    TARGET_MAX_GB = 200.0
+    chosen: float | None = None
+    for attempt in range(8):
+        size = d.selected_disk_gb()
+        log(f"  attempt {attempt + 1}: the detail pane reads "
+            + ("nothing readable" if size is None else f"{size:.2f} GB"))
+        if size is not None and TARGET_MIN_GB <= size <= TARGET_MAX_GB:
+            chosen = size
+            log(f"  the target is selected: {size:.2f} GB")
+            break
+        # ONE ROW UP, THEN LET THE PANE REBUILD BEFORE READING AGAIN.
+        #
+        # The pane repaints for several seconds after the selection moves - that is when
+        # Disk Utility reads the newly selected device's partition table - and a read
+        # taken too soon returns the PREVIOUS disk's number, which is worse than none.
+        d.key("up", settle=3.0)
+        d.wait(3, "the detail pane has to show the newly selected disk")
 
-    d.wait(30, "the detail pane has to rebuild for the newly selected disk")
+    if chosen is None:
+        log("=== NO DISK IN THE TARGET RANGE WAS SELECTED ===")
+        log(f"  every reading was outside {TARGET_MIN_GB:.0f}..{TARGET_MAX_GB:.0f} GB")
+        log("  erasing the wrong one installs macOS into the recovery volume or the boot")
+        log("  image, so the sequence stops here rather than guessing")
+        raise SystemExit(1)
+
+    d.wait(5, "the detail pane settles on the chosen disk")
 
     # THE SWEEP: y = 280..320 BY 2, TWO SECONDS APART.
     #
@@ -816,8 +954,26 @@ def select_and_erase(d: Recovery) -> None:
     # It stops mattering the moment the sheet opens: the next click lands on the sheet's
     # backdrop. There is no early exit because detecting "the sheet is up" needs a
     # screen read this file deliberately does not do for control flow.
+    sheet_open = False
     for y in range(ERASE_BUTTON_Y_FIRST, ERASE_BUTTON_Y_LAST + 1, ERASE_BUTTON_Y_STEP):
         d.click((ERASE_BUTTON_X, y), f"Erase (y={y})", settle=2)
+        # EACH SWEEP STEP IS CHECKED, SO A WORKING CLICK ENDS THE SWEEP AND A DEAD ONE IS
+        # KNOWN TO BE DEAD.
+        #
+        # The sweep exists because the control moves a pixel or two between runs; the
+        # check exists because a sweep that never lands used to be followed by a backspace
+        # and a typed name into a field that was not there, and the failure then surfaced
+        # two minutes later as "the disk did not grow".
+        if d.erase_sheet_is_open():
+            log(f"  the erase sheet opened at y={y}")
+            sheet_open = True
+            break
+
+    if not sheet_open:
+        log("=== THE ERASE SHEET NEVER OPENED ===")
+        log("  every y in the sweep was clicked and none raised it; the disk is unchanged")
+        log("  and the sequence stops rather than typing a name into nothing")
+        raise SystemExit(1)
 
     # ONE BACKSPACE, because the name field arrives holding the disk's own name with the
     # text selected. Without this the typed name appends instead of replacing.
