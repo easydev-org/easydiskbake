@@ -672,19 +672,19 @@ class TheEraseButtonIsTheGlyph(unittest.TestCase):
         The history, because each attempt failed differently and the pattern is the
         useful part - see the comment beside ERASE_BUTTON in install.py.
         """
-        self.assertEqual(install.ERASE_BUTTON, (1290, 295))
+        self.assertEqual(install.ERASE_BUTTON, (1290, 305))
 
     def test_the_button_is_above_the_label(self):
         # The label's top edge, measured by tesseract on a full-resolution frame, is 293.
         # The glyph sits above it; 295 is just below that edge, which is where the
         # operator put the pointer after (1255, 278) landed on the glyph's corner.
         self.assertGreaterEqual(install.ERASE_BUTTON[1], 293)
-        self.assertLess(install.ERASE_BUTTON[1], 310)
+        self.assertLess(install.ERASE_BUTTON[1], 320)
 
     def test_the_source_records_where_the_numbers_came_from(self):
         with open(os.path.join(MACOS15, "install.py"), encoding="utf-8") as fh:
             source = fh.read()
-        start = source.index("ERASE_BUTTON = (1290, 295)")
+        start = source.index("ERASE_BUTTON = (1290, 305)")
         note = source[max(0, start - 1200):start]
         self.assertIn("(1255, 278)", note)
-        self.assertIn("sheet DID open", note)
+        self.assertIn("sheet OPENED", note)

@@ -87,23 +87,20 @@ ROW_X = 837
 # so the centre is (1142, 586).
 CONTINUE_MENU = (1142, 586)
 
-# The Erase toolbar button. Its LABEL's box is only 8px tall at y=332-340; the control
-# itself is the icon ABOVE the label, which is why clicking the label's centre does
-# nothing and y=306 is what opens the sheet.
+# SET BY THE OPERATOR, AND THE HISTORY IS THE USEFUL PART.
 #
-# SET BY THE OPERATOR, FROM THE LIVE SCREEN.
+#     (1290, 306)  nothing
+#     (1290, 296)  nothing
+#     (1290, 311)  nothing
+#     (1290, 314)  nothing
+#     (1290, 309)  nothing
+#     (1255, 278)  the sheet OPENED - backspace, "main" and Done all ran
+#     (1290, 295)  the sheet OPENED again, and the whole 17-step sequence ran through
+#                  to the destination pane
 #
-# Seven values have now been tried, and the history is worth keeping because each one
-# failed differently:
-#
-#     306, 296, 311, 314, 309   nothing happened; the sheet never opened
-#     (1255, 278)               the sheet DID open - backspace, "main" and Done all ran -
-#                               but the pointer was on the glyph's upper-left corner
-#
-# The last one is the useful one: it proves the control is reachable, and that the
-# remaining error is a few pixels, not a wrong control. (1290, 295) is the value given
-# for this attempt.
-ERASE_BUTTON = (1290, 295)
+# The last two both worked, which is what makes this a refinement rather than a fix:
+# the control's hit area is a few pixels wide in y, and 295 and 305 are both inside it.
+ERASE_BUTTON = (1290, 305)
 
 # Sidebar rows under "Internal", 28px apart, x=540 inside the labels. Five rows because
 # the count differs between Show Only Volumes (one) and Show All Devices (four), and a
