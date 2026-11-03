@@ -176,7 +176,7 @@ def main() -> int:
     disk = os.path.join(work, "disk.qcow2")
     if os.path.exists(disk):
         os.unlink(disk)
-    subprocess.run(["qemu-img", "create", "-f", "qcow2", "disk.qcow2", DISK_SIZE], check=True)
+    compress.run("create", "-f", "qcow2", "disk.qcow2", DISK_SIZE)
 
     # --- the live session ---------------------------------------------------
     blog("=== the live session, with vnc and a recording ===")

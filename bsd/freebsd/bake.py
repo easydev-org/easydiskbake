@@ -282,8 +282,7 @@ def main(argv: list[str]) -> int:
     disk = os.path.join(work, "disk.qcow2")
     if os.path.exists(disk):
         os.unlink(disk)
-    subprocess.run(["qemu-img", "create", "-f", "qcow2", disk, args.disk_size],
-                   check=True)
+    compress.run("create", "-f", "qcow2", disk, args.disk_size)
     log(f"disk created: {args.disk_size}")
 
     # THE SERIAL IS A CHARDDEV ON A FIFO, NOT mon:stdio, SO IT CAN BE READ AND PRINTED.

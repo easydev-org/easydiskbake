@@ -23,6 +23,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import compress  # noqa: E402
 import iso  # noqa: E402
 import vm  # noqa: E402
 
@@ -49,7 +50,7 @@ def main(argv: list[str]) -> int:
             log(f"missing {path}")
             return 2
 
-    subprocess.run(["qemu-img", "create", "-f", "qcow2", "disk.qcow2", "1G"], check=True)
+    compress.run("create", "-f", "qcow2", "disk.qcow2", "1G")
 
     guest = vm.Guest(
         os.getcwd(),

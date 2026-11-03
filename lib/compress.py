@@ -81,6 +81,38 @@ def qemu_img() -> str:
     return "qemu-img"
 
 
+def run(*args: str, check: bool = True, text: bool = True,
+        timeout: float | None = None) -> subprocess.CompletedProcess:
+    """Run qemu-img with the resolved binary, and say what it said if it fails.
+
+    WHY THIS EXISTS RATHER THAN `subprocess.run(["qemu-img", ...])` AT EACH CALL SITE.
+
+    The bare name is wrong here for the reason this module has documented since the first
+    Windows bake: the image puts /opt/android-sdk/emulator ahead of /usr/bin on PATH, and
+    that copy cannot read a zstd-compressed qcow2. Three call sites re-derived that
+    mistake independently - the Windows ssh and dev stages, and linux/nixos/derive.py -
+    and each one failed in a way that named neither the binary nor the disk:
+
+        qemu-img resize ... returned non-zero exit status 1
+
+    A function is the only fix that stays fixed: the resolution is in one place, and a
+    failure prints qemu-img's own words instead of an exit status.
+
+    check=True keeps the behaviour every caller already expected.
+    """
+    binary = qemu_img()
+    result = subprocess.run(
+        [binary, *args], capture_output=True, text=text, timeout=timeout,
+    )
+    if check and result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(
+            f"{binary} {' '.join(args)} failed ({result.returncode})"
+            + (f":\n{detail[:600]}" if detail else "")
+        )
+    return result
+
+
 def version() -> str:
     try:
         result = subprocess.run([qemu_img(), "--version"], capture_output=True,

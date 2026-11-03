@@ -47,6 +47,7 @@ sys.path.insert(0, REPO)
 sys.path.insert(0, os.path.join(REPO, "lib"))
 sys.path.insert(0, HERE)
 
+import compress  # noqa: E402
 import desktop  # noqa: E402
 import machine  # noqa: E402
 import opencore  # noqa: E402
@@ -203,7 +204,7 @@ def run(out: str, *, wait_boot: int, clicks: int, interval: float) -> int:
     disk = os.path.join(work, "disk.qcow2")
     if os.path.exists(disk):
         os.unlink(disk)
-    subprocess.run(["qemu-img", "create", "-f", "qcow2", disk, "64G"], check=True)
+    compress.run("create", "-f", "qcow2", disk, "64G")
 
     guest = machine.make_guest(work, assets, disk, recovery,
                                cpus=args.cpus, mem_mb=args.mem)

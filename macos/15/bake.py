@@ -164,10 +164,7 @@ class Baker:
 
         if os.path.exists(self.disk):
             os.unlink(self.disk)
-        subprocess.run(
-            ["qemu-img", "create", "-f", "qcow2", self.disk, self.args.disk_size],
-            check=True,
-        )
+        compress.run("create", "-f", "qcow2", self.disk, self.args.disk_size)
         log(f"disk created: {self.args.disk_size}")
 
         # THE MACHINE AND ITS DISKS COME FROM macos/15/machine.py.

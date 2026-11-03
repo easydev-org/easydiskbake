@@ -29,6 +29,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import compress  # noqa: E402
 import iso  # noqa: E402
 import smoke  # noqa: E402
 import vm  # noqa: E402
@@ -90,7 +91,7 @@ def main() -> int:
     log(f"  initrd: {initrd} ({os.path.getsize(initrd)} bytes)")
 
     log("=== an empty disk ===")
-    subprocess.run(["qemu-img", "create", "-f", "qcow2", "disk.qcow2", "2G"], check=True)
+    compress.run("create", "-f", "qcow2", "disk.qcow2", "2G")
 
     log("=== boot it: vnc + port forwards + two qmp sockets ===")
     guest = vm.Guest(
