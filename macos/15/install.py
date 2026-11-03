@@ -107,10 +107,19 @@ CONTINUE_MENU = (1142, 586)
 # a deliberate move toward the smaller of them rather than a new guess - the control's
 # vertical extent is narrow, and the failures at 306, 309, 311 and 314 are all above it.
 #
-# 300 -> 295 BY INSTRUCTION. 295 is the one value that is known to have opened the sheet
-# on a real run (see above), and the two runs at 305 failed. Stopping the midpoint
-# experiment and using the measurement.
-ERASE_BUTTON = (1290, 295)
+# BOTH CANDIDATES, TRIED IN TURN, BY INSTRUCTION.
+#
+# 295 is the one value in this file's history that opened the sheet on a real run; 305 is
+# the value that was in use through the failures but is also the toolbar's own measured
+# centre for this control. The control's vertical extent is a few pixels, so one of them
+# is inside it and the other is not - and which one has flipped between runs, because the
+# toolbar is redrawn and the button migrates a pixel or two as the window settles.
+#
+# Clicking both, five seconds apart, covers the uncertainty without guessing again. The
+# first click that lands raises the sheet; the second one lands on the sheet's backdrop,
+# which does nothing.
+ERASE_BUTTON_Y_CANDIDATES = (295, 305)
+ERASE_BUTTON_X = 1290
 
 # Sidebar rows under "Internal", 28px apart, x=540 inside the labels. Five rows because
 # the count differs between Show Only Volumes (one) and Show All Devices (four), and a
@@ -782,7 +791,14 @@ def select_and_erase(d: Recovery) -> None:
 
     d.wait(30, "the detail pane has to rebuild for the newly selected disk")
 
-    d.click(ERASE_BUTTON, "Erase", settle=5)
+    # BOTH y VALUES, FIVE SECONDS APART, BY INSTRUCTION.
+    #
+    # One click each at 295 and 305. The control's hit area is a few pixels tall and both
+    # numbers are measurements from runs where it worked, so trying each covers the
+    # uncertainty in the button's position rather than guessing between them. If the first
+    # raises the sheet the second lands on the sheet's own backdrop, which does nothing.
+    for attempt, y in enumerate(ERASE_BUTTON_Y_CANDIDATES, 1):
+        d.click((ERASE_BUTTON_X, y), f"Erase (y={y}, {attempt}/2)", settle=5)
 
     # ONE BACKSPACE, because the name field arrives holding the disk's own name with the
     # text selected. Without this the typed name appends instead of replacing.
