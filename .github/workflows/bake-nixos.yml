@@ -143,10 +143,15 @@ jobs:
       matrix:
         # THE INPUT IS A COMMA-SEPARATED LIST, AND EMPTY MEANS ALL SIX.
         #
-        # GitHub cannot turn a string input into a matrix without an expression, and an
-        # expression that both splits and defaults is the kind of YAML nobody can read
-        # six months later. So the input is turned into JSON here and fromJSON reads it.
-        desktop: ${{ fromJSON(github.event.inputs.desktops == '' && '["labwc","gnome","kde","cosmic","hyprland","miracle"]' || format('["{0}"]', replace(github.event.inputs.desktops, ',', '","'))) }}
+        # GitHub's expression language has no `replace` (it has join and split), so a
+        # list is cut with split and rebuilt with join. `desktops` is split on ",", and an
+        # empty input yields [""] - which join turns back into "" and the comparison
+        # catches. That is why the default branch is tested before the split.
+        desktop: ${{ fromJSON(
+          github.event.inputs.desktops == ''
+            && '["labwc","gnome","kde","cosmic","hyprland","miracle"]'
+            || format('["{0}"]', join(split(github.event.inputs.desktops, ','), '","'))
+        ) }}
 
     steps:
       - uses: actions/checkout@v4
