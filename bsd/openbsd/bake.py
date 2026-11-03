@@ -129,7 +129,24 @@ def answers() -> list[tuple[str, float]]:
         ("no", 4),          # start it with xenodm? no - ssh is the way in
         # Change the default console to com0? [yes] - yes, because this guest has no
         # usable VGA console and every subsequent boot should talk on tty00.
+        #
+        # AND THEN IT ASKS FOR THE SPEED, which the list did not know about. Run
+        # 41667774351 got here and every answer after it went into that one prompt:
+        #
+        #     Change the default console to com0? [yes] yes
+        #     Which speed should com0 use? (or 'done') [115200] sd0
+        #     'sd0' is not a valid choice.
+        #     Available speeds are: 9600 19200 38400 57600 115200.
+        #
+        # 115200 is what lib/serial.py carries and what boot.conf sets, so agreeing with
+        # the default keeps the installed system's console at the speed the bake reads.
         ("yes", 4),         # Change the default console to com0
+        ("115200", 4),      # Which speed should com0 use
+        # Setup a user? [no] - no, and this is deliberate. The bake adds docker itself in
+        # finish_install(), with the same password and doas rule every other image here
+        # has; letting the installer create one would duplicate that with a second set of
+        # choices this list cannot express.
+        ("no", 4),          # Setup a user
         ("sd0", 5),         # Which disk is the root disk
         ("W", 5),           # Use (W)hole disk
         ("a", 5),           # Use (A)uto layout
