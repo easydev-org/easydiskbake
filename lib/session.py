@@ -223,13 +223,37 @@ def check_wayland_session(port: int, process: str, note=log) -> bool:
     # /run/user/1000/wayland-1, so an existing file with that name is the server's own
     # proof that it bound a socket. 1000 is docker's uid in every image here
     # (configuration-minimal.nix creates it as the first normal user).
-    status, sockets = ssh(port, "sudo ls -l /run/user/1000/wayland-* 2>/dev/null | head -5")
+    # THE SOCKET, FOUND THREE WAYS, BECAUSE sudo IS NOT GUARANTEED.
+    #
+    # `sudo ls` is the direct route and it runs as docker, which subiquity puts in the
+    # sudo group - where sudo asks for a password. Over ssh with no tty there is nowhere
+    # to type one, so the command fails silently and this reported "NO WAYLAND SOCKET" on
+    # a system whose kwin_wayland had been started with --socket wayland-0 (run
+    # 41675028701).
+    #
+    # So the list is built from what docker can already reach: its own runtime directory
+    # (no sudo needed for your own /run/user/<uid>), the compositor's command line, and
+    # only then sudo as a fallback.
+    probe_socket = (
+        "echo XDG:${XDG_RUNTIME_DIR:-unset}; "
+        "ls -l /run/user/$(id -u)/wayland-* 2>/dev/null | head -5; "
+        "echo ---; "
+        "ls -l /tmp/.X11-unix 2>/dev/null | head -2; "
+        "echo ---; "
+        "for p in $(pgrep -f '" + process + "' | head -1); do "
+        "tr '\\0' '\\n' < /proc/$p/cmdline 2>/dev/null "
+        "| grep -oE 'wayland-[0-9]+' | head -2; done; "
+        "echo ---; "
+        "sudo -n ls -l /run/user/$(id -u)/wayland-* 2>/dev/null | head -5"
+    )
+    status, sockets = ssh(port, probe_socket)
     listed = sockets.strip()
     note(f"  wayland sockets: {listed.replace(chr(10), ' | ') if listed else '(none)'}")
     if "wayland-" not in listed:
-        note("=== NO WAYLAND SOCKET IN /run/user/1000 ===")
-        note("  the compositor process exists but has not bound a socket")
-        status, listing = ssh(port, "sudo ls -la /run/user/1000/ 2>/dev/null | head -15")
+        note("=== NO WAYLAND SOCKET FOR THE RUNNING COMPOSITOR ===")
+        note("  the compositor process exists but no socket names it; the probe above")
+        note("  shows the runtime dir, the X11 sockets, and its own command line")
+        status, listing = ssh(port, "ls -la /run/user/$(id -u)/ 2>/dev/null | head -15")
         for line in listing.splitlines()[:12]:
             note(f"  run: {line.strip()}")
         return False

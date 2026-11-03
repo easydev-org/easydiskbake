@@ -137,6 +137,17 @@ autoinstall:
     # not guaranteed to be Plasma.
     - curtin in-target -- sh -c 'mkdir -p /etc/sddm.conf.d && printf "%s\n" "[Autologin]" "User=docker" "Session=plasma" "Relogin=false" > /etc/sddm.conf.d/autologin.conf'
 
+    # PASSWORDLESS sudo, BECAUSE THE LAUNCH CHECK RUNS `sudo ls` WITH NO TTY.
+    #
+    # subiquity puts identity.username in the sudo group, which still asks for a password.
+    # Over ssh with no terminal there is nowhere to type it, so the command fails silently
+    # and the check reports a missing Wayland socket on a system whose socket is right
+    # there. Run 41675028701 is exactly that: kwin_wayland running with
+    # --socket wayland-0, and "NO WAYLAND SOCKET IN /run/user/1000" because the ls under
+    # sudo never ran.
+    - curtin in-target -- sh -c 'printf "%s\n" "docker ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/90-docker-nopasswd'
+    - curtin in-target -- chmod 0440 /etc/sudoers.d/90-docker-nopasswd
+
     # NO CLOUD-INIT ON THE FINISHED DISK. An installed system that still runs cloud-init
     # looks for a datasource on every boot and waits for one that is not there. The
     # install is done; the mechanism that did it is not part of the result.
