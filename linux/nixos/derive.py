@@ -184,8 +184,12 @@ def main(argv: list[str]) -> int:
         vga="std", serial_pipe=ser.stdin.removesuffix(".in"),
     )
     drives = ["-drive", f"file={disk},if=virtio,format=qcow2"]
-    guest = vm.Guest(work, extra=drives, shape=shape,
-                     stdout=os.path.join(work, "derive.log"))
+    # stdout IS /dev/null: this guest's console is a chardev on a fifo (Shape.serial_pipe),
+    # so qemu's own stdout carries only warnings. The guest's words are in ser.sink, and
+    # pointing stdout at derive.log made an empty file that looked like a silent guest -
+    # then last_status() read that empty file and reported "exit status: <never returned>"
+    # for a run whose last line was DERIVE_RC=0.
+    guest = vm.Guest(work, extra=drives, shape=shape, stdout=os.devnull)
     try:
         guest.start()
         ser.open(timeout=60)
@@ -224,7 +228,8 @@ def main(argv: list[str]) -> int:
         except subprocess.TimeoutExpired:
             server.kill()
 
-    log_path = os.path.join(work, "derive.log")
+    # THE CONSOLE IS ser.sink, NOT derive.log - see the note where the guest is created.
+    log_path = ser.sink
     rc = last_status(log_path)
     log(f"derive exit status: {rc if rc is not None else '<never returned>'}")
     if rc != 0:

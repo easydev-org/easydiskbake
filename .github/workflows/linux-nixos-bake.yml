@@ -200,6 +200,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: nixos-${{ matrix.desktop }}-console
-          path: out/derive.log
+          # THE GUEST'S CONSOLE, WHICH IS NOT derive.log. The derive runs with its
+          # serial on a fifo chardev (Shape.serial_pipe), so qemu's stdout is only
+          # warnings and lib/serial.py writes the guest's words to out/serial.out.log.
+          # Uploading derive.log meant the artifact held an empty file, which is how run
+          # 41626226787 reported "exit status: <never returned>" for a run whose last
+          # line was DERIVE_RC=0.
+          path: |
+            out/serial.out.log
+            out/derive.log
           if-no-files-found: warn
           retention-days: 7
