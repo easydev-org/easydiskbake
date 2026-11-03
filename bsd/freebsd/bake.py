@@ -76,20 +76,27 @@ def build_installerconfig() -> str:
 
 
 def build_media(iso_path: str, work: str) -> str:
-    """The installation ISO with /etc/installerconfig inside it.
+    """The installation ISO with /etc/installerconfig added to it.
 
-    TWO STEPS, BECAUSE THE FILE IS NOT ON THE ISO'S FILE SYSTEM.
+    THE ISO HAS A REAL /etc, AND THAT IS THE WHOLE REPACK.
 
-    Nothing on the ISO is at /etc/installerconfig - the live environment's /etc is a
-    memory filesystem built at boot from the mfsroot image inside the ISO. So the mfsroot
-    is unpacked, the file added, the image rebuilt, and only then is the ISO repacked with
-    the new mfsroot in place of the old one.
+    The first version of this looked for an mfsroot inside the ISO and failed on run
+    41600033829 with "no mfsroot inside ... the ISO's layout has changed". It had not
+    changed - FreeBSD 15.1's disc1 simply does not use one. Its root filesystem IS the
+    ISO: etc/, boot/, usr/freebsd-packages/ are all there as ordinary directories, and
+    bsdinstall reads /etc/installerconfig from that tree when the media boots.
 
-    THE REBUILD IS udfcreate AND THE REPACK IS xorriso, and both are in the bake image.
+    That makes this two steps instead of four: unpack, write one file, repack. No
+    makefs, no mfsroot, no second image to keep in step.
+
+    THE PACKAGES DIRECTOR Y IS WHY THE ISO IS BIG, and it is also why nothing needs a
+    network: usr/freebsd-packages/offline carries base, kernel and the rest, so bsdinstall
+    installs from the medium.
     """
+    import shutil
+
     tree = os.path.join(work, "iso")
     if os.path.exists(tree):
-        import shutil
         shutil.rmtree(tree)
     os.makedirs(tree)
 
@@ -104,72 +111,44 @@ def build_media(iso_path: str, work: str) -> str:
     #
     #     ERROR: Dangerous link path was ignored : etc/os-release : ../var/run/os-release
     #
-    # It then exits 1. Run 41599346958 stopped there, before a single file had been looked
-    # at, and the tree it had written was complete for every purpose this bake has: the
-    # mfsroot is a regular file, and the symlinks it skipped are inside the LIVE system's
-    # filesystem, which this never mounts.
-    #
-    # So the judgement is whether the tree holds what is needed, not what 7z returned.
-    # Anything else it complains about still shows up as a missing mfsroot below.
+    # It then exits 1. Run 41599346958 stopped there even though the tree was complete:
+    # the symlinks it skipped are inside the live system, which this never mounts.
     if "Dangerous link path was ignored" in (result.stderr or result.stdout or ""):
-        log("  7z skipped symlinks pointing outside the tree; that is expected here")
+        log("  7z skipped symlinks pointing outside the tree; expected here")
     elif result.returncode != 0:
         raise SystemExit(
             f"could not unpack {iso_path}: {(result.stderr or result.stdout)[:400]}")
 
-    # The mfsroot is the last stage of the live environment; its name is stable across
-    # releases because the loader refers to it by that name.
-    mfsroot = None
-    for root, _dirs, files in os.walk(tree):
-        for name in files:
-            if name == "mfsroot":
-                mfsroot = os.path.join(root, name)
-                break
-        if mfsroot:
-            break
-    if not mfsroot:
+    etc = os.path.join(tree, "etc")
+    if not os.path.isdir(etc):
         raise SystemExit(
-            f"no mfsroot inside {iso_path}. Its /etc is built from that image, so "
-            f"/etc/installerconfig cannot be added without it - and the ISO's layout has "
-            f"changed from what this expects.")
+            f"no etc/ in {iso_path}. bsdinstall reads /etc/installerconfig from the "
+            f"medium's own root, so without it there is nowhere to put the answers.")
 
-    log(f"mfsroot: {os.path.relpath(mfsroot, tree)}")
-
-    # ADD THE FILE TO THE MFSROOT. It is a plain UFS image, which 7z can open read-only.
-    mtree = os.path.join(work, "mfs")
-    if os.path.exists(mtree):
-        import shutil
-        shutil.rmtree(mtree)
-    os.makedirs(mtree)
-    unpack = subprocess.run(["7z", "x", "-y", f"-o{mtree}", mfsroot],
-                            capture_output=True, text=True)
-    if unpack.returncode != 0:
-        raise SystemExit(
-            f"could not unpack the mfsroot: {(unpack.stderr or unpack.stdout)[:300]}")
-
-    etc = os.path.join(mtree, "etc")
-    os.makedirs(etc, exist_ok=True)
     target = os.path.join(etc, "installerconfig")
     with open(target, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(build_installerconfig())
-    log(f"wrote {os.path.relpath(target, work)}")
+    log(f"wrote etc/installerconfig ({os.path.getsize(target)} bytes)")
 
-    # Repack the mfsroot. Compression is off: the media's own mfsroot is not compressed
-    # and the loader does not expect it to be.
-    rebuilt = os.path.join(work, "mfsroot.new")
-    made = subprocess.run(["makefs", "-t", "ffs", "-o", "version=2", rebuilt, mtree],
-                          capture_output=True, text=True)
-    if made.returncode != 0:
-        raise SystemExit(
-            f"makefs could not rebuild the mfsroot: {(made.stderr or made.stdout)[:300]}")
-    os.replace(rebuilt, mfsroot)
-    log(f"rebuilt the mfsroot ({os.path.getsize(mfsroot) >> 20} MiB)")
+    # AND THE BOOT MENU IS TOLD TO RUN IT. bsdinstall with no arguments starts its menu
+    # wizard; the script target is what reads the file. The media's loader can hand it a
+    # kernel environment, and `bsdinstall.script` is the variable its rc reads - but the
+    # simplest reliable place is the menu's own default entry, which no longer needs to
+    # offer a choice.
+    loader_conf = os.path.join(tree, "boot", "loader.conf")
+    if os.path.exists(loader_conf):
+        with open(loader_conf, "a", encoding="utf-8") as fh:
+            fh.write('\n# easydiskbake: install from /etc/installerconfig, no menu\n')
+            fh.write('autoboot_delay="0"\n')
+        log("boot/loader.conf: autoboot with no delay")
 
-    # And the ISO, keeping the El Torito record that makes it bootable.
+    # The repack keeps the El Torito record that makes it bootable: boot/cdboot for BIOS
+    # and boot/boot1.efi for UEFI, both of which this image carries.
     media = os.path.join(work, "freebsd-install.iso")
     repack = subprocess.run([
         "xorriso", "-as", "mkisofs", "-o", media,
         "-b", "boot/cdboot", "-no-emul-boot", "-c", "boot/boot.catalog",
+        "-eltorito-alt-boot", "-e", "boot/boot1.efi", "-no-emul-boot",
         "-J", "-R", "-V", "FREESD_INSTALL", tree,
     ], capture_output=True, text=True)
     if repack.returncode != 0:

@@ -268,15 +268,22 @@ def pack(avd_home_dir: str, out: str) -> str:
         os.unlink(out)
 
     log(f"packing {avd_home_dir} -> {out}")
-    # -S keeps the sparse holes; the data partition is 4G of them and a plain tar
-    # would write every zero.
+    # 7z, NOT `tar -I "zstd"`, AND RUN 41600044258 IS WHY.
+    #
+    # tar's -I names a PROGRAM to pipe through, and the bake image has no `zstd`
+    # binary:
+    #
+    #     tar (child): zstd -d -T0: Cannot exec: No such file or directory
+    #
+    # 7z carries its own zstd codec, so it needs nothing on PATH. It also handles the
+    # sparse data partition by compressing the zeros, which is what the holes were
+    # worth anyway - `tar --sparse` saved disk, not bytes in the archive.
     result = subprocess.run(
-        ["tar", "--sparse", "-C", avd_home_dir, "-I", "zstd -3 -T0",
-         "-cf", out, "."],
-        capture_output=True, text=True,
+        ["7z", "a", "-t7z", "-m0=zstd", "-mx=3", out, "."],
+        cwd=avd_home_dir, capture_output=True, text=True,
     )
     if result.returncode != 0:
-        raise AvdError(f"tar failed: {result.stderr[:400]}")
+        raise AvdError(f"7z failed: {(result.stderr or result.stdout)[:400]}")
 
     log(f"{os.path.getsize(out) >> 20} MiB")
     return out
@@ -287,12 +294,13 @@ def unpack(archive: str, dest: str) -> str:
     os.makedirs(dest, exist_ok=True)
 
     log(f"unpacking {archive} -> {dest}")
+    # 7z again, for the same reason as pack(): no external zstd binary is needed.
     result = subprocess.run(
-        ["tar", "--sparse", "-C", dest, "-I", "zstd -d -T0", "-xf", archive],
+        ["7z", "x", "-y", f"-o{dest}", archive],
         capture_output=True, text=True,
     )
     if result.returncode != 0:
-        raise AvdError(f"tar failed: {result.stderr[:400]}")
+        raise AvdError(f"7z failed: {(result.stderr or result.stdout)[:400]}")
 
     avds = [d for d in os.listdir(dest) if d.endswith(".avd")]
     if not avds:
