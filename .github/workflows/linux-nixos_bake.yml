@@ -165,7 +165,18 @@ jobs:
             python3 lib/ci.py install-oras
             python3 lib/ci.py login --registry ghcr.io
             oras pull "ghcr.io/${{ github.repository }}:nixos-base" -o out/base
-            ls -la out/base/
+            # THE FILE LANDS INSIDE THE OUTPUT DIRECTORY, under the name the push used -
+            # publish_disk.py pushes os.path.basename(path), which is nixos-base.qcow2.
+            # The derive step was told out/nixos-base.qcow2 and found nothing, so run
+            # 41611250363's base job succeeded and all six derive legs died on
+            # "no base disk at out/nixos-base.qcow2".
+            BASE=$(find out/base -name '*.qcow2' | head -1)
+            if [ -z "$BASE" ]; then
+              echo "=== NO BASE DISK IN out/base ==="
+              ls -laR out/base || true
+              exit 1
+            fi
+            echo "base disk: $BASE"
       
       - name: derive
         uses: easydev-org/easyagent-github-ext/actions/log-stream@main
@@ -176,8 +187,10 @@ jobs:
           command: |
             set -euo pipefail
             export GITHUB_TOKEN="${{ github.token }}"
+            BASE=$(find out/base -name '*.qcow2' | head -1)
+            echo "base disk: $BASE"
             python3 linux/nixos/derive.py \
-              --base out/nixos-base.qcow2 \
+              --base "$BASE" \
               --desktop "${{ matrix.desktop }}" \
               --out "out/nixos-${{ matrix.desktop }}.qcow2" \
               --timeout "${{ inputs.derive_timeout || '3600' }}"
