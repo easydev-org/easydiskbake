@@ -65,71 +65,61 @@ def installer_config() -> str:
 def answers() -> list[tuple[str, float]]:
     """The installer's questions, in order, with the time each answer needs.
 
-    READ OFF THE CONSOLE, NOT FROM MEMORY. Run 41660285262's transcript is the source:
+    TRANSCRIBED FROM A CONSOLE, NOT WRITTEN FROM MEMORY. Run 41663585347 is the source,
+    and it is the first run whose console had anything in it at all:
 
         Welcome to the OpenBSD/amd64 8.0 installation program.
-        (I)nstall, (U)pgrade, (A)utoinstall or (S)hell? vt220
-        (I)nstall, (U)pgrade, (A)utoinstall or (S)hell? openbsd
-        ...
-        (I)nstall, (U)pgrade, (A)utoinstall or (S)hell? sd0
-        # W
-        sh: W: not found
+        (I)nstall, (U)pgrade, (A)utoinstall or (S)hell? I
+        Terminal type? [vt220]
+        System hostname? (short form, e.g. 'foo') openbsd
+        Network interface to configure? (...) [vio0] vio0
+        IPv4 address for vio0? (or 'autoconf' or 'none') [autoconf] dhcp
+        IPv6 address for vio0? (or 'autoconf' or 'none') [autoconf] none
+        Network interface to configure? (name, lladdr, '?', or 'done') [done] done
+        Password for root account? (will not echo)
+        Password for root account? (again)
+        Start sshd(8) by default? [yes] sd0
+        'sd0' is not a valid choice.
+        Start sshd(8) by default? [yes] W
+        'W' is not a valid choice.
 
-    Two things that list makes plain:
+    THE PASSWORD COMES BEFORE sshd, and that single fact is what the previous list got
+    wrong - it had the password after the timezone, so everything from "Start sshd" onward
+    was three questions ahead. The installer rejected each answer in turn and re-asked, and
+    the run never reached the disk.
 
-    1. THE FIRST QUESTION IS (I)nstall, NOT THE TERMINAL TYPE. A CD boot does not ask
-       for one - the console was already set by boot.conf, and bsd.rd only asks that
-       question on a netboot. The old list started with "vt220", so every answer after it
-       was one question behind, which is why "openbsd" was read as the install mode.
+    THE TERMINAL TYPE IS ASKED, AND ONLY AFTER CHOOSING INSTALL. An earlier attempt put it
+    first, which made (I)nstall read "vt220"; this one knows better and answers the default
+    with an empty line. That is also why the first answer is I and the second is blank.
 
-    2. THAT IS ALSO WHY IT ENDED IN A SHELL. By the time the real prompts arrived the
-       answers were six questions out of step, and "sd0" landed on something that took it
-       as a command - `# W` and `sh: W: not found` are the installer having given up.
+    Everything after sshd has not yet been observed on a run that got that far - the set
+    location and the layout are from the OpenBSD installer's documented flow and from
+    easysandbox-vm's own install.conf. They are the answers a person gives:
 
-    So this list starts with I, and every answer after it is the one a working 8.0 CD
-    install takes:
-
-        I        install, not upgrade or autoinstall
-        (blank)  keyboard layout: the default, us
-        openbsd  system hostname
-        vio0     the virtio NIC on this qemu machine
-        dhcp     IPv4; lib/vm.py's user-mode network answers
-        none     IPv6
-        done     no second interface
-        yes      start sshd at boot - the point of this stage
-        yes      start ntpd at boot
-        (blank)  root password prompt is skipped when one is set below? no - see below
-        sd0      the only disk
-        W        use the whole disk
-        a        auto layout
-        cd0      location of sets: the medium it booted from
-        *        every set on it, X11 included
-        UTC      timezone
-        admin    root password
-        admin    and again
-
-    THE ROOT PASSWORD COMES AFTER THE TIMEZONE on 8.0, and the set location is `cd0`
-    because the machine installed from the CD. Both were wrong in the old list, which had
-    the password before the timezone and never named a set location.
+        ntpd      yes
+        disk      sd0, the only disk
+        layout    W (whole disk), then a (auto layout)
+        sets      cd0, the medium it booted from; then * for every set
+        timezone  UTC
     """
     return [
-        ("I", 5),           # install, not upgrade/autoinstall
-        ("", 4),            # keyboard layout: default (us)
-        ("openbsd", 4),     # system hostname
-        ("vio0", 4),        # which interface to configure
+        ("I", 5),           # (I)nstall, not upgrade or autoinstall
+        ("", 4),            # Terminal type: the default, vt220
+        ("openbsd", 4),     # System hostname
+        ("vio0", 4),        # Network interface to configure
         ("dhcp", 30),       # IPv4 - the DHCP exchange takes a moment
         ("none", 4),        # IPv6
         ("done", 4),        # no second interface
-        ("yes", 4),         # start sshd at boot
-        ("yes", 4),         # start ntpd at boot
-        ("sd0", 5),         # which disk is the root disk
-        ("W", 5),           # use the whole disk
-        ("a", 5),           # auto layout
-        ("cd0", 5),         # location of sets: the CD
-        ("*", 5),           # every set, X11 included
-        ("UTC", 4),         # timezone
-        ("admin", 4),       # root password
+        ("admin", 4),       # Password for root account
         ("admin", 4),       # and again
+        ("yes", 4),         # Start sshd(8) by default
+        ("yes", 4),         # Start ntpd(8) by default
+        ("sd0", 5),         # Which disk is the root disk
+        ("W", 5),           # Use (W)hole disk
+        ("a", 5),           # Use (A)uto layout
+        ("cd0", 5),         # Location of sets
+        ("*", 5),           # Set name(s): all of them
+        ("UTC", 4),         # What timezone
         ("", 120),          # unpacking the sets
         ("", 10),           # done; the installer reboots
     ]
