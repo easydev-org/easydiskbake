@@ -106,8 +106,11 @@ CONTINUE_MENU = (1142, 586)
 # that opened it. 300 is the midpoint of the two measurements that have worked, and it is
 # a deliberate move toward the smaller of them rather than a new guess - the control's
 # vertical extent is narrow, and the failures at 306, 309, 311 and 314 are all above it.
-# The click is still made three times, five seconds apart; see select_and_erase().
-ERASE_BUTTON = (1290, 300)
+#
+# 300 -> 295 BY INSTRUCTION. 295 is the one value that is known to have opened the sheet
+# on a real run (see above), and the two runs at 305 failed. Stopping the midpoint
+# experiment and using the measurement.
+ERASE_BUTTON = (1290, 295)
 
 # Sidebar rows under "Internal", 28px apart, x=540 inside the labels. Five rows because
 # the count differs between Show Only Volumes (one) and Show All Devices (four), and a
@@ -759,9 +762,25 @@ def select_and_erase(d: Recovery) -> None:
     # THE TARGET IS ONE ROW ABOVE THE DEFAULT SELECTION. Measured, not assumed: with the
     # recovery volume selected, two Ups land on disk0. Five seconds apart: the detail
     # pane repaints between them and a second Up during that repaint is lost.
+    #
+    # THIRTY SECONDS BEFORE THE SECOND UP, BY INSTRUCTION. The two runs that failed to
+    # raise the erase sheet both had the target correctly selected in their frames - disk0,
+    # 68.72 GB, "Uninitialized", Child count 0 - and the Erase button lit. What neither had
+    # was a settled window: the detail pane repaints for a long time after the first Up
+    # arrives, because that is when Disk Utility goes and reads the disk's partition table.
+    # Five seconds was measured between two Ups on the run that worked, and it is enough
+    # for the *selection* to move; it is not necessarily enough for the pane to finish
+    # being rebuilt from the newly selected device, and the Erase control is part of what
+    # gets rebuilt.
+    #
+    # So the first Up is followed immediately by the second only after the window has had
+    # a full thirty seconds to settle. It costs half a minute and it removes the one
+    # difference between the runs that worked and the runs that did not.
     for i in range(2):
         d.key("up", settle=5.0)
         log(f"  up {i + 1}/2")
+        if i == 0:
+            d.wait(30, "the detail pane has to rebuild for the newly selected disk")
     d.wait(5, "the detail pane repaints")
 
     # ERASE IS CLICKED THREE TIMES, FIVE SECONDS APART, AND RUNS 41626151499 AND 41632393923
