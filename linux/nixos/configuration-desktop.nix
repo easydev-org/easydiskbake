@@ -114,26 +114,70 @@ in
   # and miracle-wm - each of those sets services.displayManager.sessionPackages
   # itself. So the other three are ordinary entries in whatever display manager
   # is enabled, and only labwc needs a DM that can be handed a raw command.
+  #
+  # initial_session, NOT default_session, AND RUN 41650668823 IS WHY.
+  #
+  # greetd has two kinds of session and logind does not treat them the same:
+  #
+  #     default_session   the GREETER. greetd runs it before anyone logs in, and
+  #                       logind registers it with Class=greeter
+  #     initial_session   an automatic login. greetd starts it as the user at boot
+  #                       and PAM registers it with Class=user
+  #
+  # This file used default_session, so the labwc session was a greeter session no
+  # matter which user it ran as. The launch stage asked for an active session with
+  # Class=user or manager and correctly found none:
+  #
+  #     sessions (id|type|class|active):
+  #         ['1|wayland|greeter|yes', '2|unspecified|manager|yes', ...]
+  #     === NO ACTIVE USER WAYLAND SESSION ===
+  #
+  # and the screenshot was mean grey 0.0 - there was no desktop, because greetd was
+  # still waiting for a login at a greeter it had been told to run as the compositor
+  # itself.
+  #
+  # initial_session is greetd's autologin, which is exactly what this disk wants: the
+  # compositor starts at boot as docker, with no password and no greeter in between.
+  # default_session stays as the fallback for after a logout, which is what greetd
+  # falls back to once the initial session ends.
   services.greetd = lib.mkIf (desktop == "labwc") {
     enable = true;
-    settings.default_session = {
-      user = "docker";
-      command = "${pkgs.writeShellScript "labwc-session" ''
-        export XDG_RUNTIME_DIR=/run/user/1000
-        export XDG_SESSION_TYPE=wayland
-        export XDG_CURRENT_DESKTOP=wlroots
-        # DRM, not headless: headless output is never drawn to the framebuffer.
-        export WLR_BACKENDS=drm
-        export WLR_LIBINPUT_NO_DEVICES=1
-        # pixman: wlroots wants a DRM render node; this guest has card0 only.
-        export WLR_RENDERER=pixman
-        # No autostart here either. This used to open foot so the screenshot had
-        # something to look at, which is the same mistake as the systemd unit I
-        # put on the other three: a gold image that launches a terminal is not a
-        # stock desktop. smoke.sh starts kitty over the serial console instead,
-        # after boot, where it belongs.
-        exec ${pkgs.labwc}/bin/labwc
-      ''}";
+    settings = {
+      # THE AUTOLOGIN. This is the session the launch stage sees.
+      initial_session = {
+        user = "docker";
+        command = "${pkgs.writeShellScript "labwc-session" ''
+          # THE RUNTIME DIRECTORY IS THE USER'S OWN, LOOKED UP RATHER THAN ASSUMED.
+          #
+          # It was hardcoded to /run/user/1000. That is docker's uid on every image in
+          # this repository because configuration-minimal.nix creates it as the first
+          # normal user - but a session that hardcodes another process's uid is one
+          # rebuild away from a compositor writing its socket where nothing looks for it.
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          export XDG_SESSION_TYPE=wayland
+          export XDG_CURRENT_DESKTOP=wlroots
+          # DRM, not headless: headless output is never drawn to the framebuffer.
+          export WLR_BACKENDS=drm
+          export WLR_LIBINPUT_NO_DEVICES=1
+          # pixman: wlroots wants a DRM render node; this guest has card0 only.
+          export WLR_RENDERER=pixman
+          # No autostart here either. This used to open foot so the screenshot had
+          # something to look at, which is the same mistake as the systemd unit I
+          # put on the other three: a gold image that launches a terminal is not a
+          # stock desktop. smoke.sh starts kitty over the serial console instead,
+          # after boot, where it belongs.
+          exec ${pkgs.labwc}/bin/labwc
+        ''}";
+      };
+      # NO default_session, AND THAT IS DELIBERATE.
+      #
+      # greetd's module installs a default (agreety) when this attribute is absent, and
+      # naming one by hand would be a second thing that can be wrong: agreety lives in
+      # greetd's own store path, and `--cmd` is a tuigreet flag, not an agreety one.
+      #
+      # What matters here is initial_session above - the autologin the launch stage
+      # checks. If that session ever ends, greetd falling back to its own greeter is
+      # the right behaviour and needs no configuration from this file.
     };
   };
 
