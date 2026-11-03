@@ -58,17 +58,34 @@ def log(message: str) -> None:
 
 
 def boot_entry_from_grub(iso_path: str) -> tuple[str, str]:
-    """The kernel and initrd paths the ISO's own menu entry names.
+    """The kernel and initrd that the ISO's default menu entry names.
 
-    THE PAIRING IS THE IMAGE'S CLAIM, NOT AN INFERENCE. grub.cfg's entry is one line:
+    THE PAIRING IS THE IMAGE'S CLAIM, NOT AN INFERENCE. The ISO carries two kernels -
+    6.18.60 and 7.3.1 - so any rule that picks one by name ("newest", "first found") pairs
+    a kernel with another build's initrd. easysandbox-vm records exactly that mistake.
 
-        linux /boot/nix/store/<hash>-linux-X/bzImage init=... \\
-              initrd=/boot/nix/store/<hash>-initrd-linux-X/initrd ...
+    TWO FORMATS, AND THE NEWER ONE IS WHY THIS RUN FAILED. Read from
+    NixOS 26.05's own EFI/BOOT/grub.cfg:
 
-    so the kernel is the argument after `linux` and the initrd is the one after
-    `initrd=`, and they come from the same line. easysandbox-vm records what happens
-    without this: a hardcoded 6.18.57 matched nothing, and taking "whichever bzImage
-    find returned first" paired 6.18.59 with another build's initrd.
+        menuentry 'NixOS 26.05... Installer (Linux LTS)' --class installer {
+          linux /boot//nix/store/<hash>-linux-6.18.60/bzImage ${isoboot} init=... \\
+                nohibernate root=fstab loglevel=4 lsm=landlock,yama,bpf
+          initrd /boot//nix/store/<hash>-initrd-linux-6.18.60/initrd
+        }
+
+    The initrd is on ITS OWN LINE, named by GRUB's `initrd` directive - not appended to
+    the `linux` line as `initrd=...`, which is the form easysandbox-vm's older image used
+    and the only form this function first understood. Run 41591542701 died on that
+    difference at once: "no 'linux ... initrd=...' line", four minutes in, before any
+    guest started.
+
+    So both are read: an `initrd=` argument on the linux line if there is one, and
+    otherwise the first `initrd <path>` line after it. The first menu entry is the
+    default one, which is what a person pressing Enter at the boot menu gets.
+
+    THE DOUBLE SLASH IS THE IMAGE'S. `/boot//nix/store/...` appears in grub.cfg because
+    the path is built from a variable, and it is harmless - path lookups collapse it - but
+    it is why the returned paths are not run through a normaliser.
     """
     cfg = subprocess.run(
         ["7z", "e", "-so", iso_path, "EFI/BOOT/grub.cfg"],
@@ -79,37 +96,81 @@ def boot_entry_from_grub(iso_path: str) -> tuple[str, str]:
             f"could not read EFI/BOOT/grub.cfg from {iso_path}: "
             f"{(cfg.stderr or '').strip()[:200]}"
         )
-    for line in cfg.stdout.splitlines():
-        line = line.strip()
-        if not line.startswith("linux "):
+
+    kernel = ""
+    initrd = ""
+    for raw in cfg.stdout.splitlines():
+        line = raw.strip()
+        if not kernel and line.startswith("linux "):
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            kernel = parts[1]
+            # The older form: initrd named as an argument on this same line.
+            for part in parts:
+                if part.startswith("initrd="):
+                    initrd = part[len("initrd="):]
+                    break
             continue
-        parts = line.split()
-        kernel = parts[1]
-        initrd = ""
-        for part in parts:
-            if part.startswith("initrd="):
-                initrd = part[len("initrd="):]
-                break
+        if kernel and not initrd and line.startswith("initrd "):
+            parts = line.split()
+            if len(parts) >= 2:
+                initrd = parts[1]
+            continue
+        # The first entry's block is what matters; a later one is a different kernel.
         if kernel and initrd:
             return kernel, initrd
+
+    if kernel and initrd:
+        return kernel, initrd
     raise SystemExit(
-        f"no 'linux ... initrd=...' line in {iso_path}'s grub.cfg; the image's layout "
-        f"changed and this needs looking at rather than guessing"
+        f"no kernel/initrd pair in {iso_path}'s grub.cfg: "
+        f"kernel={'found' if kernel else 'missing'}, "
+        f"initrd={'found' if initrd else 'missing'}. The image's layout changed and "
+        f"this needs looking at rather than guessing."
     )
 
 
 def extract(iso_path: str, wanted: str, dest: str) -> str:
-    """Pull one file out of the ISO by path suffix, and return where it landed."""
-    subprocess.run(["7z", "x", "-y", "-r", f"-o{dest}", iso_path, wanted],
-                   capture_output=True)
+    """Pull one file out of the ISO by its path suffix, and return where it landed.
+
+    THE FILTER IS THE BASENAME, NOT THE WHOLE PATH. 7z treats its pattern as a wildcard
+    and a value containing slashes matches nothing - measured here: passing
+    "nix/store/<hash>-linux-6.18.60/bzImage" extracted zero files while "bzImage" got
+    both of the image's two kernels. So the basename picks the candidates and the FULL
+    suffix decides which one, which is the half that matters: the two kernels live at
+    different store paths and only one is paired with the initrd this run needs.
+    """
+    leaf = os.path.basename(wanted.replace("\\", "/"))
+    result = subprocess.run(
+        ["7z", "x", "-y", "-r", f"-o{dest}", iso_path, leaf],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise SystemExit(
+            f"7z could not extract {leaf} from {iso_path}: "
+            f"{(result.stderr or result.stdout).strip()[:300]}"
+        )
+
+    suffix = wanted.replace("\\", "/").lstrip("./")
+    found = []
     for root, _dirs, files in os.walk(dest):
         for name in files:
             path = os.path.join(root, name)
-            if path.replace("\\", "/").endswith(wanted.replace("\\", "/")):
-                return path
+            if path.replace("\\", "/").endswith(suffix):
+                found.append(path)
+    if len(found) == 1:
+        return found[0]
+    if not found:
+        raise SystemExit(
+            f"{wanted} is named by the ISO's menu entry but was not in the extracted "
+            f"tree under {dest}. What was extracted: "
+            + (", ".join(os.path.join(r, f) for r, _d, fs in os.walk(dest) for f in fs)
+               or "nothing")
+        )
     raise SystemExit(
-        f"{wanted} is named by the ISO's menu entry but was not in the extracted tree "
-        f"under {dest}"
+        f"{wanted} matched {len(found)} files under {dest}: {found}. The menu entry "
+        f"names one store path and more than that cannot be what it meant."
     )
 
 
