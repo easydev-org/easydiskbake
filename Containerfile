@@ -68,6 +68,11 @@ RUN set -eux; \
         tesseract-ocr-eng \
         e2fsprogs \
         genisoimage \
+        xorriso \
+        # makefs is what rebuilds a FreeBSD mfsroot after /etc/installerconfig is added
+        # to it. Without it the FreeBSD bake cannot put its answer file on the medium,
+        # and there is no other transport - see bsd/freebsd/bake.py.
+        makefs \
         wimtools \
         swtpm \
         ovmf \
@@ -88,6 +93,7 @@ RUN set -eux; \
     qemu-io --version 2>&1 | head -1; \
     7z 2>/dev/null | head -2 | tail -1; \
     xorriso -version 2>&1 | head -2 | tail -1; \
+    command -v makefs; \
     python3 --version; \
     ffmpeg -version 2>&1 | head -1; \
     tesseract --version 2>&1 | head -1; \

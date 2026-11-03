@@ -47,7 +47,8 @@ import time
 # windows/11/bake.py -> the repository root
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from lib import bootkey, compress, desktop, images, iso, smoke, vm, wim, winiso  # noqa: E402
+from lib import (bootkey, compress, desktop, images, iso, live as livelib, smoke, vm,  # noqa: E402
+                 wim, winiso)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ANSWER = os.path.join(HERE, "answer")
@@ -467,6 +468,16 @@ class Baker:
             stdout=open(snap_log, "wb"), stderr=subprocess.STDOUT,
         )
 
+        # THE RECORDING AND THE LAST FRAME ARE KEPT CURRENT, not written at the end.
+        # A cancelled run used to upload neither, because both were produced after the
+        # bake finished and a cancel is a SIGKILL - see lib/live.py.
+        live = livelib.start(
+            [shots], os.path.join(self.work, "install.mp4"),
+            os.path.join(self.work, "last-frame.png"),
+            every=float(os.environ.get("LIVE_ARTIFACT_SECONDS", "20")),
+            fps=int(os.environ.get("RECORD_FPS", "1")),
+        )
+
         # Prove the recorder is producing frames before waiting fifteen minutes for a
         # guest. The prompt to boot from CD is answered in the first seconds, so by the
         # time this check runs there should already be a frame or two.
@@ -511,15 +522,15 @@ class Baker:
         # seconds: encoding at 1 fps makes the video run SNAPSHOT_INTERVAL times
         # faster than real time, which is the point - a 90-minute install is worth
         # watching in 18 minutes, and the file stays small.
-        log("=== encoding the recording ===")
+        # ONE LAST PASS, so both artifacts match the final frame rather than whichever
+        # one the live loop last saw. See lib/live.py.
+        log("=== finalising the recording ===")
+        live.stop(final=True)
         mp4 = os.path.join(self.work, "install.mp4")
-        if vm.record_many(mp4, shots, fps=int(os.environ.get("RECORD_FPS", "1"))):
+        if os.path.exists(mp4):
             log(f"recording: {mp4} ({os.path.getsize(mp4) >> 20} MiB)")
         else:
-            log("recording: nothing to encode")
-
-        # ONE PICTURE OF WHERE IT STOPPED - see lib/lastframe.py for why one and not all.
-        convert_last_frame(shots, os.path.join(self.work, "last-frame.png"))
+            log("recording: nothing was encoded")
 
         if not arrived:
             log("=== THE GUEST DID NOT REACH A RUNNING SYSTEM ===")

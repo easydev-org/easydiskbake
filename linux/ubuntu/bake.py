@@ -47,7 +47,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, REPO)
 
-from lib import compress, iso, smoke, vm  # noqa: E402
+from lib import compress, iso, live as livelib, smoke, vm  # noqa: E402
 
 CONFIG_PORT = 8000
 UBUNTU_TAG = "iso-ubuntu"
@@ -174,11 +174,17 @@ def main(argv: list[str]) -> int:
     #   cloud-config-url=/dev/null  stops the installer re-reading the ISO as a cloud
     #                           config source, which it otherwise does and which costs
     #                           minutes of the same work twice
+    #   console=ttyS0,115200n8  AND THIS ONE WAS MISSING, which is why run 41595469908
+    #                           showed sixteen minutes of "disk 0 MiB" and not one line of
+    #                           guest output: the kernel was writing to the emulated VGA
+    #                           and the serial log stayed empty, so a working install and
+    #                           a hung one were indistinguishable.
     #   ---                     end of the kernel's own arguments
     append = (
         "autoinstall "
         f'"ds=nocloud-net;s={seed_url}" '
-        "ip=dhcp cloud-config-url=/dev/null ---"
+        "ip=dhcp cloud-config-url=/dev/null "
+        "console=ttyS0,115200n8 ---"
     )
 
     shape = vm.Shape(
@@ -200,6 +206,25 @@ def main(argv: list[str]) -> int:
                      stdout=os.path.join(work, "console.log"))
     try:
         guest.start()
+
+        # THE GUEST IS A SCREEN AS WELL AS A CONSOLE, so it is recorded. A text installer
+        # still draws a framebuffer - subiquity's console is on tty1 as well as ttyS0 -
+        # and a cancelled run's last frame is what says which pane it was on.
+        shots = os.path.join(work, "frames")
+        os.makedirs(shots, exist_ok=True)
+        snap = subprocess.Popen(
+            [sys.executable, os.path.join(REPO, "lib", "snapshots.py"),
+             guest.paths.record, shots,
+             os.environ.get("SNAPSHOT_INTERVAL", "5"), "2000"],
+            stdout=open(os.path.join(shots, "snapshots.log"), "wb"),
+            stderr=subprocess.STDOUT,
+        )
+        live = livelib.start(
+            [shots], os.path.join(work, "install.mp4"),
+            os.path.join(work, "last-frame.png"),
+            every=float(os.environ.get("LIVE_ARTIFACT_SECONDS", "20")),
+        )
+
         log(f"waiting up to {args.timeout}s for the installer to finish and reboot")
         deadline = time.time() + args.timeout
         while time.time() < deadline:
@@ -214,6 +239,12 @@ def main(argv: list[str]) -> int:
             log(f"=== THE INSTALLER DID NOT FINISH IN {args.timeout}s ===")
     finally:
         guest.stop()
+        snap.terminate()
+        try:
+            snap.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            snap.kill()
+        live.stop(final=True)
         server.terminate()
         try:
             server.wait(timeout=10)

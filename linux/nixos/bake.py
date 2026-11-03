@@ -46,7 +46,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, REPO)
 
-from lib import compress, iso, serial, smoke, vm  # noqa: E402
+from lib import compress, iso, live as livelib, serial, smoke, vm  # noqa: E402
 
 NIXOS_TAG = "iso-nixos"
 CONFIG_NAME = "configuration.nix"
@@ -303,6 +303,25 @@ def main(argv: list[str]) -> int:
     try:
         guest.start()
         ser.open(timeout=60)
+
+        # THE SCREEN TOO. This installer is installed by typing, but it draws - and a
+        # cancelled run's last frame says which step it had reached without reading the
+        # console. See lib/live.py for why both artifacts are kept current.
+        shots = os.path.join(work, "frames")
+        os.makedirs(shots, exist_ok=True)
+        snap = subprocess.Popen(
+            [sys.executable, os.path.join(REPO, "lib", "snapshots.py"),
+             guest.paths.record, shots,
+             os.environ.get("SNAPSHOT_INTERVAL", "5"), "2000"],
+            stdout=open(os.path.join(shots, "snapshots.log"), "wb"),
+            stderr=subprocess.STDOUT,
+        )
+        live = livelib.start(
+            [shots], os.path.join(work, "install.mp4"),
+            os.path.join(work, "last-frame.png"),
+            every=float(os.environ.get("LIVE_ARTIFACT_SECONDS", "20")),
+        )
+
         # 115 seconds for the live medium to reach a root shell. Measured: the ISO's
         # own boot takes a little under two minutes before it prints the prompt.
         log("waiting 115s for the live medium to reach a shell")
@@ -322,13 +341,19 @@ def main(argv: list[str]) -> int:
             log(f"=== THE GUEST DID NOT POWER OFF IN {args.timeout}s ===")
     finally:
         guest.stop()
+        snap.terminate()
+        try:
+            snap.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            snap.kill()
+        live.stop(final=True)
         server.terminate()
         try:
             server.wait(timeout=10)
         except subprocess.TimeoutExpired:
             server.kill()
 
-    console = os.path.join(work, "console.log")
+    console = ser.sink
     rc = install_status(console)
     log(f"nixos-install exit status: {rc if rc is not None else '<never returned>'}")
     if rc != 0:

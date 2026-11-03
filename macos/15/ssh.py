@@ -37,7 +37,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, REPO)
 
-from lib import compress, machine, smoke, vm  # noqa: E402
+from lib import compress, live as livelib, machine, smoke, vm  # noqa: E402
 
 # The password the desktop stage was given. Remote Login is turned on from a root shell
 # started with sudo, so this is the account's password, not root's.

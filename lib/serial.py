@@ -80,15 +80,64 @@ class Serial:
     a verdict, in text form. So each `say()` takes the time that step needs, measured
     from a run that worked, and the caller passes a duration rather than waiting for a
     pattern.
+
+    THE OUTPUT SIDE IS NOT OPTIONAL, AND RUN 41592290525 IS WHY.
+
+    `-chardev pipe` is two fifos: this class writes `serial.in` and qemu writes
+    `serial.out`. The first version only ever opened the write side, so nothing read the
+    guest's console. A fifo has no reader until somebody opens one, and once qemu's writes
+    fill the pipe buffer - 64 KiB - qemu BLOCKS. The guest then freezes mid-command, which
+    is what happened forty seconds after `nixos-install` started:
+
+        06:53:11  > sudo nixos-install ... ; echo INSTALL_RC=$?
+        07:37:19  (nothing, for 44 minutes)
+
+    The install had not failed and was not slow. It was stopped, waiting for somebody to
+    read 64 KiB of output it had already produced.
+
+    So a reader thread opens `serial.out` and drains it into a caller-supplied sink - the
+    console log, normally - and keeps draining until close(). Nothing decides anything
+    from this text; it is forwarded so the run is readable and so the pipe never fills.
     """
 
-    def __init__(self, work: str, name: str = "serial"):
+    def __init__(self, work: str, name: str = "serial", sink: str | None = None):
         os.makedirs(work, exist_ok=True)
         self.stdin, self.stdout = fifo_pair(work, name)
+        self.sink = sink or os.path.join(work, "serial.out.log")
         self._writer = None
+        self._reader_thread = None
+        self._stop_reading = False
+
+    def _drain(self) -> None:
+        """Copy the guest's console into `sink` for as long as it produces anything.
+
+        OPENED AFTER QEMU, WHICH IS WHY THIS IS A THREAD. Opening the read side blocks
+        until a writer appears, and the writer is qemu, which the caller starts between
+        open() and the first command. Doing it here means the block is on a thread that
+        nobody is waiting for.
+        """
+        import threading
+
+        try:
+            with open(self.stdout, "rb", buffering=0) as reader, \
+                    open(self.sink, "ab") as out:
+                while not self._stop_reading:
+                    try:
+                        chunk = reader.read(4096)
+                    except OSError:
+                        break
+                    if not chunk:
+                        # A fifo gives EOF between writers; qemu is still running, so the
+                        # only correct reading of it is "wait for more".
+                        time.sleep(0.2)
+                        continue
+                    out.write(chunk)
+                    out.flush()
+        except OSError as exc:
+            log(f"  console reader stopped: {exc}")
 
     def open(self, timeout: float = 30.0) -> "Serial":
-        """Open the writer side.
+        """Open the writer side, and start draining the read side.
 
         OPENING BLOCKS UNTIL QEMU IS READING. A fifo has no buffer until both ends are
         open, so `open(for writing)` on a host whose qemu has not started yet waits -
@@ -115,6 +164,9 @@ class Serial:
                 f"this path - check the qemu command line for '-serial chardev:serial0'."
             )
         self._writer = result["f"]
+
+        self._reader_thread = threading.Thread(target=self._drain, daemon=True)
+        self._reader_thread.start()
         return self
 
     def say(self, line: str, wait: float = 3.0) -> None:
@@ -133,9 +185,36 @@ class Serial:
         time.sleep(wait)
 
     def close(self) -> None:
+        """Stop writing, stop reading, and let the caller see what the guest said.
+
+        THE READER IS STOPPED BY A FLAG, NOT BY CLOSING ITS FIFO. Closing `serial.out`
+        from here would race the thread already blocked in read() on it, and the result
+        would be an exception in a daemon thread at exactly the moment the run is ending -
+        noise in a log that is being read for a verdict.
+
+        The order is: stop the writer so qemu sees EOF and finishes honestly, then let the
+        reader drain whatever is still buffered, then join.
+        """
+        self._stop_reading = True
         if self._writer is not None:
             try:
                 self._writer.close()
             except OSError:
                 pass
             self._writer = None
+        if self._reader_thread is not None:
+            self._reader_thread.join(timeout=10)
+            self._reader_thread = None
+
+    def console(self) -> str:
+        """Everything the guest has said, as text.
+
+        FOR THE CALLER'S OWN JUDGEMENT - a NixOS bake reads INSTALL_RC out of this rather
+        than parsing a picture. Decoded with `replace` because a console carries escape
+        sequences and partial UTF-8, and neither is a reason to fail.
+        """
+        try:
+            with open(self.sink, "rb") as fh:
+                return fh.read().decode("utf-8", "replace")
+        except OSError:
+            return ""

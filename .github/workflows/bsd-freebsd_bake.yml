@@ -1,0 +1,119 @@
+name: bsd-freebsd_bake
+
+# Install FreeBSD with bsdinstall in script mode, and publish the disk.
+#
+# NO SCREEN IS READ AND NOTHING IS CLICKED. bsdinstall's `script` target is the same
+# installation path as its menu wizard, driven from /etc/installerconfig instead of from
+# prompts - so the whole install is one file on the medium.
+#
+# THE FILE GOES IN THE MEDIUM'S mfsroot, and that is why the ISO is repacked:
+# /etc/installerconfig is read from the live environment's memory filesystem, not from the
+# ISO's own tree and not from a second volume. bsd/freebsd/bake.py unpacks the mfsroot,
+# adds the file, rebuilds it with makefs, and repacks the ISO with xorriso.
+#
+# WHAT THE RESULT HAS: sshd on, the docker/admin account, and git, curl, python3, node,
+# jq, unzip, bash and sudo - the toolchain a GitHub Actions runner expects. All of it is
+# done inside bsdinstall's chroot, so nothing has to log in afterwards to finish the job.
+#
+# MANUAL ONLY.
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Push the disk to ghcr"
+        type: boolean
+        default: true
+      disk_size:
+        description: "Guest disk size"
+        default: "24G"
+      install_timeout:
+        description: "Seconds the installer may run"
+        default: "3600"
+
+concurrency:
+  group: bsd-freebsd-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bake:
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: freebsd-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            # the ISO, its repacked copy, the disk and the compressed output
+            python3 lib/ci.py free-disk --need 40
+            python3 lib/ci.py tags --prefix iso-freebsd
+            command -v makefs
+            command -v xorriso
+
+      - name: install
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: freebsd-install
+          interval: "15"
+          command: |
+            set -euo pipefail
+            mkdir -p out
+            export GITHUB_TOKEN="${{ github.token }}"
+            python3 bsd/freebsd/bake.py \
+              --out out/freebsd.qcow2 \
+              --disk-size "${{ inputs.disk_size || '24G' }}" \
+              --timeout "${{ inputs.install_timeout || '3600' }}"
+
+      - name: keep the recording
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: freebsd-recording
+          path: |
+            out/install.mp4
+            out/last-frame.png
+            out/console.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: upload the disk
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: freebsd-qcow2
+          path: out/freebsd.qcow2
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: push the disk
+        if: ${{ success() && (inputs.publish == true || inputs.publish == null) }}
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: freebsd-publish
+          interval: "15"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py install-oras
+            python3 lib/ci.py login --registry ghcr.io
+            python3 lib/publish_disk.py out/freebsd.qcow2 --kind bsd-freebsd

@@ -48,7 +48,7 @@ import time
 # android/15/bake.py -> the repository root
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from lib import avd, ci, emulator, iso, vm  # noqa: E402
+from lib import avd, ci, emulator, iso, live as livelib, vm  # noqa: E402
 
 IMAGE = "sysimg:android-15-aosp"
 
@@ -71,22 +71,6 @@ def gold_token() -> str:
 
 def log(msg: str) -> None:
     print(f"[bake-android {__import__('time').strftime('%H:%M:%S')}] {msg}", flush=True)
-
-
-def convert_last_frame(shots: str, dest: str) -> None:
-    """Write the newest frame as a PNG, for the workflow's fallback artifact.
-
-    Not fatal when it fails: this runs after the bake has already decided its result, and
-    a missing picture must not turn one failure into two.
-    """
-    try:
-        import lastframe
-        if lastframe.main([shots, dest]) != 0:
-            log("no last-frame.png was written")
-    except (ImportError, OSError) as exc:
-        log(f"could not write the last frame: {exc}")
-
-
 
 
 def parse(argv: list[str]) -> argparse.Namespace:
@@ -168,6 +152,16 @@ def main(argv: list[str]) -> int:
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
 
+    # THE RECORDING IS KEPT CURRENT, so a cancelled run still has an mp4 and a last
+    # frame - see lib/live.py. The emulator's boot takes minutes and its failure mode is
+    # a black screen, which is a thing to look at rather than to read.
+    live = livelib.start(
+        [shots], os.path.join(work, "install.mp4"),
+        os.path.join(work, "last-frame.png"),
+        every=float(os.environ.get("LIVE_ARTIFACT_SECONDS", "20")),
+        fps=int(os.environ.get("RECORD_FPS", "1")),
+    )
+
     try:
         booted = emu.wait_for_boot(args.boot_timeout)
 
@@ -184,18 +178,16 @@ def main(argv: list[str]) -> int:
             snap.wait(timeout=10)
         except subprocess.TimeoutExpired:
             snap.kill()
+        live.stop(final=True)
 
-    # Encoded whether or not it booted: a failed boot is exactly when the frames are
+    # Written whether or not it booted: a failed boot is exactly when the frames are
     # worth watching, and the emulator's own log is kept beside them.
-    log("=== encoding the recording ===")
+    log("=== finalising the recording ===")
     mp4 = os.path.join(work, "install.mp4")
-    if vm.record_many(mp4, shots, fps=int(os.environ.get("RECORD_FPS", "1"))):
+    if os.path.exists(mp4):
         log(f"recording: {mp4} ({os.path.getsize(mp4) >> 20} MiB)")
     else:
-        log("recording: nothing to encode")
-
-    # ONE PICTURE OF WHERE IT STOPPED - see lib/lastframe.py for why one and not all.
-    convert_last_frame(shots, os.path.join(work, "last-frame.png"))
+        log("recording: nothing was encoded")
 
     if not booted:
         log("=== THE GUEST DID NOT REACH sys.boot_completed ===")

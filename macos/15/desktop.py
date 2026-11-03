@@ -44,7 +44,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, REPO)
 
-from lib import compress, desktop, machine, smoke, vm  # noqa: E402
+from lib import compress, desktop, live as livelib, machine, smoke, vm  # noqa: E402
 
 
 def log(message: str) -> None:
@@ -116,6 +116,15 @@ def main(argv: list[str]) -> int:
         stderr=subprocess.STDOUT,
     )
 
+    # THE RECORDING IS KEPT CURRENT, so a cancelled run still has one - see lib/live.py.
+    # The wizard is driven by clicks and its failures are only ever visible in a video.
+    live = livelib.start(
+        [os.path.join(frames, "shots"), frames],
+        os.path.join(work, "install.mp4"),
+        os.path.join(work, "last-frame.png"),
+        every=float(os.environ.get("LIVE_ARTIFACT_SECONDS", "20")),
+    )
+
     arrived = False
     try:
         log("=== the Setup Assistant: drive.py ===")
@@ -138,6 +147,7 @@ def main(argv: list[str]) -> int:
             snap.wait(timeout=5)
         except subprocess.TimeoutExpired:
             snap.kill()
+        live.stop(final=True)
 
     if not arrived:
         log("=== THE WIZARD DID NOT REACH A DESKTOP ===")

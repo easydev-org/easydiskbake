@@ -50,8 +50,8 @@ class AvdError(RuntimeError):
 # streamed desktop matches the other platforms; the rest is what makes a phone AVD
 # behave like a desktop with a mouse.
 CONFIG = {
-    "hw.lcd.width": "1024",
-    "hw.lcd.height": "768",
+    "hw.lcd.width": "1920",
+    "hw.lcd.height": "1080",
     "hw.lcd.density": "240",
     "hw.initialOrientation": "landscape",
     "hw.keyboard": "yes",
@@ -70,7 +70,7 @@ CONFIG = {
     "hw.sensors.orientation": "no",
     "hw.sensors.proximity": "no",
     "disk.dataPartition.size": "4G",
-    "skin.name": "1024x768",
+    "skin.name": "1920x1080",
     "skin.path": "_no_skin",
     "showDeviceFrame": "no",
 }
