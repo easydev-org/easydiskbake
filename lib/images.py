@@ -126,11 +126,11 @@ LINUX = {
         "size": None,
     },
     "alpine": {
-        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/x86_64/"
-               "alpine-virt-3.21.3-x86_64.iso",
-        # Measured with a HEAD; the filename carries the version, which is the pin.
-        "sha256": None,
-        "size": 66060288,
+        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/x86_64/"
+               "alpine-virt-3.24.3-x86_64.iso",
+        # The vendor publishes a .sha256 beside the image.
+        "sha256": "cdc1bc0efc64d8d611bf3733f54868172a545888dfd726f518bf279bcb0ff1af",
+        "size": 70254592,
     },
 
     # ---------------------------------------------------------------------------
@@ -175,10 +175,10 @@ LINUX = {
         "size": 1217329152,
     },
     "arch": {
-        "url": "https://geo.mirror.pkgbuild.com/iso/2026.10.01/"
-               "archlinux-2026.10.01-x86_64.iso",
-        "sha256": "684ded26c63240ff4a41e8c25ee84ea6da233f557364821f13d12c2b0a9059a5",
-        "size": 1640497152,
+        "url": "https://geo.mirror.pkgbuild.com/iso/2026.11.01/"
+               "archlinux-2026.11.01-x86_64.iso",
+        "sha256": "01bcdcf01af2f7d58f2794899c834770d25c9bfc945bd092b32bb66672a4a216",
+        "size": 1317568512,
     },
 
     # ---------------------------------------------------------------------------
@@ -193,67 +193,72 @@ LINUX = {
     "popos": {
         # 24.04 nvidia: the image with the driver branch already in it, which is the
         # one Pop!_OS is known for. intel exists as a second entry if it is wanted.
-        "url": "https://iso.pop-os.org/24.04/amd64/nvidia/22/"
-               "pop-os_24.04_amd64_nvidia_22.iso",
+        "url": "https://iso.pop-os.org/24.04/amd64/nvidia/28/"
+               "pop-os_24.04_amd64_nvidia_28.iso",
         # From the vendor's SHA256SUMS beside the image.
-        "sha256": "d58ab031a9a251c844a87bea7948a9c3924165ee31418aa5644c36d72ba8b4d2",
-        "size": 3600056320,
+        "sha256": "bd867a6b93810769b2189471cfc2d7b6b9c642213c7bf827de511be5f42ce666",
+        "size": 3934945280,
     },
     "cachyos": {
         "url": "https://mirror.cachyos.org/ISO/desktop/260809/"
                "cachyos-desktop-linux-260809.iso",
-        # CachyOS publishes no checksum file beside the ISO at this path; the
-        # filename carries the build, which is the pin, and the ISO9660 check in
-        # publish_iso.py is what catches a bad download.
-        "sha256": None,
-        "size": None,
+        # From the .sha256 published beside the image.
+        "sha256": "959f6577f45e25ee9fd8c220fd221b08e4ea79412c7315c0f922dd6d86d5e33c",
+        "size": 3188850688,
     },
     "endeavouros": {
         "url": "https://mirrors.gigenet.com/endeavouros/iso/"
                "EndeavourOS_Titan-Nova-2026.08.15.iso",
+        # NO SHA256: the vendor publishes only a .sha512sum for this image, and a
+        # truncated sha512 is not a sha256. The size is pinned and the ISO9660 check
+        # in publish_iso.py catches a corrupt download; the difference is that this
+        # one cannot catch a substituted file.
         "sha256": None,
-        "size": None,
+        "size": 3898638336,
     },
     "nixos": {
         # The minimal image: NixOS has no answer-file installer, so a bake drives it
         # over a serial console, and the smaller image is the one with the console
         # menu rather than a graphical session.
-        "url": "https://channels.nixos.org/nixos-unstable/"
+        "url": "https://channels.nixos.org/nixos-26.05/"
                "latest-nixos-minimal-x86_64-linux.iso",
-        # A channel URL, which moves: the pin is the file it resolves to today and
-        # there is nothing stable to hash against. lib/iso.py records the size of
-        # whatever it pulled, so a truncated transfer still fails.
-        "sha256": None,
-        "size": None,
+        # The channel URL resolves to a dated file, and NixOS publishes a .sha256
+        # beside it. That digest belongs to whatever the channel points at today, so
+        # this pair has to be refreshed together - which the failure message says.
+        "sha256": "83445162c4a18fb372657d38c942147b770d3bfdaf6bb1c37905333b80f9a79f",
+        "size": 1746124800,
     },
     "mint": {
-        "url": "https://mirrors.kernel.org/linuxmint/stable/22.2/"
-               "linuxmint-22.2-cinnamon-64bit.iso",
-        "sha256": None,
-        "size": None,
+        "url": "https://mirrors.kernel.org/linuxmint/stable/22.3/"
+               "linuxmint-22.3-cinnamon-64bit.iso",
+        # From sha256sum.txt under the same mirror path.
+        "sha256": "a081ab202cfda17f6924128dbd2de8b63518ac0531bcfe3f1a1b88097c459bd4",
+        "size": 3091660800,
     },
     "alma": {
-        "url": "https://repo.almalinux.org/almalinux/9/isos/x86_64/"
-               "AlmaLinux-9.8-x86_64-minimal.iso",
-        "sha256": None,
-        "size": None,
+        "url": "https://repo.almalinux.org/almalinux/10/isos/x86_64/"
+               "AlmaLinux-10.2-x86_64-minimal.iso",
+        # From the CHECKSUM file beside the images.
+        "sha256": "1b532f534231da0d1cd0ccae622bea6cd588d8a0d7b259f1f131501a6eed41a4",
+        "size": 1651376128,
     },
     "rocky": {
-        "url": "https://dl.rockylinux.org/pub/rocky/9/isos/x86_64/"
-               "Rocky-9.8-x86_64-minimal.iso",
-        "sha256": None,
-        "size": None,
+        "url": "https://dl.rockylinux.org/pub/rocky/10/isos/x86_64/"
+               "Rocky-10.2-x86_64-minimal.iso",
+        # From the CHECKSUM file beside the images.
+        "sha256": "aac6ac3ce781b91a91ce78463405f66c611a5dca4b3840c79e5e01d97302f6c8",
+        "size": 2072444928,
     },
     "manjaro": {
         # 26.1.2 Bian-May, XFCE full. Found through the release announcement on
         # forum.manjaro.org, because download.manjaro.org answers / and /xfce/ with a
         # redirect to the download page and no directory listing - the version
         # directory is only reachable if its exact name is already known.
-        "url": "https://download.manjaro.org/xfce/26.1.2/"
-               "manjaro-xfce-26.1.2-260910-linux71.iso",
+        "url": "https://download.manjaro.org/xfce/26.1.3/"
+               "manjaro-xfce-26.1.3-261028-linux618.iso",
         # From the .sha256 published beside the image.
-        "sha256": "9ec142e8cc8060db7447cdada1b0a5f309ce10f9342049bccaf2414e54211700",
-        "size": 5171830784,
+        "sha256": "a100c3ca17668fd10daa453709ff29e22f43f1cd83f44369f70b02e21bda3af9",
+        "size": 5210302464,
     },
     "zorin": {
         # 18.1 Core. zorin.com/os/download/18/core/ is a page, not a file, but the
@@ -270,9 +275,12 @@ LINUX = {
         # download.opensuse.org/distribution/leap/ did not resolve when this was
         # written, and Tumbleweed is the edition the project points people at.
         "url": "https://download.opensuse.org/tumbleweed/iso/"
-               "openSUSE-Tumbleweed-DVD-x86_64-Current.iso",
-        "sha256": None,
-        "size": None,
+               "openSUSE-Tumbleweed-DVD-x86_64-Snapshot20261031-Media.iso",
+        # A dated snapshot rather than -Current: Current is a symlink that moves, and
+        # a hash of one snapshot cannot be applied to the next. Refreshing means
+        # taking both the filename and the .sha256 together.
+        "sha256": "993f6a07ac3f35b113de698975bd43ec6e8da5ad6dac3ddcdaddbc71a928f440",
+        "size": 4611637248,
     },
 }
 
