@@ -42,7 +42,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, REPO)
 
-from lib import bsdinstall, compress, iso as isolib, live as livelib, vm  # noqa: E402
+from lib import (bsdinstall, compress, iso as isolib, live as livelib,  # noqa: E402
+                 serial, vm)
 
 FREESD_TAG = "iso-freebsd"
 CONFIG_PORT = 8000
@@ -138,9 +139,23 @@ def build_media(iso_path: str, work: str) -> str:
     loader_conf = os.path.join(tree, "boot", "loader.conf")
     if os.path.exists(loader_conf):
         with open(loader_conf, "a", encoding="utf-8") as fh:
-            fh.write('\n# easydiskbake: install from /etc/installerconfig, no menu\n')
+            fh.write('\n# easydiskbake: no menu, and everything on the serial port\n')
             fh.write('autoboot_delay="0"\n')
-        log("boot/loader.conf: autoboot with no delay")
+            # THE CONSOLE, AND THE REASON RUN 41602957404 SHOWED NOTHING.
+            #
+            # FreeBSD sends boot messages to the VGA adapter by default. qemu's serial
+            # gets nothing, so the bake's log had only its own heartbeat lines -
+            # "0 MiB, 120s, 240s, ... 720s" - and a bsdinstall that was working and one
+            # that had died were indistinguishable for twelve minutes.
+            #
+            # These four lines are the documented way to move both the loader's output
+            # and the kernel's console onto ttyu0. They have to be in the MEDIA's
+            # loader.conf because that is read before anything on the disk exists.
+            fh.write('console="comconsole"\n')
+            fh.write('boot_serial="YES"\n')
+            fh.write('comconsole_speed="115200"\n')
+            fh.write('comconsole_port="0x3f8"\n')
+        log("boot/loader.conf: autoboot, console on ttyu0")
 
     # The repack keeps the El Torito record that makes it bootable: boot/cdboot for BIOS
     # and boot/boot1.efi for UEFI, both of which this image carries.
@@ -192,15 +207,23 @@ def main(argv: list[str]) -> int:
                    check=True)
     log(f"disk created: {args.disk_size}")
 
-    shape = vm.Shape(cpus=args.cpus, mem_mb=args.mem, machine="q35", vga="std")
+    # THE SERIAL IS A CHARDDEV ON A FIFO, NOT mon:stdio, SO IT CAN BE READ AND PRINTED.
+    #
+    # With mon:stdio the console lands in console.log through qemu's own stdout, which
+    # means nothing prints it while the run happens - and a poll on the disk says "0 MiB"
+    # whether bsdinstall is working or dead. lib/serial.py's drain thread prints every
+    # line as it arrives, which is what makes this log readable at all.
+    ser = serial.Serial(work, "serial")
+    shape = vm.Shape(cpus=args.cpus, mem_mb=args.mem, machine="q35", vga="std",
+                     serial_pipe=ser.stdin.removesuffix(".in"))
     drives = [
         "-drive", f"file={media},media=cdrom,readonly=on",
         "-drive", f"file={disk},if=virtio,format=qcow2",
     ]
-    guest = vm.Guest(work, extra=drives, shape=shape,
-                     stdout=os.path.join(work, "console.log"))
+    guest = vm.Guest(work, extra=drives, shape=shape, stdout=os.devnull)
     try:
         guest.start()
+        ser.open(timeout=60)
         shots = os.path.join(work, "frames")
         os.makedirs(shots, exist_ok=True)
         snap = subprocess.Popen(
@@ -236,12 +259,13 @@ def main(argv: list[str]) -> int:
         except subprocess.TimeoutExpired:
             snap.kill()
         live.stop(final=True)
+        ser.close()
 
     log(f"disk is {os.stat(disk).st_blocks * 512 >> 20} MiB")
     if not bsdinstall.check_disk_ufs(disk):
         log("=== THE DISK HOLDS NO UFS FILESYSTEM ===")
         log("  a failed bsdinstall leaves a partition table and nothing on it")
-        first_error(os.path.join(work, "console.log"))
+        first_error(ser.sink)
         return 1
 
     log("compressing")

@@ -298,8 +298,11 @@ def main(argv: list[str]) -> int:
         "-drive", f"file={iso_path},media=cdrom,readonly=on",
         "-drive", f"file={disk},if=virtio,format=qcow2",
     ]
-    guest = vm.Guest(work, extra=drives, shape=shape,
-                     stdout=os.path.join(work, "console.log"))
+    # stdout IS /dev/null ON PURPOSE. This guest's console is a chardev on a fifo
+    # (Shape.serial_pipe), so qemu's own stdout carries nothing but warnings - and the
+    # first version pointed it at console.log, which made an empty file that looked like
+    # a guest saying nothing. The console is ser.sink, and ser prints every line.
+    guest = vm.Guest(work, extra=drives, shape=shape, stdout=os.devnull)
     try:
         guest.start()
         ser.open(timeout=60)
