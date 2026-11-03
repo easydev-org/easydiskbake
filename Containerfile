@@ -152,8 +152,28 @@ RUN set -eux; \
        "$ANDROID_SDK_ROOT/cmdline-tools/latest"; \
     yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true; \
     "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
-        "platform-tools" "emulator" >/dev/null; \
+        "platform-tools" "emulator" \
+        "system-images;android-35;default;x86_64" >/dev/null; \
     rm -rf "$ANDROID_SDK_ROOT/cmdline-tools" /root/.android/cache
+
+# THE SYSTEM IMAGE IS PART OF THE IMAGE, NOT OF THE AVD, AND RUN 41605230808 IS WHY.
+#
+# A published AVD holds config.ini, userdata, cache and an initrd - not the system
+# partition. That comes from $ANDROID_SDK_ROOT/system-images/<api>/<tag>/<abi>/, which
+# the AVD's config.ini names as `image.sysdir.1`. The first version of this RUN block
+# installed only platform-tools and emulator, so every Android bake started an emulator
+# that exited at once:
+#
+#     WARNING | /opt/android-sdk/system-images/android-35/default/x86_64/ is not a
+#               valid directory
+#     FATAL   | Broken AVD system path. Check your ANDROID_SDK_ROOT value
+#
+# The comment above this block said the emulator looks for its system images here, and
+# then nothing put them there.
+#
+# THE VERSION IS PINNED TO WHAT android/15/android_pin.py BUILDS THE AVD ON, so the two
+# cannot drift: a system image of a different API level is not interchangeable, and the
+# mismatch would show up as an emulator that starts and never boots.
 
 ENV PATH="$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/emulator:$PATH"
 

@@ -57,7 +57,7 @@ def log(message: str) -> None:
     print(f"[nixos {time.strftime('%H:%M:%S')}] {message}", flush=True)
 
 
-def boot_entry_from_grub(iso_path: str) -> tuple[str, str]:
+def boot_entry_from_grub(iso_path: str) -> tuple[str, str, str, str]:
     """The kernel and initrd that the ISO's default menu entry names.
 
     THE PAIRING IS THE IMAGE'S CLAIM, NOT AN INFERENCE. The ISO carries two kernels -
@@ -86,6 +86,22 @@ def boot_entry_from_grub(iso_path: str) -> tuple[str, str]:
     THE DOUBLE SLASH IS THE IMAGE'S. `/boot//nix/store/...` appears in grub.cfg because
     the path is built from a variable, and it is harmless - path lookups collapse it - but
     it is why the returned paths are not run through a normaliser.
+
+    THE ENTRY ALSO NAMES init=, AND LEAVING IT OUT IS WHY RUN 41605220712 STOPPED DEAD.
+
+    The boot stops in the initrd:
+
+        [FAILED] Failed to start Find NixOS closure.
+        Dependency failed for Initrd Default Target.
+        You are in emergency mode.
+
+    "Find NixOS closure" is the initrd looking for the path in `init=`. This bake boots
+    the kernel directly instead of through the media's GRUB, so nothing expanded the
+    menu entry - and the kernel command line it built named no init at all. Without one
+    the initrd has no closure to mount and drops to a shell.
+
+    It is returned here rather than hardcoded because the path carries the build hash of
+    a specific NixOS release, and that hash changes with every channel update.
     """
     cfg = subprocess.run(
         ["7z", "e", "-so", iso_path, "EFI/BOOT/grub.cfg"],
@@ -99,9 +115,11 @@ def boot_entry_from_grub(iso_path: str) -> tuple[str, str]:
 
     kernel = ""
     initrd = ""
+    init = ""
     for raw in cfg.stdout.splitlines():
         line = raw.strip()
         if not kernel and line.startswith("linux "):
+            entry_line = line
             parts = line.split()
             if len(parts) < 2:
                 continue
@@ -110,7 +128,8 @@ def boot_entry_from_grub(iso_path: str) -> tuple[str, str]:
             for part in parts:
                 if part.startswith("initrd="):
                     initrd = part[len("initrd="):]
-                    break
+                elif part.startswith("init="):
+                    init = part[len("init="):]
             continue
         if kernel and not initrd and line.startswith("initrd "):
             parts = line.split()
@@ -118,15 +137,16 @@ def boot_entry_from_grub(iso_path: str) -> tuple[str, str]:
                 initrd = parts[1]
             continue
         # The first entry's block is what matters; a later one is a different kernel.
-        if kernel and initrd:
-            return kernel, initrd
+        if kernel and initrd and init:
+            return kernel, initrd, init, entry_line
 
-    if kernel and initrd:
-        return kernel, initrd
+    if kernel and initrd and init:
+        return kernel, initrd, init, entry_line
     raise SystemExit(
-        f"no kernel/initrd pair in {iso_path}'s grub.cfg: "
+        f"no kernel/initrd/init set in {iso_path}'s grub.cfg: "
         f"kernel={'found' if kernel else 'missing'}, "
-        f"initrd={'found' if initrd else 'missing'}. The image's layout changed and "
+        f"initrd={'found' if initrd else 'missing'}, "
+        f"init={'found' if init else 'missing'}. The image's layout changed and "
         f"this needs looking at rather than guessing."
     )
 
@@ -260,9 +280,10 @@ def main(argv: list[str]) -> int:
             ) from exc
     log(f"iso {os.path.getsize(iso_path) >> 20} MiB")
 
-    kernel_path, initrd_path = boot_entry_from_grub(iso_path)
+    kernel_path, initrd_path, init_path, entry = boot_entry_from_grub(iso_path)
     log(f"the ISO's menu entry names kernel={kernel_path}")
     log(f"                                  initrd={initrd_path}")
+    log(f"                                  init={init_path}")
 
     tree = os.path.join(work, "x")
     kernel = extract(iso_path, kernel_path.lstrip("/boot/"), tree)
@@ -288,8 +309,19 @@ def main(argv: list[str]) -> int:
         firmware_code="", firmware_vars="",
         vga="std", cpu="", smp_topology="",
         serial_pipe=ser.stdin.removesuffix(".in"),
+        # THE COMMAND LINE THE MEDIA'S OWN ENTRY WOULD HAVE BUILT, MINUS GRUB.
+        #
+        # init= is the closure the initrd is supposed to mount, and without it the boot
+        # stops in "Find NixOS closure" and drops to emergency mode. The rest is the
+        # entry's own text: nohibernate, root=fstab, loglevel and the security modules
+        # are what the image asks for, and a bake that invented a different list would be
+        # testing a system the image does not ship.
+        #
+        # console= is ADDED, because this runs headless and the media's entry does not
+        # name a console at all - it expects the GRUB gfxterm it was written for.
         kernel_append=(
-            "edd=off nohibernate root=fstab loglevel=4 console=ttyS0,115200n8"
+            f"{init_path} edd=off nohibernate root=fstab loglevel=4 "
+            "lsm=landlock,yama,bpf console=ttyS0,115200n8"
         ),
     )
     drives = [
