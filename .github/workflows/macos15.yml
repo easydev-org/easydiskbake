@@ -122,7 +122,7 @@ jobs:
       checks: write
       packages: write
     outputs:
-      tag: ${{ inputs.setup_from || inputs.publish_tag || 'macos15-setup' }}
+      tag: ${{ inputs.setup_from || steps.publish.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -218,7 +218,7 @@ jobs:
       checks: write
       packages: write
     outputs:
-      tag: ${{ inputs.desktop_from || inputs.publish_tag || 'macos15-desktop' }}
+      tag: ${{ inputs.desktop_from || steps.publish.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -323,7 +323,7 @@ jobs:
       checks: write
       packages: write
     outputs:
-      tag: ${{ inputs.ssh_from || inputs.publish_tag || 'macos15-ssh' }}
+      tag: ${{ inputs.ssh_from || steps.publish.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 

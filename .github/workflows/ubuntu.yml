@@ -95,7 +95,7 @@ jobs:
     outputs:
       # ONE EXPRESSION SERVES BOTH PATHS: given a tag, this job installs nothing and the
       # output is what it was given.
-      tag: ${{ inputs.bake_from || inputs.publish_tag || 'linux-ubuntu' }}
+      tag: ${{ inputs.bake_from || steps.publish.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 

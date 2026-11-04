@@ -87,7 +87,7 @@ jobs:
       checks: write
       packages: write
     outputs:
-      tag: ${{ inputs.bake_from || inputs.publish_tag || 'bsd-freebsd' }}
+      tag: ${{ inputs.bake_from || steps.publish.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 

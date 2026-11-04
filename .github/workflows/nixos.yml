@@ -109,7 +109,7 @@ jobs:
       checks: write
       packages: write
     outputs:
-      tag: ${{ inputs.base_from || 'nixos-base' }}
+      tag: ${{ inputs.base_from || steps.publish.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 

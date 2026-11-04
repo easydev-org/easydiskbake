@@ -96,7 +96,7 @@ jobs:
       checks: write
       packages: write
     outputs:
-      tag: ${{ inputs.setup_from || inputs.publish_tag || 'macos26-setup' }}
+      tag: ${{ inputs.setup_from || steps.publish.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
