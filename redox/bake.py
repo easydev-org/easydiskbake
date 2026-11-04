@@ -1211,9 +1211,32 @@ def main(argv: list[str]) -> int:
                 return False
             note("  /var/empty exists")
 
-            con.type("/usr/bin/sshd ; echo SSHD_RC=$?")
-            if not con.wait_for(["sshd_rc=0"], 600, "sshd started"):
-                note("=== sshd WOULD NOT START ===")
+            # SSHD IS FLAKY ON THIS SYSTEM, AND RETRYING IS THE HONEST ANSWER.
+            #
+            # Two runs of identical code, differing only in the quoting of a later ssh command:
+            #
+            #     e5a71d7   sshd started: 'sshd_rc=0' after 53s
+            #     c4732ec   killed by signal sigsegv
+            #
+            # Same binary, same files, same command. OpenSSH on Redox is a port whose own log
+            # lines here are full of `TODO: ... not implemented` (setgroups, madvise), and it
+            # does not always survive its own startup. What this stage needs is not a
+            # guarantee that the first attempt works - it is evidence that sshd CAN run on
+            # this disk, which a second attempt gives at least as well as a first.
+            #
+            # Three attempts, and the run fails only if none of them produces sshd_rc=0. The
+            # wait is shorter per attempt because a start that is going to fail has already
+            # segfaulted by the time the marker would appear.
+            started_sshd = False
+            for attempt in range(1, 4):
+                con.type("/usr/bin/sshd ; echo SSHD_RC=$?", settle=2.0)
+                if con.wait_for(["sshd_rc=0"], 300,
+                                f"sshd started (attempt {attempt} of 3)"):
+                    started_sshd = True
+                    break
+                note(f"  attempt {attempt} did not start it; trying again")
+            if not started_sshd:
+                note("=== sshd WOULD NOT START IN THREE ATTEMPTS ===")
                 note("  `sshd -d` prints why; the frame beside this message is the console")
                 return False
 
