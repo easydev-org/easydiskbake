@@ -176,6 +176,19 @@ SHEET_SKIP = (1026, 634)
 # disabled there, so Not Now is the only control that moves the wizard.
 NOT_NOW_LEFT = (1132, 796)
 
+# THE LICENCE SHEET'S AGREE, MEASURED FROM ITS OWN FRAME.
+#
+# The Terms and Conditions pane puts a modal sheet over a long document, and the sheet has its
+# own pair:
+#
+#     (875..928, 610)   Disagree
+#     (1001..1037, 610) Agree        <- this, centre (1019, 616)
+#
+# The pane's own Agree is at the bottom right, behind the sheet. Clicking it while the sheet is
+# up does nothing - which is what run 41816298797 did six times, and its last frame is the sheet
+# still there with the pointer on the button underneath.
+LICENCE_AGREE = (1019, 616)
+
 # THE APPLE ACCOUNT PANE'S "Set Up Later", MEASURED FROM ITS OWN FRAME.
 #
 # The link's blue text spans x=389..437 at y=601 in the 1280x800 recording, so its centre is
@@ -523,7 +536,12 @@ def tail(d: Driver) -> None:
     # the sequence.
     for i in range(6):
         d.wait(6, f"pane {i + 1} settles")
-        d.key("ret", settle=3.0)
+        # THE LICENCE SHEET, IF IT IS UP. It is modal and covers the pane's own Agree, so a
+        # click at CONTINUE lands on the sheet's edge and nothing moves. This point is empty
+        # space on any pane without a sheet, which is why it costs nothing to do every time.
+        d.click(LICENCE_AGREE, f"pane {i + 1}: Agree on the licence sheet, if it is up",
+                settle=2.0)
+        d.key("ret", settle=2.0)
         d.click(CONTINUE, f"pane {i + 1} Continue", settle=3.0)
 
     # A LAST LONG WAIT, BECAUSE THE FINISHING PANES WRITE BEFORE THEY DRAW.
