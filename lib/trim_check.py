@@ -59,7 +59,16 @@ def allocated_mib(disk: str) -> int:
     """Bytes the qcow2 actually occupies, in MiB. `qemu-img info`'s "disk size"."""
     import subprocess
 
-    r = subprocess.run(["qemu-img", "info", "--output=json", disk],
+    # THE ABSOLUTE BINARY, FOR THE REASON lib/compress.py ALREADY DOCUMENTS: the bare name
+    # resolves to the Android SDK's copy on this image's PATH, and that build cannot open a
+    # qcow2 whose clusters use compression_type=zstd - which is what every published disk is.
+    #
+    #     qemu-img: Could not open '.../disk.qcow2': Unsupported qcow2 feature(s): compression type
+    #
+    # which is run 41826421656, and it stopped the experiment before it measured anything.
+    from compress import qemu_img
+
+    r = subprocess.run([qemu_img(), "info", "--output=json", disk],
                        capture_output=True, text=True)
     if r.returncode != 0:
         raise SystemExit(f"qemu-img info failed: {(r.stderr or r.stdout)[:300]}")
@@ -75,7 +84,9 @@ def virtual_gib(disk: str) -> float:
     import json
     import subprocess
 
-    r = subprocess.run(["qemu-img", "info", "--output=json", disk],
+    from compress import qemu_img
+
+    r = subprocess.run([qemu_img(), "info", "--output=json", disk],
                        capture_output=True, text=True)
     info = json.loads(r.stdout) if r.returncode == 0 else {}
     return (info.get("virtual-size") or 0) / float(1 << 30)

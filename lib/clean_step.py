@@ -93,7 +93,17 @@ def main(argv: list[str]) -> int:
 
     note(f"disk {args.disk} ({os.path.getsize(args.disk) >> 20} MiB)")
 
-    if spec["bootstate"]:
+    # THE BOOTSTATE IS OPTIONAL NOW, AND THAT IS THE POINT OF --self-boot.
+    #
+    # A disk the bake wrote the UEFI fallback loader into does not need OVMF's variables: the
+    # firmware finds \EFI\BOOT\BOOTX64.EFI on its own. Restoring an old bootstate anyway is
+    # not merely unnecessary - it reinstates the very dependency the boot was made independent
+    # of, and if the archive is from a different boot its entries point at partitions this disk
+    # may not have.
+    #
+    # So it is used only when there is one AND the caller asked for it. `--bootstate` is how a
+    # caller says "this disk needs it"; the workflow passes nothing for a self-booting disk.
+    if spec["bootstate"] and args.bootstate:
         import bootstate
 
         # THE ARCHIVE HAS TO SIT BESIDE THE DISK UNDER THE DISK'S OWN NAME - that is the only
@@ -124,7 +134,37 @@ def main(argv: list[str]) -> int:
             note("=== THE BOOTSTATE COULD NOT BE RESTORED ===")
             return 2
 
+    # WINDOWS WILL NOT START ON SEABIOS, SO THE FIRMWARE IS NOT OPTIONAL.
+    #
+    # The Shape below used to leave firmware_code and firmware_vars empty, which means qemu's
+    # default firmware - SeaBIOS. A Windows 11 disk under SeaBIOS does not boot, and the symptom
+    # was a 900-second wait ending in "Connection timed out during banner exchange": qemu's
+    # user-mode network accepts the TCP connection to a forwarded port even when nothing is
+    # listening, so the failure looked like sshd rather than like firmware.
+    #
+    # ubuntu::bake and launch_windows.py both set these; this is the same code they use.
+    #
+    # THE VARS ARE A FRESH COPY OF THE TEMPLATE, NOT THE DISK'S OWN BOOTSTATE - that is what
+    # this stage is now testing on Windows: whether the fallback loader at \EFI\BOOT\BOOTX64.EFI
+    # is enough on a machine with no boot entries at all.
+    firmware_code = ""
+    firmware_vars = ""
+    if args.kind == "windows":
+        import shutil
+
+        firmware_code = os.environ.get("OVMF_CODE", "/usr/share/OVMF/OVMF_CODE_4M.fd")
+        template = os.environ.get("OVMF_VARS_TEMPLATE", "/usr/share/OVMF/OVMF_VARS_4M.fd")
+        for path in (firmware_code, template):
+            if not os.path.isfile(path):
+                note(f"=== UEFI FIRMWARE NOT FOUND: {path} ===")
+                note("  Windows does not boot on SeaBIOS; this is fatal, not a warning")
+                return 2
+        firmware_vars = os.path.join(work, "OVMF_VARS.fd")
+        # ALWAYS A FRESH COPY, never a leftover: the point is a machine with no boot entries.
+        shutil.copyfile(template, firmware_vars)
+
     shape = vm.Shape(cpus=args.cpus, mem_mb=args.mem, machine="q35", vga="std",
+                     firmware_code=firmware_code, firmware_vars=firmware_vars,
                      resolution=(1920, 1080), ssh_port=spec["ssh_port"])
     # discard=unmap so a guest's fstrim reaches the qcow2 and drops the clusters, rather than
     # qemu storing zeros that convert has to read again.
@@ -143,6 +183,28 @@ def main(argv: list[str]) -> int:
         if not session.wait_for_ssh(spec["ssh_port"], args.boot_timeout, note):
             note("=== THE DISK DID NOT ANSWER ON SSH ===")
             note("  it cannot be cleaned if it cannot be reached; the disk is unchanged")
+
+            # A PICTURE OF WHERE IT STOPPED, BECAUSE THE SSH MESSAGE CANNOT SAY.
+            #
+            # "Connection timed out during banner exchange" is what qemu's user-mode network
+            # produces whether the guest never booted, booted to a firmware shell, or booted and
+            # never started sshd - three different problems with one message. The frame is the
+            # only thing that distinguishes them, and without it this stage failed twice with
+            # nothing to look at.
+            try:
+                import qmp as qmpmod
+                import lastframe
+
+                ppm = os.path.join(artifacts, "clean-stopped.ppm")
+                client = qmpmod.QMP(guest.paths.drive)
+                try:
+                    client.execute("screendump", filename=ppm)
+                finally:
+                    client.close()
+                lastframe.convert(ppm, os.path.join(artifacts, "clean-stopped.png"))
+                note(f"  the screen at that moment: {artifacts}/clean-stopped.png")
+            except (OSError, RuntimeError) as exc:
+                note(f"  and the screenshot failed too: {exc}")
             return 1
 
         import clean_disk
