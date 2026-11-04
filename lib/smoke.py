@@ -71,7 +71,25 @@ APFS_MAGIC_OFFSET = 32
 # for the magic - the entry states where the partition starts.
 #
 #   7C3457EF-0000-11AA-AA11-00306543ECAC  ->  7c3457ef 0000 aa11 aa11 00306543ecac
-APFS_PARTITION_TYPE = bytes.fromhex("7c3457ef0000aa11aa1100306543ecac")
+# IN GPT'S BYTE ORDER, NOT THE GUID'S PRINTED ORDER.
+#
+# The APFS container type is 7C3457EF-0000-11AA-AA11-00306543ECAC. GPT stores the first
+# three fields of a GUID LITTLE-ENDIAN, so the bytes on disk are
+#
+#     ef 57 34 7c  00 00  aa 11  aa 11  00 30 65 43 ec ac
+#
+# and that is what this has to compare against. Writing the printed GUID in order -
+# "7c3457ef0000aa11aa1100306543ecac" - matches no partition that ever existed, and the
+# failure it produces is indistinguishable from a disk macOS did not install on:
+#
+#     no APFS partition in the GPT - macOS did not install
+#     the GPT holds 2 entries; their type GUIDs are:
+#       1: 28732ac11ff8d211ba4b00a0c93ec93b
+#       2: ef57347c0000aa11aa1100306543ecac
+#
+# which is run 41902984373 - printed one line above the entry it wanted. The guest had reached
+# its desktop and the recording proves it; only this comparison said otherwise.
+APFS_PARTITION_TYPE = bytes.fromhex("ef57347c0000aa11aa1100306543ecac")
 
 # The GPT partition entry array. LBA 1 is the header, which states where the array is
 # (normally LBA 2); each entry is 128 bytes and its first 16 are the partition type GUID.
