@@ -8,42 +8,45 @@ Every Windows stage in this repository carries `<job>_bootstate` - an archive ho
 `windows.vars`, the OVMF variable store. The boot entry "Windows Boot Manager" is written into
 it by the Windows installer and exists nowhere else, so a disk on its own starts like this:
 
-    BdsDxe: failed to load Boot0001 "UEFI Misc Device"  ... : Not Found
-    BdsDxe: failed to load Boot0002 "UEFI Misc Device 2" ... : Not Found
-    BdsDxe: failed to load Boot0003 "UEFI HTTPv4 (MAC:...)" : Not Found
-    BdsDxe: failed to load Boot0004 "UEFI HTTPv6 (MAC:...)" : Not Found
-    BdsDxe: loading Boot0005 "EFI Internal Shell"
+    BdsDxe: failed to load BOOT0001 "UEFI Misc Device"  ... : Not Found
+    BdsDxe: failed to load BOOT0002 "UEFI Misc Device 2" ... : Not Found
+    BdsDxe: failed to load BOOT0003 "UEFI HTTPv4 (MAC:...)" : Not Found
+    BdsDxe: failed to load BOOT0004 "UEFI HTTPv6 (MAC:...)" : Not Found
+    BdsDxe: loading BOOT0005 "EFI Internal Shell"
     Shell>
 
-That is a real dependency on two extra files, and it is the kind of thing that makes an
-artifact awkward to hand to anyone: "here is the disk, and also the firmware state, or it will
-not start".
+That is a real dependency on two extra files, and it is what makes an artifact awkward to hand
+to anyone: "here is the disk, and also the firmware state, or it will not start".
 
 CAN IT BE REMOVED?
 
-UEFI has a standard fallback: a removable-media path the firmware tries when no boot entry
-resolves. `\\EFI\\BOOT\\BOOTX64.EFI` on the EFI System Partition. Windows writes its loader to
-`\EFI\Microsoft\Boot\bootmgfw.efi`, which is only reachable through a Boot#### entry; nothing
-puts it at the fallback path, because on real hardware the installer's NVRAM entry is enough.
+UEFI has a standard fallback: `\EFI\BOOT\BOOTX64.EFI` on the EFI System Partition, which the
+firmware tries when no boot entry resolves. Windows puts its loader at
+`\EFI\Microsoft\Boot\bootmgfw.efi` and reaches it only through a BOOT#### entry; nothing puts it
+at the fallback path, because on real hardware the installer's NVRAM entry is enough.
 
-So if `bootmgfw.efi` (and the BCD it reads) exist at the fallback path, a firmware with a blank
-variable store should find them. That is the hypothesis, and this module is what tests it -
+So if `bootmgfw.efi` - and the BCD it reads - exist at the fallback path, a firmware with a blank
+variable store should find them. That is the hypothesis, and this module is what tests it. It is
 NOT a claim that it works.
 
-WHAT IT DOES, AND WHY IT NEEDS A RAW COPY
+WHY qemu-io AND NOT A RAW COPY
 
-The ESP is a FAT filesystem inside a GPT partition, and `mcopy -i <image>@@<offset>` edits a FAT
-filesystem at a byte offset in a FILE. qcow2 is not a file whose bytes are the disk's bytes, so
-the disk is converted to raw, edited, and converted back. Three passes over 12-16 GiB, and it
-only ever runs in the bake that produces the disk - a stage that pulls a finished disk would
-have to do the same work on every pull.
+The first version converted the disk to raw, edited it with `mcopy -i <file>@@<offset>`, and
+converted back. Three copies of 16 GiB, and it needed a runner with 90 GB free - which the
+standard GitHub runner does not have, so the experiment failed in `prepare` before it reached
+the disk at all.
 
-THE FALLBACK IS ADDITIVE
+`qemu-io` reads and writes at a byte offset INSIDE a qcow2, so the partition table can be read
+and the ESP's FAT can be edited without ever materialising the disk's bytes. What it cannot do is
+run mtools, which wants a file - so the FAT is extracted to a small file, edited there, and
+written back. An ESP is 100 MiB; the whole operation touches megabytes, not gigabytes.
 
-Nothing is removed and no existing path is changed: the copy is written in addition to
+WHAT IS KEPT
+
+Nothing is removed and no existing path changes: the copy is written in addition to
 `\EFI\Microsoft\Boot\bootmgfw.efi`, so a disk that also has its NVRAM entry boots exactly as it
-did before. That is what makes this safe to try on a real bake rather than a throwaway one -
-the failure mode of the hypothesis being wrong is that nothing changes.
+did before. That is what makes this safe to try on a real bake - the failure mode of the
+hypothesis being wrong is that nothing changes.
 """
 
 from __future__ import annotations
@@ -66,39 +69,80 @@ def log(message: str) -> None:
     print(f"[fixedboot] {message}", flush=True)
 
 
-# WHERE WINDOWS PUTS ITS LOADER, AND WHERE THE FIRMWARE LOOKS WITHOUT BEING TOLD.
 WIN_LOADER = "/EFI/Microsoft/Boot/bootmgfw.efi"
 WIN_BCD = "/EFI/Microsoft/Boot/BCD"
 FALLBACK_LOADER = "/EFI/BOOT/BOOTX64.EFI"
-# THE BCD IS READ FROM A PATH RELATIVE TO THE LOADER'S OWN DIRECTORY in the fallback case, so a
-# second copy has to sit beside it. Windows' bootmgr searches \EFI\Microsoft\Boot first and the
-# current directory second; putting both in place covers either behaviour.
 FALLBACK_BCD = "/EFI/BOOT/BCD"
 
+SECTOR = 512
+# THE ESP TYPE GUID, IN THE BYTE ORDER GPT STORES IT.
+#
+# The GUID is C12A7328-F81F-11D2-BA4B-00A0C93EC93B, and GPT writes its first three fields
+# LITTLE-ENDIAN - so the bytes on disk are 28 73 2a c1 1f f8 d2 11 ... and not the string's
+# order. Comparing against the string form matches nothing, which is a failure that says
+# "there is no ESP" about a disk that has one.
+ESP_TYPE = "28732ac11ff8d211ba4b00a0c93ec93b"
 
-def gpt_partitions(raw: str) -> list[dict]:
+
+def qio(disk: str, *commands: str) -> str:
+    """Run qemu-io commands against `disk`, returning its output."""
+    argv = ["qemu-io", "-f", "qcow2"]
+    for c in commands:
+        argv += ["-c", c]
+    argv.append(disk)
+    r = subprocess.run(argv, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise SystemExit(f"qemu-io failed ({r.returncode}):\n{(r.stderr or r.stdout)[:800]}")
+    return r.stdout
+
+
+def read_at(disk: str, offset: int, length: int) -> bytes:
+    """`length` bytes of `disk` starting at `offset`, through qemu-io's hexdump.
+
+    qemu-io has no way to write raw bytes to stdout, so its `read -v` output is parsed. It is a
+    stable format - eight hex bytes, an ASCII column, one line per 16 bytes - and the input is a
+    partition table, whose offsets are known.
+    """
+    out = qio(disk, f"read -v {offset} {length}")
+    data = bytearray()
+    for line in out.splitlines():
+        # qemu-io prints, per 16 bytes:
+        #
+        #     00000200:  45 46 49 20 50 41 52 54 00 00 01 00 5c 00 00 00  EFI.PART........
+        #
+        # Offset, two spaces, sixteen hex bytes, two spaces, ASCII. The ASCII column can
+        # contain any byte, so only the sixteen fields between the first two spaces are read -
+        # splitting on the separator instead of counting fields is what turns "EFI.PART" into
+        # integers and silently loses the line.
+        if ":" not in line or line.startswith("read "):
+            continue
+        _, rest = line.split(":", 1)
+        fields = rest.split()
+        hexes = [f for f in fields if len(f) == 2 and all(c in "0123456789abcdef" for c in f)]
+        for h in hexes[:16]:
+            data.append(int(h, 16))
+    if len(data) < length:
+        raise SystemExit(f"read {len(data)} of {length} bytes at {offset:#x} from {disk}")
+    return bytes(data[:length])
+
+
+def gpt_partitions(disk: str) -> list[dict]:
     """The GPT's partitions, with the byte offset of each.
 
-    READ DIRECTLY FROM THE IMAGE, not from a tool: `sgdisk -p` is not in the bake image and
-    `parted` is not either, and the header format is 40 lines of specification that has not
-    changed since 2000. A protective MBR at 0 and a GPT header at LBA 1, entries at the LBA the
-    header names.
+    READ FROM THE DISK WITH qemu-io, not from a tool: `sgdisk` is not in the bake image and
+    `parted` is not either, and the header format has not changed since 2000.
     """
-    with open(raw, "rb") as fh:
-        fh.seek(512)
-        header = fh.read(92)
-        if header[:8] != b"EFI PART":
-            raise SystemExit(f"{raw}: no GPT header at LBA 1; this is not a GPT disk")
+    header = read_at(disk, SECTOR, 92)
+    if header[:8] != b"EFI PART":
+        raise SystemExit(f"{disk}: no GPT header at LBA 1; this is not a GPT disk")
 
-        entry_lba = struct.unpack("<Q", header[72:80])[0]
-        count = struct.unpack("<I", header[80:84])[0]
-        size = struct.unpack("<I", header[84:88])[0]
-        if size < 128 or count == 0 or count > 1024:
-            raise SystemExit(f"{raw}: a GPT entry table of {count}x{size} is not plausible")
+    entry_lba = struct.unpack("<Q", header[72:80])[0]
+    count = struct.unpack("<I", header[80:84])[0]
+    size = struct.unpack("<I", header[84:88])[0]
+    if size < 128 or count == 0 or count > 1024:
+        raise SystemExit(f"{disk}: a GPT entry table of {count}x{size} is not plausible")
 
-        fh.seek(entry_lba * 512)
-        table = fh.read(count * size)
-
+    table = read_at(disk, entry_lba * SECTOR, count * size)
     parts = []
     for i in range(count):
         e = table[i * size:(i + 1) * size]
@@ -108,16 +152,12 @@ def gpt_partitions(raw: str) -> list[dict]:
         last = struct.unpack("<Q", e[40:48])[0]
         parts.append({
             "index": i,
-            "offset": first * 512,
-            "bytes": (last - first + 1) * 512,
+            "offset": first * SECTOR,
+            "bytes": (last - first + 1) * SECTOR,
             "type": e[:16].hex(),
             "name": e[56:128].decode("utf-16-le", "replace").rstrip("\x00"),
         })
     return parts
-
-
-# THE ESP's PARTITION TYPE GUID, byte for byte as GPT stores it.
-ESP_TYPE = "c12a7328f81f11d2ba4b00a0c93ec93b"
 
 
 def find_esp(parts: list[dict]) -> dict:
@@ -131,89 +171,101 @@ def find_esp(parts: list[dict]) -> dict:
     )
 
 
-def run(argv: list[str], what: str) -> None:
+def run(argv: list[str], what: str) -> subprocess.CompletedProcess:
     r = subprocess.run(argv, capture_output=True, text=True)
     if r.returncode != 0:
-        raise SystemExit(f"{what} failed ({r.returncode}):\n"
-                         f"{(r.stderr or r.stdout or '')[:800]}")
-
-
-def mcopy_at(raw: str, offset: int, src: str, dst: str) -> None:
-    """Copy one file into the FAT filesystem that starts at `offset` inside `raw`."""
-    run(["mcopy", "-o", "-i", f"{raw}@@{offset}", src, f"::{dst}"], f"mcopy {dst}")
+        raise SystemExit(f"{what} failed ({r.returncode}):\n{(r.stderr or r.stdout)[:800]}")
+    return r
 
 
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--disk", required=True, help="the qcow2 to make self-booting")
-    p.add_argument("--keep-raw", action="store_true",
-                   help="leave the raw intermediate beside the disk, for inspection")
     args = p.parse_args(argv)
 
     if not os.path.isfile(args.disk):
         raise SystemExit(f"no disk at {args.disk}")
 
-    work = os.path.dirname(os.path.abspath(args.disk))
-    raw = os.path.join(work, os.path.basename(args.disk) + ".raw")
+    parts = gpt_partitions(args.disk)
+    log("partitions:")
+    for part in parts:
+        log(f"  {part['index']}: {part['name'] or '(unnamed)'} "
+            f"{part['bytes'] >> 20} MiB at {part['offset']:#x}")
 
-    log(f"converting {args.disk} to raw")
-    run(["qemu-img", "convert", "-O", "raw", args.disk, raw], "qemu-img convert to raw")
+    esp = find_esp(parts)
+    log(f"ESP: partition {esp['index']}, {esp['bytes'] >> 20} MiB at {esp['offset']:#x}")
 
-    try:
-        parts = gpt_partitions(raw)
-        log("partitions:")
-        for part in parts:
-            log(f"  {part['index']}: {part['name'] or '(unnamed)'} "
-                f"{part['bytes'] >> 20} MiB at {part['offset']:#x}")
+    with tempfile.TemporaryDirectory() as tmp:
+        fat = os.path.join(tmp, "esp.fat")
+        log(f"extracting the ESP ({esp['bytes'] >> 20} MiB) to {fat}")
+        # A FAT filesystem is self-describing: mtools can operate on the partition's bytes as a
+        # file, which is all an ESP is. 100 MiB of memcpy replaces 16 GiB of convert.
+        with open(fat, "wb") as fh:
+            written = 0
+            chunk = 4 << 20
+            while written < esp["bytes"]:
+                n = min(chunk, esp["bytes"] - written)
+                fh.write(read_at(args.disk, esp["offset"] + written, n))
+                written += n
+        log(f"  {os.path.getsize(fat) >> 20} MiB")
 
-        esp = find_esp(parts)
-        log(f"ESP: partition {esp['index']}, {esp['bytes'] >> 20} MiB at {esp['offset']:#x}")
+        loader = os.path.join(tmp, "bootmgfw.efi")
+        run(["mcopy", "-o", "-i", fat, f"::{WIN_LOADER}", loader], f"mcopy {WIN_LOADER} out")
+        size = os.path.getsize(loader)
+        log(f"  {WIN_LOADER}: {size} bytes")
+        if size < 4096:
+            raise SystemExit(f"{WIN_LOADER} is {size} bytes; that is not a PE image")
 
-        # THE LOADER IS EXTRACTED FIRST, so the failure says "this disk has no bootmgfw.efi"
-        # rather than "mcopy wrote an empty file".
-        with tempfile.TemporaryDirectory() as tmp:
-            loader = os.path.join(tmp, "bootmgfw.efi")
-            bcd = os.path.join(tmp, "BCD")
+        for d in ("::/EFI", "::/EFI/BOOT"):
+            subprocess.run(["mmd", "-i", fat, d], capture_output=True, text=True)
 
-            run(["mcopy", "-o", "-i", f"{raw}@@{esp['offset']}", f"::{WIN_LOADER}", loader],
-                f"mcopy {WIN_LOADER} out")
-            size = os.path.getsize(loader)
-            log(f"  {WIN_LOADER}: {size} bytes")
-            if size < 4096:
-                raise SystemExit(f"{WIN_LOADER} is {size} bytes; that is not a PE image")
+        # -o overwrites, so a disk that already has a fallback loader gets the Windows one.
+        run(["mcopy", "-o", "-i", fat, loader, f"::{FALLBACK_LOADER}"],
+            f"mcopy {FALLBACK_LOADER} in")
+        log(f"  wrote {FALLBACK_LOADER}")
 
-            # mkdir -p for both directories: /EFI/BOOT usually exists on a Windows ESP (the
-            # firmware's own fallback bootloader lives there), but nothing guarantees it.
-            for d in ("::/EFI", "::/EFI/BOOT"):
-                subprocess.run(["mmd", "-i", f"{raw}@@{esp['offset']}", d],
-                               capture_output=True, text=True)
+        bcd = os.path.join(tmp, "BCD")
+        r = subprocess.run(["mcopy", "-o", "-i", fat, f"::{WIN_BCD}", bcd],
+                           capture_output=True, text=True)
+        if r.returncode == 0:
+            run(["mcopy", "-o", "-i", fat, bcd, f"::{FALLBACK_BCD}"],
+                f"mcopy {FALLBACK_BCD} in")
+            log(f"  wrote {FALLBACK_BCD} ({os.path.getsize(bcd)} bytes)")
+        else:
+            log(f"  no {WIN_BCD}; the loader will use the one beside it")
 
-            mcopy_at(raw, esp["offset"], loader, FALLBACK_LOADER)
-            log(f"  wrote {FALLBACK_LOADER}")
+        # WRITE THE FAT BACK - ONLY THE PARTS THAT CHANGED.
+        #
+        # qemu-io cannot read from a file and write to the disk in one step, but it CAN write a
+        # range FROM a file: `write -s <path> <offset> <len>`. So the edited ESP is written
+        # block by block, skipping blocks that are byte-identical to what is already there.
+        #
+        # THAT SKIP IS NOT AN OPTIMISATION. Writing 100 MiB into a qcow2 allocates every cluster
+        # it touches, so a full write-back would grow the image by 100 MiB even though only two
+        # files changed - and the artifact this stage produces is the one people download.
+        log("writing the ESP back, block by block")
+        changed = 0
+        block = 4 << 20
+        written = 0
+        with open(fat, "rb") as fh:
+            while written < esp["bytes"]:
+                same = fh.read(min(block, esp["bytes"] - written))
+                at = esp["offset"] + written
+                if not same:
+                    break
+                if read_at(args.disk, at, len(same)) != same:
+                    part = os.path.join(tmp, "blk.bin")
+                    with open(part, "wb") as out:
+                        out.write(same)
+                    run(["qemu-io", "-f", "qcow2",
+                         "-c", f"write -s {part} {at} {len(same)}", args.disk],
+                        f"qemu-io write {at:#x}")
+                    changed += len(same)
+                written += len(same)
+        log(f"  wrote {changed >> 20} MiB of {esp['bytes'] >> 20} MiB")
 
-            # THE BCD, IF THE DISK HAS ONE. bootmgr can boot a Windows installed on the same
-            # volume without it on some firmware, and cannot on others; copying it costs 40 KiB
-            # and removes a variable from the experiment.
-            r = subprocess.run(
-                ["mcopy", "-o", "-i", f"{raw}@@{esp['offset']}", f"::{WIN_BCD}", bcd],
-                capture_output=True, text=True)
-            if r.returncode == 0:
-                mcopy_at(raw, esp["offset"], bcd, FALLBACK_BCD)
-                log(f"  wrote {FALLBACK_BCD} ({os.path.getsize(bcd)} bytes)")
-            else:
-                log(f"  no {WIN_BCD} on this disk; the loader will use the one beside it")
-
-        log("converting back to qcow2")
-        tmp_out = args.disk + ".fixed"
-        run(["qemu-img", "convert", "-O", "qcow2", raw, tmp_out], "qemu-img convert to qcow2")
-        os.replace(tmp_out, args.disk)
-        log(f"done: {args.disk} ({os.path.getsize(args.disk) >> 20} MiB)")
-        return 0
-    finally:
-        if args.keep_raw:
-            log(f"raw kept at {raw}")
-        elif os.path.exists(raw):
-            os.unlink(raw)
+    log("done")
+    return 0
 
 
 if __name__ == "__main__":
