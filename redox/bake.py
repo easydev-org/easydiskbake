@@ -108,6 +108,15 @@ ROOT_PASSWORD = "password"
 # bare wallpaper, with the check then reporting that the dock had not launched anything.
 DOCK_TERMINAL = (115, 1051)
 
+# THE DOCK STRIP, for dock_dark_fraction(). See that function for the measurement that
+# decided these: a dock that reads 0.60 dark is a placeholder and does not take clicks.
+DOCK_TOP = 0.935      # y / height: the bottom 7% of the frame
+DOCK_WIDTH = 0.21     # x / width: the strip the launcher icons occupy
+
+# HOW LIGHT THE DOCK HAS TO BE. 0.000 is a painted strip, 0.603 is a placeholder; the
+# threshold sits between them with room for a theme that draws darker icons.
+DOCK_READY = 0.25
+
 # WHERE THIS BAKE LOOKS, and why not the whole frame. See ocr() for the measurement.
 REGIONS = [
     ((830, 440, 1100, 650), 4, "the login box"),
@@ -257,6 +266,46 @@ def dark_window_fraction(ppm: str) -> float:
     return dark / total if total else 0.0
 
 
+def dock_dark_fraction(path: str) -> float:
+    """How much of the DOCK STRIP is dark, 0..1.
+
+    THE DOCK IS NOT PART OF THE DESKTOP TEST, and this is the difference between a dock that
+    can be clicked and one that cannot. Measured on two redox bakes whose every other number
+    matched:
+
+        41874326761   terminal opened on the first click    dock dark 0.000
+        41882033727   six clicks, nothing                   dock dark 0.603
+
+    Both had passed "the desktop is up" - the wallpaper is bright and colourful, and the
+    brightness test fires on it long before the panel finishes. In the second the dock was
+    still a dark placeholder: the icons were drawn, but the strip had not been painted, and
+    nothing answered the pointer.
+
+    The dock occupies the bottom seventy pixels. Read from y=1010 rather than 1080 because
+    the icons' own dark backgrounds sit in the top half of it, and the test wants the strip
+    around them.
+    """
+    parsed = _parse_ppm(_as_ppm(path))
+    if parsed is None:
+        return 1.0
+    width, height, pixels = parsed
+    # THE REGION IS A FRACTION OF THE FRAME, not a pixel rectangle. A recording is 640x480
+    # and a screendump is 1920x1080, and a measurement given in pixels is silently empty on
+    # whichever one it was not written for - `range(1010, 480)` is no iterations at all, and
+    # that reads as "entirely dark" rather than as "not measured".
+    top = int(height * DOCK_TOP)
+    right = int(width * DOCK_WIDTH)
+    dark = total = 0
+    for y in range(top, height):
+        for x in range(0, right):
+            i = (y * width + x) * 3
+            r, g, b = pixels[i], pixels[i + 1], pixels[i + 2]
+            total += 1
+            if r + g + b < 120:
+                dark += 1
+    return dark / total if total else 1.0
+
+
 def ocr(path: str) -> str:
     """The text on a screenshot, lower-cased, read from the places this needs to watch.
 
@@ -319,6 +368,18 @@ class Console:
         os.makedirs(shots, exist_ok=True)
         # The last frame that OCR read, so a failure can quote it.
         self.last_text = ""
+        # The input connection, opened on first use and kept - see live().
+        self._live = None
+
+    def live(self):
+        """The QMP connection used for input, opened once and kept.
+
+        Input is not a request/response conversation: the guest's view of the pointer is
+        state, and a connection closed between clicks takes that state with it. See click().
+        """
+        if getattr(self, "_live", None) is None:
+            self._live = self.qmp()
+        return self._live
 
     def qmp(self):
         """A QMP connection, waiting for the socket to exist.
@@ -399,17 +460,15 @@ class Console:
 
     def type(self, text: str, *, settle: float = 0.5) -> None:
         """Type `text` and press Return. Newlines are refused by lib/keys."""
-        c = self.qmp()
-        try:
-            for kind, code in keylib.for_text(text):
-                if kind == "key":
-                    qmpmod.key(c, code)
-                else:
-                    qmpmod.key_combo(c, *code)
-                time.sleep(0.03)
-            qmpmod.key(c, "ret")
-        finally:
-            c.close()
+        # ONE CONNECTION FOR THE WHOLE LINE, the same one the pointer uses. See live().
+        c = self.live()
+        for kind, code in keylib.for_text(text):
+            if kind == "key":
+                qmpmod.key(c, code)
+            else:
+                qmpmod.key_combo(c, *code)
+            time.sleep(0.03)
+        qmpmod.key(c, "ret")
         time.sleep(settle)
 
     def click(self, x: int, y: int, *, why: str = "", settle: float = 1.5) -> None:
@@ -419,20 +478,28 @@ class Console:
         this converts - the same contract lib/qmp.py has, kept here so every call in this
         file is in the units a screenshot is measured in.
         """
-        c = self.qmp()
-        try:
-            qmpmod.click(c, x, y)
-        finally:
-            c.close()
+        # ONE CONNECTION, KEPT OPEN, AND THE POINTER LEFT WHERE IT WAS PUT.
+        #
+        # This used to open a QMP connection, click and close it - several times per stage,
+        # against another client (lib/snapshots.py) doing the same socket. A usb-tablet reports
+        # absolute position, and the position it reports is only meaningful while something
+        # is tracking it: with the connection torn down after every click, the guest sees a
+        # pointer that appears at a coordinate, presses, releases, and then ceases to exist,
+        # and Orbital's taskbar - which highlights on hover - never believes it is being
+        # pointed at.
+        #
+        # Runs 41874326761 and 41882033727 sent the same click to the same coordinate with the
+        # same timings and got opposite answers; the difference this addresses is that the
+        # pointer now persists long enough to be "over" the icon before and after the press.
+        qmpmod.click(self.live(), x, y)
         log(f"  click ({x}, {y})" + (f" {why}" if why else ""))
         time.sleep(settle)
 
     def key(self, qcode: str, *, settle: float = 0.5) -> None:
-        c = self.qmp()
-        try:
-            qmpmod.key(c, qcode)
-        finally:
-            c.close()
+        # THE SAME CONNECTION AS THE POINTER. A key is not positional, but the guest's input
+        # queue is one queue: mixing it across connections is how a chord and a click get
+        # reordered against each other. See live().
+        qmpmod.key(self.live(), qcode)
         time.sleep(settle)
 
     def wait_for(self, markers: list[str], seconds: int, what: str) -> str:
@@ -648,8 +715,19 @@ def main(argv: list[str]) -> int:
             # and the dock subscribe to input. Run 41871160859 clicked one second after this
             # point and the dock never reacted. Ten seconds is what the desktop took to
             # settle in the run that got its terminal open.
+            # WAIT FOR THE DOCK ITSELF, NOT JUST THE WALLPAPER.
+            #
+            # "The desktop is up" fires on the wallpaper, which is painted well before the
+            # taskbar is a control rather than a picture. Measured across three bakes whose
+            # timings were otherwise identical:
+            #
+            #     41874326761   dock dark 0.000   the first click opened a terminal
+            #     41882033727   dock dark 0.603   six clicks, nothing at all
+            #
+            # So the thing to wait for is the strip turning light. A dark dock is a
+            # placeholder; it is drawn, and it answers nothing.
             log("  letting Orbital finish drawing its panel and dock")
-            time.sleep(10)
+            time.sleep(int(os.environ.get("DESKTOP_SETTLE_SECONDS", "15")))
 
             # 3. A TERMINAL, OPENED THE WAY A PERSON WOULD - the same shape as
             #    windows/11/ssh.py's open_powershell().
