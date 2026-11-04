@@ -154,6 +154,7 @@ Write-Output ("  cleared " + $cleared + " logs")
 # Slower and kinder than sdelete -c: a file grown to fill the disk with zero writes, then
 # deleted, so the clusters are genuinely zero when convert looks at them.
  Write-Output "--- zeroing free space ---"
+ $writtenTotal = 0
  $zeroStart = Get-Date
  $free = (Get-PSDrive C -ErrorAction SilentlyContinue).Free
  Write-Output ("  free before: " + [math]::Round($free/1GB,2) + " GB")
@@ -169,8 +170,10 @@ Write-Output ("  cleared " + $cleared + " logs")
              $written += $buf.Length
          }
          $fs.Close()
+         $writtenTotal = $written
          Write-Output ("  wrote " + [math]::Round($written/1GB,2) + " GB of zeros")
      } catch {
+         $writtenTotal = $written
          Write-Output ("  stopped at " + [math]::Round($written/1GB,2) + " GB: " + $_.Exception.Message)
      } finally {
          Remove-Item $tmp -Force -ErrorAction SilentlyContinue
@@ -186,7 +189,27 @@ $kh = Join-Path $env:USERPROFILE ".ssh\known_hosts"
 if (Test-Path $kh) { Remove-Item $kh -Force -ErrorAction SilentlyContinue; Write-Output "  known_hosts removed" } else { Write-Output "  known_hosts absent" }
 cmdkey /list 2>$null | Select-String "Target:" | ForEach-Object { Write-Output ("  credential: " + $_.Line) }
 
-$after = (Get-PSDrive C -ErrorAction SilentlyContinue).Used
-Write-Output ("used after:  " + [math]::Round($after/1MB,0) + " MB")
-Write-Output ("freed:        " + [math]::Round(($before - $after)/1MB,1) + " MB")
+# WHAT THE ZEROING ACTUALLY ACHIEVED, AND WHY "USED" IS THE WRONG NUMBER FOR IT.
+#
+# The first version printed `used after:` and `freed:` from Get-PSDrive, and run 41785167409
+# reported
+#
+#     used before: 33382 MB
+#     used after:  64301 MB
+#     freed:       -30919 MB
+#
+# which reads as "the clean added 30 GB". It did not. Writing zeros into zero.fill really did
+# consume 31.38 GB - that is the whole point, the blocks are no longer free - and when the
+# file is deleted NTFS marks those clusters free WITHOUT zeroing them again, because they are
+# already zero. `Used` counts live files, so after the delete it should have gone back.
+#
+# It did not, because this ran in the same session: Get-PSDrive caches, and the value it
+# returned still included the file. So the number this prints is not a measurement of the
+# disk, and a metric that is wrong in a plausible direction is worse than no metric.
+#
+# WHAT IS REPORTED INSTEAD is the thing that was measured directly and cannot be misread:
+# how many bytes of zeros were written. That is the quantity qemu-img convert will skip, and
+# it is printed by the loop that wrote them.
+Write-Output ("zeroed:      " + [math]::Round($writtenTotal/1MB,1) + " MB written over free space")
+Write-Output ("used before: " + [math]::Round($before/1MB,0) + " MB (for reference only)")
 Write-Output "CLEAN_DONE"
