@@ -104,6 +104,24 @@ jobs:
               --ssh-port "${{ inputs.ssh_port || '2223' }}" \
               $CLEAN
 
+      # THE LAST FRAME, ON ITS OWN, ON EVERY OUTCOME.
+      #
+      # `keep the recording` already carries out/last-frame.png inside the mp4's artifact,
+      # which is fine while the video is there and useless when it is not: a run cancelled
+      # mid-install, or one whose encoder never ran, leaves the frame as the only image of
+      # the pane the driver stopped on. The two setup stages already publish it separately;
+      # these three did not, and there is no reason for the difference.
+      #
+      # 300 KiB, and it is the file a person opens first when a stage fails.
+      - name: keep the last frame
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dev-last-frame
+          path: out/last-frame.png
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: upload the disk
         uses: actions/upload-artifact@v4
         with:

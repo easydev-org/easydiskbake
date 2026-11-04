@@ -195,8 +195,16 @@ jobs:
       # The last frame is the pane the driver stopped on, and lib/lastframe.py converts it
       # to a 300 KiB PNG. Gated on the mp4 being absent, so a normal run uploads nothing
       # extra.
+      # ON EVERY OUTCOME, NOT ONLY WHEN THE ENCODING FAILED.
+      #
+      # The gate was `hashFiles('out/install.mp4') == ''`, true only when lib/live.py never
+      # encoded anything - and that has never happened on a run that mattered, because the
+      # live encoder writes an mp4 within twenty seconds of the guest starting. So this
+      # artifact never existed. The frame was still inside the recording artifact, but a
+      # 300 KiB PNG is what a person opens first when a stage fails, and burying it next to
+      # a 456 KiB video and a console log means it gets read last.
       - name: keep the last frame
-        if: always() && hashFiles('out/install.mp4') == ''
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: macos-last-frame
