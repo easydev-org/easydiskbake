@@ -83,11 +83,61 @@ switch ($name) {
 
     # POWERSHELL 7, not Windows PowerShell 5.1, which is in the image already and would
     # make this probe pass on every machine.
+    #
+    # THE PATH IS ASKED FOR, NOT ASSUMED. This probed `$env:ProgramFiles\PowerShell\7\pwsh.exe`
+    # and reported MISSING in run 41782341308 while winget had just said
+    #
+    #     Successfully installed
+    #
+    # and `pwsh -v` answered PowerShell 7.6.9 in the very next step. So the file was there and
+    # the guess was wrong - 7.4 and 7.5 use %ProgramFiles%\PowerShell\7, and an msix or a
+    # per-user install does not.
+    #
+    # `Get-Command` answers where it actually is, which is also what the next stage will use.
+    # The exe name alone distinguishes 7 from 5.1: Windows PowerShell is `powershell.exe`.
     "pwsh" {
-        $exe = Join-Path $env:ProgramFiles "PowerShell\7\pwsh.exe"
-        if (-not (Test-Path $exe)) { Write-Output "absent: no $exe"; exit 1 }
-        Write-Output ("present: " + $exe)
-        exit 0
+        $cmd = Get-Command pwsh.exe -ErrorAction SilentlyContinue
+        if ($cmd) {
+            $v = & $cmd.Source -NoProfile -Command '$PSVersionTable.PSVersion.Major' 2>$null
+            if ($v -and ([int]$v -ge 6)) {
+                Write-Output ("present: " + $cmd.Source + " v" + $v)
+                exit 0
+            }
+            Write-Output ("absent: pwsh runs but reports major version $v")
+            exit 1
+        }
+        # THE MACHINE'S PATH, NOT THIS PROCESS'S.
+        #
+        # The MSI writes the new directory into the machine environment. An ssh session that
+        # was already open - and this script runs under Windows PowerShell 5.1, started by
+        # sshd - keeps the environment sshd captured at login, so `Get-Command` cannot see a
+        # product that was installed five seconds ago. Run 41782341308 is the proof: this
+        # probe said MISSING and the next step's `pwsh -v` answered PowerShell 7.6.9,
+        # because ssh exec starts a NEW process and the new process reads the new PATH.
+        $machine = @()
+        try {
+            $machine = ([Environment]::GetEnvironmentVariable("Path", "Machine") -split ";")
+        } catch { }
+        $user = @()
+        try {
+            $user = ([Environment]::GetEnvironmentVariable("Path", "User") -split ";")
+        } catch { }
+
+        $candidates = @(
+            (Join-Path $env:ProgramFiles "PowerShell\7\pwsh.exe"),
+            (Join-Path ${env:ProgramFiles(x86)} "PowerShell\7\pwsh.exe"),
+            (Join-Path $env:LOCALAPPDATA "Microsoft\WindowsApps\pwsh.exe")
+        ) + ($machine | Where-Object { $_ } | ForEach-Object { Join-Path $_ "pwsh.exe" }) `
+          + ($user    | Where-Object { $_ } | ForEach-Object { Join-Path $_ "pwsh.exe" })
+
+        foreach ($p in $candidates) {
+            if ($p -and (Test-Path $p)) {
+                $v = & $p -NoProfile -Command '$PSVersionTable.PSVersion.Major' 2>$null
+                if ($v -and ([int]$v -ge 6)) { Write-Output ("present: " + $p + " v" + $v); exit 0 }
+            }
+        }
+        Write-Output "absent: no pwsh.exe on the machine path or in the usual places"
+        exit 1
     }
 
     default {
