@@ -757,44 +757,77 @@ def main(argv: list[str]) -> int:
             tip = None
             got_shell = False
 
-            # --- 1. THE DOCK. Two successes, and the exact sequence they used. -----------
-            note("=== a terminal, from the dock ===")
-            baseline = con.shot("terminal-before")
-            before = dark_window_fraction(baseline) if baseline else 0.0
-            note(f"  dark fraction before: {before:.2f}")
-            # TEN ATTEMPTS, BECAUSE THE OUTCOME IS A COIN FLIP AND EACH ONE COSTS SECONDS.
+            # --- 1. SUPER+T. The launcher binds it to the terminal, and it needs no pointer.
             #
-            # Five bakes this session behaved like this:
+            # orbutils/launcher/src/main.rs handles the super-key events directly:
             #
-            #     1bf4adb  f45c29f  1a79330  a77bd3f    opened a terminal on attempt 1
-            #     366b38e  41912935659                  opened nothing, ten seconds at a time
+            #     if event.code >= 0x1000_0000 {          // the "super event" hack
+            #         super_event.code -= 0x1000_0000;
+            #         match key_event.scancode {
+            #             orbclient::K_B => bar.spawn("netsurf-fb"),
+            #             orbclient::K_F => bar.spawn("cosmic-files"),
+            #             orbclient::K_T => bar.spawn("cosmic-term"),     // <- this one
+            #         }
+            #     }
             #
-            # with byte-identical frames at the moment of the click and identical timing - a
-            # slow boot was the guess, and the second of those runs waited thirty extra
-            # seconds and still opened nothing. Nothing measurable distinguishes them.
-            #
-            # Four in five, repeated ten times, is a failure rate of one in ten million; three
-            # attempts is one in a hundred and twenty-five, which is what the last two runs
-            # drew from.
-            for attempt in range(1, 11):
-                con.click(*DOCK_TERMINAL,
-                          why=f"the terminal icon in the dock (attempt {attempt} of 10)",
-                          settle=1.0)
-                deadline = time.time() + 10
-                while time.time() < deadline:
-                    time.sleep(2)
-                    png = con.shot(f"terminal-{attempt}")
-                    if not png:
-                        continue
+            # So Super+T opens the terminal through the launcher's own code path, with no
+            # cursor position involved. That matters because the dock has opened a terminal in
+            # six of eleven bakes and not the other five, with byte-identical frames at the
+            # moment of the click - and the keyboard has never failed to reach this guest.
+            note("=== a terminal, with Super+T ===")
+            con.key_combo("meta_l", "t", settle=3.0)
+            time.sleep(3)
+            try:
+                png = con.shot("super-t")
+                if png:
                     now = dark_window_fraction(png)
                     note(f"    dark fraction {now:.2f}")
-                    # 15 points of the frame turning dark is a window, not a redraw: the
-                    # wallpaper does not change when a terminal opens over it.
-                    if now - before >= 0.15:
+                    if now >= 0.55:
                         got_shell = True
+            except Exception:  # noqa: BLE001
+                pass
+            if got_shell:
+                note("  Super+T opened a terminal")
+
+            # --- 1b. THE DOCK, IF Super+T DID NOT. --------------------------------------
+            if not got_shell:
+                note("=== a terminal, from the dock ===")
+                baseline = con.shot("terminal-before")
+                before = dark_window_fraction(baseline) if baseline else 0.0
+                note(f"  dark fraction before: {before:.2f}")
+                # TEN ATTEMPTS, BECAUSE THE OUTCOME IS A COIN FLIP AND EACH ONE COSTS SECONDS.
+                #
+                # Five bakes this session behaved like this:
+                #
+                #     1bf4adb  f45c29f  1a79330  a77bd3f    opened a terminal on attempt 1
+                #     366b38e  41912935659                  opened nothing, ten seconds at a time
+                #
+                # with byte-identical frames at the moment of the click and identical timing - a
+                # slow boot was the guess, and the second of those runs waited thirty extra
+                # seconds and still opened nothing. Nothing measurable distinguishes them.
+                #
+                # Four in five, repeated ten times, is a failure rate of one in ten million; three
+                # attempts is one in a hundred and twenty-five, which is what the last two runs
+                # drew from.
+                for attempt in range(1, 11):
+                    con.click(*DOCK_TERMINAL,
+                              why=f"the terminal icon in the dock (attempt {attempt} of 10)",
+                              settle=1.0)
+                    deadline = time.time() + 10
+                    while time.time() < deadline:
+                        time.sleep(2)
+                        png = con.shot(f"terminal-{attempt}")
+                        if not png:
+                            continue
+                        now = dark_window_fraction(png)
+                        note(f"    dark fraction {now:.2f}")
+                        # 15 points of the frame turning dark is a window, not a redraw: the
+                        # wallpaper does not change when a terminal opens over it.
+                        if now - before >= 0.15:
+                            got_shell = True
+                            break
+                    if got_shell:
                         break
-                if got_shell:
-                    break
 
             # --- 2. A TEXT CONSOLE, BY KEYBOARD. The keyboard has never failed. ----------
             #
@@ -894,7 +927,15 @@ def main(argv: list[str]) -> int:
                 return False
             note(f"  a root shell ({marker!r})")
 
-            # 5. THE ACCOUNT. Redox reads /etc/users.toml; there is no /etc/passwd to edit.
+            # 5. THE ACCOUNT. TWO FILES, AND THEY ANSWER DIFFERENT QUESTIONS.
+            #
+            #     /etc/users.toml   what login, sudo and pkg read - an ini-style list of
+            #                       [users.<name>] tables with password/uid/gid/shell
+            #     /etc/passwd       what every libc account lookup reads, getpwnam included;
+            #                       one entry per line, `;`-separated, see the note below
+            #
+            # This wrote only the first for a long time, and the comment here said there was no
+            # second. There is, and sshd's privilege-separation lookup uses it.
             #
             # THE FILE IS BUILT WITH A HEREDOC because the console has no clipboard and the
             # content has quotes and newlines. `ion` handles them the way sh does.
@@ -976,6 +1017,49 @@ def main(argv: list[str]) -> int:
                 note(f"  expected {len(users)}; the frame beside this message shows what it has")
                 return False
             note("  the account is written")
+
+            # /etc/passwd, BECAUSE THAT IS WHAT getpwnam() READS - NOT users.toml.
+            #
+            # Run 41914834762 printed its users.toml, and the frame can be read without OCR:
+            # the file is complete and correct, sshd's section included -
+            #
+            #     [users.sshd]
+            #     password = "*"
+            #     uid = 22
+            #     gid = 22
+            #     shell = "/usr/bin/ion"
+            #
+            # - and sshd still answered "Privilege separation user sshd does not exist",
+            # SSHD_RC=255.
+            #
+            # relibc's pwd implementation is why. src/header/pwd/mod.rs:
+            #
+            #     let Ok(file) = File::open(c"/etc/passwd".into(), fcntl::O_RDONLY) else {
+            #         return Err(Cause::Other);
+            #     };
+            #
+            # and on Redox the field separator is `;` (SEPARATOR is b':' on Linux and b';'
+            # under #[cfg(target_os = "redox")]), one entry per line, in the order
+            #
+            #     name;uid;gid;gecos;dir;shell
+            #
+            # `users.toml` is what login and pkg read; `passwd` is what every libc account
+            # lookup reads. sshd uses getpwnam, so it has been looking in a file this bake
+            # never wrote.
+            passwd_entries = [
+                "root;0;0;root;/root;/usr/bin/ion",
+                f"{args.user};1000;1000;{args.user};/home/{args.user};/usr/bin/ion",
+                "sshd;22;22;sshd;/var/empty;/usr/bin/ion",
+            ]
+            for n, line in enumerate(passwd_entries):
+                op = ">" if n == 0 else ">>"
+                con.type(f"echo '{line}' {op} /etc/passwd", settle=0.25)
+            con.type(f"test \"$(wc -l < /etc/passwd)\" -eq {len(passwd_entries)} ; echo PASSWD_OK=$?",
+                     settle=2.0)
+            if not con.wait_for(["passwd_ok=0"], 60, "/etc/passwd"):
+                note("=== /etc/passwd DOES NOT HAVE THE EXPECTED LINES ===")
+                return False
+            note("  /etc/passwd is written")
 
             # 6. OPENSSH. Not in the desktop image; installed from the vendor's package server,
             #    which the image already points at (/etc/pkg.d/50_redox).
