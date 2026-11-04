@@ -15,6 +15,15 @@ Four questions decide whether a bake is worth writing, and this answers them fro
     3. does the guest get a network address
     4. is there an sshd to log in to, or only a console
 
+THE FIRST FRAME IS A MENU, NOT A DESKTOP, AND IT WAITS FOR A KEY
+
+Run 41776866958 booted this image correctly and the probe called it "NOTHING DRAWN": the
+bootloader's menu is white text on black, so its mean brightness is 9.9 where a desktop's is
+above 20, and every frame for 240 s was that same unchanged menu. A menu does not advance on
+its own, so no amount of waiting would have produced Orbital. The probe now recognises
+firmware drawing at all (anything above black), waits one more frame for the menu to finish
+drawing, and sends Return to take the default mode.
+
 WHAT A PASS HERE DOES AND DOES NOT MEAN
 
 It means the image runs on this machine and that the pieces a later stage needs are present.
@@ -113,6 +122,21 @@ def take_frame(guest, dest: str, note) -> bool:
     return True
 
 
+def send_key(guest, qcode: str, note) -> bool:
+    """One keystroke through QMP. True when it was accepted."""
+    import qmp as qmpmod
+
+    client = qmpmod.QMP(guest.paths.drive)
+    try:
+        qmpmod.key(client, qcode)
+    except (OSError, RuntimeError) as exc:
+        note(f"  the keystroke {qcode} failed: {exc}")
+        return False
+    finally:
+        client.close()
+    return True
+
+
 def frame_stats(path: str) -> tuple[float, float]:
     """Mean grey and mean channel spread of the PPM beside `path`."""
     try:
@@ -146,8 +170,9 @@ def main(argv: list[str]) -> int:
                    help="the .img.zst or the decompressed .img")
     p.add_argument("--work", default=None)
     p.add_argument("--artifacts", default=None)
-    p.add_argument("--seconds", type=int, default=240,
-                   help="how long to watch the guest after it starts")
+    p.add_argument("--seconds", type=int, default=600,
+                   help="how long to watch the guest after it starts; the bootloader menu "
+                        "waits for Return and Orbital then has to come up under TCG")
     p.add_argument("--mem", type=int, default=2048,
                    help="Redox's own QEMU example uses 1024 for the desktop variant; "
                         "2048 is that with room for a browser")
@@ -222,7 +247,27 @@ def main(argv: list[str]) -> int:
         deadline = time.time() + args.seconds
         started = time.time()
         shot = os.path.join(artifacts, "orbital.png")
-        quiet_since = None
+
+        # THE BOOTLOADER MENU IS THE FIRST THING THAT DRAWS, AND IT WAITS FOR A KEY.
+        #
+        # run 41776866958 sat on it for 240 s and the probe called that "NOTHING DRAWN",
+        # because the threshold below was written for a desktop and the menu is white text
+        # on black: mean 9.9, chroma 0.0. The image had booted perfectly - the frame in
+        # orbital.png names the RedoxFS volume and the best resolution - and nothing would
+        # ever change, because a menu does not advance on its own.
+        #
+        #     Redox OS Bootloader 1.0.0 on x86/BIOS
+        #     RedoxFS b8f97f3a-5f54-4d43-832e-c44f483ca7a1: 647 MiB
+        #     Arrow keys and enter select mode / Press 1 to enable live mode
+        #
+        # So there are two thresholds, not one. Anything above pure black means firmware or
+        # bootloader is drawing, and at that point the probe answers the menu. Only a frame
+        # with both brightness and colour is Orbital, whose panel and wallpaper have both.
+        BOOTLOADER_VISIBLE = 1.0
+        ORBITAL_MEAN, ORBITAL_CHROMA = 20.0, 6.0
+
+        answered = False
+        menu_seen = 0
         last_mean = None
         while time.time() < deadline:
             if not guest.alive():
@@ -230,21 +275,29 @@ def main(argv: list[str]) -> int:
                 break
             time.sleep(10)
             elapsed = int(time.time() - started)
-            if take_frame(guest, shot, note):
-                mean, spread = frame_stats(shot)
-                note(f"  {elapsed}s: mean {mean:.1f} chroma {spread:.1f}")
-                # A DRAWN FRAME IS THE WHOLE POINT OF ORBITAL. The boot screen is
-                # monochrome text; a desktop has a panel and wallpaper.
-                if mean >= 20 and spread >= 6:
-                    note("=== SOMETHING IS DRAWN ===")
-                    note(f"  mean {mean:.1f}, chroma {spread:.1f} - not the text console")
-                    reached = True
-                    break
-                if last_mean is not None and abs(mean - last_mean) < 0.5:
-                    quiet_since = quiet_since or time.time()
-                else:
-                    quiet_since = None
-                last_mean = mean
+            if not take_frame(guest, shot, note):
+                continue
+            mean, spread = frame_stats(shot)
+            note(f"  {elapsed}s: mean {mean:.1f} chroma {spread:.1f}")
+
+            if mean >= ORBITAL_MEAN and spread >= ORBITAL_CHROMA:
+                note("=== ORBITAL IS DRAWN ===")
+                note(f"  mean {mean:.1f}, chroma {spread:.1f} - a panel and a wallpaper")
+                reached = True
+                break
+
+            if not answered and mean >= BOOTLOADER_VISIBLE:
+                # TWO CONSECUTIVE FRAMES before answering, so the menu is finished drawing:
+                # Enter sent while the bootloader is still probing disks is an Enter nobody
+                # is listening for, and the run then looks like an image that does not boot.
+                menu_seen += 1
+                if menu_seen == 2:
+                    note("=== THE BOOTLOADER MENU IS DRAWN ===")
+                    note("  pressing Return to take the default mode")
+                    send_key(guest, "ret", note)
+                    answered = True
+                    note("  waiting for Orbital after the boot continues")
+            last_mean = mean
 
         note(f"verdict {'DRAWN' if reached else 'NOTHING DRAWN'} after {args.seconds}s")
         note("  install.mp4 and last-frame.png are in the artifacts directory")

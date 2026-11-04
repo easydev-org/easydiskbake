@@ -44,8 +44,8 @@ on:
         description: "Its sha256, from the SHA256SUM beside it"
         default: "ff3affbba2a2737e1ac015f599cf8dc3f6df220f5620ccacf66ab17c56de491b"
       seconds:
-        description: "Seconds to watch the guest after it starts"
-        default: "240"
+        description: "Seconds to watch the guest after the bootloader menu is answered"
+        default: "600"
       mem:
         description: "Guest memory in MB"
         default: "2048"
@@ -112,7 +112,7 @@ jobs:
               --image out/redox.img.zst \
               --work out/redox-work \
               --artifacts out/redox-probe \
-              --seconds "${{ inputs.seconds || '240' }}" \
+              --seconds "${{ inputs.seconds || '600' }}" \
               --mem "${{ inputs.mem || '2048' }}"
 
       # THE FRAME AND THE RECORDING ARE THE RESULT. "It booted" is not a claim this stage
