@@ -18,8 +18,11 @@ name: redox-probe
 #
 # WHAT THE IMAGE IS
 #
-# A RAWest disk image with Redox's own bootloader and a RedoxFS root - not an ISO. It is
-# booted as a virtio disk, read-only, so a probe can never write to the release image.
+# A raw disk image with Redox's own bootloader and a RedoxFS root - not an ISO. It is booted
+# as a virtio disk through qemu's `snapshot=on`, so the guest may write without the release
+# file being touched: Redox mounts RedoxFS read-write and its virtio-blk driver asserts on a
+# read-only device, which is what made the first probe panic at
+# drivers/storage/virtio-blk/src/scheme.rs:72 rather than boot.
 #
 # THE CPU STRING IS REDOX'S OWN. Its documentation gives
 # "Broadwell,-pcid,-x2apic,-tsc-deadline,-hle,-rtm,-invpcid" for QEMU; the kernel does not

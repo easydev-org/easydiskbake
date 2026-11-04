@@ -213,12 +213,31 @@ def main(argv: list[str]) -> int:
     #
     # THE IMAGE IS A VIRTIO DISK, not a cdrom: it is a raw disk image with its own partition
     # table, which is what its documented `-drive file=...img,format=raw,if=virtio` means.
+    #
+    # WRITABLE, THROUGH QEMU'S SNAPSHOT LAYER. The first probe opened it `readonly=on` to
+    # guarantee the release image was never modified, and the guest panicked:
+    #
+    #     VirtIO-Blk: disk size: 1331200 sectors and block size of 512 bytes
+    #     thread 'main' (1) panicked at drivers/storage/virtio-blk/src/scheme.rs:72:9:
+    #     assertion `left == right` failed
+    #       left: 1
+    #      right: 0
+    #     [ERROR virtio_blk@src/header/stdlib/mod.rs:121] Abort
+    #
+    # Redox mounts RedoxFS read-write and its virtio-blk driver has no read-only path: the
+    # driver asserts that a write was accepted, and a read-only device refuses it. Redox's
+    # own QEMU examples do not use readonly for the same reason.
+    #
+    # `snapshot=on` is the write allowed without the release file being touched: qemu
+    # redirects every write to a temporary overlay and throws it away when the guest stops,
+    # so a probe cannot corrupt the image it is measuring and cannot leave state behind that
+    # makes the next probe different from this one.
     shape = vm.Shape(
         cpus=args.cpus, mem_mb=args.mem, machine="q35",
         cpu="Broadwell,-pcid,-x2apic,-tsc-deadline,-hle,-rtm,-invpcid",
         vga="std",
     )
-    drives = ["-drive", f"file={image},format=raw,if=virtio,readonly=on"]
+    drives = ["-drive", f"file={image},format=raw,if=virtio,snapshot=on"]
     guest = vm.Guest(work, extra=drives, shape=shape, stdout=os.devnull)
 
     shots = os.path.join(work, "frames")
