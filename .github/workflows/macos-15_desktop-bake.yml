@@ -30,6 +30,12 @@ on:
       desktop_timeout:
         description: "Seconds to wait for a desktop after the wizard"
         default: "1800"
+      inspect_after:
+        description: >-
+          Stop this many seconds after the wizard's last click, keep the recording and
+          publish nothing. For looking at what the wizard actually did instead of waiting
+          out desktop_timeout. Empty means the normal run.
+        default: ""
 
 concurrency:
   group: macos-15-desktop-${{ github.ref }}
@@ -109,7 +115,8 @@ jobs:
               --disk "$DISK" \
               --out out/macos15-desktop.qcow2 \
               --assistant-timeout "${{ inputs.assistant_timeout || '2700' }}" \
-              --desktop-timeout "${{ inputs.desktop_timeout || '1800' }}"
+              --desktop-timeout "${{ inputs.desktop_timeout || '1800' }}" \
+              ${{ inputs.inspect_after != '' && format('--inspect-after {0}', inputs.inspect_after) || '' }}
 
       - name: keep the recording
         if: always()

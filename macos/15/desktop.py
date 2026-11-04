@@ -89,6 +89,10 @@ def main(argv: list[str]) -> int:
     p.add_argument("--password", default=os.environ.get("MACOS_PASSWORD", "admin"))
     p.add_argument("--assistant-timeout", type=int, default=45 * 60)
     p.add_argument("--desktop-timeout", type=int, default=30 * 60)
+    p.add_argument("--inspect-after", type=int, default=None,
+                   help="stop this many seconds after the wizard's last click, keep the "
+                        "recording and publish nothing (exit 3). For looking at what the "
+                        "wizard actually did instead of waiting out --desktop-timeout")
     args = p.parse_args(argv)
 
     out = args.out or args.disk.replace(".qcow2", "-desktop.qcow2")
@@ -199,6 +203,34 @@ def main(argv: list[str]) -> int:
             log(f"the Setup Assistant driver failed: {exc}")
 
         log("waiting for a desktop")
+        if args.inspect_after is not None:
+            # LOOK AT THE RECORDING INSTEAD OF WAITING OUT THE TIMEOUT.
+            #
+            # The wizard has finished - drive.py returns after its last click - and whether a
+            # desktop appears is exactly the question the recording answers. Waiting 1800s to
+            # learn that the last pane did not dismiss is 1800s spent on an answer that is
+            # already on screen.
+            #
+            # The guest is stopped after this many seconds, the recording and last frame are
+            # uploaded, and the disk is NOT published: exit code 3, which no stage treats as
+            # success. That is the difference between "inspect this" and "this is a disk".
+            log(f"inspection stop: {args.inspect_after}s after the sequence, then stop")
+            time.sleep(args.inspect_after)
+            import lastframe
+            shot = os.path.join(os.path.dirname(os.path.abspath(frames)), "inspect.ppm")
+            try:
+                client = __import__("qmp").QMP(guest.paths.drive)
+                try:
+                    client.execute("screendump", filename=shot)
+                finally:
+                    client.close()
+                lastframe.convert(shot, os.path.join(
+                    os.path.dirname(os.path.abspath(frames)), "last-frame.png"))
+            except (OSError, RuntimeError) as exc:
+                log(f"  the screenshot could not be taken: {exc}")
+            log("=== STOPPED FOR INSPECTION; the disk is not published ===")
+            log("  the recording is the evidence: look at the last frame it kept")
+            return 3
         arrived = wait_for_desktop(guest, frames, args.desktop_timeout)
     finally:
         guest.stop(acpi_first=arrived)

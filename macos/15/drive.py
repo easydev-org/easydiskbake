@@ -72,9 +72,18 @@ CONTINUE = (1306, 810)
 COUNTRY_LIST = (900, 500)
 UNITED_STATES = (764, 615)
 
-# Transfer pane, four cards. The fourth is "Set up as new", and it is what keeps this
-# Mac off the transfer path. Left-aligned at x=743 where the radio marks sit.
-SET_UP_AS_NEW = (743, 714)
+# THE TRANSFER PANE HAS NO COORDINATE HERE, DELIBERATELY.
+#
+# It is a vertical radio list - "From a Mac, Time Machine, or startup disk", "From a Windows
+# PC", "Set up with iPhone or iPad", "Set up as new" - with the first row selected when the
+# pane opens. set_up_as_new() sends three Downs and presses Continue, because keys walk the
+# list the widget drew and a coordinate does not.
+#
+# The coordinate this replaced was (743, 714), documented as "the fourth card". The pane is
+# about 120px tall and 714 is below its last row, so the click selected "Set up with iPhone
+# or iPad" and the wizard opened a pairing handshake with a device that does not exist. Two
+# runs ended there: 41777784309 under a case-sensitive-filesystem alert, 41782331835 under
+# "Unable to Pair Computers". Same wrong row, two different alerts.
 
 # The account form. OCR gives the LABELS, which sit 20px above their fields; the values
 # below are the field boxes, measured from a vertical scan at x=900 - each is a band of
@@ -94,32 +103,6 @@ HINT = (900, 667)
 
 # The "Are you sure you want to skip sign in?" sheet - Skip is the right-hand of its pair.
 SHEET_SKIP = (1026, 634)
-
-# THE TRANSFER PANE'S "Not now", AND THE ALERT THAT CAN COVER IT.
-#
-# Run 41777784309 sat on the transfer pane for the whole 1800s desktop timeout. The frame
-# says why, and it is not the click:
-#
-#     Transfer information to this Mac
-#       [AssetData]  <- the install medium, offered as a migration source
-#       Other Server...
-#         +---------------------------------------+
-#         |  The selected source cannot be used   |
-#         |  for migration.                       |
-#         |  This source is using a Case Sensitive |
-#         |  filesystem, while your Mac is not.   |
-#         |              [ OK ]                   |
-#         +---------------------------------------+
-#     Not now                          Back  Continue
-#
-# Something selected the AssetData volume and Migration Assistant refused it with a MODAL
-# alert. A modal alert swallows every click sent at the pane behind it, so the sequence's
-# remaining actions - all of them "successful" in the log - landed on a sheet that ate them.
-#
-# Two numbers, and they are measured from that frame at 1920x1080:
-TRANSFER_NOT_NOW = (604, 803)
-# The alert's OK is centred in a 250x170 sheet whose top edge is at y=535.
-TRANSFER_ALERT_OK = (958, 620)
 
 # Not Now on a two-button pane: the pairing pane after Data & Privacy. Continue is
 # disabled there, so Not Now is the only control that moves the wizard.
@@ -249,38 +232,44 @@ def pick_country(d: Driver) -> None:
 
 
 def set_up_as_new(d: Driver) -> None:
-    """Leave the transfer pane without transferring, whatever it is showing.
+    """Three Downs, then Continue. The pane is a RADIO LIST, not cards.
 
-    THE PANE HAS THREE STATES AND THE OLD CODE KNEW ONE.
+    WHAT IT ACTUALLY LOOKS LIKE, from the recording of run 41782331835 at 37s:
 
-        no source selected    card 4 selects "Set up as new", Continue moves on
-        a source selected     a modal alert says why it cannot be used, and it EATS clicks
-        a source offered      clicking the card is not needed; Not now is the way out
+        Transfer Your Data to This Mac
+          How do you want to transfer your information?
+            (o) From a Mac, Time Machine, or startup disk
+            ( ) From a Windows PC
+            ( ) Set up with iPhone or iPad
+            ( ) Set up as new
+                                            [ Back ] [ Continue ]
 
-    Run 41777784309 was in the second state and the sequence was written for the first:
-    the alert swallowed Continue, and every later step of a "fixed sequence" was spent
-    clicking at a sheet.
+    The first item is selected when the pane opens, so three Downs walk the highlight to
+    the last one. That is the whole action, and it does not depend on where anything sits
+    on the screen - which is the entire reason it replaced a click.
 
-    Not now is clicked unconditionally, and it is idempotent: on a pane that has already
-    moved on it lands on the next pane's lower-left corner, which is empty on every
-    remaining pane of this wizard. OK is clicked after it, because an alert that was up
-    needs dismissing either way and the OK position is empty when there is no alert.
+    WHY THE CLICK WAS WRONG, AND WHY IT LOOKED RIGHT
+
+    The sequence clicked (743, 714), documented as "card 4, Set up as new". The pane is not
+    cards; it is a vertical radio list about 120px tall, and 714 is BELOW the last row. What
+    that click actually selected was "Set up with iPhone or iPad", and the next thing on
+    screen was
+
+        Enter the code below on your other computer
+        Unable to Pair Computers
+        This Mac could not be paired with the computer you want to connect.
+
+    - a pairing handshake with a device that does not exist, which is the same dead end the
+    privacy pane's Not Now exists to avoid. Two runs were spent on it: 41777784309 ended with
+    a case-sensitive-filesystem alert over this pane, and 41782331835 with the pairing alert.
+    Both were the same wrong row, reached two different ways.
+
+    A CLICK AT A MEASURED POSITION IS ONLY FIXED IF THE THING AT THAT POSITION IS. Keys walk
+    the list the widget drew, so they survive a re-layout; the coordinate cannot.
     """
     d.wait(8, "transfer pane settles")
-
-    # CARD 4 FIRST, because when nothing is selected this is the only way forward and the
-    # card position is inert once a source is already selected.
-    d.click(SET_UP_AS_NEW, "card 4, Set up as new", settle=2.5)
-
-    # THE ALERT, IF THE CLICK ON THE CARD RAISED ONE. Clicking a card for a volume that
-    # cannot be migrated raises the modal; clicking OK is the way back to the pane.
-    d.click(TRANSFER_ALERT_OK, "dismiss the migration alert, if there is one", settle=2.0)
-
-    # NOT NOW IS THE EXIT THAT DOES NOT DEPEND ON WHICH STATE THE PANE IS IN.
-    d.click(TRANSFER_NOT_NOW, "Not now on the transfer pane", settle=3.0)
-
-    # AND CONTINUE, FOR THE CASE WHERE NOT NOW WAS ALREADY TAKEN AND THIS IS THE NEXT PANE.
-    d.click(CONTINUE, "transfer Continue", settle=8.0)
+    d.key("down", times=3, settle=1.0)
+    d.click(CONTINUE, "transfer Continue, Set up as new selected", settle=8.0)
 
 
 def languages(d: Driver) -> None:
@@ -347,13 +336,6 @@ def tail(d: Driver) -> None:
     """
     for i in range(12):
         d.wait(5, f"pane {i + 1} settles")
-        # A MODAL ALERT CAN APPEAR ON ANY PANE, AND Return DOES NOT DISMISS IT.
-        #
-        # The transfer pane's alert is dismissed above, but "you haven't provided all of the
-        # requested information" and the Siri and FileVault prompts are the same shape, and
-        # any of them swallows the rest of the sequence. One click at the alert's OK costs
-        # nothing on a pane that has no alert, because that point is inside the pane body.
-        d.click(TRANSFER_ALERT_OK, f"pane {i + 1}: dismiss an alert if one is up", settle=1.0)
         d.key("ret", settle=2.0)
         d.click(CONTINUE, f"pane {i + 1} Continue", settle=2.5)
 
