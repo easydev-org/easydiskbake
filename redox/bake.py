@@ -495,6 +495,20 @@ class Console:
         log(f"  click ({x}, {y})" + (f" {why}" if why else ""))
         time.sleep(settle)
 
+    def click_relative(self, x: int, y: int, *, why: str = "",
+                       settle: float = 1.5) -> None:
+        """A click with a PS/2 pointer, for a guest that ignores absolute events.
+
+        Redox's usbhid does not bind `usb-tablet`: the cursor in run 41894870375's recording
+        is still the white arrow at (0, 0) after six absolute clicks, each of which QMP
+        accepted. Its ps2d driver does handle the PS/2 mouse, so this walks the pointer to
+        the coordinate instead of telling the guest where it is. See lib/qmp.py's
+        point_relative().
+        """
+        qmpmod.click_relative(self.live(), x, y)
+        log(f"  click ({x}, {y}) with the PS/2 pointer" + (f" {why}" if why else ""))
+        time.sleep(settle)
+
     def key(self, qcode: str, *, settle: float = 0.5) -> None:
         # THE SAME CONNECTION AS THE POINTER. A key is not positional, but the guest's input
         # queue is one queue: mixing it across connections is how a chord and a click get
@@ -625,6 +639,19 @@ def main(argv: list[str]) -> int:
         # after this Popen. Creating it here is the fix, and the Console's makedirs stays
         # because a directory can be removed between the two.
         os.makedirs(shots, exist_ok=True)
+        # A PS/2 MOUSE AS WELL AS THE USB TABLET, AND THE REASON IS THE POINTER.
+        #
+        # vm.Shape always attaches `usb-tablet,bus=xhci.0`, and Redox's usbhid driver does not
+        # bind it: run 41894870375 clicked (115, 1051) six times and the cursor in the
+        # recording is still the white arrow at (0, 0) in the 76-second frame, after every
+        # one of them. QMP accepted each input-send-event - so nothing raised, and nothing
+        # moved.
+        #
+        # Redox ships ps2d (its boot-process documentation lists "ps2d loads PS/2 handling
+        # into /scheme/serio"), and q35 has a PS/2 controller. A PS/2 mouse reports RELATIVE
+        # motion, which Redox does handle - and which needs no absolute axis to be understood.
+        # `-device usb-tablet` is left in place because other guests in this repository use
+        # it and the extra device is inert here.
         shape = vm.Shape(cpus=args.cpus, mem_mb=args.mem, machine="q35", cpu=CPU,
                          vga="std", resolution=(1920, 1080))
         drives = ["-drive", f"file={disk},if=virtio,format=qcow2"]
@@ -816,14 +843,15 @@ def main(argv: list[str]) -> int:
                 # hover and closing it before the click is the pattern this whole change
                 # removed; it also made qmp() connect while snapshots.py held the socket,
                 # which timed out in run 41886018594.
-                qmpmod.move(con.live(), *DOCK_TERMINAL)
+                qmpmod.point_relative(con.live(), *DOCK_TERMINAL)
                 time.sleep(2.0)
                 hovered = dock_changed(baseline, f"terminal-hover-{attempt}")
                 note(f"    the dock {'answered the pointer' if hovered else 'did not react'}")
 
-                con.click(*DOCK_TERMINAL,
-                          why=f"the terminal icon in the dock (attempt {attempt} of 3)",
-                          settle=1.0)
+                con.click_relative(*DOCK_TERMINAL,
+                                   why=f"the terminal icon in the dock "
+                                       f"(attempt {attempt} of 3)",
+                                   settle=1.0)
                 deadline = time.time() + 10
                 while time.time() < deadline:
                     time.sleep(2)

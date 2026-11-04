@@ -186,6 +186,44 @@ def click(q, x, y):
         {"type": "btn", "data": {"down": False, "button": "left"}}])
 
 
+def point_relative(q, x, y):
+    """Put a PS/2 pointer at (x, y) without pressing anything."""
+    # A CORNER FIRST, so the position is known rather than assumed: a large negative delta
+    # saturates every guest's accumulator at (0, 0), and from there the target is exact.
+    _send(q, "home the pointer", [
+        {"type": "rel", "data": {"axis": "x", "value": -4000}},
+        {"type": "rel", "data": {"axis": "y", "value": -4000}},
+    ])
+    time.sleep(0.2)
+    _send(q, f"move to ({x}, {y})", [
+        {"type": "rel", "data": {"axis": "x", "value": x}},
+        {"type": "rel", "data": {"axis": "y", "value": y}},
+    ])
+    time.sleep(0.2)
+    q._cursor = (x, y)
+
+
+def click_relative(q, x, y):
+    """Move a PS/2 mouse from where it is to (x, y), then click.
+
+    A PS/2 mouse reports RELATIVE motion - it has no idea where the screen is - so a
+    coordinate cannot be sent to it. This walks it: the guest tells us nothing, so the motion
+    is the difference from the last position this function placed it at, which is tracked on
+    the `q` object.
+
+    WHY THIS EXISTS: Redox's usbhid does not bind `usb-tablet`, so its cursor never moves on
+    an absolute event - measured on run 41894870375, where the arrow is still at (0, 0) in
+    the frame after six clicks. Its ps2d driver does handle the PS/2 mouse, which is the
+    device this drives.
+    """
+    point_relative(q, x, y)
+    _send(q, f"press at ({x}, {y})", [
+        {"type": "btn", "data": {"down": True, "button": "left"}}])
+    time.sleep(0.15)
+    _send(q, f"release at ({x}, {y})", [
+        {"type": "btn", "data": {"down": False, "button": "left"}}])
+
+
 def key(q, qcode):
     """Press and release one key, in a single QMP event list.
 
