@@ -465,7 +465,20 @@ def apple_account(d: Driver) -> None:
     So the click is followed by Return: on this pane Return activates the focused control, and
     the click has just focused it. Two ways to leave, one of which is a key.
     """
-    d.wait(6, "apple account pane settles")
+    # THE ACCOUNT FORM TAKES ABOUT TWENTY SECONDS TO FINISH, AND SIX WAS NOT ENOUGH.
+    #
+    # The recording puts this at:
+    #
+    #     330s   Create a Mac Account / "Creating account..."      <- still working
+    #     350s   Sign In to Your Apple Account
+    #
+    # and run 41805713652 clicked at 347s - inside the gap. The click landed on a pane that had
+    # not finished appearing, so "Set Up Later" was not there yet to receive it, and the next
+    # sixteen actions were spent on the account form's disabled Continue.
+    #
+    # 25 SECONDS, NOT 6. The cost is idle time on the fast path; the cost of being early is the
+    # whole rest of the wizard, which is what fifteen runs have been paying.
+    d.wait(25, "apple account pane: the account is being created")
     d.click(NOT_NOW, "Set Up Later", settle=2.0)
     d.key("ret", settle=3.0)
 
@@ -506,6 +519,14 @@ def tail(d: Driver) -> None:
         d.wait(6, f"pane {i + 1} settles")
         d.key("ret", settle=3.0)
         d.click(CONTINUE, f"pane {i + 1} Continue", settle=3.0)
+
+    # A LAST LONG WAIT, BECAUSE THE FINISHING PANES WRITE BEFORE THEY DRAW.
+    #
+    # After the last Continue the wizard creates the account and the login items and then
+    # fades to the desktop. Five runs have ended their recording on a wizard pane that was
+    # still doing that work, and the frame taken at the end looked exactly like a wizard that
+    # never moved. Twenty seconds is what the transition takes when the disk is slow.
+    d.wait(20, "the wizard finishes and the desktop appears")
 
 
 def run_sequence(qmp_path: str, frames_dir: str | None, user: str, password: str) -> None:
