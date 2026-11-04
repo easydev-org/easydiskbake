@@ -231,22 +231,35 @@ def verify() -> bool:
         log(f"  {[l for l in text.splitlines() if 'PowerShell ' in l][0].strip()}")
 
     log("dotnet")
-    # THE FULL PATH. winget does not refresh PATH for sessions that already exist, so a
-    # fresh ssh session sees the environment from before the install and reports the bare
-    # name as not found even though the SDK is on disk and working.
-    dotnet = r"C:\Program Files\dotnet\dotnet.exe"
-    result = ssh_run(f'"{dotnet}" --version', timeout=300)
-    text = (result.stdout or "") + (result.stderr or "")
-    version = None
-    for line in text.splitlines():
-        if re.match(r"^[0-9]+\.[0-9]+\.[0-9]+", line.strip()):
-            version = line.strip()
-            break
-    if version:
-        log(f"  {version}")
+    # A VERSION STRING WAS NOT ENOUGH, AND IN RUN 41775507806 IT WAS EMPTY.
+    #
+    # The check was
+    #
+    #     ssh> "C:\Program Files\dotnet\dotnet.exe" --version
+    #       no version in the output
+    #
+    # with winget listing Microsoft.DotNet.SDK.10 as installed. `dotnet --version` writes its
+    # error to stderr and exits non-zero when no SDK is beside the muxer, and merging the two
+    # streams over ssh is how that became "nothing came back". An empty answer cannot be
+    # acted on, so this now runs a script that prints the path, the sdk directory, both exit
+    # codes, and then builds and runs a console app - a dev disk exists to compile things,
+    # and an SDK that lists a version but cannot restore is not a toolchain.
+    script = os.path.join(HERE, "dotnet-check.ps1")
+    if not os.path.isfile(script):
+        raise SystemExit(f"{script} is missing; the dotnet check cannot run without it")
+    remote = f"C:/Users/{SSH_USER}/dotnet-check.ps1"
+    scp_to(script, remote)
+    result = ssh_run(
+        f"powershell -NoProfile -ExecutionPolicy Bypass -File {remote}", timeout=1800)
+    out = (result.stdout or "") + (result.stderr or "")
+    for line in out.splitlines():
+        text = line.strip()
+        if text and not text.startswith("Warning: Permanently added"):
+            log(f"    {text[:150]}")
+    if "DOTNET_OK" in out:
+        log("  built and ran a console application")
     else:
         failures.append("dotnet")
-        log("  no version in the output")
 
     log("compiling and running a C program")
     script = os.path.join(HERE, "msvc-check.ps1")
