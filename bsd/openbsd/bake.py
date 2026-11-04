@@ -145,6 +145,18 @@ def answers() -> list[tuple[str, float]]:
         ("W", 5),           # Use (W)hole disk
         ("a", 5),           # Use (A)uto layout
         ("cd0", 5),         # Location of sets
+        # THE PATH ON THE MEDIUM, WHICH IS ITS OWN QUESTION.
+        #
+        # 8.0 asks "Pathname to the sets?" after the location, and the list went straight
+        # to the set names - so `*` went into the pathname and was rejected:
+        #
+        #     Location of sets? (cd0 cd1 disk http nfs or 'done') [http] cd0
+        #     Pathname to the sets? (or 'done') [8.0/amd64] *
+        #     The directory '*' does not exist.
+        #
+        # An empty answer takes the offered default, 8.0/amd64, which is where the release
+        # puts its sets. The next question is the set list.
+        ("", 5),            # Pathname to the sets: the default, 8.0/amd64
         ("*", 5),           # Set name(s): all of them
         ("", 120),          # unpacking the sets
         ("", 10),           # done; the installer reboots
