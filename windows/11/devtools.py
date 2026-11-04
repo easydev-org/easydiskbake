@@ -349,8 +349,9 @@ def main(argv: list[str]) -> int:
                    help="provide a TPM 2.0; off by default, because the answer file "
                         "bypasses the check and the disk boots without one")
     p.add_argument("--bootstate", default=None,
-                   help="the .bootstate.tar.gz published with the disk; "
-                        "without it the firmware has no boot entry")
+                   help="IGNORED. The disk carries \\EFI\\BOOT\\BOOTX64.EFI and this "
+                        "machine uses a fresh variable store; kept so an existing command "
+                        "line still parses")
     args = p.parse_args(argv)
 
     if not os.path.isfile(args.ssh):
@@ -391,47 +392,14 @@ def main(argv: list[str]) -> int:
     firmware_code = os.environ.get("OVMF_CODE", "/usr/share/OVMF/OVMF_CODE_4M.fd")
     firmware_vars = os.path.join(work, "OVMF_VARS.fd")
     template = os.environ.get("OVMF_VARS_TEMPLATE", "/usr/share/OVMF/OVMF_VARS_4M.fd")
-    if not os.path.exists(firmware_vars):
-        shutil.copyfile(template, firmware_vars)
-    # THE FIRMWARE AND TPM STATE HAVE TO COME BACK BEFORE THE MACHINE STARTS.
-    #
-    # A published disk carries a complete Windows 11 and no boot entry: the one that
-    # matters is written into OVMF's variables during setup, and a fresh template has
-    # none of them. Started that way the firmware tries Boot0001..Boot0005, fails each,
-    # and drops into its own shell - measured on run 41468968378.
-    import bootstate
-    # Same coupling as the ssh stage: the archive moves to the working disk's name.
+    # A FRESH TEMPLATE, ALWAYS - the disk carries its own loader at the UEFI fallback path
+    # \EFI\BOOT\BOOTX64.EFI, so nothing has to be restored for it to start. See the longer
+    # note in ssh.py; this stage had the same unconditional bootstate requirement and the
+    # same failure when the artifact was not there.
+    shutil.copyfile(template, firmware_vars)
     if args.bootstate:
-        source = args.bootstate
-        # A PATH THAT DOES NOT EXIST IS AN ERROR HERE, NOT A WARNING LATER.
-        #
-        # The workflow names this file and can name it wrongly - run 41480134822 passed
-        # `out/windows11-gold.qcow2.bootstate.tar.gz` while the artifact downloads as
-        # `windows11.qcow2.bootstate.tar.gz`. The old code silently skipped a missing
-        # --bootstate and failed on the generic "no archive at <working disk>" message,
-        # which pointed at the wrong directory.
-        if not os.path.isfile(source):
-            raise SystemExit(
-                f"--bootstate {source} does not exist. It must be the archive as it "
-                f"arrives - named after the PUBLISHED disk (windows11.qcow2), not after "
-                f"the tag this stage pulled (windows11-gold.qcow2). Instead of guessing, "
-                f"this stops: the archive beside {os.path.basename(source)} is what the "
-                f"publisher actually wrote."
-            )
-    else:
-        source = bootstate.archive_path(args.ssh)
-    placed = bootstate.adopt(disk, source)
-    log(f"bootstate {source} -> {placed}")
-    restored = bootstate.restore(work, disk)
-    if not restored:
-        raise SystemExit(
-            "no bootstate archive at "
-            f"{bootstate.archive_path(disk)}. The disk alone will not boot: OVMF's "
-            "variables hold the \"Windows Boot Manager\" entry and the TPM holds the "
-            "state Windows sealed against it. Pass --bootstate <disk>.bootstate.tar.gz, "
-            "or publish it beside the disk - see lib/bootstate.py."
-        )
-    log(f"bootstate restored into {work}")
+        log(f"--bootstate {args.bootstate} IGNORED: the disk carries its own loader at "
+            f"\\EFI\\BOOT\\BOOTX64.EFI and this machine uses a fresh variable store")
 
     # NO TPM BY DEFAULT, the same as bake.py and ssh.py.
     tpm = start_swtpm(work) if args.tpm else ""

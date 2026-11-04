@@ -1,7 +1,6 @@
 """Clean a local disk that is not running: boot it, clean it over ssh, stop it.
 
     python3 lib/clean_step.py --disk out/windows11-ssh.qcow2 --kind windows
-    python3 lib/clean_step.py --disk out/windows11-ssh.qcow2 --kind windows --bootstate out/ssh-work
 
 WHY THIS EXISTS WHEN lib/clean_disk.clean_running() DOES
 
@@ -22,9 +21,11 @@ THE DISK IS MODIFIED IN PLACE. This is the last step before compress and publish
 disk passed in IS the one that ships: cleaning a copy would mean the copy has to be moved
 back afterwards, and a copy-back that failed would publish the dirty one.
 
-THE BOOTSTATE IS OPTIONAL AND USUALLY NEEDED ON WINDOWS. The firmware variables live in
-`<work>/*.bootstate.tar.gz`; without them the machine starts and finds no boot entry, which
-looks like a disk that does not boot. `--bootstate` points at the directory holding them.
+NO BOOTSTATE IS NEEDED, ON ANY SYSTEM. Windows used to require one - the "Windows Boot
+Manager" entry lived in OVMF's variables and nowhere else - and this stage restored it before
+starting the machine. The bake now writes the Windows loader to the UEFI fallback path
+\\EFI\\BOOT\\BOOTX64.EFI as well, so a fresh template's variables are enough and `--bootstate`
+exists only so an older command line still parses.
 """
 
 from __future__ import annotations

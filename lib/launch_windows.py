@@ -6,8 +6,8 @@ WHAT THIS ANSWERS
 
     does the artifact in ghcr actually boot to a desktop
 
-bake-windows publishes a disk and a bootstate archive; the ssh stage starts one and waits
-for a desktop. That wait is nine minutes of silence, and when it fails it reports
+bake-windows publishes a disk that carries its own boot loader; the ssh stage starts one
+and waits for a desktop. That wait is nine minutes of silence, and when it fails it reports
 
     the guest did not reach a desktop
 
@@ -53,7 +53,6 @@ sys.path.insert(0, REPO)
 sys.path.insert(0, os.path.join(REPO, "lib"))
 sys.path.insert(0, os.path.join(REPO, "windows", "11"))
 
-import bootstate  # noqa: E402
 import iso  # noqa: E402
 import smoke  # noqa: E402
 import vm  # noqa: E402
@@ -78,11 +77,12 @@ def main(argv: list[str]) -> int:
     p.add_argument("--disk", default=None,
                    help="a local disk to start instead of pulling one")
     p.add_argument("--bootstate", default=None,
-                   help="the .bootstate.tar.gz; defaults to the one beside the disk")
+                   help="IGNORED. The disk carries \\EFI\\BOOT\\BOOTX64.EFI, so nothing has "
+                        "to be restored; kept so an existing command line still parses")
     p.add_argument("--allow-blank-firmware", action="store_true",
-                   help="start with the OVMF template's variables instead of a restored "
-                        "bootstate - for testing whether a disk booted by the UEFI fallback "
-                        "path needs one at all")
+                   help="IGNORED. Every launch now starts with a fresh variable store, "
+                        "because the disk carries its own loader; kept so the command line "
+                        "that ran the original experiment still parses")
     p.add_argument("--artifacts", default="out")
     p.add_argument("--work", default=None)
     p.add_argument("--boot-timeout", type=int, default=900)
@@ -168,42 +168,26 @@ def main(argv: list[str]) -> int:
         note("  this is a bake failure, not a launch failure - nothing below can help")
         return finish(1)
 
-    # --- 3. firmware and TPM state --------------------------------------------
-    source_state = args.bootstate or bootstate.archive_path(source)
-    if args.allow_blank_firmware:
-        # THE POINT OF THE EXPERIMENT: boot with the OVMF template's variables, which contain
-        # no "Windows Boot Manager" entry, and see whether the firmware finds the fallback
-        # loader at \EFI\BOOT\BOOTX64.EFI instead. Nothing is restored, and the variable
-        # store qemu is given is a fresh copy of the template - see step 4 below.
-        note("=== BOOTING WITH A FRESH VARIABLE STORE (--allow-blank-firmware) ===")
-        note("  no bootstate is restored; the firmware has no boot entries at all")
-        note("  the disk was expected to carry a fallback loader at \\EFI\\BOOT\\BOOTX64.EFI")
-    elif os.path.isfile(source_state):
-        placed = bootstate.adopt(disk, source_state)
-        note(f"bootstate {source_state} -> {placed}")
-    else:
-        # NAME WHAT WAS LOOKED FOR AND WHAT IS THERE. The old message named only the
-        # post-adopt path, so "no bootstate at out/launch-work/disk.qcow2.bootstate" read
-        # as a missing work file rather than as "the artifact was never downloaded" -
-        # which is what run 41592865333 actually was.
-        note(f"FAILED: no bootstate archive at {source_state}")
-        note("  and none beside the disk either. Without OVMF's variables the firmware")
-        note("  has no boot entry and Windows will not start - this is an artifact")
-        note("  problem, not a disk problem")
-        return finish(1)
-    if not args.allow_blank_firmware:
-        if not bootstate.restore(work, disk):
-            note(f"FAILED: the archive {source_state} did not restore into {work}")
-            return finish(1)
-        note(f"bootstate restored into {work}")
-
-    # --- 4. start it -----------------------------------------------------------
+    # --- 3. firmware ---------------------------------------------------------
+    #
+    # NOTHING IS RESTORED, EVER. The disk is self-booting: bake.py writes the Windows loader
+    # to the UEFI fallback path \EFI\BOOT\BOOTX64.EFI, the firmware tries it when no boot
+    # entry resolves, and a fresh variable store is then enough. That is the machine a person
+    # who downloads the artifact gets, so it is the machine this launch tests.
+    #
+    # This used to require a bootstate archive and refuse to start without one, which made a
+    # launch of a perfectly good disk fail on a missing artifact. `--allow-blank-firmware` is
+    # still accepted - it was the flag that ran this experiment - but it now describes what
+    # always happens rather than an alternative.
     firmware_code = os.environ.get("OVMF_CODE", "/usr/share/OVMF/OVMF_CODE_4M.fd")
     firmware_vars = os.path.join(work, "OVMF_VARS.fd")
-    if not os.path.exists(firmware_vars):
-        template = os.environ.get("OVMF_VARS_TEMPLATE",
-                                  "/usr/share/OVMF/OVMF_VARS_4M.fd")
-        shutil.copyfile(template, firmware_vars)
+    template = os.environ.get("OVMF_VARS_TEMPLATE", "/usr/share/OVMF/OVMF_VARS_4M.fd")
+    shutil.copyfile(template, firmware_vars)
+    note("booting with a fresh variable store; the disk carries \\EFI\\BOOT\\BOOTX64.EFI")
+    if args.bootstate:
+        note(f"--bootstate {args.bootstate} IGNORED for the same reason")
+    if args.allow_blank_firmware:
+        note("  (--allow-blank-firmware: this was the experiment; it is now the only path)")
 
     # DOCKUR-WINDOWS DOES NOT GIVE WINDOWS A TPM AT ALL, and it installs and boots
     # Windows 11. Its answer file bypasses the check in WinPE:
@@ -218,8 +202,8 @@ def main(argv: list[str]) -> int:
     # TPM.
     #
     # THE DEFAULT IS NO TPM, the way dockur-windows runs Windows 11. --tpm is for the
-    # case that wants the pairing on purpose, and then the state has to travel with the
-    # disk and be restored before every boot - see lib/bootstate.py.
+    # case that wants the pairing on purpose, and then the swtpm state this run creates is
+    # the only one the guest has ever seen - which is the situation the flag is for.
     tpm = sshstage.start_swtpm(work) if args.tpm else ""
     note("starting WITHOUT a TPM, the way dockur-windows does"
          if not args.tpm else "starting WITH a TPM and the state from the archive")

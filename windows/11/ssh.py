@@ -384,8 +384,9 @@ def main(argv: list[str]) -> int:
     p.add_argument("--no-clean", dest="clean", action="store_false",
                    help="leave the disk as it is; the workflow runs lib/clean_step.py next")
     p.add_argument("--bootstate", default=None,
-                   help="the .bootstate.tar.gz published with the disk; "
-                        "without it the firmware has no boot entry")
+                   help="IGNORED. The disk carries \\EFI\\BOOT\\BOOTX64.EFI and this "
+                        "machine uses a fresh variable store; kept so an existing command "
+                        "line still parses")
     args = p.parse_args(argv)
 
     if not os.path.isfile(args.gold):
@@ -421,51 +422,27 @@ def main(argv: list[str]) -> int:
     firmware_code = os.environ.get("OVMF_CODE", "/usr/share/OVMF/OVMF_CODE_4M.fd")
     firmware_vars = os.path.join(work, "OVMF_VARS.fd")
     template = os.environ.get("OVMF_VARS_TEMPLATE", "/usr/share/OVMF/OVMF_VARS_4M.fd")
-    if not os.path.exists(firmware_vars):
-        shutil.copyfile(template, firmware_vars)
-    # THE FIRMWARE AND TPM STATE HAVE TO COME BACK BEFORE THE MACHINE STARTS.
+    # ALWAYS A FRESH COPY OF THE TEMPLATE, NEVER A RESTORED BOOTSTATE.
     #
-    # A published disk carries a complete Windows 11 and no boot entry: the one that
-    # matters is written into OVMF's variables during setup, and a fresh template has
-    # none of them. Started that way the firmware tries Boot0001..Boot0005, fails each,
-    # and drops into its own shell - measured on run 41468968378.
-    import bootstate
-    # THE ARCHIVE MOVES WITH THE DISK. This stage copies the published disk to a working
-    # name (out/windows11-gold.qcow2 -> ssh-work/disk.qcow2), and restore() looks for
-    # `ssh-work/disk.qcow2.bootstate.tar.gz` and nothing else. Run 41477859630 failed
-    # with "no bootstate archive was found" while the archive sat in out/ under the
-    # published disk's name - so it is renamed here rather than searched for later.
+    # The disk is self-booting: bake.py writes the Windows loader to the UEFI fallback path
+    # \EFI\BOOT\BOOTX64.EFI, which the firmware tries when no boot entry resolves. So this
+    # machine is given an EMPTY variable store on purpose - it is the machine a person who
+    # downloads the artifact gets, and the boot is the same boot.
+    #
+    # THIS USED TO REQUIRE A BOOTSTATE ARCHIVE AND ABORT WITHOUT ONE. Every stage carried
+    # `<job>_bootstate`, the archive held `windows.vars` with the "Windows Boot Manager"
+    # entry, and a missing artifact failed the job before the disk was ever started:
+    #
+    #     Unable to download artifact(s): Artifact not found for name: windows11-bootstate
+    #
+    # which is run 41835601248 - the disk was fine, and it was pulled and never booted.
+    # Restoring an old bootstate is not merely unnecessary now, it is worse than useless:
+    # its entries name the partition GUID of whichever disk wrote them, so an archive from
+    # a different boot points at partitions this disk may not have.
+    shutil.copyfile(template, firmware_vars)
     if args.bootstate:
-        source = args.bootstate
-        # A PATH THAT DOES NOT EXIST IS AN ERROR HERE, NOT A WARNING LATER.
-        #
-        # The workflow names this file and can name it wrongly - run 41480134822 passed
-        # `out/windows11-gold.qcow2.bootstate.tar.gz` while the artifact downloads as
-        # `windows11.qcow2.bootstate.tar.gz`. The old code silently skipped a missing
-        # --bootstate and failed on the generic "no archive at <working disk>" message,
-        # which pointed at the wrong directory.
-        if not os.path.isfile(source):
-            raise SystemExit(
-                f"--bootstate {source} does not exist. It must be the archive as it "
-                f"arrives - named after the PUBLISHED disk (windows11.qcow2), not after "
-                f"the tag this stage pulled (windows11-gold.qcow2). Instead of guessing, "
-                f"this stops: the archive beside {os.path.basename(source)} is what the "
-                f"publisher actually wrote."
-            )
-    else:
-        source = bootstate.archive_path(args.gold)
-    placed = bootstate.adopt(disk, source)
-    log(f"bootstate {source} -> {placed}")
-    restored = bootstate.restore(work, disk)
-    if not restored:
-        raise SystemExit(
-            "no bootstate archive at "
-            f"{bootstate.archive_path(disk)}. The disk alone will not boot: OVMF's "
-            "variables hold the \"Windows Boot Manager\" entry and the TPM holds the "
-            "state Windows sealed against it. Pass --bootstate <disk>.bootstate.tar.gz, "
-            "or publish it beside the disk - see lib/bootstate.py."
-        )
-    log(f"bootstate restored into {work}")
+        log(f"--bootstate {args.bootstate} IGNORED: the disk carries its own loader at "
+            f"\\EFI\\BOOT\\BOOTX64.EFI and this machine uses a fresh variable store")
 
     # NO TPM BY DEFAULT - see the note in bake.py's swtpm(). A published Windows disk
     # from this repository is installed with the answer file's BypassTPMCheck keys, so it
@@ -570,20 +547,13 @@ def main(argv: list[str]) -> int:
             compress.compress(disk, args.out)
             log(f"BAKED {args.out} ({os.path.getsize(args.out) >> 20} MiB)")
 
-            # THIS STAGE HAS TO PUBLISH THE BOOTSTATE TOO, because bake-windows-dev
-            # starts from this disk. The firmware variables and the TPM were carried in
-            # from the base bake, restored for this boot, and the boot wrote to them -
-            # so what goes out is what this stage ended with, not what came in.
+            # NO BOOTSTATE IS SAVED, BECAUSE NOTHING CONSUMES ONE.
             #
-            # Until this was added the ssh workflow uploaded a `windows-ssh-bootstate`
-            # artifact with `if-no-files-found: warn`, which silently uploaded nothing,
-            # and the dev stage would have failed exactly as the ssh stage did.
-            archive = bootstate.save(work, args.out)
-            if archive:
-                log(f"bootstate: {archive} ({os.path.getsize(archive) >> 10} KiB)")
-            else:
-                log("bootstate: NOTHING SAVED - the dev stage will not be able to boot "
-                    "this disk; the firmware variables were not found in " + work)
+            # This stage used to pack the firmware variables and TPM state so the dev stage
+            # could restore them. The disk now carries \EFI\BOOT\BOOTX64.EFI and starts on a
+            # fresh template, so there is no second artifact - and a stage that published one
+            # anyway would be maintaining a dependency the bake just removed.
+            log("no bootstate: the disk boots by its own fallback loader")
 
 
 # HOW BRIGHT A FRAME HAS TO BE TO BE WORTH A KEYPRESS.

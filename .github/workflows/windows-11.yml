@@ -21,21 +21,26 @@ name: windows11
 #
 #     <job>_run          should this job run at all
 #     <job>_from         the tag to pull; empty means "use what the job above produced"
-#     <job>_bootstate    the run holding that tag's firmware variables
 #
-# and the tag expression is always `inputs.<job>_from || needs.<above>.outputs.tag`. When a job
-# is given a tag it does not look upstream for anything except, on Windows, the bootstate.
+# and the tag expression is always `inputs.<job>_from || needs.<above>.outputs.tag`.
 #
-# WHY EVERY JOB CARRIES A BOOTSTATE RUN ID
+# THERE IS NO BOOTSTATE, AND THERE IS NO `<job>_bootstate` INPUT ANY MORE.
 #
-# A Windows disk boots by a boot entry stored in its OVMF variables, and those travel as an
-# artifact of the run that produced the disk - not with the disk. A job that starts from a tag
-# must therefore be told which run holds that disk's bootstate. It is one extra integer beside
-# the tag, and without it the machine starts and finds nothing to boot.
+# A Windows disk used to boot only by a "Windows Boot Manager" entry in OVMF's variable store,
+# which travels as an artifact of the run that produced the disk. Every job therefore carried an
+# extra run id beside the tag, and a job that was given a tag but not that id failed before it
+# started the machine:
 #
-# WHAT CROSSES A JOB BOUNDARY IS A TAG AND A RUN ID, NOTHING ELSE. The disks go through ghcr
-# because that is what `lib/iso.fetch_tag` already resumes, and a 12 GiB artifact round trip is
-# the thing this week was spent removing.
+#     Unable to download artifact(s): Artifact not found for name: windows11-bootstate
+#
+# The bake now writes the Windows loader to the UEFI fallback path \EFI\BOOT\BOOTX64.EFI as well
+# as the path its NVRAM entry names, so a fresh template's variables are enough and the machine
+# starts the way it would for anyone who downloaded the artifact. The tag is the whole input
+# again, which is what "one source per input" means: a disk, and nothing beside it.
+#
+# WHAT CROSSES A JOB BOUNDARY IS A TAG. The disks go through ghcr because that is what
+# `lib/iso.fetch_tag` already resumes, and a 12 GiB artifact round trip is the thing this week
+# was spent removing.
 #
 # MANUAL ONLY, like every workflow here.
 
@@ -72,32 +77,17 @@ on:
       base_from:
         description: "base: pull this tag instead of baking from an ISO (base_from)"
         default: ""
-      base_bootstate:
-        description: "base: the run whose artifact holds that tag's firmware variables"
-        default: ""
       ssh_from:
         description: "ssh: pull this tag instead of the base job's output"
-        default: ""
-      ssh_bootstate:
-        description: "ssh: the run whose artifact holds that tag's firmware variables"
         default: ""
       dev_from:
         description: "dev: pull this tag instead of the ssh job's output"
         default: ""
-      dev_bootstate:
-        description: "dev: the run whose artifact holds that tag's firmware variables"
-        default: ""
       launch_ssh_from:
         description: "launch_ssh: the tag to launch; empty for the ssh job's output"
         default: ""
-      launch_ssh_bootstate:
-        description: "launch_ssh: the run whose artifact holds that tag's firmware variables"
-        default: ""
       launch_dev_from:
         description: "launch_dev: the tag to launch; empty for the dev job's output"
-        default: ""
-      launch_dev_bootstate:
-        description: "launch_dev: the run whose artifact holds that tag's firmware variables"
         default: ""
 
       # --- base ---------------------------------------------------------------------
@@ -164,7 +154,6 @@ jobs:
       # ONE EXPRESSION SERVES BOTH PATHS. Given a tag, this job publishes nothing and the
       # outputs are what it was given; baked here, they are what it produced.
       tag: ${{ inputs.base_from || steps.publish.outputs.tag }}
-      bootstate_run: ${{ inputs.base_bootstate || github.run_id }}
       ran: ${{ steps.publish.outcome == 'success' }}
     steps:
       - uses: actions/checkout@v4
@@ -199,14 +188,9 @@ jobs:
               --timeout 5400
             python3 windows/11/verify.py out/windows11.qcow2
 
-      - name: keep the bootstate
-        if: always() && inputs.base_from == ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows11-bootstate
-          path: out/windows11.qcow2.bootstate.tar.gz
-          if-no-files-found: warn
-          retention-days: 30
+      # NO BOOTSTATE ARTIFACT. The disk carries its own loader at \EFI\BOOT\BOOTX64.EFI,
+      # so there is nothing beside it to upload - and an artifact that exists only to make
+      # the next job work is the dependency this bake just removed.
 
       # A PLAIN `run:` STEP, NOT log-stream, AND THAT IS A DECISION.
       #
@@ -257,7 +241,6 @@ jobs:
       packages: write
     outputs:
       tag: ${{ inputs.ssh_from || steps.publish.outputs.tag }}
-      bootstate_run: ${{ inputs.ssh_bootstate || github.run_id }}
     steps:
       - uses: actions/checkout@v4
 
@@ -290,16 +273,6 @@ jobs:
               "${{ inputs.ssh_from || needs.base.outputs.tag }}" \
               out/windows11-gold.qcow2
 
-      # THE BOOTSTATE COMES FROM THE RUN THAT MADE THE DISK, which is this run when the base
-      # was baked here and the given run id when it was not.
-      - name: pull the bootstate
-        uses: actions/download-artifact@v4
-        with:
-          name: windows11-bootstate
-          path: out
-          github-token: ${{ github.token }}
-          run-id: ${{ inputs.ssh_bootstate || needs.base.outputs.bootstate_run }}
-
       - name: install ssh
         uses: easydev-org/easyagent-github-ext/actions/log-stream@main
         with:
@@ -311,7 +284,6 @@ jobs:
             python3 windows/11/ssh.py \
               --gold out/windows11-gold.qcow2 \
               --out out/windows11-ssh.qcow2 \
-              --bootstate out/windows11.qcow2.bootstate.tar.gz \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
               --no-clean
 
@@ -332,15 +304,6 @@ jobs:
               --artifacts out \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
               --mem 6144
-
-      - name: keep the bootstate
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-ssh-bootstate
-          path: out/windows11-ssh.qcow2.bootstate.tar.gz
-          if-no-files-found: warn
-          retention-days: 30
 
       - name: publish
         if: success()
@@ -380,7 +343,6 @@ jobs:
       packages: write
     outputs:
       tag: ${{ inputs.dev_from || steps.publish.outputs.tag }}
-      bootstate_run: ${{ inputs.dev_bootstate || github.run_id }}
     steps:
       - uses: actions/checkout@v4
 
@@ -413,14 +375,6 @@ jobs:
               "${{ inputs.dev_from || needs.ssh.outputs.tag }}" \
               out/windows11-ssh.qcow2
 
-      - name: pull the bootstate
-        uses: actions/download-artifact@v4
-        with:
-          name: windows-ssh-bootstate
-          path: out
-          github-token: ${{ github.token }}
-          run-id: ${{ inputs.dev_bootstate || needs.ssh.outputs.bootstate_run }}
-
       - name: install the toolchain
         uses: easydev-org/easyagent-github-ext/actions/log-stream@main
         with:
@@ -433,7 +387,6 @@ jobs:
             export WINDOWS_ADMIN_PASSWORD=admin
             python3 windows/11/devtools.py \
               --ssh out/windows11-ssh.qcow2 \
-              --bootstate out/windows11-ssh.qcow2.bootstate.tar.gz \
               --out out/windows11-dev.qcow2 \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
               --no-clean
@@ -453,15 +406,6 @@ jobs:
               --artifacts out \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
               --mem 8192
-
-      - name: keep the bootstate
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-dev-bootstate
-          path: out/windows11-dev.qcow2.bootstate.tar.gz
-          if-no-files-found: warn
-          retention-days: 30
 
       - name: publish
         if: success()
@@ -513,14 +457,6 @@ jobs:
             python3 lib/ci.py kvm
             python3 lib/ci.py free-disk --need 60
 
-      - name: pull the bootstate
-        uses: actions/download-artifact@v4
-        with:
-          name: windows-ssh-bootstate
-          path: out
-          github-token: ${{ github.token }}
-          run-id: ${{ inputs.launch_ssh_bootstate || needs.ssh.outputs.bootstate_run }}
-
       - name: launch it and photograph the screen
         uses: easydev-org/easyagent-github-ext/actions/log-stream@main
         with:
@@ -536,17 +472,9 @@ jobs:
             fi
             CHECK=""
             if [ "${{ inputs.check_ssh }}" = "true" ]; then CHECK="--check-ssh"; fi
-            ARCHIVE=$(ls out/*.bootstate.tar.gz 2>/dev/null | head -1)
-            if [ -z "$ARCHIVE" ]; then
-              echo "=== NO BOOTSTATE ARCHIVE IN out/ ==="
-              ls -la out/ || true
-              exit 1
-            fi
-            echo "bootstate: $ARCHIVE"
             python3 lib/launch_windows.py \
               --tag "${{ inputs.launch_ssh_from || needs.ssh.outputs.tag }}" \
               $CHECK \
-              --bootstate "$ARCHIVE" \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
               --resolution "${{ inputs.resolution || '1920x1080' }}" \
               $PROBE \
@@ -601,14 +529,6 @@ jobs:
             python3 lib/ci.py kvm
             python3 lib/ci.py free-disk --need 60
 
-      - name: pull the bootstate
-        uses: actions/download-artifact@v4
-        with:
-          name: windows-dev-bootstate
-          path: out
-          github-token: ${{ github.token }}
-          run-id: ${{ inputs.launch_dev_bootstate || needs.dev.outputs.bootstate_run }}
-
       - name: launch it and photograph the screen
         uses: easydev-org/easyagent-github-ext/actions/log-stream@main
         with:
@@ -624,17 +544,9 @@ jobs:
             fi
             CHECK=""
             if [ "${{ inputs.check_ssh }}" = "true" ]; then CHECK="--check-ssh"; fi
-            ARCHIVE=$(ls out/*.bootstate.tar.gz 2>/dev/null | head -1)
-            if [ -z "$ARCHIVE" ]; then
-              echo "=== NO BOOTSTATE ARCHIVE IN out/ ==="
-              ls -la out/ || true
-              exit 1
-            fi
-            echo "bootstate: $ARCHIVE"
             python3 lib/launch_windows.py \
               --tag "${{ inputs.launch_dev_from || needs.dev.outputs.tag }}" \
               $CHECK \
-              --bootstate "$ARCHIVE" \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
               --resolution "${{ inputs.resolution || '1920x1080' }}" \
               $PROBE \
