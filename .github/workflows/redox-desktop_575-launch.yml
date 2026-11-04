@@ -1,0 +1,122 @@
+name: redox-desktop_575-launch
+
+# Start a published Redox disk with no installer attached and prove it comes up.
+#
+# WHAT THIS ANSWERS, AND WHAT THE BAKE COULD NOT
+#
+# The bake proved that sshd could be installed, started and logged in to WHILE THE MACHINE
+# WAS RUNNING and a root shell was open. That is not the same claim as "the disk, on its
+# own, at the next boot, reaches Orbital and answers ssh from outside". The two differ in
+# exactly the places this repository has been bitten: a daemon started by hand and never
+# enabled, an account that works from a root shell and not from login.
+#
+#     1. does Orbital draw                       a frame, by brightness and chroma
+#     2. does sshd answer at boot                a banner on the forwarded port
+#     3. does the account exist for that login    sshd's own refusal, or not
+#
+# WHY THERE IS NO lib/launch_linux.py HERE
+#
+# That module waits for a marker on a serial console and then asks logind for a session.
+# Redox has neither: no ttyS0, no systemd, no session bus, no compositor process to look
+# for. What it does have is a framebuffer and an sshd, so the verdict is a picture and a
+# banner - the same two things the probe measured.
+#
+# WHY THE FRAME IS PART OF THE VERDICT AND NOT DECORATION
+#
+# Orbital is the only way to say "the desktop came up" on this system. The probe measured
+# it at mean 91.7 / chroma 93.5 and the bootloader menu at 9.9 / 0.0, so the two are not
+# close and a threshold is honest here. The text console measures like the menu, which is
+# what makes this a test rather than a screenshot.
+#
+# MANUAL ONLY.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The disk to start (a tag in this package)"
+        default: "redox-desktop"
+      boot_timeout:
+        description: "Seconds to wait for Orbital and sshd"
+        default: "600"
+      mem:
+        description: "Guest memory in MB"
+        default: "2048"
+
+concurrency:
+  group: launch-redox-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  launch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      packages: read
+      checks: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: redox-launch-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            python3 lib/ci.py free-disk --need 8
+            python3 lib/ci.py tags --prefix redox-
+            zstd --version | head -1
+
+      - name: launch it
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: redox-launch
+          interval: "20"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            python3 redox/launch.py \
+              --tag "${{ inputs.tag || 'redox-desktop' }}" \
+              --artifacts out/redox-launch \
+              --boot-timeout "${{ inputs.boot_timeout || '600' }}" \
+              --mem "${{ inputs.mem || '2048' }}"
+
+      - name: keep the verdict
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: redox-launch
+          path: |
+            out/redox-launch/launch.txt
+            out/redox-launch/screen.png
+            out/redox-launch/boot.png
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: the verdict
+        if: always()
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: redox-launch-verdict
+          interval: "10"
+          command: |
+            set -euo pipefail
+            echo "=== redox launch ==="
+            if [ -f out/redox-launch/launch.txt ]; then
+              cat out/redox-launch/launch.txt
+            else
+              echo "no verdict was written"
+            fi
