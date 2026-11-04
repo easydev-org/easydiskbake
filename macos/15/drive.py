@@ -177,8 +177,12 @@ SHEET_SKIP = (1026, 634)
 # disabled there, so Not Now is the only control that moves the wizard.
 NOT_NOW_LEFT = (1132, 796)
 
-# Three-button panes put Not Now leftmost.
-NOT_NOW = (604, 810)
+# THE APPLE ACCOUNT PANE'S "Set Up Later", MEASURED FROM ITS OWN FRAME.
+#
+# The link's blue text spans x=389..437 at y=601 in the 1280x800 recording, so its centre is
+# 413 - which is 620 in the 1920x1080 units these constants use. The old value, 604, mapped to
+# 403: inside the text, but three pixels from its left edge, and the click did nothing.
+NOT_NOW = (620, 811)
 
 
 class Driver:
@@ -450,9 +454,28 @@ def account(d: Driver, user: str, password: str) -> None:
 
 
 def apple_account(d: Driver) -> None:
+    """Leave the Apple Account pane without signing in.
+
+    "Set Up Later" is a text link in the bottom-left corner, not a button, and clicking it has
+    not been enough: run 41802589394 clicked it at (604, 810) - which maps to (403, 600) on the
+    1280x800 screen, inside the 389..437 the words occupy - and the pane never moved. The next
+    thirteen actions were spent clicking Continue on a button that is disabled while the email
+    field is empty, which is why the recording is 34 seconds of one screen.
+
+    So the click is followed by Return: on this pane Return activates the focused control, and
+    the click has just focused it. Two ways to leave, one of which is a key.
+    """
     d.wait(6, "apple account pane settles")
-    d.click(NOT_NOW, "Set Up Later", settle=2.5)
-    d.click(SHEET_SKIP, "sheet: Skip", settle=3.0)
+    d.click(NOT_NOW, "Set Up Later", settle=2.0)
+    d.key("ret", settle=3.0)
+
+    # THE SHEET ONLY EXISTS IF THE CLICK WORKED. When the pane has already gone, this
+    # coordinate is empty space on the next pane - harmless - and when the sheet is up it is
+    # its Skip button. Kept because the sheet does appear on some releases.
+    d.click(SHEET_SKIP, "sheet: Skip, if there is one", settle=2.0)
+
+    # AND A LAST RETURN, for the same reason: if the sheet was there, Skip focused it.
+    d.key("ret", settle=2.0)
 
 
 def tail(d: Driver) -> None:
