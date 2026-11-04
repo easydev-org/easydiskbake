@@ -90,6 +90,19 @@ DISK_NAME = install15.DISK_NAME
 # Measured on a 1920x1080 screendump scaled from the recording, and it is the value for
 # THIS release. 15 keeps its own.
 ERASE_CONFIRM = (1146, 661)
+
+# THE LICENCE'S AGREE, ALSO MEASURED ON TAHOE.
+#
+# 15 clicks (1005, 713). The buttons on 26 have transparent fills, so only their labels can
+# be located - by scanning the bright text in y=700..760, which gives
+#
+#     Disagree   x 890..941   centre (915, 722)
+#     Agree      x 988..1022  centre (1005, 722)
+#
+# Nine pixels lower than 15's. On a 30-pixel-tall label that is still inside it, but the
+# value is written down because the next run may show it is not.
+AGREE = (1005, 722)
+
 ERASE_DONE = install15.ERASE_DONE
 NOTHING_DRAWN = install15.NOTHING_DRAWN
 
@@ -102,7 +115,18 @@ NOTHING_DRAWN = install15.NOTHING_DRAWN
 # because lib/opencore pins the resolution.
 PANE_DETAIL = (690, 540, 1490, 680)     # Disk Utility's capacity table
 PANE_SHEET = (700, 440, 1410, 560)      # the erase sheet's question line
-PANE_LICENCE = (600, 900, 1350, 1080)   # the Agree/Disagree row at the foot
+# THE LICENCE ROW IS HIGHER ON TAHOE THAN ON SEQUOIA.
+#
+# 15 puts Agree/Disagree near y=1000 at 1920x1080. Tahoe's installer window is shorter and
+# its button row sits at y=719..725 - measured on run 41758532972's own frame, where the
+# crop (600, 700, 1400, 760) at 4x reads `disagree q agree` and nothing else does:
+#
+#     (600, 700, 1400, 760)   -> 'disagree q agree'
+#     (600, 900, 1350, 1080)  -> ''            <- what this used, and why the check failed
+#
+# The old rectangle is below the dialog entirely, which is why the pane "never appeared" on
+# a screen where it was plainly visible.
+PANE_LICENCE = (600, 700, 1400, 760)    # the Agree/Disagree row, Tahoe's position
 
 
 def says(frame: str, box: tuple[int, int, int, int], *needles: str) -> bool:
@@ -221,7 +245,7 @@ def run_installation(qmp_path: str, frames_dir: str | None,
             log("  the welcome Continue may be somewhere else on this release")
             return 1
 
-        d.click(install15.AGREE, "Agree", settle=5)
+        d.click(AGREE, "Agree", settle=5)
         d.wait(10, "the licence sheet has to be on screen")
         d.wait(10, "the sheet finishes becoming clickable")
         d.click(install15.AGREE_SHEET, "Agree in the sheet", settle=5)

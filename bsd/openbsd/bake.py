@@ -221,6 +221,9 @@ def answer_prompts(ser, seconds: int) -> None:
     # prompt text -> answer. Matched case-insensitively against the tail of the console,
     # and the LAST matching entry wins, so a general rule can sit before a specific one.
     rules: list[tuple[str, str]] = [
+        # THE MODE PROMPT IS FIRST AND HAS NO DEFAULT, so a blank answer leaves it
+        # unanswered and the install never starts. `I` is (I)nstall.
+        (r"\(i\)nstall, \(u\)pgrade", "I"),
         (r"term type|terminal type", "vt220"),
         (r"system hostname", "openbsd"),
         (r"network interface to configure", "vio0"),
