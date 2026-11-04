@@ -1100,6 +1100,18 @@ def main(argv: list[str]) -> int:
                 return False
             note("  the sshd account exists")
 
+            # FIRST PRINT WHAT THE GUEST THINKS THE FILE SAYS, so a failure names its cause.
+            #
+            # The last attempt got SSHDUSER_OK=1 on the same screen as the error, which means
+            # the writes landed and sshd still could not find the account. Two readings: the
+            # file is malformed somewhere above the new section (a TOML parser stops at the
+            # first bad table), or sshd asks for a different name than the one appended.
+            #
+            # `test -f` and `-s` are checked before anything else, then the file is printed.
+            # `ion` has `cat` through the base package, and this is one line with one marker.
+            con.type("cat /etc/users.toml ; echo USERS_SHOWN=1", settle=2.0)
+            con.wait_for(["users_shown=1"], 120, "users.toml printed")
+
             con.type("/usr/bin/sshd ; echo SSHD_RC=$?")
             if not con.wait_for(["sshd_rc=0"], 180, "sshd started"):
                 note("=== sshd WOULD NOT START ===")
