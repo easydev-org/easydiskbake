@@ -633,7 +633,8 @@ def boot_disk(disk: str, expect: str, seconds: int = 600,
         except subprocess.TimeoutExpired:
             snap.kill()
 
-    count = len([f for f in os.listdir(frames) if f.startswith("frame-") and f.endswith(".ppm")])
+    count = len([f for f in os.listdir(frames)
+                 if f.startswith("frame-") and f.endswith((".ppm", ".jpg"))])
     print(f"=== frames: {count} ===", flush=True)
     return ok
 

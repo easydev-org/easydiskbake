@@ -263,7 +263,7 @@ def reached_assistant(directory: str, *, explain: bool = False) -> bool:
     try:
         names = sorted(
             f for f in os.listdir(directory)
-            if f.startswith("frame-") and f.endswith(".ppm")
+            if f.startswith("frame-") and f.endswith((".ppm", ".jpg"))
         )[-5:]
     except OSError:
         return False

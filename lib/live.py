@@ -95,6 +95,9 @@ class LiveArtifacts:
         self.last_frame = last_frame
         self.every = every
         self.fps = fps
+        # Set when an encode failed because the filesystem filled up. The loop stops trying;
+        # the caller's stop() still writes the last frame from the frames on disk.
+        self._full = False
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         # The number of frames the current video was made from, so an unchanged frame
@@ -135,7 +138,7 @@ class LiveArtifacts:
         for directory in self.frames_dirs:
             try:
                 total += len([f for f in os.listdir(directory)
-                              if f.startswith("frame-") and f.endswith(".ppm")])
+                              if f.startswith("frame-") and f.endswith((".ppm", ".jpg"))])
             except OSError:
                 pass
         return total
@@ -158,7 +161,7 @@ class LiveArtifacts:
         for directory in self.frames_dirs:
             try:
                 names = [n for n in os.listdir(directory)
-                         if n.startswith("frame-") and n.endswith(".ppm")]
+                         if n.startswith("frame-") and n.endswith((".ppm", ".jpg"))]
             except OSError:
                 continue
             for name in names:
@@ -210,15 +213,24 @@ class LiveArtifacts:
             n = 0
             for directory in self.frames_dirs:
                 try:
+                    # `frame-` FILES, WHATEVER SNAPSHOTS.PY LEFT THEM AS.
+                    #
+                    # lib/snapshots.py converts each screendump to JPEG and deletes the PPM -
+                    # a PPM is 3 MB and an hour of them is 11 GiB. The encoder does not care
+                    # which format it reads, so this looks for the name rather than the
+                    # extension and trusts ffmpeg with what it finds.
                     names = sorted(
                         f for f in os.listdir(directory)
-                        if f.startswith("frame-") and f.endswith(".ppm")
+                        if f.startswith("frame-") and f.endswith((".ppm", ".jpg"))
                     )
                 except OSError:
                     continue
                 for name in names:
                     src = os.path.join(directory, name)
-                    dst = os.path.join(stage, f"f-{n:05d}.ppm")
+                    # THE EXTENSION IS KEPT: ffmpeg identifies an image by its content, but a
+                    # staged file named .ppm that holds JPEG bytes is the kind of thing that
+                    # works until a tool trusts the name.
+                    dst = os.path.join(stage, f"f-{n:05d}{os.path.splitext(name)[1]}")
                     try:
                         os.link(src, dst)
                     except OSError:
@@ -237,8 +249,8 @@ class LiveArtifacts:
             result = subprocess.run(
                 [
                     "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-                    "-framerate", str(self.fps), "-start_number", "0",
-                    "-i", os.path.join(stage, "f-%05d.ppm"),
+                    "-framerate", str(self.fps),
+                    "-pattern_type", "glob", "-i", os.path.join(stage, "f-*"),
                     "-c:v", "libx264", "-preset", "ultrafast",
                     "-pix_fmt", "yuv420p", "-movflags", "+faststart",
                     tmp,
@@ -246,9 +258,28 @@ class LiveArtifacts:
                 capture_output=True, text=True,
             )
             if result.returncode != 0:
-                log(f"  encode failed: {(result.stderr or '').strip()[:200]}")
+                detail = (result.stderr or "").strip()
+                log(f"  encode failed: {detail[:200]}")
                 if os.path.exists(tmp):
-                    os.unlink(tmp)
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
+
+                # A FULL DISK STOPS THE RECORDING RATHER THAN THE RUN.
+                #
+                # macos26 filled its runner mid-install and this retried on every pass, each
+                # attempt writing a partial file into a filesystem that had no room for it -
+                # so the failure was repeated every twenty seconds for the rest of the bake
+                # and the guest's own writes were competing with it.
+                #
+                # The frames on disk are still there and `keep the last frame` uploads them, so
+                # stopping the ENCODER loses the video and nothing else. Stopping it loudly is
+                # better than a log full of identical errors.
+                if "No space left on device" in detail:
+                    log("  === THE RUNNER IS FULL; RECORDING STOPS HERE ===")
+                    log("  the frames are still on disk and the last one is uploaded")
+                    self._full = True
                 return False
             os.replace(tmp, self.video)
             return True

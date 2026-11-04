@@ -75,12 +75,17 @@ def newest_frame(directory: str) -> str | None:
 
     candidates = []
     for name in names:
-        if not name.endswith(".ppm"):
+        # .jpg AS WELL AS .ppm, because lib/snapshots.py converts each screendump and deletes
+        # the PPM: a PPM is 3 MB and an hour of frames is 11 GiB, which filled a runner and
+        # stopped macos26 mid-install. The name still starts with a prefix and a number; only
+        # the extension changed.
+        ext = os.path.splitext(name)[1]
+        if ext not in (".ppm", ".jpg"):
             continue
         for prefix in PREFIXES:
             if not name.startswith(prefix):
                 continue
-            stem = name[len(prefix):-len(".ppm")]
+            stem = name[len(prefix):-len(ext)]
             # `frame-0000` and `boot-1793633015` are numbers; `inst-003-after-...` starts
             # with one and then carries a label.
             head = stem.split("-", 1)[0]

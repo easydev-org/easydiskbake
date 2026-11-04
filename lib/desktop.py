@@ -112,6 +112,42 @@ def read_ppm(path: str) -> tuple[int, int, bytes] | None:
     except OSError:
         return None
 
+    # A JPEG IS CONVERTED FIRST, because lib/snapshots.py now writes those.
+    #
+    # The PPM is 3 MB per frame and an hour of a macOS install is 11 GiB of them, which filled
+    # a runner and stopped macos26 mid-install. The frames are JPEG now, at 27 KB each - and
+    # every measurement below wants RGB triples, not a particular container.
+    #
+    # Done here rather than at each caller because this is the single entry point: analyse(),
+    # is_desktop(), newest_frame() and reached_desktop() all come through it, and a caller that
+    # had to remember to convert would be a fourth place to get it wrong.
+    if not data.startswith(b"P6"):
+        import shutil
+        import subprocess
+        import tempfile
+
+        if not shutil.which("ffmpeg"):
+            return None
+        with tempfile.NamedTemporaryFile(suffix=".ppm", delete=False) as tmp:
+            ppm = tmp.name
+        try:
+            r = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+                 "-i", path, "-pix_fmt", "rgb24", "-f", "image2", "-vcodec", "ppm", ppm],
+                capture_output=True, text=True,
+            )
+            if r.returncode != 0:
+                return None
+            with open(ppm, "rb") as fh:
+                data = fh.read()
+        except OSError:
+            return None
+        finally:
+            try:
+                os.unlink(ppm)
+            except OSError:
+                pass
+
     if not data.startswith(b"P6"):
         return None
 
@@ -291,7 +327,7 @@ def newest_frame(directory: str) -> str | None:
     try:
         names = sorted(
             f for f in os.listdir(directory)
-            if f.startswith("frame-") and f.endswith(".ppm")
+            if f.startswith("frame-") and f.endswith((".ppm", ".jpg"))
         )
     except OSError:
         return None
@@ -308,7 +344,7 @@ def reached_desktop(directory: str, *, explain: bool = False) -> bool:
     try:
         names = sorted(
             f for f in os.listdir(directory)
-            if f.startswith("frame-") and f.endswith(".ppm")
+            if f.startswith("frame-") and f.endswith((".ppm", ".jpg"))
         )[-5:]
     except OSError:
         return False

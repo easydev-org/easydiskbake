@@ -130,7 +130,7 @@ def newest(directory: str) -> str | None:
     """The highest-numbered frame from snapshots.py, which writes frame-NNNN.ppm."""
     try:
         names = [n for n in os.listdir(directory)
-                 if n.startswith("frame-") and n.endswith(".ppm")]
+                 if n.startswith("frame-") and n.endswith((".ppm", ".jpg"))]
     except OSError:
         return None
     if not names:

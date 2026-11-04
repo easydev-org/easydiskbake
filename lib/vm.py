@@ -553,13 +553,16 @@ def record_many(out: str, *frame_dirs: str, fps: int = 1) -> bool:
         for d in frame_dirs:
             if not os.path.isdir(d):
                 continue
-            frames = sorted(f for f in os.listdir(d) if f.startswith("frame-") and f.endswith(".ppm"))
+            frames = sorted(f for f in os.listdir(d)
+                            if f.startswith("frame-") and f.endswith((".ppm", ".jpg")))
             if not frames:
                 log(f"record: no frames in {d}, skipping")
                 continue
             log(f"record: {len(frames)} frames from {d}")
             for i, name in enumerate(frames):
-                shutil.copyfile(os.path.join(d, name), os.path.join(stage, f"frame-{n:04d}.ppm"))
+                # THE EXTENSION TRAVELS WITH THE FRAME: snapshots.py leaves JPEGs now.
+                ext = os.path.splitext(name)[1]
+                shutil.copyfile(os.path.join(d, name), os.path.join(stage, f"frame-{n:04d}{ext}"))
                 n += 1
 
         if n == 0:
@@ -571,7 +574,7 @@ def record_many(out: str, *frame_dirs: str, fps: int = 1) -> bool:
             [
                 "ffmpeg", "-hide_banner", "-loglevel", "warning", "-nostdin", "-y",
                 "-framerate", str(fps), "-start_number", "0",
-                "-i", os.path.join(stage, "frame-%04d.ppm"),
+                "-pattern_type", "glob", "-i", os.path.join(stage, "frame-*"),
                 "-c:v", "libx264", "-preset", "ultrafast",
                 "-pix_fmt", "yuv420p", "-movflags", "+faststart",
                 out,

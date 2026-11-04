@@ -30,6 +30,7 @@ anyone asks of a picture.
 import json
 import os
 import socket
+import subprocess
 import sys
 import time
 
@@ -114,9 +115,37 @@ def main():
             if "error" in reply:
                 print("[snap] screendump %d failed: %s" % (n, reply["error"]), flush=True)
             else:
+                # THE PPM IS CONVERTED TO JPEG AND DELETED, IMMEDIATELY.
+                #
+                # A 1280x800 PPM is 3.07 MB and this writes one a second for the length of a
+                # bake. macos26 runs for over an hour:
+                #
+                #     3960 frames x 3.07 MB = 11.3 GiB
+                #
+                # which filled the runner mid-install and made ffmpeg fail with "No space left
+                # on device" while the guest kept writing. The recording that came out of the
+                # same run was 1.8 MB - the frames, not the video, were the problem.
+                #
+                # JPEG at q=4 is 27 KB for the same picture: 0.22 GiB for the whole run.
+                jpeg = path[:-4] + ".jpg"
+                converted = subprocess.run(
+                    ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+                     "-i", path, "-q:v", "4", jpeg],
+                    capture_output=True, text=True,
+                )
+                if converted.returncode == 0 and os.path.exists(jpeg):
+                    os.unlink(path)
+                    name = os.path.basename(jpeg)
+                    size = os.path.getsize(jpeg)
+                else:
+                    # A CONVERSION THAT FAILED LEAVES THE PPM. It is the frame; losing it to
+                    # save space would be trading the evidence for the room to store it.
+                    print("[snap] could not convert %s: %s"
+                          % (name, (converted.stderr or "").strip()[:120]), flush=True)
+                    size = os.path.getsize(path) if os.path.exists(path) else 0
+
                 stamp = time.strftime("%H:%M:%S")
-                index.write("%s %s %s\n" % (name, stamp, os.path.getsize(path)
-                                            if os.path.exists(path) else 0))
+                index.write("%s %s %s\n" % (name, stamp, size))
                 index.flush()
                 print("[snap] %s at %s" % (name, stamp), flush=True)
             n += 1

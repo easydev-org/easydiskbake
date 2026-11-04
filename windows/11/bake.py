@@ -88,7 +88,7 @@ def frame_progress(shots: str, window: int = 3) -> tuple[int, bool]:
     """
     try:
         names = sorted(f for f in os.listdir(shots)
-                       if f.startswith("frame-") and f.endswith(".ppm"))
+                       if f.startswith("frame-") and f.endswith((".ppm", ".jpg")))
     except OSError:
         return 0, False
 

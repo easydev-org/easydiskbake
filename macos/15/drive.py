@@ -534,7 +534,11 @@ def tail(d: Driver) -> None:
     # NOTHING HERE READS THE SCREEN. The count and the coordinate are fixed, and whether the
     # wizard finished is answered by the recording rather than by a check in the middle of
     # the sequence.
-    for i in range(6):
+    # TEN, NOT SIX. Measured from run 41826976026, which is the first run to get past the
+    # licence: the six this used to do ended on "Update Mac Automatically", and the wizard
+    # still had Siri, FileVault, the appearance pane and the finish after it. Six was chosen
+    # when the sequence never got that far.
+    for i in range(10):
         d.wait(6, f"pane {i + 1} settles")
         # THE LICENCE SHEET, IF IT IS UP. It is modal and covers the pane's own Agree, so a
         # click at CONTINUE lands on the sheet's edge and nothing moves. This point is empty

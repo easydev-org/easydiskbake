@@ -109,7 +109,16 @@ jobs:
           command: |
             set -euo pipefail
             python3 lib/ci.py kvm
-            python3 lib/ci.py free-disk --need 80
+            # THE INSTALL IS ~39 GB AND THE RECORDING GROWS WITH IT.
+            #
+            # 80 was the old number and it was not enough: macos26 filled the runner mid-install
+            # and ffmpeg began failing with
+            #
+            #     Error submitting a packet to the muxer: No space left on device
+            #
+            # while the guest kept installing, so the run could not have finished even if the
+            # wizard had. 110 leaves room for the disk, its compressed copy and the frames.
+            python3 lib/ci.py free-disk --need 110
             python3 lib/ci.py tags --prefix macos-
 
       - name: bake
