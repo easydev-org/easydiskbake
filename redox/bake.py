@@ -122,12 +122,38 @@ class Console:
         # The last frame that OCR read, so a failure can quote it.
         self.last_text = ""
 
+    def qmp(self):
+        """A QMP connection, waiting for the socket to exist.
+
+        THE SAME WAIT AS macos/15/drive.py AND windows/11/ssh.py, and it is here for the
+        same reason: vm.Guest.start() returns as soon as the process exists and qemu binds
+        its sockets a moment later. Connecting immediately raises
+
+            FileNotFoundError: [Errno 2] No such file or directory
+            self.sock.connect(path)
+
+        which is what this bake's first local run did, at the very first screenshot - after
+        the image had been verified, converted and booted, so it looked late when it was a
+        race at the start. Redox is the third system in this repository to hit it, which is
+        why the wait is a method here rather than a comment in each caller.
+        """
+        deadline = time.time() + 120
+        path = self.guest.paths.drive
+        while not os.path.exists(path):
+            if time.time() > deadline:
+                raise SystemExit(
+                    f"no QMP socket at {path} after 120s; qemu either failed to start "
+                    f"or was given a different work directory"
+                )
+            time.sleep(1)
+        return qmpmod.QMP(path)
+
     def shot(self, label: str) -> str:
         self.n += 1
         safe = re.sub(r"[^a-z0-9]+", "-", label.lower())[:40].strip("-") or "step"
         ppm = os.path.join(self.shots, f"rx-{self.n:03d}-{safe}.ppm")
         png = ppm[:-4] + ".png"
-        c = qmpmod.QMP(self.guest.paths.drive)
+        c = self.qmp()
         try:
             c.execute("screendump", filename=ppm)
         finally:
@@ -148,7 +174,7 @@ class Console:
 
     def type(self, text: str, *, settle: float = 0.5) -> None:
         """Type `text` and press Return. Newlines are refused by lib/keys."""
-        c = qmpmod.QMP(self.guest.paths.drive)
+        c = self.qmp()
         try:
             for kind, code in keylib.for_text(text):
                 if kind == "key":
@@ -162,7 +188,7 @@ class Console:
         time.sleep(settle)
 
     def key(self, qcode: str, *, settle: float = 0.5) -> None:
-        c = qmpmod.QMP(self.guest.paths.drive)
+        c = self.qmp()
         try:
             qmpmod.key(c, qcode)
         finally:
@@ -265,10 +291,19 @@ def main(argv: list[str]) -> int:
         finally block is how a run loses the frames that explain it.
         """
         shots = os.path.join(work, "frames")
+        # THE FRAME DIRECTORY HAS TO EXIST BEFORE snapshots.py IS STARTED, because its stdout
+        # goes to a file inside it. This was
+        #
+        #     FileNotFoundError: .../out/redox-work/frames/snapshots.log
+        #
+        # on the first real run - Console() creates the directory too, but it is constructed
+        # after this Popen. Creating it here is the fix, and the Console's makedirs stays
+        # because a directory can be removed between the two.
+        os.makedirs(shots, exist_ok=True)
         shape = vm.Shape(cpus=args.cpus, mem_mb=args.mem, machine="q35", cpu=CPU,
                          vga="std", resolution=(1920, 1080))
         drives = ["-drive", f"file={disk},if=virtio,format=qcow2"]
-        guest = vm.Guest(work, extra=drives, shape=shape, stdout=os.devnull)
+        guest = vm.Guest(work, extra=drives, shape=shape, stdout=os.path.join(work, "qemu.log"))
 
         import live as livelib
 

@@ -211,9 +211,22 @@ def build_args(work: str, extra: list[str] | None = None,
     shape = shape or Shape.from_env()
     paths = Paths(work)
 
+    # KVM IS THE DEFAULT AND TCG IS AN OPT-OUT FOR A MACHINE THAT HAS NO /dev/kvm.
+    #
+    # Every workflow runs on a runner with KVM, and a bake under TCG is twenty to fifty
+    # times slower - so this is not a fallback that turns on by itself. It is an explicit
+    # switch for developing a driver on a machine without the device, where the alternative
+    # is not testing the driver at all. Redox's bake found three bugs this way (a missing
+    # frame directory, a socket race, and the order of the two) in minutes rather than in
+    # three CI runs.
+    #
+    # THE CPU IS NOT "host" UNDER TCG, because there is no host CPU to describe: qemu's
+    # default is what TCG can emulate. A shape that names its own cpu string keeps it.
+    accel = [] if os.environ.get("VM_ACCEL") == "tcg" else ["-enable-kvm"]
+    cpu = shape.cpu or ("max" if accel == [] else "host")
     args: list[str] = [
         QEMU,
-        "-enable-kvm", "-cpu", shape.cpu or "host",
+        *accel, "-cpu", cpu,
         "-smp", shape.smp_topology or str(shape.cpus), "-m", str(shape.mem_mb),
         "-display", "none",
         "-vnc", f"{shape.vnc_bind}:{shape.vnc_display}",
