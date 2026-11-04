@@ -1022,27 +1022,36 @@ def main(argv: list[str]) -> int:
             # is created first because `mkdir -p` on an existing one is silent and the
             # redirection is what fails loudly when it is not there.
             note("=== the init.d entry ===")
-            con.type("mkdir -p /usr/lib/init.d ; echo MKDIR_RC=$?", settle=1.0)
-            if not con.wait_for(["mkdir_rc=0"], 120, "the init.d directory"):
-                note("=== /usr/lib/init.d COULD NOT BE CREATED ===")
+            # ONE LINE, ONE MARKER, BECAUSE THE READER LAGS THE TYPING.
+            #
+            # Run 41904865449 typed `mkdir -p /usr/lib/init.d ; echo MKDIR_RC=$?` and then
+            # waited 120 seconds for `mkdir_rc=0`. What the screen was showing, at 30s, 64s
+            # and 106s, was the echo lines from /etc/users.toml - four commands earlier. A
+            # wait_for() pass screenshots and reads three crops plus the whole frame with
+            # tesseract; that is several seconds per pass, and every pass sees a screen
+            # further behind the keystrokes that have queued behind it.
+            #
+            # So the whole init.d step goes in as ONE command line with ONE marker at the end.
+            # Nothing is checked in the middle, and the marker cannot be reached unless the
+            # mkdir, both echoes and the chmod all succeeded - `&&` rather than `;`, so a
+            # failure anywhere leaves INITD_OK unset instead of printing a misleading number.
+            #
+            # /usr/lib/init.d, NOT /etc/init.d: the latter is a Debian convention and does not
+            # exist here (run 41875783970's frame shows the redirection failing with
+            # "No such file or directory (os error 2)").
+            con.type(
+                "mkdir -p /usr/lib/init.d "
+                "&& echo '#!/usr/bin/ion' > /usr/lib/init.d/90_sshd "
+                "&& echo '/usr/bin/sshd -D &' >> /usr/lib/init.d/90_sshd "
+                "&& chmod +x /usr/lib/init.d/90_sshd "
+                "&& echo INITD_OK=1",
+                settle=2.0)
+            if not con.wait_for(["initd_ok=1"], 300, "the init.d entry"):
+                note("=== THE init.d ENTRY COULD NOT BE WRITTEN ===")
+                note("  mkdir, both echoes and the chmod are joined by && on one line; the")
+                note("  frame beside this message shows which of them failed")
                 return False
-            # ONE LINE AT A TIME, FOR THE SAME REASON AS users.toml: ion has no heredoc.
-            for n, line in enumerate(("#!/usr/bin/ion", "/usr/bin/sshd -D &")):
-                op = ">" if n == 0 else ">>"
-                con.type(f"echo '{line}' {op} /usr/lib/init.d/90_sshd", settle=0.3)
-            con.type("chmod +x /usr/lib/init.d/90_sshd ; echo CHMOD_RC=$?")
-            # 300s BECAUSE THE READER LAGS, NOT THE COMMAND.
-            #
-            # Run 41874326761 saw, at 32s and again at 62s, the screen still showing
-            #
-            #     ... echo '[groups.sudo]' >> /etc/users.toml
-            #
-            # - four commands behind. Each wait_for() takes a screenshot, reads three crops
-            # with tesseract and then the whole frame, so a pass costs several seconds and
-            # the text it returns lags the terminal by however many commands have queued.
-            if not con.wait_for(["chmod_rc=0"], 300, "init.d entry"):
-                note("=== THE init.d ENTRY COULD NOT BE MADE EXECUTABLE ===")
-                return False
+            note("  the init.d entry is written and executable")
 
             # 9. START IT NOW AND PROVE IT LISTENS. The init.d entry only matters at the next
             #    boot; this run has to verify the daemon before the disk is published.
