@@ -113,6 +113,19 @@ def serve(work: str, flavour: str) -> subprocess.Popen:
     with open(os.path.join(seed, "meta-data"), "w", encoding="utf-8") as fh:
         fh.write("instance-id: easydiskbake\n")
 
+    # THE CLEANUP SCRIPT TRAVELS WITH THE SEED - see the longer note in
+    # linux/ubuntu/bake.py::serve(). Same file, same reason: late-commands cannot carry a
+    # 5.5 KiB script inside a YAML scalar, and the seed server is already reachable from the
+    # guest at the URL the autoinstall document came from.
+    clean_src = os.path.join(REPO, "lib", "linux-clean.sh")
+    if not os.path.isfile(clean_src):
+        raise SystemExit(f"{clean_src} is missing; the disk would ship with its build traces")
+    with open(clean_src, "rb") as fh:
+        payload = fh.read()
+    with open(os.path.join(seed, "linux-clean.sh"), "wb") as fh:
+        fh.write(payload)
+    log(f"  cleanup script served beside user-data ({len(payload)} bytes)")
+
     return subprocess.Popen(
         [sys.executable, "-m", "http.server", str(CONFIG_PORT), "--bind", "0.0.0.0"],
         cwd=os.path.join(work, "srv"),

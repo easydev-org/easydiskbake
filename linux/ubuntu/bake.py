@@ -113,6 +113,25 @@ def serve(work: str, flavour: str) -> subprocess.Popen:
     with open(os.path.join(seed, "meta-data"), "w", encoding="utf-8") as fh:
         fh.write("instance-id: easydiskbake\n")
 
+    # THE CLEANUP SCRIPT TRAVELS WITH THE SEED.
+    #
+    # late-commands runs inside the installer, which has no /bin/sh of its own to read a file
+    # this repository was never going to fit into a YAML scalar - the script is 5.5 KiB and
+    # base64 would be 97 lines of noise in a document a person has to read.
+    #
+    # The seed server is already there, at a URL the guest is already using, so the script
+    # goes beside user-data and late-commands fetches it with curl. That keeps the script in
+    # lib/ where it can be read and edited, and it means the disk is cleaned by exactly the
+    # file this repository carries rather than by a copy pasted into YAML.
+    clean_src = os.path.join(REPO, "lib", "linux-clean.sh")
+    if not os.path.isfile(clean_src):
+        raise SystemExit(f"{clean_src} is missing; the disk would ship with its build traces")
+    with open(clean_src, "rb") as fh:
+        payload = fh.read()
+    with open(os.path.join(seed, "linux-clean.sh"), "wb") as fh:
+        fh.write(payload)
+    log(f"  cleanup script served beside user-data ({len(payload)} bytes)")
+
     return subprocess.Popen(
         [sys.executable, "-m", "http.server", str(CONFIG_PORT), "--bind", "0.0.0.0"],
         cwd=os.path.join(work, "srv"),

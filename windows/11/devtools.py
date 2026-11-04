@@ -347,28 +347,12 @@ def clean() -> bool:
     convert still stores them and the qcow2 comes out the same size. A file grown to fill
     the disk with zeros, then deleted, is what actually makes it smaller.
     """
-    log("cleaning the guest")
-    script = os.path.join(HERE, "clean.ps1")
-    if not os.path.isfile(script):
-        raise SystemExit(f"{script} is missing; the disk would ship with build traces")
-    remote = f"C:/Users/{SSH_USER}/clean.ps1"
-    scp_to(script, remote)
+    # THE SAME CLEANING windows/11/ssh.py RUNS, from lib/winclean.py. Two stages reach the
+    # guest differently - this one is already over ssh, that one has only a keyboard - and
+    # the cleaning is identical, including the zeroing that decides the artifact's size.
+    from lib.winclean import clean as clean_guest
 
-    result = ssh_run(
-        f"powershell -NoProfile -ExecutionPolicy Bypass -File {remote}", timeout=1800)
-    out = (result.stdout or "") + (result.stderr or "")
-    for line in out.splitlines():
-        text = line.strip()
-        if text and not text.startswith("Warning: Permanently added"):
-            log(f"  {text[:150]}")
-
-    # SILENCE IS NOT SUCCESS. The script ends with CLEAN_DONE; without the marker the step
-    # failed and the disk still carries whatever was left.
-    if "CLEAN_DONE" not in out:
-        log("clean.ps1 did not report completion")
-        return False
-    log("clean complete")
-    return True
+    return clean_guest(scp=scp_to, ssh_run=ssh_run, user=SSH_USER, note=log)
 
 
 def main(argv: list[str]) -> int:

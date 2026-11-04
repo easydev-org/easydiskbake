@@ -70,6 +70,32 @@ CONTINUE = (1306, 810)
 # reaches the wizard's power controls - which shut the machine down twice before that
 # was understood.
 COUNTRY_LIST = (900, 500)
+
+# THE TRANSFER PANE'S RADIO ROWS, CONVERTED CORRECTLY FROM THE RECORDING.
+#
+# THE RECORDING IS 1280x800 AND THE GUEST IS 1920x1080, and the two factors are NOT the same:
+#
+#     x   1920 / 1280 = 1.5
+#     y   1080 /  800 = 1.35
+#
+# The first version of this used 1.5 for both, so the row it aimed at was 10px off per row
+# and the click landed on "Set up with iPhone or iPad" instead of the row above it. That is
+# the third time a coordinate in this file has been wrong in a way that selected a
+# neighbouring row, which is why the numbers below name the factor they came from.
+#
+#     From a Mac, Time Machine, or startup disk   y=444 -> 599
+#     From a Windows PC                           y=463 -> 625
+#     Set up with iPhone or iPad                  y=482 -> 651
+#     Set up as new                               y=501 -> 676
+#
+# x=548 is the radio column, and 548 * 1.5 = 822.
+TRANSFER_ROWS = {
+    "From a Mac": (822, 599),
+    "From a Windows PC": (822, 625),
+    "iPhone": (822, 651),
+    "Set up as new": (822, 676),
+}
+FIRST_RADIO = TRANSFER_ROWS["From a Mac"]
 UNITED_STATES = (764, 615)
 
 # THE TRANSFER PANE HAS NO COORDINATE HERE, DELIBERATELY.
@@ -150,16 +176,24 @@ class Driver:
         log(f"wait {seconds:g}s" + (f" - {why}" if why else ""))
         time.sleep(seconds)
 
-    def shot(self, label: str) -> None:
+    def shot(self, label: str) -> str | None:
+        """Save a frame. Returns its path, or None when the screenshot failed.
+
+        THE PATH IS RETURNED BECAUSE ONE CALLER READS IT. Every other use in this file takes
+        the frame for the record only; pane_says() needs to OCR the thing it just saved, and
+        reconstructing the filename outside would be a second copy of this format string.
+        """
         if not self.frames:
-            return
+            return None
         self.shots += 1
         safe = "".join(c if c.isalnum() else "-" for c in label[:40]).strip("-") or "step"
-        leaf = f"mac-{self.shots:03d}-{safe}.ppm"
+        path = os.path.join(self.frames, f"mac-{self.shots:03d}-{safe}.ppm")
         try:
-            self.q.execute("screendump", filename=os.path.join(self.frames, leaf))
+            self.q.execute("screendump", filename=path)
         except (OSError, RuntimeError) as exc:
             log(f"screendump failed at {label}: {exc}")
+            return None
+        return path
 
     def click(self, xy: tuple[int, int], why: str = "", settle: float = 2.5) -> None:
         """Click, then wait 2.5s by default before the next action.
@@ -291,8 +325,98 @@ def set_up_as_new(d: Driver) -> None:
     the list the widget drew, so they survive a re-layout; the coordinate cannot.
     """
     d.wait(8, "transfer pane settles")
-    d.key("down", times=3, settle=2.0)
+
+    # THE FOCUSED CLICK FIRST. THIS IS WHY THREE DOWNS DID NOTHING.
+    #
+    # Run 41787686321 sent `key down x3` and then clicked Continue, and the recording ends
+    # with the FIRST radio still filled in. A key event goes to whatever has focus in
+    # macOS, and nothing on this pane had it - the pane had just appeared and the keyboard
+    # focus was still on the Continue button the previous pane's click left it on. Down on a
+    # button moves nothing.
+    #
+    # pick_country() has always done this correctly and that is the proof: it clicks
+    # COUNTRY_LIST before typing "united states", because typing into an unfocused list
+    # does nothing either. The same rule, on the pane five seconds later, was not applied.
+    #
+    # The click lands on the FIRST RADIO's row, which selects it - and it is already
+    # selected, so nothing changes except that the list now has focus. Then three Downs
+    # walk to "Set up as new", and Continue leaves the pane.
+    # CLICKING THE ROW, NOT ARROWING TO IT.
+    #
+    # Three Downs did not move the highlight in runs 41784951651 and 41787686321. The pane
+    # has no focused control when it appears - the keyboard focus is still on the Continue
+    # button the previous pane's click left it on - and Down on a button moves nothing.
+    # pick_country() avoids the same problem by TYPING into its list, which forces focus
+    # first; a radio group cannot be typed into.
+    #
+    # So the row is clicked, which both focuses the group and selects the row in one action.
+    # A click on a radio row selects it - that is what the control is for, and it is the
+    # same interaction a person has with this pane.
+    row = TRANSFER_ROWS["Set up as new"]
+    d.click(row, "Set up as new", settle=2.5)
     d.click(CONTINUE, "transfer Continue, Set up as new selected", settle=8.0)
+
+    # DID IT WORK? THIS IS THE CHECK THAT WOULD HAVE SAVED FOUR RUNS.
+    #
+    # Selecting "Set up as new" means the next pane is NOT a transfer pane. If "Transfer
+    # information to this Mac" is on screen now, the click did not take and the wizard is
+    # waiting on a source it was never told to skip - so the run stops here, with the phrase
+    # it saw, instead of clicking Continue twelve more times into a pane that is not moving.
+    #
+    # "Transfer information" is the second pane, the one with [AssetData] and Not now. The
+    # first is "Transfer Your Data to This Mac", which is what this function was looking at.
+    # They differ by one word, which is exactly why the phrase is quoted in full.
+    if pane_says(d, "transfer information", seconds=25):
+        raise SystemExit(
+            "=== THE TRANSFER PANE DID NOT MOVE ON ===\n"
+            "  'Set up as new' was clicked at "
+            f"{row} and the wizard is still on the transfer pane, which means the\n"
+            "  radio it selected was not the last one. The frames beside this run show\n"
+            "  which row is filled in - compare it against TRANSFER_ROWS."
+        )
+
+
+def pane_says(d: Driver, phrase: str, seconds: int = 20) -> bool:
+    """Whether the wizard's current pane carries `phrase`. Reads the bottom strip only.
+
+    WHY THIS EXISTS AT ALL, IN A FILE THAT SAYS "NO LOOKING".
+
+    The rule in this file is that the SEQUENCE is fixed and no decision is made from the
+    screen. That is still true - nothing here chooses an action. What this answers is a
+    different question, and it is the one that has cost four runs: DID THE STEP I JUST TOOK
+    DO ANYTHING AT ALL?
+
+    Runs 41784951651 and 41787686321 both clicked "Set up as new", both clicked Continue,
+    and both ended on the TRANSFER INFORMATION pane - the one that only appears when "From a
+    Mac" is selected. The log could not tell the difference between "the click worked and a
+    later step went back" and "the click never worked", because every line in it was written
+    by this file rather than read from the guest.
+
+    So the check is a fact about the guest, taken after the action, and it never feeds back
+    into which action comes next. When it fails the stage stops and says which phrase was
+    missing, rather than continuing for twelve more clicks.
+
+    The title strip is y=300..360 at 1920x1080 - where the wizard prints "Transfer Your Data
+    to This Mac" and "Transfer information to this Mac", which differ by one word and
+    therefore by the thing that matters.
+    """
+    try:
+        import assistant
+    except Exception:  # noqa: BLE001
+        return True  # no reader: do not fail a run over a missing tool
+
+    for _ in range(max(1, seconds // 5)):
+        ppm = d.shot("pane-check")
+        if not ppm:
+            time.sleep(5)
+            continue
+        text = assistant.ocr_text_cropped(ppm, (300, 290, 1620, 370), scale=3)
+        if phrase.lower() in (text or "").lower():
+            log(f"  the pane says {phrase!r}")
+            return True
+        time.sleep(5)
+    log(f"  !=== THE PANE DOES NOT SAY {phrase!r} ===")
+    return False
 
 
 def languages(d: Driver) -> None:
@@ -370,10 +494,29 @@ def tail(d: Driver) -> None:
     what this release needs; a pane that needs the seventh will stop visible and say so,
     which is recoverable, where overshooting silently undoes a finished wizard.
     """
+    # TWELVE BECAME SIX BECAUSE THE WIZARD HAS FOUR TO SIX PANES LEFT HERE, and clicking past
+    # the end lands on Back's neighbour in the fixed footer - which is how run 41784951651
+    # ended fifteen panes back on the transfer pane.
+    #
+    # NOTHING HERE READS THE SCREEN TO DECIDE WHAT TO DO. The count and the coordinate are
+    # fixed, as this file requires; what changed is that the LAST pane is now followed by a
+    # check that the wizard is gone, so a run that still has panes left says so instead of
+    # hoping.
     for i in range(6):
         d.wait(6, f"pane {i + 1} settles")
         d.key("ret", settle=3.0)
         d.click(CONTINUE, f"pane {i + 1} Continue", settle=3.0)
+
+    # THE WIZARD SHOULD BE FINISHED. If a transfer or setup pane is still up, the click
+    # above did not take and the desktop will never appear - the stage would then sit for
+    # its full desktop timeout, which is the pattern every failure in this file has had.
+    for leftover in ("transfer information", "transfer your data", "select your country"):
+        if pane_says(d, leftover, seconds=10):
+            raise SystemExit(
+                f"=== THE WIZARD IS STILL ON {leftover!r} AFTER THE TAIL ===\n"
+                "  the sequence ran to its end without leaving this pane, so the desktop\n"
+                "  will not appear. The frame beside this message is what it is showing."
+            )
 
 
 def run_sequence(qmp_path: str, frames_dir: str | None, user: str, password: str) -> None:
