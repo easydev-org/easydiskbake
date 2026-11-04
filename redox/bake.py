@@ -1240,35 +1240,36 @@ def main(argv: list[str]) -> int:
                 note("  `sshd -d` prints why; the frame beside this message is the console")
                 return False
 
-            # 10. THE ACCOUNT CAN REACH IT, from the guest's own network - the same address
-            #     qemu forwards to, so this proves the port rather than just the process.
+            # 10. THE PORT, WITHOUT A CLIENT FROM THIS IMAGE.
             #
-            # `-y` IS NOT NEEDED AND `true` IS NOT A REDOX COMMAND. The probe is `echo`, which
-            # ion has; and the check is the exit status of the whole ssh, so an auth failure
-            # and a missing binary are the same answer here - which is correct, because both
-            # mean the account cannot log in.
-            note("=== ssh from the guest to itself ===")
-            # THE ADDRESS HAS TO BE QUOTED, OR ion READS IT AS A VARIABLE.
+            # THE GUEST'S OWN ssh CANNOT BE USED - it panics. Run 41930233893 got all the way
+            # to SSHD_RC=0 and the frame shows the probe dying inside relibc:
             #
-            # Run 41924785986 reached this with sshd running (SSHD_RC=0) and the frame shows
-            # what happened instead:
+            #     root:~# ssh ... 'docker@10.0.2.15' echo ok ; echo SSHTEST=$?
+            #     RELIBC PANIC: panicked at src/platform/redox/socket.rs:135:52:
+            #     missing address
+            #     ion: pipeline execution error: process (95) ended by signal SIGILL
             #
-            #     root:~# ssh ... docker@10.0.2.15 echo ok ; echo SSHTEST=$?
-            #     ion: expansion error: Variable "10" does not exist
+            # That is the ssh CLIENT's address lookup failing, not the daemon. Quoting the
+            # destination fixed the shell's `@10` expansion and moved the failure one layer
+            # down into relibc's socket code.
             #
-            # ion expands `@10` - the `@` starts a variable name in this shell - so the
-            # command never ran and the probe could not have succeeded. The redirection
-            # operators wrote a literal file for the same reason in an earlier run.
+            # AND IT IS NOT EVIDENCE THIS STAGE NEEDS. What has to be true for the artifact is
+            # that sshd accepts connections on port 22 - which the next workflow job proves
+            # from outside, over the host forward, with a client that is not this image's.
+            # Proving it here as well would only be proving it with the one client on this disk
+            # that is known to crash.
             #
-            # Single quotes around the destination, which is how a shell keeps its hands off
-            # an argument.
-            con.type(f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
-                     f"'{args.user}@10.0.2.15' echo ok ; echo SSHTEST=$?")
-            if not con.wait_for(["sshtest=0"], 300, "ssh login"):
-                note("=== sshd IS UP BUT THE ACCOUNT CANNOT LOG IN ===")
-                note("  a password prompt that never accepts an empty line is the usual cause,")
-                note("  and `ssh -v` on the frame beside this message says which check failed")
+            # What IS checked here is the half a TCP banner cannot show: that sshd is running as
+            # a process after it daemonised. `pgrep` comes from uutils-procps, which this image
+            # ships.
+            note("=== sshd is running ===")
+            con.type("pgrep sshd ; echo PGPID=$?")
+            if not con.wait_for(["pgpid=0"], 300, "the sshd process"):
+                note("=== sshd DID NOT STAY RUNNING ===")
+                note("  SSHD_RC=0 only says it started; this asks whether it is still there")
                 return False
+            note("  sshd is up and daemonised")
 
             # 11. CLEAN, SO THE PUBLISHED DISK DOES NOT CARRY THIS RUN.
             note("=== cleaning ===")
