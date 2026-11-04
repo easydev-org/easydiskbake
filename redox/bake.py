@@ -1177,6 +1177,28 @@ def main(argv: list[str]) -> int:
             con.type("cat /etc/users.toml ; echo USERS_SHOWN=1", settle=2.0)
             con.wait_for(["users_shown=1"], 120, "users.toml printed")
 
+            # THE CHROOT DIRECTORY, WHICH IS THE NEXT CHECK IN sshd's OWN STARTUP.
+            #
+            # The /etc/passwd fix moved the failure on, and the frame from run 41916585870
+            # shows exactly one line further into sshd.c:
+            #
+            #     Missing privilege separation directory: /var/empty
+            #     SSHD_RC=255
+            #
+            # which is `if ((stat(_PATH_PRIVSEP_CHROOT_DIR, &sb) == -1) || !S_ISDIR(...))` -
+            # the check immediately after the account lookup that used to fail. A directory is
+            # all it wants; sshd chroots the unprivileged half of each connection into it.
+            #
+            # ONE LINE WITH ONE MARKER, as with the other file work: every wait_for() pass
+            # reads the screen several seconds behind, so a step split into several waits falls
+            # further behind with each one.
+            con.type("mkdir -p /var/empty && chmod 755 /var/empty && echo VAREMPTY_OK=1",
+                     settle=2.0)
+            if not con.wait_for(["varempty_ok=1"], 120, "/var/empty"):
+                note("=== /var/empty COULD NOT BE CREATED ===")
+                return False
+            note("  /var/empty exists")
+
             con.type("/usr/bin/sshd ; echo SSHD_RC=$?")
             if not con.wait_for(["sshd_rc=0"], 180, "sshd started"):
                 note("=== sshd WOULD NOT START ===")
