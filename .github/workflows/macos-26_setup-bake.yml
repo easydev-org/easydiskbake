@@ -78,7 +78,7 @@ on:
         default: "1800"
 
 concurrency:
-  group: bake-macos-${{ github.ref }}
+  group: bake-macos-26-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
