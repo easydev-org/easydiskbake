@@ -246,9 +246,18 @@ def main(argv: list[str]) -> int:
 
         ok = True
     finally:
-        # ACPI FIRST WHEN IT WORKED, because the cleaning wrote to the filesystem and a
-        # powered-off mid-write disk is one that repairs itself on every later boot.
-        guest.stop(acpi_first=ok)
+        # ACPI FIRST WHEN IT WORKED, AND LONG ENOUGH FOR IT TO FINISH.
+        #
+        # The cleaning wrote to the filesystem seconds ago - 18 GB of zeros on the Kubuntu
+        # run - and a disk killed mid-write is one that repairs itself on every later boot.
+        # 60s is vm.py's default and it was not enough: run 41789800329 logged
+        #
+        #     the guest did not power off within 60s; killing it
+        #
+        # after a successful clean, which turns a clean shutdown into a dirty one at the
+        # last step for no reason. Five minutes is not a cost on the normal path, where the
+        # guest answers in a few seconds.
+        guest.stop(acpi_first=ok, acpi_timeout=300)
 
     if not ok:
         return 1

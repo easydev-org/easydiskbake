@@ -289,9 +289,9 @@ def pick_country(d: Driver) -> None:
 
 
 def set_up_as_new(d: Driver) -> None:
-    """Three Downs, then Continue. The pane is a RADIO LIST, not cards.
+    """Focus the radio list, then THREE DOWNS. The row is never clicked directly.
 
-    WHAT IT ACTUALLY LOOKS LIKE, from the recording of run 41782331835 at 37s:
+    THE PANE, from the recording of run 41782331835 at 37s:
 
         Transfer Your Data to This Mac
           How do you want to transfer your information?
@@ -301,78 +301,58 @@ def set_up_as_new(d: Driver) -> None:
             ( ) Set up as new
                                             [ Back ] [ Continue ]
 
-    The first item is selected when the pane opens, so three Downs walk the highlight to
-    the last one. That is the whole action, and it does not depend on where anything sits
-    on the screen - which is the entire reason it replaced a click.
+    The first row is selected when the pane opens. Three Downs move the selection to the last
+    row, which is the whole action.
 
-    WHY THE CLICK WAS WRONG, AND WHY IT LOOKED RIGHT
+    WHY A CLICK AT THE LAST ROW WAS WRONG, TWICE
 
-    The sequence clicked (743, 714), documented as "card 4, Set up as new". The pane is not
-    cards; it is a vertical radio list about 120px tall, and 714 is BELOW the last row. What
-    that click actually selected was "Set up with iPhone or iPad", and the next thing on
-    screen was
+    First (743, 714) was documented as "card 4" and is below the list's last row, so it
+    selected "Set up with iPhone or iPad" - which opens a pairing handshake with a device
+    that does not exist. Runs 41777784309 and 41782331835 both ended there.
 
-        Enter the code below on your other computer
-        Unable to Pair Computers
-        This Mac could not be paired with the computer you want to connect.
+    Then it became a click on a recomputed row position, and that was wrong as well, because
+    the conversion from the recording's 1280x800 to the guest's 1920x1080 is not uniform:
+    x scales by 1.5 and y by 1.35. A row aimed at with 1.5 for both lands one row off, which
+    is the same failure with a different number.
 
-    - a pairing handshake with a device that does not exist, which is the same dead end the
-    privacy pane's Not Now exists to avoid. Two runs were spent on it: 41777784309 ended with
-    a case-sensitive-filesystem alert over this pane, and 41782331835 with the pairing alert.
-    Both were the same wrong row, reached two different ways.
+    Keys do not have that problem. They walk the list the widget drew, so the target is
+    "three rows down" rather than a position - and a position is wrong every time anything
+    above it moves.
 
-    A CLICK AT A MEASURED POSITION IS ONLY FIXED IF THE THING AT THAT POSITION IS. Keys walk
-    the list the widget drew, so they survive a re-layout; the coordinate cannot.
+    WHY THE LIST HAS TO BE CLICKED FIRST, AND WHY THAT IS NOT THE SAME AS CLICKING THE ROW
+
+    A key event goes to whatever has focus. When this pane appears, nothing in it does: the
+    keyboard focus is still on the Continue button the previous pane's click left it on, and
+    Down on a button moves nothing. That is why runs 41784951651 and 41787686321 sent three
+    Downs that moved nothing at all.
+
+    pick_country() has always done it correctly and is the proof: it clicks COUNTRY_LIST
+    before typing "united states", because typing into an unfocused list does nothing either.
+
+    So the click here lands on the FIRST row, which is ALREADY SELECTED - it changes nothing
+    on screen, its only job is to give the list focus. Then three Downs, then Continue.
     """
     d.wait(8, "transfer pane settles")
 
-    # THE FOCUSED CLICK FIRST. THIS IS WHY THREE DOWNS DID NOTHING.
-    #
-    # Run 41787686321 sent `key down x3` and then clicked Continue, and the recording ends
-    # with the FIRST radio still filled in. A key event goes to whatever has focus in
-    # macOS, and nothing on this pane had it - the pane had just appeared and the keyboard
-    # focus was still on the Continue button the previous pane's click left it on. Down on a
-    # button moves nothing.
-    #
-    # pick_country() has always done this correctly and that is the proof: it clicks
-    # COUNTRY_LIST before typing "united states", because typing into an unfocused list
-    # does nothing either. The same rule, on the pane five seconds later, was not applied.
-    #
-    # The click lands on the FIRST RADIO's row, which selects it - and it is already
-    # selected, so nothing changes except that the list now has focus. Then three Downs
-    # walk to "Set up as new", and Continue leaves the pane.
-    # CLICKING THE ROW, NOT ARROWING TO IT.
-    #
-    # Three Downs did not move the highlight in runs 41784951651 and 41787686321. The pane
-    # has no focused control when it appears - the keyboard focus is still on the Continue
-    # button the previous pane's click left it on - and Down on a button moves nothing.
-    # pick_country() avoids the same problem by TYPING into its list, which forces focus
-    # first; a radio group cannot be typed into.
-    #
-    # So the row is clicked, which both focuses the group and selects the row in one action.
-    # A click on a radio row selects it - that is what the control is for, and it is the
-    # same interaction a person has with this pane.
-    row = TRANSFER_ROWS["Set up as new"]
-    d.click(row, "Set up as new", settle=2.5)
+    d.click(TRANSFER_ROWS["From a Mac"], "focus the transfer radio list", settle=2.0)
+    d.key("down", times=3, settle=2.0)
     d.click(CONTINUE, "transfer Continue, Set up as new selected", settle=8.0)
 
-    # DID IT WORK? THIS IS THE CHECK THAT WOULD HAVE SAVED FOUR RUNS.
+    # DID IT WORK? Four runs were spent not knowing.
     #
-    # Selecting "Set up as new" means the next pane is NOT a transfer pane. If "Transfer
-    # information to this Mac" is on screen now, the click did not take and the wizard is
-    # waiting on a source it was never told to skip - so the run stops here, with the phrase
-    # it saw, instead of clicking Continue twelve more times into a pane that is not moving.
+    # Choosing "Set up as new" means the next pane is not a transfer pane. If "Transfer
+    # information to this Mac" - the second one, with [AssetData] and Not now - is on screen
+    # now, the selection did not take, and this stops with the phrase it saw instead of
+    # clicking Continue twelve more times into a pane that is not moving.
     #
-    # "Transfer information" is the second pane, the one with [AssetData] and Not now. The
-    # first is "Transfer Your Data to This Mac", which is what this function was looking at.
-    # They differ by one word, which is exactly why the phrase is quoted in full.
+    # This never chooses anything; the sequence stays fixed. It answers one question: did the
+    # step I just took do what it says.
     if pane_says(d, "transfer information", seconds=25):
         raise SystemExit(
             "=== THE TRANSFER PANE DID NOT MOVE ON ===\n"
-            "  'Set up as new' was clicked at "
-            f"{row} and the wizard is still on the transfer pane, which means the\n"
-            "  radio it selected was not the last one. The frames beside this run show\n"
-            "  which row is filled in - compare it against TRANSFER_ROWS."
+            "  three Downs from the first row did not reach 'Set up as new', and the\n"
+            "  wizard is on the second transfer pane. The frame beside this run shows\n"
+            "  which row is filled in."
         )
 
 
@@ -410,7 +390,17 @@ def pane_says(d: Driver, phrase: str, seconds: int = 20) -> bool:
         if not ppm:
             time.sleep(5)
             continue
-        text = assistant.ocr_text_cropped(ppm, (300, 290, 1620, 370), scale=3)
+        # THE TITLE LINE, AND NOTHING AROUND IT.
+        #
+        # Measured from run 41784951651's own frames, which are 1280x800 while the guest is
+        # 1920x1080: the title sits at y=225..255 in the recording, which is y=304..344 on
+        # the guest. The first version of this box was (300, 290, 1620, 370) - too tall and
+        # far too wide - and tesseract returned NOTHING for it, because at that size the
+        # surrounding paragraph is more ink than the title and page segmentation drops both.
+        #
+        # A box that reads everything around the thing it is looking for is a box that reads
+        # nothing, which is the same lesson as the whole-frame OCR in redox/bake.py.
+        text = assistant.ocr_text_cropped(ppm, (420, 300, 1500, 350), scale=4)
         if phrase.lower() in (text or "").lower():
             log(f"  the pane says {phrase!r}")
             return True
