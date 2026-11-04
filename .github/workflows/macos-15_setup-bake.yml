@@ -224,9 +224,19 @@ jobs:
             set -euo pipefail
             python3 lib/ci.py install-oras
             python3 lib/ci.py login --registry ghcr.io
+            # A FIXED TAG AS WELL AS THE DATED ONE, SO THE NEXT STAGE CAN NAME IT.
+            #
+            # Without --tag this pushes macos15-base-<timestamp> only, and
+            # macos-15_desktop-bake asks for "macos15-setup" by name - which is a tag that
+            # never existed. The desktop stage would have failed at the pull.
+            #
+            # The dated tag is kept in --kind so "which build is this" still has an answer;
+            # --tag is the stable name a consumer uses. linux-nixos-bake makes the same
+            # split for nixos-base and its six desktops.
             python3 lib/publish_disk.py \
               "out/macos${{ inputs.release || '15' }}.qcow2" \
-              --kind "macos${{ inputs.release || '15' }}-base"
+              --kind "macos${{ inputs.release || '15' }}-base" \
+              --tag "macos${{ inputs.release || '15' }}-setup"
 
       - name: what is in the package
         if: always()
