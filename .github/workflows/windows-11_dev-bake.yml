@@ -83,7 +83,18 @@ jobs:
             python3 lib/ci.py free-disk --need 40
             # sshpass turns "a banner appeared" into "a login worked", and this stage logs
             # in rather than looking at a screen.
-            command -v sshpass || apt-get install -y -qq sshpass
+            # apt-get update FIRST. `install` alone against a container whose package
+            # lists were never fetched answers
+            #
+            #     E: Unable to locate package sshpass
+            #
+            # and exits 100, which is run 41774536455's prepare step - the job never
+            # reached the disk. Every other workflow in this repository pairs the two;
+            # this one had only the install.
+            if ! command -v sshpass >/dev/null 2>&1; then
+              apt-get update -qq
+              DEBIAN_FRONTEND=noninteractive apt-get install -y -qq sshpass
+            fi
             sshpass -V | head -1
             python3 lib/ci.py tags --prefix windows-
 

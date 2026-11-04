@@ -108,12 +108,46 @@ def main(argv: list[str]) -> int:
         raise SystemExit(
             f"could not copy the disk: {(copied.stderr or copied.stdout).strip()[:300]}")
 
+    # THE RECOVERY IMAGE IS AN INPUT EVEN THOUGH THIS STAGE DOES NOT BOOT FROM IT.
+    #
+    # opencore.build() takes Apple's APFS driver out of the recovery image and installs it
+    # into boot.img, which travels with the machine. Without that driver the guest cannot
+    # mount what the installer wrote - so the image is required even though no cdrom is
+    # attached here.
+    #
+    # A BAKE STAGE DOES NOT INHERIT ANOTHER STAGE'S INPUTS. bake.py fetches this at its own
+    # start; desktop.py assumed it would be present and died at the first build step:
+    #
+    #     opencore.OpenCoreError: no recovery image at .../out/recovery.dmg, and the APFS
+    #     driver can only come from one; the guest would install a macOS it cannot boot
+    #
+    # which is run 41773825483. The tag and the file name are bake.py's, because the two
+    # stages must agree on which image was used: a driver out of a different release is a
+    # different boot path.
+    log("=== recovery image ===")
+    import iso as isolib
+    import opencore
+
+    recovery = opencore.recovery_image(work)
+    if not (os.path.isfile(recovery) and os.path.getsize(recovery) > 0):
+        name = "sequoia"
+        tag = f"macos-recovery-{name}"
+        log(f"  not present; pulling {tag}")
+        try:
+            isolib.fetch_tag(tag, recovery)
+        except isolib.IsoError as exc:
+            raise SystemExit(
+                f"=== NO RECOVERY IMAGE AND IT COULD NOT BE PULLED ===\n"
+                f"  {exc}\n"
+                f"  The APFS driver comes out of it; without one the disk this stage"
+                f" produces cannot boot. Run macos-recovery-publish.yml for 15 first."
+            ) from exc
+    log(f"  {recovery} ({os.path.getsize(recovery) >> 20} MiB)")
+
     # THE BOOT ASSETS. opencore.build() needs the recovery image only to take Apple's
     # APFS driver out of it - the driver is installed into boot.img, which travels with
     # the machine, not with the disk.
     log("=== OpenCore, firmware, APFS driver ===")
-    import opencore
-
     assets = opencore.build("15", work)
     log(f"identity {assets['identity']['serial']} / {assets['identity']['mac']}")
 
