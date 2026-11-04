@@ -432,7 +432,12 @@ class Recovery:
         """
         if not self.frames:
             return None
-        path = os.path.join(self.frames, f"{name}.ppm")
+        # UNDER shots/, WHERE THE RECORDING'S FRAMES LIVE, so the frames artifact's glob
+        # picks them up. Written to the parent directory they are on the runner and thrown
+        # away - which is what happened to run 41695990597's twenty-one erase attempts.
+        shots = os.path.join(self.frames, "shots")
+        os.makedirs(shots, exist_ok=True)
+        path = os.path.join(shots, f"ocr-{name}.ppm")
         try:
             self.q.execute("screendump", filename=path)
         except (OSError, RuntimeError) as exc:
@@ -443,22 +448,34 @@ class Recovery:
     def erase_sheet_is_open(self) -> bool:
         """Is the erase confirmation sheet on screen?
 
-        THE SHEET IS THE PROOF THAT THE CLICK LANDED, and its words are unique to it: it
-        asks for a Name and shows Format and Scheme pickers. The licence pane, the
-        destination pane and Disk Utility itself show none of those together.
+        THE SHEET IS THE PROOF THAT THE CLICK LANDED, and its first line is unique:
+        `Erase "<device>"?`. Nothing else in Disk Utility asks a question in that shape.
 
-        Reading it means a click that did nothing can be retried deliberately instead of
-        being followed by a backspace and a typed name into a field that is not there.
+        WHY THIS READS A CROP AND NOT THE WHOLE FRAME. Run 41695990597 clicked all
+        twenty-one sweep positions, each followed by this check, and every check said the
+        sheet was closed - while the last frame of that run shows the sheet open, with the
+        Name field, Format APFS and Scheme GUID Partition Map all drawn. The whole-frame
+        OCR that was used reads only the title bar and the device name at this size; the
+        dialog's own text is a third of that height.
+
+        The crop is the dialog's question line, measured on that frame:
+        x 700..1410, y 440..560 at 1920x1080.
         """
         path = self.screenshot("probe-sheet")
         if not path:
             return False
-        text = assistant.ocr_text(path)
+        text = assistant.ocr_text_cropped(path, (700, 440, 1410, 560), scale=4)
         if not text:
             return False
-        # "scheme" and "format" are the two picker labels; either alone is enough, since
-        # Disk Utility's main window has neither on this screen.
-        return "scheme" in text or "guid partition map" in text
+        # THE QUESTION MARK IS THE SHAPE OF THE THING, not the word "erase" - Disk
+        # Utility's own toolbar has an Erase button, so a bare "erase" would match the
+        # window behind the sheet.
+        #
+        # "ERASE" FOLLOWED BY A QUOTE OF EITHER KIND. tesseract returns the typographic
+        # ones macOS draws - `erase “apple inc. virtio block media"?` - so a check for a
+        # straight quote misses the sheet on every frame, which is how the twenty-one
+        # attempts in 41695990597 were all read as closed.
+        return "erase" in text and ("?" in text or "\u201c" in text or '"' in text)
 
     def selected_disk_gb(self) -> float | None:
         """The capacity Disk Utility is showing for the selected disk, in GB, or None.
