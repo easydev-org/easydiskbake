@@ -94,6 +94,37 @@ MIN_BRIGHTNESS_DROP = 15.0     # top mean minus bottom mean, per channel average
 MIN_VARIANCE_RATIO = 2.0       # bottom variance / top variance
 MIN_SATURATION_RISE = 0.10     # bottom saturation - top saturation
 
+# THE MENU BAR, AND WHY IT IS THE ONE TEST THAT SURVIVES EVERY WALLPAPER.
+#
+# MIN_VARIANCE_RATIO is measured on macOS 15 and it is BACKWARDS there. From run
+# 41881240543's own recording, one frame every six seconds:
+#
+#     the wizard        drop -0.3   ratio 0.40   sat  0.00   top 228.5  bottom 228.8
+#     the desktop       drop 27.3   ratio 1.56   sat  0.01   top 230.9  bottom 201.9
+#
+# and across all 349 frames: every frame that passed the brightness drop had a variance
+# ratio BELOW 1.58, and every frame above 2.0 failed it. The test was written for a Windows
+# desktop with a dark taskbar and a busy background; a white macOS setup sheet over a white
+# desktop has the variance the other way round. Requiring ratio >= 2.0 on that machine is a
+# test that can only be passed by the screen it is supposed to reject.
+#
+# What every macOS desktop has and no setup pane has is a menu bar: a dark, uniform strip
+# across the very top, with the clock in it. Measured on the same frames:
+#
+#     the wizard         top 1.2% mean 227.3
+#     the desktop        top 1.2% mean  39.7
+#
+# That is one band, one number, and a factor of nearly six - the same order of contrast the
+# brightness drop was reaching for, on the region where it is actually reliable.
+MENU_BAR = (0.000, 0.012)
+MAX_MENU_BAR_MEAN = 120.0      # a dark strip; the lightest macOS menu bar is well under
+# AND THE SCREEN UNDER IT HAS TO BE LIT. A menu bar is dark and so is an unlit framebuffer,
+# and the first version of this test passed every black frame in the recording for exactly
+# that reason - 274 of 349, including the boot. The desktop's own body is bright (231 and 207
+# in the bands above, mean 219) and a black screen is 0; the bracket separates them with an
+# order of magnitude to spare on both sides.
+MIN_DESKTOP_BRIGHTNESS = 120.0
+
 
 def log(msg: str) -> None:
     print(f"[desktop] {msg}", flush=True)
@@ -276,9 +307,11 @@ def analyse(path: str) -> dict | None:
 
     top_mean, top_var = _band_stats(width, height, pixels, *TOP_BAND)
     bot_mean, bot_var = _band_stats(width, height, pixels, *BOTTOM_BAND)
+    menu_mean, _ = _band_stats(width, height, pixels, *MENU_BAR)
 
     return {
         "size": (width, height),
+        "menu_bar_mean": sum(menu_mean) / 3.0,
         "top_mean": top_mean,
         "bottom_mean": bot_mean,
         "top_var": top_var,
@@ -295,10 +328,20 @@ def analyse(path: str) -> dict | None:
 
 
 def is_desktop(path: str, *, explain: bool = False) -> bool:
-    """Is this frame a Windows desktop?
+    """Is this frame a desktop?
 
-    All three tests must pass. See the constants above for why each one is there and
-    why the thresholds are loose.
+    TWO WAYS TO PASS, AND THE SECOND ONE WAS WRITTEN BECAUSE THE FIRST CANNOT SEE macOS.
+
+        the Windows test    a bright top band over a dark, varied bottom band - the taskbar
+                            and the wallpaper of a Windows desktop
+        the macOS test      a dark menu bar across the top of an otherwise light screen
+
+    See MENU_BAR for the measurements that forced the second: on macOS 15 the variance ratio
+    runs the other way, so every frame that passed the brightness drop failed the variance
+    test and every frame that passed the variance test was a setup pane. Requiring both made
+    the check impossible to satisfy - run 41881240543 sat in reached_desktop() for its whole
+    1800-second budget with the desktop plainly on screen, and its own recording shows the
+    menu bar four frames from the end.
     """
     stats = analyse(path)
     if stats is None:
@@ -309,16 +352,23 @@ def is_desktop(path: str, *, explain: bool = False) -> bool:
     drop = stats["brightness_drop"]
     ratio = stats["variance_ratio"]
     rise = stats["saturation_rise"]
+    menu = stats["menu_bar_mean"]
 
-    passed = (
+    windows = (
         drop >= MIN_BRIGHTNESS_DROP
         and ratio >= MIN_VARIANCE_RATIO
         and rise >= MIN_SATURATION_RISE
     )
+    body = (sum(stats["top_mean"]) + sum(stats["bottom_mean"])) / 6.0
+    macos = menu <= MAX_MENU_BAR_MEAN and body >= MIN_DESKTOP_BRIGHTNESS
+
+    passed = windows or macos
 
     if explain:
         log(f"{os.path.basename(path)}: drop={drop:+.1f} ratio={ratio:.1f}x "
-            f"sat={rise:+.2f} -> {'DESKTOP' if passed else 'not a desktop'}")
+            f"sat={rise:+.2f} menu={menu:.0f} body={body:.0f} "
+            f"-> {'DESKTOP' if passed else 'not a desktop'}"
+            f" ({'windows' if windows else 'macos menu bar' if macos else 'neither'})")
     return passed
 
 
