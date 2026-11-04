@@ -560,9 +560,32 @@ def record_many(out: str, *frame_dirs: str, fps: int = 1) -> bool:
                 continue
             log(f"record: {len(frames)} frames from {d}")
             for i, name in enumerate(frames):
-                # THE EXTENSION TRAVELS WITH THE FRAME: snapshots.py leaves JPEGs now.
-                ext = os.path.splitext(name)[1]
-                shutil.copyfile(os.path.join(d, name), os.path.join(stage, f"frame-{n:04d}{ext}"))
+                # EVERY STAGED FRAME IS A JPEG, WHATEVER IT ARRIVED AS.
+                #
+                # The encoder needs one extension to build a sequence from, and
+                # `-pattern_type glob -i 'frame-*'` with no extension does not work: ffmpeg's
+                # image2 demuxer rejects it with
+                #
+                #     Error opening input: No such file or directory
+                #
+                # on ffmpeg 7.1.5, while `frame-*.jpg` and `frame-*.ppm` both work. A mixed
+                # set - which is what exists while snapshots.py is converting - has neither.
+                # So anything that is not already a JPEG is converted here, and the sequence
+                # the encoder is given is uniform.
+                dst = os.path.join(stage, f"frame-{n:04d}.jpg")
+                src = os.path.join(d, name)
+                if name.endswith(".jpg"):
+                    shutil.copyfile(src, dst)
+                else:
+                    r = subprocess.run(
+                        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+                         "-i", src, "-q:v", "4", dst],
+                        capture_output=True, text=True,
+                    )
+                    if r.returncode != 0 or not os.path.exists(dst):
+                        log(f"record: could not convert {name}: "
+                            f"{(r.stderr or '').strip()[:120]}")
+                        continue
                 n += 1
 
         if n == 0:
@@ -574,7 +597,7 @@ def record_many(out: str, *frame_dirs: str, fps: int = 1) -> bool:
             [
                 "ffmpeg", "-hide_banner", "-loglevel", "warning", "-nostdin", "-y",
                 "-framerate", str(fps), "-start_number", "0",
-                "-pattern_type", "glob", "-i", os.path.join(stage, "frame-*"),
+                "-i", os.path.join(stage, "frame-%04d.jpg"),
                 "-c:v", "libx264", "-preset", "ultrafast",
                 "-pix_fmt", "yuv420p", "-movflags", "+faststart",
                 out,

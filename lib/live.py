@@ -245,12 +245,64 @@ class LiveArtifacts:
             if n == 0:
                 return False
 
+            # EVERY STAGED FRAME IS A JPEG, WHATEVER IT ARRIVED AS.
+            #
+            # The encoder needs one extension to build a sequence from, and `frame-*.ppm`
+            # stopped being the only one when lib/snapshots.py began converting each
+            # screendump to JPEG: during a transition there really is a mixed set.
+            #
+            # `-pattern_type glob -i 'f-*'` DOES NOT WORK FOR THAT, and this is worth
+            # recording because it looks like it should. ffmpeg's image2 demuxer rejects a
+            # glob with no extension at the end:
+            #
+            #     [in#0 @ ...] Error opening input: No such file or directory
+            #     Error opening input file /tmp/live-mp4-xxxx/f-*.
+            #
+            # measured on ffmpeg 7.1.5, for `f-*`, `f-*.[jp]*` and `f-*.?` alike, while
+            # `f-*.jpg` and `f-*.ppm` both work. macos26's bake logged that error every
+            # twenty seconds for an hour and produced a recording artifact containing one
+            # PNG and no video.
+            #
+            # So the staging pass normalises instead: anything that is not already a JPEG is
+            # converted here, into the same `f-%05d.jpg` sequence the encoder is then given.
+            # It costs one ffmpeg call per non-JPEG frame, which is only the frames written
+            # before snapshots.py started converting - normally none.
+            sequence = os.path.join(stage, "seq-%05d.jpg")
+            k = 0
+            for name in sorted(os.listdir(stage)):
+                src = os.path.join(stage, name)
+                if not name.startswith("f-"):
+                    continue
+                dst = os.path.join(stage, f"seq-{k:05d}.jpg")
+                if name.endswith(".jpg"):
+                    os.replace(src, dst)
+                else:
+                    r = subprocess.run(
+                        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+                         "-i", src, "-q:v", "4", dst],
+                        capture_output=True, text=True,
+                    )
+                    if r.returncode != 0 or not os.path.exists(dst):
+                        # A FRAME THAT WILL NOT CONVERT IS DROPPED, NOT FIXED UP. It is one
+                        # of hundreds and the run continues; guessing at its format would
+                        # put a wrong picture in the recording.
+                        log(f"  could not convert {name}: "
+                            f"{(r.stderr or '').strip()[:120]}")
+                        continue
+                    try:
+                        os.unlink(src)
+                    except OSError:
+                        pass
+                k += 1
+            if k == 0:
+                return False
+
             tmp = part_path(self.video)
             result = subprocess.run(
                 [
                     "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
                     "-framerate", str(self.fps),
-                    "-pattern_type", "glob", "-i", os.path.join(stage, "f-*"),
+                    "-i", sequence,
                     "-c:v", "libx264", "-preset", "ultrafast",
                     "-pix_fmt", "yuv420p", "-movflags", "+faststart",
                     tmp,
