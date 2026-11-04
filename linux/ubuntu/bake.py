@@ -153,9 +153,24 @@ def boot_installed(work: str, args, disk: str) -> bool:
         # compositor running and serving a WAYLAND_DISPLAY socket. A picture cannot answer
         # that - it cannot tell a compositor that does not draw on the emulated adapter
         # from one that never started.
-        return session.wait_for_wayland(
+        arrived = session.wait_for_wayland(
             args.ssh_port, args.compositor, args.timeout, log,
             ssh_seconds=min(args.timeout, 600))
+        if not arrived:
+            return False
+
+        # CLEAN WHILE THE GUEST IS UP AND CONNECTED, WHICH IS WHY THIS IS A STEP HERE.
+        #
+        # The disk has just been shown to boot and to answer ssh, so the cleaning operates on
+        # a running system - and it is the FIRST BOOT that created most of what should not
+        # ship: journal entries, the accounts' own caches, apt's lists after the first update.
+        # A clean run inside the installer cannot see any of that.
+        #
+        # A separate job would boot the disk a second time after an artifact round trip of the
+        # whole disk. This is the same machine, and the caller stops it in the `finally` below.
+        import clean_disk
+
+        return clean_disk.clean_running("linux", port=args.ssh_port, note=log)
     finally:
         guest.stop()
 
@@ -388,7 +403,11 @@ def main(argv: list[str]) -> int:
             log("the installed system answers on ssh")
 
     finally:
-        guest.stop()
+        # ACPI FIRST, AND LONG ENOUGH: the clean wrote gigabytes of zeros seconds ago and a
+        # disk killed mid-write repairs itself on every later boot. The return value is not
+        # threaded here because the caller has already decided - this only decides how the
+        # machine goes down.
+        guest.stop(acpi_first=True, acpi_timeout=300)
         # AFTER guest.stop(), NOT BEFORE. Closing the writer first tells qemu its console
         # is gone, and a guest mid-shutdown then loses the line that says why.
         ser.close()

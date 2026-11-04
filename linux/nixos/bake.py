@@ -273,6 +273,8 @@ def main(argv: list[str]) -> int:
     p.add_argument("--work", default=None)
     p.add_argument("--mem", type=int, default=6144)
     p.add_argument("--cpus", type=int, default=4)
+    p.add_argument("--ssh-port", type=int, default=2222,
+                   help="host port forwarded to the guest's sshd, for the clean step")
     p.add_argument("--disk-size", default="20G")
     p.add_argument("--timeout", type=int, default=3600,
                    help="seconds the whole guest may run")
@@ -459,11 +461,54 @@ def main(argv: list[str]) -> int:
         log("=== THE DISK FAILED ITS CHECKS; refusing to produce an artifact ===")
         return 1
 
+    # CLEANING NEEDS THE SYSTEM RUNNING, AND THIS STAGE NEVER STARTED IT.
+    #
+    # nixos-install writes the disk and the installer powers off; nothing has ever booted
+    # what it wrote. So the disk is started once here, with no installer attached, cleaned
+    # over ssh, and stopped. That is one extra boot in the same job - not an artifact round
+    # trip of the whole disk - and it also catches a NixOS disk that installs and cannot
+    # boot, which this stage had no way to notice before.
+    log("=== booting the installed disk, to clean it ===")
+    if not clean_installed(work, args, disk):
+        log("=== THE DISK DID NOT BOOT, OR WAS NOT CLEANED; nothing is published ===")
+        return 1
 
     log("compressing")
     compress.compress(disk, args.out)
     log(f"BAKED nixos-base -> {args.out} ({os.path.getsize(args.out) >> 20} MiB)")
     return 0
+
+
+def clean_installed(work: str, args, disk: str) -> bool:
+    """Boot the disk nixos-install wrote, clean it over ssh, and stop it.
+
+    NO CDROM AND NO -kernel: this is the system itself, started the way its owner will start
+    it. That is what makes the cleaning possible at all (ssh needs the installed system
+    running) and what makes it verifiable (a clean that breaks the boot fails here rather
+    than in the next stage).
+
+    THE DISK IS MODIFIED IN PLACE. Booting from `disk` directly, not a copy: what the guest
+    cleans while running is what the artifact should contain.
+    """
+    import clean_disk
+    import session
+
+    shape = vm.Shape(cpus=args.cpus, mem_mb=args.mem, machine="q35", vga="std",
+                     ssh_port=args.ssh_port)
+    guest = vm.Guest(work, extra=["-drive", f"file={disk},if=virtio,format=qcow2"],
+                     shape=shape, stdout=os.devnull)
+    ok = False
+    try:
+        guest.start()
+        if not session.wait_for_ssh(args.ssh_port, args.timeout, log):
+            log("=== THE INSTALLED DISK DID NOT ANSWER ON SSH ===")
+            return False
+        ok = clean_disk.clean_running("linux", port=args.ssh_port, note=log)
+        return ok
+    finally:
+        # ACPI when the clean happened: it wrote gigabytes of zeros and a disk killed
+        # mid-write repairs itself on every later boot.
+        guest.stop(acpi_first=ok, acpi_timeout=300)
 
 
 def install_status(console: str, disk: str | None = None) -> int | None:

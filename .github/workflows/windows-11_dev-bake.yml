@@ -156,116 +156,18 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-      # THE DISK AND ITS FIRMWARE STATE, HANDED TO THE CLEAN JOB.
+      # PUBLISHED HERE, AFTER THE CLEAN THE STAGE ITSELF RAN.
       #
-      # This stage used to publish directly, so a cleaned and an uncleaned dev disk were
-      # indistinguishable in the package. The clean job below pulls this artifact, boots it,
-      # cleans it, and publishes under the tag this workflow was asked for.
-      - name: upload the disk
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-dev-disk
-          path: |
-            out/windows11-dev.qcow2
-            out/windows11-dev.qcow2.bootstate.tar.gz
-          if-no-files-found: error
-          retention-days: 7
-          compression-level: 0
-
-  # CLEANING IS ITS OWN JOB, AND IT PUBLISHES.
-  #
-  # The dev disk is the one that most needs it - a toolchain install leaves winget
-  # downloads, the VS payload cache, DeliveryOptimization and the installers themselves -
-  # and before this it was published without any of that being removed.
-  #
-  # Separating it from the install means a cleaning change does not pay for a twenty-minute
-  # Visual Studio install, and the run graph shows which of the two failed.
-  clean:
-    needs: dev
-    runs-on: ubuntu-24.04
-    timeout-minutes: 90
-    container:
-      image: ghcr.io/${{ github.repository }}:latest
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-      options: --device /dev/kvm
-    permissions:
-      contents: read
-      checks: write
-      packages: write
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: prepare
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
-        with:
-          token: ${{ github.token }}
-          name: clean-prepare
-          interval: "10"
-          command: |
-            set -euo pipefail
-            python3 lib/ci.py kvm
-            python3 lib/ci.py free-disk --need 60
-            if ! command -v sshpass >/dev/null 2>&1; then
-              apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
-                apt-get install -y -qq sshpass
-            fi
-            sshpass -V | head -1
-
-      - name: pull the disk
-        uses: actions/download-artifact@v4
-        with:
-          name: windows-dev-disk
-          path: out/clean-work
-
-      - name: clean it
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
-        with:
-          token: ${{ github.token }}
-          name: clean-disk
-          interval: "20"
-          command: |
-            set -euo pipefail
-            export GITHUB_TOKEN="${{ github.token }}"
-            DISK=$(ls out/clean-work/*.qcow2 | head -1)
-            echo "disk: $DISK"
-            # --disk, not --tag: nothing has been published yet. clean_disk.py copies it into
-            # --work and boots it there, so the artifact the dev job produced is untouched.
-            python3 lib/clean_disk.py \
-              --disk "$DISK" \
-              --kind windows \
-              --out out/windows11-dev.qcow2 \
-              --work out/clean-work \
-              --artifacts out \
-              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
-              --mem 6144
-
-      - name: keep the bootstate
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-dev-bootstate-final
-          path: out/clean-work/*.bootstate.tar.gz
-          if-no-files-found: warn
-          retention-days: 30
-
-      - name: keep the record
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: clean-record
-          path: out/clean.txt
-          if-no-files-found: warn
-          retention-days: 14
-
+      # The clean is a step in windows/11/devtools.py - the guest is up, ssh is connected and
+      # the disk is local, so a job boundary would only add two transfers of the whole disk.
+      # This is the stage that most needs cleaning, because the toolchain is what makes the
+      # disk large.
       - name: publish
         if: success()
         uses: easydev-org/easyagent-github-ext/actions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: clean-publish
+          name: dev-publish
           interval: "15"
           command: |
             set -euo pipefail
@@ -284,7 +186,7 @@ jobs:
         uses: easydev-org/easyagent-github-ext/actions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: clean-tags
+          name: dev-tags
           interval: "10"
           command: |
             set -euo pipefail

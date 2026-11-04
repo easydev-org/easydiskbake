@@ -513,6 +513,22 @@ def main(argv: list[str]) -> int:
             kb.shot("no-ssh")
             return 1
 
+        # CLEAN HERE, AND NOT AS A LATER JOB.
+        #
+        # The guest is running, ssh is connected, and the disk is on local storage. A separate
+        # clean job would upload this disk to an artifact and download it again - 12 GiB each
+        # way - to arrive at the same machine in the same state.
+        #
+        # It also has to be after the check above, because clean.ps1 is 190 lines and cannot
+        # be typed at a keyboard: ssh is not merely convenient here, it is the only channel
+        # that can carry the script.
+        from lib.clean_disk import clean_running
+
+        if not clean_running("windows", port=HOST_SSH_PORT, note=log):
+            log("=== THE GUEST WAS NOT CLEANED; THE DISK IS NOT PUBLISHED ===")
+            log("  an uncleaned disk carries this run's installers into every later stage")
+            return 1
+
         ok = True
         return 0
     finally:

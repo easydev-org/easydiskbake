@@ -473,10 +473,19 @@ def main(argv: list[str]) -> int:
         if not verify():
             return 1
 
-        # CLEANING IS NOT THIS STAGE'S JOB. It moved to lib/clean_disk.py, which boots the
-        # disk this produces, cleans it over ssh and zeroes its free space. A `--clean` flag
-        # here would be a second implementation of that, and the reason the cleaning was
-        # moved out was to stop having several.
+        # CLEAN HERE, WHILE THE GUEST IS UP AND CONNECTED.
+        #
+        # A separate job would upload this 16 GiB disk and download it again to clean the same
+        # machine, and the toolchain install is the thing that makes the disk big in the first
+        # place - so this is where most of the waste is.
+        #
+        # The cleaning itself is lib/clean_disk.py -> lib/winclean.py, shared with the ssh
+        # stage, so the two cannot drift about what "clean" means.
+        from lib.clean_disk import clean_running
+
+        if not clean_running("windows", port=SSH_PORT, note=log):
+            log("=== THE GUEST WAS NOT CLEANED; THE DISK IS NOT PUBLISHED ===")
+            return 1
 
         ok = True
         return 0
