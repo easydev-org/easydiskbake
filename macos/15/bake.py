@@ -184,7 +184,7 @@ class Baker:
             raise SystemExit(f"snapshots.py is not at {snapscript}; the layout changed")
         snap = subprocess.Popen(
             [sys.executable, snapscript, guest.paths.record, shots,
-             os.environ.get("SNAPSHOT_INTERVAL", "5"), "2000"],
+             os.environ.get("SNAPSHOT_INTERVAL", "1")],
             stdout=open(os.path.join(shots, "snapshots.log"), "wb"),
             stderr=subprocess.STDOUT,
         )

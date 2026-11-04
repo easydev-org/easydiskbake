@@ -230,7 +230,7 @@ def main():
     snap = subprocess.Popen(
         ["python3", os.path.join(LIB, "snapshots.py"), qmp,
          os.path.join(work, "shots-grubfix"),
-         os.environ.get("SNAPSHOT_INTERVAL", "1"), "500"],
+         os.environ.get("SNAPSHOT_INTERVAL", "1")],
         stdout=open(os.path.join(work, "shots-grubfix", "snapshots.log"), "wb"),
         stderr=subprocess.STDOUT,
     )

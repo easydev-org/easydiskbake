@@ -80,7 +80,7 @@ def parse(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--memory-mb", type=int, default=4096)
     p.add_argument("--cores", type=int, default=4)
     p.add_argument("--gpu", default="swiftshader_indirect")
-    p.add_argument("--snapshot-interval", default=os.environ.get("SNAPSHOT_INTERVAL", "5"))
+    p.add_argument("--snapshot-interval", default=os.environ.get("SNAPSHOT_INTERVAL", "1"))
     p.add_argument("--avd", default="", help="an AVD archive already on disk")
     p.add_argument("--publish", action="store_true")
     return p.parse_args(argv)
@@ -192,7 +192,7 @@ def main(argv: list[str]) -> int:
         [sys.executable,
          os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
              os.path.abspath(__file__)))), "lib", "snapshots.py"),
-         emu.qmp, shots, str(args.snapshot_interval), "2000"],
+         emu.qmp, shots, str(args.snapshot_interval)],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
 

@@ -106,7 +106,7 @@ jobs:
           command: |
             set -euo pipefail
             export GITHUB_TOKEN="${{ github.token }}"
-            export SNAPSHOT_INTERVAL=5
+            export SNAPSHOT_INTERVAL=1
             export MACOS_USER=docker
             export MACOS_PASSWORD=admin
             DISK=$(ls out/*.qcow2 | head -1)

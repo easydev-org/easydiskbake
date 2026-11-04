@@ -332,7 +332,7 @@ def main(argv: list[str]) -> int:
         snap = subprocess.Popen(
             [sys.executable, os.path.join(REPO, "lib", "snapshots.py"),
              guest.paths.record, shots,
-             os.environ.get("SNAPSHOT_INTERVAL", "5"), "2000"],
+             os.environ.get("SNAPSHOT_INTERVAL", "1")],
             stdout=open(os.path.join(shots, "snapshots.log"), "wb"),
             stderr=subprocess.STDOUT,
         )

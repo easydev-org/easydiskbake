@@ -161,19 +161,42 @@ class Driver:
         except (OSError, RuntimeError) as exc:
             log(f"screendump failed at {label}: {exc}")
 
-    def click(self, xy: tuple[int, int], why: str = "", settle: float = 1.5) -> None:
+    def click(self, xy: tuple[int, int], why: str = "", settle: float = 2.5) -> None:
+        """Click, then wait 2.5s by default before the next action.
+
+        THE WAIT IS PART OF THE ACTION. A wizard pane that has just been dismissed is still
+        animating under the pointer, and a click sent into that animation lands on the pane
+        that is leaving. The previous default was 1.5s and several callers passed 1.0; the
+        frames after each action in run 41784951651 show the pane half-faded in more than one
+        of them.
+        """
         self.n += 1
         log(f"#{self.n} click {xy} {why}")
         qmpmod.click(self.q, *xy)
         time.sleep(settle)
         self.shot(f"after-{self.n:02d}-{why}")
 
-    def key(self, name: str, times: int = 1, settle: float = 0.5) -> None:
+    def key(self, name: str, times: int = 1, settle: float = 2.0) -> None:
+        """Press one key `times` times, waiting `settle` seconds after EACH press.
+
+        THE WAIT IS BETWEEN PRESSES, NOT ONLY AFTER THE LAST ONE. This looped with
+        `time.sleep(settle)` inside it, so it did wait - but every caller passed 0.5 or 1.0,
+        and a radio list that redraws on each arrow key saw the next one before it had. Three
+        Downs in quick succession are indistinguishable from one Down for a widget that
+        coalesces key repeats, and the pane then advances with the first row still selected.
+
+        Two seconds, and the default is the point: a caller that passes nothing gets the slow
+        version rather than the fast one. `d.key("down", times=3)` is the only use where the
+        spacing decides whether the wizard moves at all.
+        """
         self.n += 1
-        log(f"#{self.n} key {name} x{times}")
-        for _ in range(times):
+        log(f"#{self.n} key {name} x{times}, {settle:g}s between")
+        for i in range(times):
             qmpmod.key(self.q, name)
-            time.sleep(settle)
+            if i < times - 1:
+                time.sleep(settle)
+        # One more wait after the last press, so the caller's next action is not racing it.
+        time.sleep(settle)
 
     def keys(self, text: str, per_char: float = 0.3) -> None:
         """Type one character at a time.
@@ -221,10 +244,10 @@ def pick_country(d: Driver) -> None:
     d.wait(30, "let the country pane finish drawing")
     d.click(COUNTRY_LIST, "focus the country list")
     d.keys("united states")
-    d.key("pgdn", times=5, settle=0.8)
-    d.key("pgup", settle=0.8)
+    d.key("pgdn", times=5, settle=2.0)
+    d.key("pgup", settle=2.0)
     d.click(UNITED_STATES, "the United States row")
-    d.key("ret", settle=2.0)
+    d.key("ret", settle=3.0)
     # THE COUNTRY PANE'S EXIT IS THIS CONTINUE, NOT THE ROW CLICK. After the row click and
     # Return the pane is still the country list; it only becomes the transfer pane after
     # this click, which is why it belongs to this step.
@@ -268,7 +291,7 @@ def set_up_as_new(d: Driver) -> None:
     the list the widget drew, so they survive a re-layout; the coordinate cannot.
     """
     d.wait(8, "transfer pane settles")
-    d.key("down", times=3, settle=1.0)
+    d.key("down", times=3, settle=2.0)
     d.click(CONTINUE, "transfer Continue, Set up as new selected", settle=8.0)
 
 
@@ -279,7 +302,7 @@ def languages(d: Driver) -> None:
 
 def accessibility(d: Driver) -> None:
     d.wait(8)
-    d.key("ret", settle=1.5)
+    d.key("ret", settle=3.0)
     d.click(CONTINUE, "accessibility Continue", settle=8.0)
 
 
@@ -292,8 +315,8 @@ def privacy_then_not_now(d: Driver) -> None:
     """
     d.wait(8)
     d.click(CONTINUE, "privacy Continue", settle=2.0)
-    d.click(NOT_NOW_LEFT, "Not Now on the pairing pane", settle=2.5)
-    d.click(NOT_NOW_LEFT, "Not Now again, in case the first was early", settle=2.5)
+    d.click(NOT_NOW_LEFT, "Not Now on the pairing pane", settle=3.0)
+    d.click(NOT_NOW_LEFT, "Not Now again, in case the first was early", settle=3.0)
 
 
 def account(d: Driver, user: str, password: str) -> None:
@@ -314,30 +337,43 @@ def account(d: Driver, user: str, password: str) -> None:
         (VERIFY, password, "verify"),
         (HINT, "hint", "hint"),
     ):
-        d.click(xy, label, settle=1.0)
+        # 2.5s after the click into a field, and 2s after typing into it: this form
+        # validates on every keystroke, and the next field's click arriving while the
+        # previous one is still validating is how "dockerdocker" got into a run.
+        d.click(xy, label, settle=2.5)
         d.clear_field()
         d.keys(value, per_char=0.4)
-        d.wait(0.8, "let the field settle")
+        d.wait(2.0, "let the field settle")
     d.click(CONTINUE, "account Continue", settle=3.0)
 
 
 def apple_account(d: Driver) -> None:
     d.wait(6, "apple account pane settles")
-    d.click(NOT_NOW, "Set Up Later")
-    d.click(SHEET_SKIP, "sheet: Skip", settle=2.5)
+    d.click(NOT_NOW, "Set Up Later", settle=2.5)
+    d.click(SHEET_SKIP, "sheet: Skip", settle=3.0)
 
 
 def tail(d: Driver) -> None:
     """After the account: Continue at the usual place, with a Return before each.
 
-    Location services, time zone, analytics, Siri, FileVault, appearance and the finishing
-    panes all take the same action. The window is fixed, so this is a count, not a loop over
-    anything observed.
+    SIX, NOT TWELVE, AND THE TWELVE IS WHY RUN 41784951651 WENT BACKWARDS.
+
+    The wizard's remaining panes - location services, time zone, analytics, Siri, FileVault,
+    appearance, then the finish - are four to six on this release. The loop clicked Continue
+    twelve times regardless, and once the wizard had nothing left, the same coordinate is
+    Back's neighbour in a fixed footer: the recording ends on the TRANSFER pane, fifteen
+    panes after the account form, which is the only way to get there from the end without
+    walking backwards.
+
+    Counting to the maximum instead of to the measured count is the same mistake as the
+    fixed coordinate: it is right only while the thing it counts does not change. Six is
+    what this release needs; a pane that needs the seventh will stop visible and say so,
+    which is recoverable, where overshooting silently undoes a finished wizard.
     """
-    for i in range(12):
-        d.wait(5, f"pane {i + 1} settles")
-        d.key("ret", settle=2.0)
-        d.click(CONTINUE, f"pane {i + 1} Continue", settle=2.5)
+    for i in range(6):
+        d.wait(6, f"pane {i + 1} settles")
+        d.key("ret", settle=3.0)
+        d.click(CONTINUE, f"pane {i + 1} Continue", settle=3.0)
 
 
 def run_sequence(qmp_path: str, frames_dir: str | None, user: str, password: str) -> None:

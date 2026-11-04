@@ -135,7 +135,7 @@ jobs:
             set -euo pipefail
             mkdir -p out
             export GITHUB_TOKEN="${{ github.token }}"
-            export SNAPSHOT_INTERVAL="${{ inputs.snapshot_interval || '5' }}"
+            export SNAPSHOT_INTERVAL="${{ inputs.snapshot_interval || '1' }}"
             export RECORD_FPS=1
             export MACOS_USER=docker
             export MACOS_PASSWORD=admin

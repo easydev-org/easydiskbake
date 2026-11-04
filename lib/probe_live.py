@@ -92,7 +92,7 @@ def main(argv: list[str]) -> int:
 
     sampler = subprocess.Popen(
         [sys.executable, os.path.join(REPO, "lib", "snapshots.py"),
-         guest.paths.record, shots, "30", "2000"],
+         guest.paths.record, shots, "30"],
         stdout=open(os.path.join(shots, "snapshots.log"), "wb"),
         stderr=subprocess.STDOUT,
     )

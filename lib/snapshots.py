@@ -3,7 +3,12 @@
     snapshots.py <qmp.socket> <outdir> [interval] [limit]
 
 Writes outdir/frame-0000.ppm, frame-0001.ppm ... one every `interval` seconds
-(default 30), until the QMP socket goes away or `limit` frames exist.
+(default 30), until the QMP socket goes away.
+
+THE `limit` ARGUMENT IS OPTIONAL AND IS NORMALLY OMITTED. The socket going away is when qemu
+exited, which is the only end of a recording that means anything; a frame count on top of it
+can only cut a run short. Two callers still pass one and both mean it: lib/capture.py takes
+40 frames on purpose, and lib/selftest.py takes 6.
 
 WHY THIS EXISTS
 
@@ -61,7 +66,20 @@ class QMP:
 def main():
     qmp_path, outdir = sys.argv[1], sys.argv[2]
     interval = float(sys.argv[3]) if len(sys.argv) > 3 else 30.0
-    limit = int(sys.argv[4]) if len(sys.argv) > 4 else 400
+
+    # NO FRAME LIMIT BY DEFAULT, AND THAT IS A CORRECTION.
+    #
+    # There was a required `limit` argument, and every caller passed one - 2000 for most
+    # bakes, chosen against a 5s interval so that it covered about three hours. When the
+    # interval became 1s the same number covered 33 minutes, and a macOS setup that takes 66
+    # would have had its second half silently dropped: the recording would end mid-install
+    # and nothing in the log would say the recorder had stopped rather than the guest.
+    #
+    # The cap was never protecting anything. The loop already ends when QMP closes, which is
+    # when qemu exits, which is the only end that means anything. A count on top of that can
+    # only ever cut a run short - so the default is unlimited, and a caller that wants a cap
+    # still passes one.
+    limit = int(sys.argv[4]) if len(sys.argv) > 4 and sys.argv[4].strip() else None
 
     os.makedirs(outdir, exist_ok=True)
     index_path = os.path.join(outdir, "frames.txt")
@@ -84,7 +102,7 @@ def main():
 
     n = 0
     with open(index_path, "a") as index:
-        while n < limit:
+        while limit is None or n < limit:
             name = "frame-%04d.ppm" % n
             path = os.path.join(outdir, name)
             try:

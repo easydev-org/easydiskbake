@@ -40,7 +40,7 @@ on:
         default: true
       snapshot_interval:
         description: "Seconds between recorded frames"
-        default: "5"
+        default: "1"
 
 env:
   # PULLED FROM THE CLUSTER'S OWN REGISTRY.
@@ -94,7 +94,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out
-          export SNAPSHOT_INTERVAL="${{ inputs.snapshot_interval || '5' }}"
+          export SNAPSHOT_INTERVAL="${{ inputs.snapshot_interval || '1' }}"
           export RECORD_FPS=1
           python3 windows/11/bake.py \
             --out out/windows11.qcow2 \

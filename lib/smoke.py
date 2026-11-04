@@ -614,7 +614,7 @@ def boot_disk(disk: str, expect: str, seconds: int = 600,
     # a kernel panic when every log line looked the same.
     snap = subprocess.Popen(
         [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "snapshots.py"),
-         guest.paths.record, frames, os.environ.get("SNAPSHOT_INTERVAL", "1"), "900"],
+         guest.paths.record, frames, os.environ.get("SNAPSHOT_INTERVAL", "1")],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
     )
 

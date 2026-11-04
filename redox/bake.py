@@ -87,6 +87,19 @@ CPU = "Broadwell,-pcid,-x2apic,-tsc-deadline,-hle,-rtm,-invpcid"
 # because that is this repository's account everywhere else.
 ROOT_PASSWORD = "password"
 
+# THE SECOND GLYPH IN ORBITAL'S BOTTOM BAR, measured from a 1920x1080 frame.
+#
+# The bar holds two letter placeholders and nothing else, so this is a position rather than
+# an icon. See the note at the click that uses it.
+DOCK_TERMINAL = (1895, 1055)
+
+# WHERE THIS BAKE LOOKS, and why not the whole frame. See ocr() for the measurement.
+REGIONS = [
+    ((830, 440, 1100, 650), 4, "the login box"),
+    ((0, 60, 1920, 1000), 2, "the window area"),
+    ((0, 1030, 1920, 1080), 4, "the bottom bar"),
+]
+
 # THE ACCOUNT THIS REPOSITORY USES EVERYWHERE ELSE.
 SSH_USER = "docker"
 SSH_PASSWORD = "admin"
@@ -97,18 +110,55 @@ def log(message: str) -> None:
 
 
 def ocr(path: str) -> str:
-    """The text on a screenshot, lower-cased.
+    """The text on a screenshot, lower-cased, read from the places this needs to watch.
 
-    lib/assistant.py already does this for macOS including the ffmpeg fallback for
-    containers without Pillow, which is why it is used rather than a second copy.
+    THE WHOLE FRAME DOES NOT WORK HERE, AND THAT IS WHY RUN 41783947010 SAT FOR TWELVE
+    MINUTES. Measured against that run's own last frame:
+
+        tesseract last-frame.png              -> ""          (nothing at all)
+        tesseract 3x-upscaled last-frame.png  -> ""          (nothing at all)
+        tesseract crop(830,450,1090,640) x4   -> "Username: user Password: Login"
+
+    Orbital draws its login box a few hundred pixels wide in a 1920x1080 frame, and at that
+    size the glyphs are below what page segmentation will call words. So the marker this
+    bake was waiting for - "username" - could never appear in the text, and the wait could
+    never return. It was not slow; it was waiting for a string the reader could not produce.
+
+    lib/assistant.py already carries the answer, and its comment is the same lesson from
+    macOS's Disk Utility pane: a whole screendump loses the small text and a crop found by
+    its rectangle keeps it.
+
+    THREE REGIONS, because three things have to be read on this machine:
+
+        the login box      who is on screen, and whether it is Orbital's login at all
+        the bottom bar     the launcher, once logged in
+        a wide middle band the terminal, which can be anywhere in the window area
+
+    All of them are concatenated: a caller that says "wait for '#'" does not care which
+    region the '#' came from.
     """
     try:
         import assistant
-
-        return assistant.ocr_text(path)
-    except Exception as exc:  # noqa: BLE001 - OCR is best effort; a failure is "no text"
+    except Exception as exc:  # noqa: BLE001
         log(f"  (ocr unavailable: {exc})")
         return ""
+
+    parts = []
+    for box, scale, what in REGIONS:
+        try:
+            text = assistant.ocr_text_cropped(path, box, scale=scale)
+        except Exception as exc:  # noqa: BLE001
+            log(f"  (ocr of {what} failed: {exc})")
+            continue
+        if text:
+            parts.append(text)
+
+    # THE WHOLE FRAME AS WELL, LAST. It costs one more pass and catches anything large
+    # enough to read - a dialog title, a boot message, an error nobody expected.
+    whole = assistant.ocr_text(path)
+    if whole:
+        parts.append(whole)
+    return " ".join(parts)
 
 
 class Console:
@@ -185,6 +235,21 @@ class Console:
             qmpmod.key(c, "ret")
         finally:
             c.close()
+        time.sleep(settle)
+
+    def click(self, x: int, y: int, *, why: str = "", settle: float = 1.5) -> None:
+        """A left click at an absolute position, then a frame.
+
+        qmp.click() takes 0..32767 and scales to the screen, so the caller passes pixels and
+        this converts - the same contract lib/qmp.py has, kept here so every call in this
+        file is in the units a screenshot is measured in.
+        """
+        c = self.qmp()
+        try:
+            qmpmod.click(c, x, y)
+        finally:
+            c.close()
+        log(f"  click ({x}, {y})" + (f" {why}" if why else ""))
         time.sleep(settle)
 
     def key(self, qcode: str, *, settle: float = 0.5) -> None:
@@ -332,7 +397,7 @@ def main(argv: list[str]) -> int:
             snap = subprocess.Popen(
                 [sys.executable, os.path.join(REPO, "lib", "snapshots.py"),
                  guest.paths.record, shots,
-                 os.environ.get("SNAPSHOT_INTERVAL", "5"), "2000"],
+                 os.environ.get("SNAPSHOT_INTERVAL", "1")],
                 stdout=open(os.path.join(shots, "snapshots.log"), "wb"),
                 stderr=subprocess.STDOUT,
             )
@@ -357,34 +422,71 @@ def main(argv: list[str]) -> int:
                 note("  Orbital's login never drew; the console may still be the boot log")
                 note("  continuing - F2 is tried below either way")
 
-            # 3. THE TEXT CONSOLE. F2 is the documented switch from Orbital to a text terminal.
-            note("=== the text console (F2) ===")
-            con.key("f2", settle=3.0)
-            got = con.wait_for(["login:", "redox login"], 180, "console login prompt")
-            if not got:
-                note("=== F2 DID NOT PRODUCE A LOGIN PROMPT ===")
-                note("  the console log is the first virtual terminal; if the prompt is there")
-                note("  instead, F1 is where it lives and this needs to try both")
+            # 3. A TERMINAL, OPENED THE WAY A PERSON WOULD - the same shape as
+            #    windows/11/ssh.py's open_powershell().
+            #
+            #    WINDOWS                      REDOX
+            #    Esc                          (nothing to dismiss)
+            #    Win+R                        click the terminal icon in the dock
+            #    type "powershell"            (the icon IS the program)
+            #    Return                       (it starts on click)
+            #
+            #    F2 WAS THE WRONG MECHANISM and this run proved it. The image's own init list
+            #    is
+            #
+            #        30_console_switch      switches the console
+            #        20_orbital             takes VT3 for the compositor
+            #        30_getty_debug.service a getty
+            #
+            #    so 30_console_switch has ALREADY handed VT3 to Orbital by the time a driver
+            #    could press F2, and pressing it afterwards moves nothing. The bake sat on
+            #    "=== orbital ===" for twelve minutes waiting for a text login that was never
+            #    going to appear on that VT.
+            #
+            #    THE DOCK IS THE LAUNCHER. Orbital's launcher is a taskbar that scans /apps/
+            #    for .desktop entries (doc.redox-os.org/book/gui.html), and this image ships
+            #    COSMIC Terminal's icon as /apps/com.system76.CosmicTerm.svg. So the terminal
+            #    is a click on the bottom bar, not a key sequence.
+            note("=== a terminal, from the dock ===")
+            # WHAT THE DOCK ACTUALLY IS, measured from run 41783947010's last frame:
+            #
+            #     the bottom bar holds exactly two glyphs, at x=1844..1871 and x=1882..1909
+            #     (y~1055), and both are LETTER PLACEHOLDERS - a bold "K" and a bold "P" on
+            #     a dark square. They are not icons: Orbital's launcher falls back to the
+            #     first letter when it cannot load an application's icon, and its binary
+            #     carries `failed to find icon ... with size ...` for exactly that path.
+            #
+            # So the dock cannot be clicked by looking for a terminal picture - there is no
+            # picture. The click below is at the SECOND glyph, which is the position a
+            # taskbar entry occupies, and its outcome is what this stage reports.
+            con.click(*DOCK_TERMINAL, why="the second glyph in the bottom bar")
+            if not con.wait_for(["$", "#", "user"], 90, "the terminal's shell"):
+                note("=== THE DOCK DID NOT OPEN A TERMINAL ===")
+                note(f"  clicked {DOCK_TERMINAL}; the bottom bar shows two letter")
+                note("  placeholders (K at x=1844..1871, P at x=1882..1909) instead of icons,")
+                note("  so which glyph launches what is not knowable from the screen")
                 return False
+            note("  a terminal is open")
 
             # 4. ROOT, AND WHY NOT `user`.
             #
             # `user` is in the sudo group but sudo prompts - for an empty password, which still
             # means pressing Return at a prompt the driver would have to notice and answer.
-            # Root's shell needs no sudo at all, so every command below is typed once.
-            note("=== root shell ===")
-            con.type("root")
-            if not con.wait_for(["password"], 60, "root password prompt"):
-                note("  noticing: root may have logged in without a password prompt")
+            # `su` into root needs the password ONCE, typed deliberately, and every command
+            # below then needs nothing.
+            note("=== root ===")
+            con.type("su")
+            if not con.wait_for(["password"], 60, "the su password prompt"):
+                note("  no password prompt; `user` may already be root, continuing")
             con.type(ROOT_PASSWORD)
-            if not con.wait_for(["#", "$", "~"], 120, "root shell"):
-                note("=== NO ROOT SHELL ===")
+            if not con.wait_for(["#", "root"], 120, "a root shell"):
+                note("=== su DID NOT GIVE A ROOT SHELL ===")
                 return False
             con.type("echo WHOAMI_MARKER")
             if not con.wait_for(["whoami_marker"], 60, "the shell echoes"):
                 note("=== THE SHELL IS NOT READING WHAT IS TYPED ===")
                 return False
-            note("  the console takes commands")
+            note("  the terminal takes commands")
 
             # 5. THE ACCOUNT. Redox reads /etc/users.toml; there is no /etc/passwd to edit.
             #

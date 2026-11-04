@@ -225,10 +225,10 @@ def main() -> int:
     snap = subprocess.Popen(
         [sys.executable, os.path.join(HERE, "..", "..", "lib", "snapshots.py"),
          guest.paths.record, os.path.join(frames, "shots"),
-         os.environ.get("SNAPSHOT_INTERVAL", "1"), "1500"],
+         os.environ.get("SNAPSHOT_INTERVAL", "1")],
         stdout=snap_log, stderr=subprocess.STDOUT,
     )
-    blog(f"snapshot every {os.environ.get('SNAPSHOT_INTERVAL', '5')}s, pid {snap.pid}")
+    blog(f"snapshot every {os.environ.get('SNAPSHOT_INTERVAL', '1')}s, pid {snap.pid}")
 
     # --- drive ---------------------------------------------------------------
     blog("=== driving the installer ===")

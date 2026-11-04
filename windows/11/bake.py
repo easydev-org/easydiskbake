@@ -464,7 +464,7 @@ class Baker:
         snap = subprocess.Popen(
             [sys.executable, snapscript,
              guest.paths.record, shots,
-             os.environ.get("SNAPSHOT_INTERVAL", "5"), "2000"],
+             os.environ.get("SNAPSHOT_INTERVAL", "1")],
             stdout=open(snap_log, "wb"), stderr=subprocess.STDOUT,
         )
 
