@@ -126,7 +126,8 @@ def wait_for_ssh(port: int, seconds: int, note=log, settle: int = 10) -> bool:
     return False
 
 
-def check_wayland_session(port: int, process: str, note=log) -> bool:
+def check_wayland_session(port: int, process: str, note=log,
+                          allow_x11: bool = False) -> bool:
     """The verdict: an active, non-greeter Wayland session with `process` in it.
 
     `process` is the compositor for this desktop, matched with pgrep -f so a session
@@ -170,10 +171,20 @@ def check_wayland_session(port: int, process: str, note=log) -> bool:
         elif kind == "x11":
             x11.append(session_id.strip())
 
-    if x11 and not wayland:
+    if x11 and not wayland and not allow_x11:
         note(f"=== AN X11 SESSION INSTEAD OF WAYLAND: {x11} ===")
-        note("  every disk here is configured for Wayland; an x11 session means it fell back")
+        note("  this disk is configured for Wayland; an x11 session means it fell back")
         return False
+
+    # FREBSD'S XFCE IS AN X SESSION AND THAT IS THE CONFIGURATION.
+    #
+    # every Linux desktop in this repository runs Wayland, and an x11 session there means
+    # something fell back. FreeBSD is the exception by design: XFCE on Xorg is what its
+    # ports tree recommends for a VM, and the disk was built to run it. `allow_x11` says so
+    # once, in the caller, rather than the check carrying a list of distributions.
+    if x11 and not wayland:
+        note(f"an X11 session is running ({x11}) - allowed for this disk")
+        return _check_x11_process(port, process, note)
 
     if not wayland:
         note("=== NO ACTIVE USER WAYLAND SESSION ===")
@@ -261,8 +272,34 @@ def check_wayland_session(port: int, process: str, note=log) -> bool:
     return True
 
 
+def _check_x11_process(port: int, process: str, note) -> bool:
+    """The X11 half of the check: is the desktop's process running in that session?
+
+    Same question as the Wayland path - a session registered but whose desktop never started
+    is the failure this stage exists to catch - and the same answer: pgrep for the process
+    the caller names. FreeBSD's entry is `xfce4-session`.
+    """
+    status, procs = ssh(port, f"pgrep -af '{process}' 2>/dev/null | head -5 || true")
+    if not procs.strip():
+        note(f"=== NO '{process}' PROCESS, THOUGH AN X11 SESSION EXISTS ===")
+        note("  the display manager started a session whose desktop is not running")
+        status, logtext = ssh(
+            port,
+            "tail -30 /var/log/lightdm/lightdm.log 2>/dev/null || "
+            "tail -30 /var/log/Xorg.0.log 2>/dev/null || true",
+        )
+        for line in logtext.splitlines()[-15:]:
+            note(f"  log: {line}")
+        return False
+    note(f"the X11 session is running {process}")
+    for line in procs.splitlines()[:3]:
+        note(f"  process: {line.strip()}")
+    return True
+
+
 def wait_for_wayland(port: int, process: str, seconds: int, note=log,
-                     ssh_seconds: int | None = None, settle: int = 20) -> bool:
+                     ssh_seconds: int | None = None, settle: int = 20,
+                     allow_x11: bool = False) -> bool:
     """Wait for ssh, then for the Wayland session. True only when both happen.
 
     SSH IS A PRECONDITION, NOT A SEPARATE TEST. If it never answers the session cannot be
@@ -274,7 +311,7 @@ def wait_for_wayland(port: int, process: str, seconds: int, note=log,
     deadline = time.time() + seconds
     started = time.time()
     while time.time() < deadline:
-        if check_wayland_session(port, process, note):
+        if check_wayland_session(port, process, note, allow_x11=allow_x11):
             note(f"the Wayland session is up after {time.time() - started:.0f}s")
             return True
         note(f"  {time.time() - started:.0f}s: no session yet")

@@ -33,6 +33,32 @@ echo 'admin' | pw usermod docker -h 0
 # fix something. Every other image here makes the same trade.
 echo 'admin' | pw usermod root -h 0
 
+# --- console ----------------------------------------------------------------
+#
+# THE INSTALLED SYSTEM HAS TO TALK ON comconsole, OR NOTHING CAN READ IT.
+#
+# The installer runs its console on the serial port, and that is why a bake can follow it
+# line by line. The system it writes does NOT inherit that: /boot/loader.conf starts empty,
+# so the first boot after the install sends everything to the VGA adapter and the serial
+# port is silent. Run 41757463732's launch is exactly that - its console.log is 0 bytes and
+# the stage reported "the disk did not reach userspace" about a disk that had booted fine.
+#
+# comconsole puts the loader and the kernel on ttyu0, which is what lib/serial.py reads.
+# The boot_multicons line keeps the VGA output too, so the same disk is readable either
+# way - useful for the console artifact and for anyone booting it locally.
+cat >> /boot/loader.conf <<'LOADERCONF'
+console="comconsole,vidconsole"
+boot_multicons="YES"
+boot_serial="YES"
+comconsole_speed="115200"
+LOADERCONF
+
+# /etc/ttys is what gives a LOGIN prompt on the serial port; without it the console is
+# readable but not usable, and the next stage could not log in. ttyu0 is the first serial
+# port on amd64.
+sed -i '' -e 's|^ttyu0.*|ttyu0\t"/usr/libexec/getty std.115200"\tvt100\ton  secure|' /etc/ttys \
+    || echo "  could not enable ttyu0 in /etc/ttys"
+
 # --- ssh --------------------------------------------------------------------
 #
 # PASSWORD AUTHENTICATION, because that is how the next stage logs in - it has the
@@ -133,7 +159,51 @@ pkg install -y \
     unzip \
     bash \
     sudo \
+    xorg \
+    xfce \
+    lightdm \
+    lightdm-gtk-greeter \
+    xfce4-terminal \
     || echo "=== easydiskbake: pkg install failed; the base system is still complete ==="
+
+# --- the desktop --------------------------------------------------------------
+#
+# XFCE ON X, STARTED BY LIGHTDM WITH AUTOMATIC LOGIN.
+#
+# THIS DISK HAD NO DESKTOP AT ALL until now: the package list above was sshd, a toolchain
+# and nothing else, so the artifact was a console system. A "gold disk" for this family is
+# expected to come up to something a person can look at, and every other image here does.
+#
+# WHY XFCE AND NOT GNOME OR KDE. On FreeBSD both are large and both drag in a
+# Linux-compatibility layer for their desktop services; XFCE is the one FreeBSD recommends
+# for a VM and the one that starts reliably on the emulated VGA adapter, which has no
+# accelerated anything.
+#
+# WHY lightdm AND NOT xdm. Automatic login is the requirement - a disk that stops at a
+# login prompt has no desktop session, which is what the launch stage reads - and lightdm
+# has it as a one-line configuration where xdm has none.
+#
+# THE USER IS docker, THE ONE THE ACCOUNT SECTION ABOVE CREATED.
+if [ -f /usr/local/etc/lightdm/lightdm.conf ]; then
+    cat >> /usr/local/etc/lightdm/lightdm.conf <<'LIGHTDM'
+[Seat:*]
+autologin-user=docker
+autologin-user-timeout=0
+user-session=xfce
+greeter-session=lightdm-gtk-greeter
+LIGHTDM
+else
+    echo "  lightdm.conf is not where it was expected; autologin NOT configured"
+fi
+
+# dbus and lightdm at boot. Without dbus the session starts and every panel applet fails
+# to talk to anything, which looks like a broken desktop rather than a missing daemon.
+sysrc dbus_enable=YES
+sysrc lightdm_enable=YES
+# hald is gone from modern FreeBSD; what a desktop needs now is the devfs rules for the
+# input devices, which is this.
+sysrc devfs_system_ruleset=desktop 2>/dev/null || true
+pw groupmod video -m docker 2>/dev/null || true
 
 # --- the disk says what made it ---------------------------------------------
 echo 'built by easydiskbake bsd-freebsd' > /etc/easydiskbake

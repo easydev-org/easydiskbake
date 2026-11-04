@@ -74,12 +74,21 @@ BOOTED_MARKER = {
 
 # THE COMPOSITOR THAT PROVES A DESKTOP SESSION, or "" for a system that has none.
 # See configuration-desktop.nix and the two Ubuntu answer files.
+# THE COMPOSITOR THAT PROVES A DESKTOP SESSION, or "" for a system that has none.
+#
+# FreeBSD runs XFCE ON XORG - an X session, not a Wayland one - because that is what its
+# ports tree recommends for a VM and what the disk was built to run. `ALLOW_X11` below says
+# so, rather than the session check carrying a list of distributions.
 COMPOSITOR = {
     "ubuntu": "gnome-shell",
     "kubuntu": "kwin_wayland",
-    "freebsd": "",
+    "freebsd": "xfce4-session",
     "openbsd": "",
 }
+
+# DISKS WHOSE DESKTOP IS AN X SESSION BY DESIGN. Only FreeBSD, for the reason above; OpenBSD
+# has no display manager at all and its entry is "" so this is never consulted for it.
+ALLOW_X11 = {"freebsd"}
 
 
 def log(message: str) -> None:
@@ -244,7 +253,8 @@ def main(argv: list[str]) -> int:
         if compositor:
             passed = session.wait_for_wayland(
                 args.ssh_port, compositor, args.boot_timeout, note,
-                ssh_seconds=60)      # already answered above
+                ssh_seconds=60,      # already answered above
+                allow_x11=kind in ALLOW_X11)
             if not passed:
                 note("  the system is reachable and its desktop session is not running")
         else:
