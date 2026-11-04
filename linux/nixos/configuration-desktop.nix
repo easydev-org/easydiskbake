@@ -191,7 +191,7 @@ in
       # for a name and a password and then starts the session that user's shell is
       # registered for, which is what this disk wants if the autologin ever ends.
       default_session = {
-        command = "${pkgs.greetd.greetd}/bin/agreety";
+        command = "${pkgs.greetd}/bin/agreety";
         user = "greeter";
       };
     };

@@ -224,7 +224,16 @@ def answer_prompts(ser, seconds: int) -> None:
         # THE MODE PROMPT IS FIRST AND HAS NO DEFAULT, so a blank answer leaves it
         # unanswered and the install never starts. `I` is (I)nstall.
         (r"\(i\)nstall, \(u\)pgrade", "I"),
-        (r"term type|terminal type", "vt220"),
+        # THE TERMINAL TYPE IS ANSWERED WITH A BLANK, NOT WITH ITS OWN NAME.
+        #
+        # `Terminal type? [vt220]` takes the offered default on an empty line. Typing
+        # `vt220` is not an error, but it is not what the prompt is for either - and on
+        # run 41760565333 nothing followed it: the installer sat on that line with the
+        # reply echoed and never asked for a hostname.
+        #
+        # An empty answer is also what a person pressing Return does, which is the rule
+        # for every prompt in this list that has a default worth taking.
+        (r"term type|terminal type", ""),
         (r"system hostname", "openbsd"),
         (r"network interface to configure", "vio0"),
         (r"ipv4 address for vio0", "dhcp"),
