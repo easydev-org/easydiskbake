@@ -294,21 +294,48 @@ class Console:
         return qmpmod.QMP(path)
 
     def shot(self, label: str) -> str:
+        """A fresh screenshot, taken through the QMP connection snapshots.py is NOT using.
+
+        THERE IS EXACTLY ONE screendump IN THIS VM, AND IT BELONGS TO snapshots.py.
+        The recording is made by a separate process that screendumps once a second into
+        `work/frames`, and this class was ALSO screendumping - a second QMP client against
+        the same qmp socket, into the same directory. Run 41861406726 shows what that
+        produced:
+
+            [redox-bake 15:52:03]  43s waiting for host key: '= | ... pkg_ok=$?'
+            [redox-bake 15:52:49]  89s waiting for host key: '= | ... pkg_ok=$?'   (identical)
+
+        five times, byte for byte, while the screen underneath was showing `KEYGEN_RC=0` -
+        which the final frame proves, and which this module's own ocr() reads out of that
+        frame correctly. The screenshots this loop was taking were not the screen.
+
+        It also raced snapshots.py's file names: the log carries
+
+            [lastframe] ffmpeg failed: Error opening input file .../frame-0217.ppm
+
+        because snapshots.py had already converted that frame to JPEG and deleted the PPM -
+        the frames are JPEG now, to stop eleven gigabytes of them filling a runner - and the
+        live encoder was still looking for the old name.
+
+        SO THE FRAME IS COPIED FROM THE RECORDING'S DIRECTORY INSTEAD. That directory is
+        written by the one process that owns the screendump, it is where the pictures that
+        end up in the video come from, and a copy of the newest one is exactly the screen.
+        The label is ignored: it only ever named the step for a human reading filenames.
+        """
+        import lastframe
+
+        newest = lastframe.newest_frame(self.shots)
+        if not newest:
+            # Nothing has been captured yet - the recording process has not started, or the
+            # guest has not drawn. An empty string is what text() already handles.
+            return ""
         self.n += 1
         safe = re.sub(r"[^a-z0-9]+", "-", label.lower())[:40].strip("-") or "step"
-        ppm = os.path.join(self.shots, f"rx-{self.n:03d}-{safe}.ppm")
-        png = ppm[:-4] + ".png"
-        c = self.qmp()
-        try:
-            c.execute("screendump", filename=ppm)
-        finally:
-            c.close()
-        try:
-            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", ppm, png],
-                           check=False, timeout=60)
-        except (OSError, subprocess.SubprocessError):
-            return ""
-        return png
+        # KEEP THE SOURCE'S EXTENSION: a JPEG copied to a .ppm name is the kind of thing
+        # that works until a tool trusts the name, and lib/lastframe.convert() takes either.
+        ext = os.path.splitext(newest)[1]
+        png = os.path.join(self.shots, f"rx-{self.n:03d}-{safe}.png")
+        return png if lastframe.convert(newest, png) else ""
 
     def text(self, label: str) -> str:
         png = self.shot(label)
