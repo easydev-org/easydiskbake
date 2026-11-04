@@ -943,7 +943,20 @@ def main(argv: list[str]) -> int:
                 op = ">" if n == 0 else ">>"
                 con.type(f"echo '{line}' {op} /etc/init.d/90_sshd", settle=0.3)
             con.type("chmod +x /etc/init.d/90_sshd ; echo CHMOD_RC=$?")
-            if not con.wait_for(["chmod_rc=0"], 60, "init.d entry"):
+            # 60 WAS NOT ENOUGH, AND THE REASON IS THE READER, NOT THE COMMAND.
+            #
+            # Run 41874326761 saw, at 32s and again at 62s, the screen still showing
+            #
+            #     ... echo '[groups.sudo]' >> /etc/users.toml
+            #
+            # - four commands behind. Each wait_for() takes a screenshot, reads three crops
+            # with tesseract and then the whole frame, so a pass costs several seconds and
+            # the text it returns lags the terminal by however many beeps have queued. The
+            # chmod itself takes no time at all.
+            #
+            # 300s, the same budget the host key above needed 19s of, so a slow OCR pass
+            # cannot fail a command that ran.
+            if not con.wait_for(["chmod_rc=0"], 300, "init.d entry"):
                 note("=== THE init.d ENTRY COULD NOT BE MADE EXECUTABLE ===")
                 return False
 

@@ -67,12 +67,24 @@ def newest_frame(directory: str) -> str | None:
 
     Clock-stamped names sort correctly as numbers because the stamp is seconds since the
     epoch, which only ever grows.
+
+    A .PPM WITH A .JPG BESIDE IT IS BEING CONVERTED, SO IT IS SKIPPED. lib/snapshots.py
+    writes `frame-0177.ppm`, converts it to `frame-0177.jpg`, then deletes the PPM. Between
+    the write and the delete both exist, and this used to return the PPM - which then
+    vanished underneath the caller:
+
+        [lastframe] ffmpeg failed: Error opening input: No such file or directory
+        Error opening input file .../frames/frame-0177.ppm.
+
+    Every redox bake logs that line, and a caller that had nothing else to fall back on
+    would have lost the frame rather than the duplicate.
     """
     try:
         names = os.listdir(directory)
     except OSError:
         return None
 
+    present = set(names)
     candidates = []
     for name in names:
         # .jpg AS WELL AS .ppm, because lib/snapshots.py converts each screendump and deletes
@@ -81,6 +93,10 @@ def newest_frame(directory: str) -> str | None:
         # the extension changed.
         ext = os.path.splitext(name)[1]
         if ext not in (".ppm", ".jpg"):
+            continue
+        if ext == ".ppm" and (name[:-4] + ".jpg") in present:
+            # The conversion finished and the delete has not happened yet. The JPEG is the
+            # same picture and is not about to disappear.
             continue
         for prefix in PREFIXES:
             if not name.startswith(prefix):
