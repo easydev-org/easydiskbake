@@ -169,15 +169,31 @@ in
           exec ${pkgs.labwc}/bin/labwc
         ''}";
       };
-      # NO default_session, AND THAT IS DELIBERATE.
+      # default_session IS REQUIRED, AND LEAVING IT OUT CRASHES greetd.
       #
-      # greetd's module installs a default (agreety) when this attribute is absent, and
-      # naming one by hand would be a second thing that can be wrong: agreety lives in
-      # greetd's own store path, and `--cmd` is a tuigreet flag, not an agreety one.
+      # The comment that used to sit here said the module supplies a default when the
+      # attribute is absent. It does not - greetd validates its own configuration at
+      # startup and refuses one with no default session:
       #
-      # What matters here is initial_session above - the autologin the launch stage
-      # checks. If that session ever ends, greetd falling back to its own greeter is
-      # the right behaviour and needs no configuration from this file.
+      #     greetd[615]: default_session contains no command
+      #     greetd.service: Main process exited, code=exited, status=1/FAILURE
+      #
+      # which is run 41757495583's labwc leg: greetd exited in five seconds, no session
+      # was ever created, and the launch stage correctly reported none. The other five
+      # desktops were unaffected because only labwc uses greetd at all.
+      #
+      # agreety ships with greetd, so this adds no package: it is the login prompt shown
+      # after the autologin session ends, and it needs no `--cmd` - that flag belongs to
+      # tuigreet, not to this one.
+      # NO --cmd ON agreety. `--cmd` is tuigreet's flag; agreety takes its session from
+      # greetd's own session file and ignores anything after its own name, so passing one
+      # would be a lie that looks like configuration. agreety is a login prompt: it asks
+      # for a name and a password and then starts the session that user's shell is
+      # registered for, which is what this disk wants if the autologin ever ends.
+      default_session = {
+        command = "${pkgs.greetd.greetd}/bin/agreety";
+        user = "greeter";
+      };
     };
   };
 
