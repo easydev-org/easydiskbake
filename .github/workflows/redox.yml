@@ -272,6 +272,13 @@ jobs:
             set -euo pipefail
             python3 lib/ci.py kvm
             python3 lib/ci.py free-disk --need 8
+            # THE LAUNCH READS ITS VERDICT OVER SSH, so the client has to be here. Redox's
+            # sshd is installed by its own bake; without sshpass the launch cannot log in and
+            # reports a timeout instead of a missing dependency.
+            if ! command -v sshpass >/dev/null 2>&1; then
+              apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
+                apt-get install -y -qq sshpass
+            fi
             python3 lib/ci.py tags --prefix redox-
 
       - name: launch it

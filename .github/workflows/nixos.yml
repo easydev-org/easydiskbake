@@ -123,6 +123,15 @@ jobs:
             set -euo pipefail
             python3 lib/ci.py kvm
             python3 lib/ci.py free-disk --need 40
+            # THE CLEAN STEP BOOTS THE DISK AND READS THE VERDICT OVER SSH, so the client that
+            # supplies the password has to be here before that starts. Run 41803886174's base
+            # job installed fine and then failed in 0.4 s with
+            #     sshpass IS NOT INSTALLED IN THIS CONTAINER
+            # which is a missing dependency in the prepare step, not a bad disk.
+            if ! command -v sshpass >/dev/null 2>&1; then
+              apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
+                apt-get install -y -qq sshpass
+            fi
             python3 lib/ci.py tags --prefix iso-nixos
 
       - name: install the base

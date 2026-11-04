@@ -87,11 +87,21 @@ CPU = "Broadwell,-pcid,-x2apic,-tsc-deadline,-hle,-rtm,-invpcid"
 # because that is this repository's account everywhere else.
 ROOT_PASSWORD = "password"
 
-# THE SECOND GLYPH IN ORBITAL'S BOTTOM BAR, measured from a 1920x1080 frame.
+# THE TERMINAL ICON IN ORBITAL'S DOCK, MEASURED FROM A LOGGED-IN SESSION.
 #
-# The bar holds two letter placeholders and nothing else, so this is a position rather than
-# an icon. See the note at the click that uses it.
-DOCK_TERMINAL = (1895, 1055)
+# The first value here, (1895, 1055), was measured on an ORBITAL LOGIN SCREEN, where the bar
+# holds two letter placeholders and nothing else - and a login screen has no dock at all,
+# because the launcher only runs inside a session. Clicking there was clicking at nothing.
+#
+# In a real session the dock is along the bottom and the terminal is the fourth icon:
+#
+#     R  the application menu      (24, 772)
+#     ~  netsurf                   (66, 772)
+#     $  COSMIC Terminal          (118, 772)      <- this one
+#     [] files, editor, viewer
+#
+# in the guest's 1280x800, which is (177, 1042) at 1920x1080.
+DOCK_TERMINAL = (177, 1042)
 
 # WHERE THIS BAKE LOOKS, and why not the whole frame. See ocr() for the measurement.
 REGIONS = [
@@ -415,12 +425,38 @@ def main(argv: list[str]) -> int:
                 return False
             con.key("ret", settle=2.0)
 
-            # 2. ORBITAL. Not required for the work, but it is what says the image is healthy,
-            #    and F2 only has a second terminal to switch to once userspace is up.
-            note("=== orbital ===")
-            if not con.wait_for(["username", "login"], args.boot_timeout, "orbital login"):
-                note("  Orbital's login never drew; the console may still be the boot log")
-                note("  continuing - F2 is tried below either way")
+            # 2. ORBITAL'S LOGIN BOX, AND THEN THE LOGIN ITSELF.
+            #
+            # THE LOGIN IS A STEP, AND IT WAS MISSING. Run 41803873067 read the login box as
+            # "a terminal is open" - the box contains the word "user", which is what the check
+            # was looking for - and then typed `su` into a form that was still waiting:
+            #
+            #     Username: [userpassword]      <- user, then su, then password
+            #     Password: [|]
+            #
+            # Every later stage worked on the login box: "password" was found because the label
+            # says Password, and the wait for a root shell never ended because no shell had
+            # ever started.
+            #
+            # The box comes with `user` already typed and an empty password, so Return IS the
+            # login. Orbital draws the desktop after it, and the dock this needs next only
+            # exists once that has happened.
+            note("=== orbital's login box ===")
+            if not con.wait_for(["username"], args.boot_timeout, "orbital login box"):
+                note("=== ORBITAL'S LOGIN BOX NEVER DREW ===")
+                return False
+
+            note("  logging in as user (empty password)")
+            con.key("ret", settle=5.0)
+
+            # THE DOCK IS THE PROOF THAT THE LOGIN WORKED. It is drawn by the launcher, which
+            # only runs inside a session; on the login box the whole bottom bar is absent.
+            if not con.wait_for(["redox", "orbital", "user"], 120, "the desktop"):
+                note("=== THE LOGIN DID NOT REACH A DESKTOP ===")
+                note("  the frame beside this message is either the login box again - a wrong")
+                note("  password - or a blank screen, which is a session that failed to start")
+                return False
+            note("  the desktop is up")
 
             # 3. A TERMINAL, OPENED THE WAY A PERSON WOULD - the same shape as
             #    windows/11/ssh.py's open_powershell().
@@ -476,8 +512,18 @@ def main(argv: list[str]) -> int:
             # below then needs nothing.
             note("=== root ===")
             con.type("su")
-            if not con.wait_for(["password"], 60, "the su password prompt"):
-                note("  no password prompt; `user` may already be root, continuing")
+
+            # "[sudo] password for user" IS THE PROMPT, AND BARE "password" IS NOT.
+            #
+            # The login box contains the label "Password:", so waiting for the word alone
+            # matches a screen where nothing has happened - which is exactly how run
+            # 41803873067 spent its time: "the su password prompt: 'password' after 1s" was
+            # the login box's own label, and the password went into the box instead of into su.
+            #
+            # su's prompt names the account, so requiring that word makes the match mean
+            # something.
+            if not con.wait_for(["password for", "Passwort"], 60, "the su password prompt"):
+                note("  no su prompt; `user` may already be root, continuing")
             con.type(ROOT_PASSWORD)
             if not con.wait_for(["#", "root"], 120, "a root shell"):
                 note("=== su DID NOT GIVE A ROOT SHELL ===")
