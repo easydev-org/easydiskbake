@@ -690,12 +690,35 @@ def main(argv: list[str]) -> int:
             # login. Orbital draws the desktop after it, and the dock this needs next only
             # exists once that has happened.
             note("=== orbital's login box ===")
+            started_orbital = time.time()
             if not con.wait_for(["username"], args.boot_timeout, "orbital login box"):
                 note("=== ORBITAL'S LOGIN BOX NEVER DREW ===")
                 return False
 
             note("  logging in as user (empty password)")
             con.key("ret", settle=5.0)
+
+            # A SLOW BOOT IS A BOOT THAT IS NOT READY TO BE CLICKED, and the five runs in this
+            # session divide on exactly that. The number is the seconds from the orchestrator
+            # starting to the login box appearing:
+            #
+            #     11s  a77bd3f   a terminal is open
+            #     12s  1bf4adb   a terminal is open
+            #     13s  f45c29f   a terminal is open
+            #     14s  1a79330   a terminal is open
+            #     17s  366b38e   NO WAY INTO THIS GUEST
+            #
+            # Four fast boots all opened the dock; the one slow boot opened nothing, twice over
+            # (dock, then the VT consoles). A guest still doing the work that made it slow is
+            # not one whose taskbar has finished subscribing to input, and the ten seconds
+            # allowed after "the desktop is up" does not scale with how late that was.
+            #
+            # Login time is known here, so it is used: the settle after this point becomes at
+            # least what a slow boot needs.
+            boot_seconds = time.time() - started_orbital
+            if boot_seconds > 15:
+                log(f"  the login box took {boot_seconds:.0f}s; giving the dock 30s more")
+                time.sleep(30)
 
             # THE DESKTOP IS A PICTURE, SO IT IS MEASURED, NOT READ.
             #
