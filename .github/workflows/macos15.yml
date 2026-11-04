@@ -135,16 +135,19 @@ jobs:
           command: |
             set -euo pipefail
             python3 lib/ci.py kvm
-            # THE INSTALL IS ~39 GB AND THE RECORDING GROWS WITH IT.
+            # 80, WHICH IS WHAT IT WAS. The disk problem was the frames, not this number.
             #
-            # 80 was the old number and it was not enough: macos26 filled the runner mid-install
-            # and ffmpeg began failing with
+            # It was raised to 110 on the theory that a 39 GB install plus its recording needed
+            # more room - and the standard runner has 83 GB, so every macOS run then failed in
+            # `prepare` before touching a disk:
             #
-            #     Error submitting a packet to the muxer: No space left on device
+            #     FAILED: at least 110 GB is required, 83 GB is free even after freeing
             #
-            # while the guest kept installing, so the run could not have finished even if the
-            # wizard had. 110 leaves room for the disk, its compressed copy and the frames.
-            python3 lib/ci.py free-disk --need 110
+            # The real cause was lib/snapshots.py keeping every 3 MB PPM: an hour of a macOS
+            # install was 11 GiB of frames, and the video they produced was 1.8 MB. Those are
+            # JPEG now, 0.22 GiB for the same run, so 80 leaves room for the install, its
+            # compressed copy and the frames.
+            python3 lib/ci.py free-disk --need 80
             python3 lib/ci.py tags --prefix macos-
 
       - name: bake
@@ -240,16 +243,19 @@ jobs:
           command: |
             set -euo pipefail
             python3 lib/ci.py kvm
-            # THE INSTALL IS ~39 GB AND THE RECORDING GROWS WITH IT.
+            # 80, WHICH IS WHAT IT WAS. The disk problem was the frames, not this number.
             #
-            # 80 was the old number and it was not enough: macos26 filled the runner mid-install
-            # and ffmpeg began failing with
+            # It was raised to 110 on the theory that a 39 GB install plus its recording needed
+            # more room - and the standard runner has 83 GB, so every macOS run then failed in
+            # `prepare` before touching a disk:
             #
-            #     Error submitting a packet to the muxer: No space left on device
+            #     FAILED: at least 110 GB is required, 83 GB is free even after freeing
             #
-            # while the guest kept installing, so the run could not have finished even if the
-            # wizard had. 110 leaves room for the disk, its compressed copy and the frames.
-            python3 lib/ci.py free-disk --need 110
+            # The real cause was lib/snapshots.py keeping every 3 MB PPM: an hour of a macOS
+            # install was 11 GiB of frames, and the video they produced was 1.8 MB. Those are
+            # JPEG now, 0.22 GiB for the same run, so 80 leaves room for the install, its
+            # compressed copy and the frames.
+            python3 lib/ci.py free-disk --need 80
             python3 lib/ci.py tags --prefix macos-
 
       - name: pull the setup disk
@@ -354,16 +360,19 @@ jobs:
           command: |
             set -euo pipefail
             python3 lib/ci.py kvm
-            # THE INSTALL IS ~39 GB AND THE RECORDING GROWS WITH IT.
+            # 80, WHICH IS WHAT IT WAS. The disk problem was the frames, not this number.
             #
-            # 80 was the old number and it was not enough: macos26 filled the runner mid-install
-            # and ffmpeg began failing with
+            # It was raised to 110 on the theory that a 39 GB install plus its recording needed
+            # more room - and the standard runner has 83 GB, so every macOS run then failed in
+            # `prepare` before touching a disk:
             #
-            #     Error submitting a packet to the muxer: No space left on device
+            #     FAILED: at least 110 GB is required, 83 GB is free even after freeing
             #
-            # while the guest kept installing, so the run could not have finished even if the
-            # wizard had. 110 leaves room for the disk, its compressed copy and the frames.
-            python3 lib/ci.py free-disk --need 110
+            # The real cause was lib/snapshots.py keeping every 3 MB PPM: an hour of a macOS
+            # install was 11 GiB of frames, and the video they produced was 1.8 MB. Those are
+            # JPEG now, 0.22 GiB for the same run, so 80 leaves room for the install, its
+            # compressed copy and the frames.
+            python3 lib/ci.py free-disk --need 80
             if ! command -v sshpass >/dev/null 2>&1; then
               apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
                 apt-get install -y -qq sshpass
@@ -468,16 +477,19 @@ jobs:
           command: |
             set -euo pipefail
             python3 lib/ci.py kvm
-            # THE INSTALL IS ~39 GB AND THE RECORDING GROWS WITH IT.
+            # 80, WHICH IS WHAT IT WAS. The disk problem was the frames, not this number.
             #
-            # 80 was the old number and it was not enough: macos26 filled the runner mid-install
-            # and ffmpeg began failing with
+            # It was raised to 110 on the theory that a 39 GB install plus its recording needed
+            # more room - and the standard runner has 83 GB, so every macOS run then failed in
+            # `prepare` before touching a disk:
             #
-            #     Error submitting a packet to the muxer: No space left on device
+            #     FAILED: at least 110 GB is required, 83 GB is free even after freeing
             #
-            # while the guest kept installing, so the run could not have finished even if the
-            # wizard had. 110 leaves room for the disk, its compressed copy and the frames.
-            python3 lib/ci.py free-disk --need 110
+            # The real cause was lib/snapshots.py keeping every 3 MB PPM: an hour of a macOS
+            # install was 11 GiB of frames, and the video they produced was 1.8 MB. Those are
+            # JPEG now, 0.22 GiB for the same run, so 80 leaves room for the install, its
+            # compressed copy and the frames.
+            python3 lib/ci.py free-disk --need 80
             if ! command -v sshpass >/dev/null 2>&1; then
               apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
                 apt-get install -y -qq sshpass

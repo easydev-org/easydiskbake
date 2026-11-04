@@ -122,6 +122,30 @@ STEPS: list[tuple[str, str]] = [
 # number that has to go down for a smaller image to come out.
 USED = "df -m / | awk 'NR==2 {print $3}'"
 
+def _used(port: int) -> int | None:
+    """Used MiB on /, or None if the guest stopped answering.
+
+    THE ONE MEASURING POINT, so a before/after pair is always the same quantity. `df`'s Used
+    column excludes reserved blocks, and that is the number that has to fall for a smaller
+    image to come out.
+
+    IT WAS DELETED IN A REWRITE AND NOT PUT BACK. The rewrite replaced everything from the
+    zeroing block onward, and this function sat inside it - so every clean failed with
+
+        NameError: name '_used' is not defined
+
+    at its first line, after a successful install and a successful boot. Both Linux and
+    FreeBSD bakes reported it the same way.
+    """
+    from session import ssh
+
+    status, out = ssh(port, USED, timeout=120)
+    if status != 0:
+        return None
+    lines = [x.strip() for x in (out or "").splitlines() if x.strip().isdigit()]
+    return int(lines[-1]) if lines else None
+
+
 # NO ZEROING. THE FILESYSTEM RELEASES ITS OWN BLOCKS.
 #
 # Writing zeros over the free space was this repository's way of making `qemu-img convert`
