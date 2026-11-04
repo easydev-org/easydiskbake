@@ -103,6 +103,26 @@ ERASE_CONFIRM = (1146, 661)
 # value is written down because the next run may show it is not.
 AGREE = (1005, 722)
 
+# THE DESTINATION CARD, AND THIS IS WHY THE INSTALL NEVER STARTED.
+#
+# Run 41765803967's last frame shows the destination pane with BOTH cards offered:
+#
+#     main               macOS Base System
+#     102.97 GB total     2.53 GB total
+#     102.76 GB available  37.6 MB available
+#
+# `main` is there and correct - so the erase worked - and neither card is highlighted and
+# Continue is greyed out. The click at 15's (850, 550) landed 30 pixels left and 19 above
+# the card's own icon, in the gap beside it.
+#
+# Measured on that frame by scanning for the icon's fill:
+#
+#     main            x 847..914    centre (880, 569)
+#     Base System     x 1003..1070  centre (1036, 569)
+#
+# 15's value is kept in macos/15/install.py; this release has its own.
+DISK_CARD = (880, 569)
+
 ERASE_DONE = install15.ERASE_DONE
 NOTHING_DRAWN = install15.NOTHING_DRAWN
 
@@ -254,7 +274,7 @@ def run_installation(qmp_path: str, frames_dir: str | None,
         if not wait_for_says(d, PANE_DETAIL, ("capacity",), 180, "destination detail"):
             log("  no capacity table, so no disk is being offered")
             return 1
-        d.click(install15.DISK_CARD, "the main disk card", settle=5)
+        d.click(DISK_CARD, "the main disk card", settle=5)
         d.click(install15.PANE_CONTINUE, "destination Continue", settle=20)
 
         # -- the copy -----------------------------------------------------------
