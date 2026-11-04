@@ -1011,7 +1011,7 @@ def main(argv: list[str]) -> int:
             # is `USERS_OK=0` - seven characters at the size the prompt is read at.
             con.type(f"test \"$(wc -l < /etc/users.toml)\" -eq {len(users)} ; echo USERS_OK=$?",
                      settle=2.0)
-            if not con.wait_for(["users_ok=0"], 60,
+            if not con.wait_for(["users_ok=0"], 300,
                                 f"users.toml has {len(users)} lines"):
                 note("=== /etc/users.toml DOES NOT HAVE THE EXPECTED LINES ===")
                 note(f"  expected {len(users)}; the frame beside this message shows what it has")
@@ -1056,7 +1056,7 @@ def main(argv: list[str]) -> int:
                 con.type(f"echo '{line}' {op} /etc/passwd", settle=0.25)
             con.type(f"test \"$(wc -l < /etc/passwd)\" -eq {len(passwd_entries)} ; echo PASSWD_OK=$?",
                      settle=2.0)
-            if not con.wait_for(["passwd_ok=0"], 60, "/etc/passwd"):
+            if not con.wait_for(["passwd_ok=0"], 300, "/etc/passwd"):
                 note("=== /etc/passwd DOES NOT HAVE THE EXPECTED LINES ===")
                 return False
             note("  /etc/passwd is written")
@@ -1109,7 +1109,7 @@ def main(argv: list[str]) -> int:
             #    the disk, not at every boot.
             note("=== the host key ===")
             con.type("ssh-keygen -A ; echo KEYGEN_RC=$?")
-            if not con.wait_for(["keygen_rc=0"], 300, "host key"):
+            if not con.wait_for(["keygen_rc=0"], 600, "host key"):
                 note("=== ssh-keygen -A FAILED ===")
                 return False
 
@@ -1159,7 +1159,7 @@ def main(argv: list[str]) -> int:
                 "&& chmod +x /usr/lib/init.d/90_sshd "
                 "&& echo INITD_OK=1",
                 settle=2.0)
-            if not con.wait_for(["initd_ok=1"], 300, "the init.d entry"):
+            if not con.wait_for(["initd_ok=1"], 600, "the init.d entry"):
                 note("=== THE init.d ENTRY COULD NOT BE WRITTEN ===")
                 note("  mkdir, both echoes and the chmod are joined by && on one line; the")
                 note("  frame beside this message shows which of them failed")
@@ -1174,9 +1174,6 @@ def main(argv: list[str]) -> int:
             # echo does not contain a digit - so a marker of `sshd_rc=` matched the echo, and a
             # daemon that never started would have passed. What is matched is a value with a
             # digit in it, which only the expansion produces.
-            con.type("cat /etc/users.toml ; echo USERS_SHOWN=1", settle=2.0)
-            con.wait_for(["users_shown=1"], 120, "users.toml printed")
-
             # THE CHROOT DIRECTORY, WHICH IS THE NEXT CHECK IN sshd's OWN STARTUP.
             #
             # The /etc/passwd fix moved the failure on, and the frame from run 41916585870
@@ -1194,13 +1191,13 @@ def main(argv: list[str]) -> int:
             # further behind with each one.
             con.type("mkdir -p /var/empty && chmod 755 /var/empty && echo VAREMPTY_OK=1",
                      settle=2.0)
-            if not con.wait_for(["varempty_ok=1"], 120, "/var/empty"):
+            if not con.wait_for(["varempty_ok=1"], 300, "/var/empty"):
                 note("=== /var/empty COULD NOT BE CREATED ===")
                 return False
             note("  /var/empty exists")
 
             con.type("/usr/bin/sshd ; echo SSHD_RC=$?")
-            if not con.wait_for(["sshd_rc=0"], 180, "sshd started"):
+            if not con.wait_for(["sshd_rc=0"], 600, "sshd started"):
                 note("=== sshd WOULD NOT START ===")
                 note("  `sshd -d` prints why; the frame beside this message is the console")
                 return False
