@@ -164,6 +164,18 @@ def click(q, x, y):
     # own request after the same 0.15s, because a widget that polls needs to see the button
     # down for at least one poll - sent back to back, the guest reads up/up and opens
     # nothing.
+    # A POINTER THAT HAS NEVER MOVED MAY NOT BE AT (0, 0). A usb-tablet resumes with
+    # whatever position it last held, and the guest's first absolute report can be ignored -
+    # so the coordinate stream starts with a corner and a move to the target, in one request,
+    # then the same target again. The duplicate is not redundant: the first move establishes
+    # the position, the second is the one the guest acts on.
+    _send(q, f"move to {x}, {y}", [
+        {"type": "abs", "data": {"axis": "x", "value": 0}},
+        {"type": "abs", "data": {"axis": "y", "value": 0}},
+        {"type": "abs", "data": {"axis": "x", "value": to_abs(x, SCREEN_W)}},
+        {"type": "abs", "data": {"axis": "y", "value": to_abs(y, SCREEN_H)}},
+    ])
+    time.sleep(0.2)
     _send(q, f"move and press at ({x}, {y})", [
         {"type": "abs", "data": {"axis": "x", "value": to_abs(x, SCREEN_W)}},
         {"type": "abs", "data": {"axis": "y", "value": to_abs(y, SCREEN_H)}},
