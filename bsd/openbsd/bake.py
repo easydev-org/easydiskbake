@@ -283,11 +283,33 @@ def answer_prompts(ser, seconds: int) -> None:
             time.sleep(3)
             continue
 
-        # The set selector legitimately repeats; every other prompt does not.
-        repeatable = "set name" in prompt.lower()
-        if not repeatable and answered.get(prompt, 0) >= 1:
-            time.sleep(3)
-            continue
+        # THE PROMPT IS RETRIED UNTIL THE CONSOLE MOVES PAST IT.
+        #
+        # A dict keyed by the prompt text was the first idea and it deadlocks on any
+        # question whose answer echoes as NOTHING - `Terminal type? [vt220]` answered with
+        # an empty line stays on the screen exactly as it was, so the dict says "already
+        # answered" and the loop waits for a new line that is never coming:
+        #
+        #     answering: 'Terminal type? [vt220]' -> ''
+        #     (and then nothing, for the whole run)
+        #
+        # So a prompt that is STILL the last line after its answer is answered again. The
+        # cost of a duplicate empty line at a prompt that has already moved on is one extra
+        # newline, which the installer ignores; the cost of not retrying is the whole run.
+        # A PROMPT THAT IS STILL LAST HAS NOT BEEN ANSWERED, whatever the dict says.
+        #
+        # The dict existed to stop a prompt being answered twice while the console caught
+        # up. That is the wrong guard: a console that has not moved is a prompt that is
+        # still waiting, and one that has moved shows a different last line. Counting
+        # replies is what the stall guard below is for.
+        #
+        # The cap is a stall guard, not a rate limit: eight identical replies to the same
+        # prompt means the installer is not accepting them, and saying so is better than
+        # looping until the timeout.
+        if answered.get(prompt, 0) >= 8:
+            log(f"=== STUCK AT {prompt[:60]!r} ===")
+            log("  eight replies did not advance the installer")
+            return
 
         answer = ""
         for pattern, value in rules:

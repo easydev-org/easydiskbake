@@ -176,6 +176,23 @@ def check_wayland_session(port: int, process: str, note=log,
         note("  this disk is configured for Wayland; an x11 session means it fell back")
         return False
 
+    # FREEBSD HAS NO logind AT ALL, SO THERE IS NO SESSION LIST TO READ.
+    #
+    # `loginctl list-sessions` returns nothing on this disk - not because no desktop is
+    # running but because FreeBSD does not ship systemd-logind. The X server and lightdm
+    # are ordinary processes there, and run 41763773907's screenshot shows the XFCE desktop
+    # fully drawn while every check above said "no session":
+    #
+    #     sessions (id|type|class|active): (none)
+    #     === NO ACTIVE USER WAYLAND SESSION ===
+    #
+    # So when `allow_x11` is set, the session list is not consulted at all: the question is
+    # whether the desktop's own process is running, and whether an X server is up beside
+    # it. That is the whole of what a BSD desktop can be asked.
+    if allow_x11 and not wayland and not x11:
+        note("no logind session is listed (this system has none); checking processes")
+        return _check_x11_process(port, process, note)
+
     # FREBSD'S XFCE IS AN X SESSION AND THAT IS THE CONFIGURATION.
     #
     # every Linux desktop in this repository runs Wayland, and an x11 session there means
@@ -294,6 +311,14 @@ def _check_x11_process(port: int, process: str, note) -> bool:
     note(f"the X11 session is running {process}")
     for line in procs.splitlines()[:3]:
         note(f"  process: {line.strip()}")
+
+    # AND AN X SERVER BESIDE IT. A desktop process with no display would be started and
+    # useless; the pair is what makes this a session rather than a stray daemon.
+    status, xserver = ssh(port, "pgrep -af 'Xorg|X :' 2>/dev/null | head -3 || true")
+    if xserver.strip():
+        note(f"  X server: {xserver.splitlines()[0].strip()[:80]}")
+    else:
+        note("  no X server process found; the desktop may be running without a display")
     return True
 
 
