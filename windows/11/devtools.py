@@ -330,25 +330,6 @@ def verify() -> bool:
     return True
 
 
-def clean() -> bool:
-    """Remove what this run left on the disk, before it is exported.
-
-    THE DISK IS THE DELIVERABLE. Everything the build put on it travels with it and is
-    visible to whoever boots the image: downloaded installers, extraction directories, the
-    test program, this run's helper scripts, shell history, event logs.
-
-    Only caches, temp files, logs and history go. Installed products are untouched - in
-    particular the Visual Studio payload cache, whose contents are what makes a VS repair
-    or update work.
-
-    THE LAST THING IT DOES IS ZERO THE FREE SPACE, and that is what decides the size of the
-    artifact rather than a formality: `qemu-img convert` only skips clusters that are
-    already zero. Deleting a file in NTFS marks its clusters free and leaves the bytes, so
-    convert still stores them and the qcow2 comes out the same size. A file grown to fill
-    the disk with zeros, then deleted, is what actually makes it smaller.
-    """
-
-
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--ssh", required=True, help="the disk windows/11/ssh.py produced")
@@ -364,9 +345,6 @@ def main(argv: list[str]) -> int:
     p.add_argument("--bootstate", default=None,
                    help="the .bootstate.tar.gz published with the disk; "
                         "without it the firmware has no boot entry")
-    p.add_argument("--clean", action="store_true",
-                   help="remove this run's traces and zero the free space before "
-                        "exporting; without it the disk ships with its build history")
     args = p.parse_args(argv)
 
     if not os.path.isfile(args.ssh):
@@ -495,11 +473,10 @@ def main(argv: list[str]) -> int:
         if not verify():
             return 1
 
-        if args.clean:
-            if not clean():
-                return 1
-        else:
-            log("not cleaning; the disk will carry this run's installers and logs")
+        # CLEANING IS NOT THIS STAGE'S JOB. It moved to lib/clean_disk.py, which boots the
+        # disk this produces, cleans it over ssh and zeroes its free space. A `--clean` flag
+        # here would be a second implementation of that, and the reason the cleaning was
+        # moved out was to stop having several.
 
         ok = True
         return 0

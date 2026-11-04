@@ -18,11 +18,12 @@ name: windows-11_dev-bake
 # program through vcvars64 and prints dotnet --version, because "the SDK installed" and
 # "the toolchain works" are different claims and only the second one matters.
 #
-# WHY --clean
+# WHY THERE IS NO --clean ANY MORE
 #
-# The disk is the deliverable. Installers, extraction directories, the test program and
-# this run's helper scripts all travel with it unless removed, and `qemu-img convert` only
-# shrinks a disk whose free space is actually zero - which the clean step handles.
+# Cleaning moved to the `clean` job below - see lib/clean_disk.py. It boots the disk this
+# job produced, cleans it over ssh, zeroes its free space and publishes the result. Keeping
+# it out of this job means a cleaning change does not pay for a twenty-minute Visual Studio
+# install, and "the tag exists" now implies "the disk was cleaned".
 #
 # MANUAL ONLY.
 
@@ -39,10 +40,6 @@ on:
       publish_tag:
         description: "Tag to publish under, or empty for windows-dev-<stamp>"
         default: ""
-      clean:
-        description: "Remove this run's traces and zero the free space"
-        type: boolean
-        default: true
       boot_timeout:
         description: "Seconds to wait for sshd"
         default: "900"
@@ -133,14 +130,11 @@ jobs:
             set -euo pipefail
             export GITHUB_TOKEN="${{ github.token }}"
             export WINDOWS_ADMIN_PASSWORD=admin
-            CLEAN=""
-            if [ "${{ inputs.clean }}" = "true" ]; then CLEAN="--clean"; fi
             python3 windows/11/devtools.py \
               --ssh out/windows11-ssh.qcow2 \
               --bootstate out/windows11-ssh.qcow2.bootstate.tar.gz \
               --out out/windows11-dev.qcow2 \
-              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
-              $CLEAN
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}"
 
       - name: keep the recording
         if: always()
@@ -162,11 +156,116 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-      - name: publish
+      # THE DISK AND ITS FIRMWARE STATE, HANDED TO THE CLEAN JOB.
+      #
+      # This stage used to publish directly, so a cleaned and an uncleaned dev disk were
+      # indistinguishable in the package. The clean job below pulls this artifact, boots it,
+      # cleans it, and publishes under the tag this workflow was asked for.
+      - name: upload the disk
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-dev-disk
+          path: |
+            out/windows11-dev.qcow2
+            out/windows11-dev.qcow2.bootstate.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  # CLEANING IS ITS OWN JOB, AND IT PUBLISHES.
+  #
+  # The dev disk is the one that most needs it - a toolchain install leaves winget
+  # downloads, the VS payload cache, DeliveryOptimization and the installers themselves -
+  # and before this it was published without any of that being removed.
+  #
+  # Separating it from the install means a cleaning change does not pay for a twenty-minute
+  # Visual Studio install, and the run graph shows which of the two failed.
+  clean:
+    needs: dev
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
         uses: easydev-org/easyagent-github-ext/actions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: dev-publish
+          name: clean-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            python3 lib/ci.py free-disk --need 60
+            if ! command -v sshpass >/dev/null 2>&1; then
+              apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
+                apt-get install -y -qq sshpass
+            fi
+            sshpass -V | head -1
+
+      - name: pull the disk
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-dev-disk
+          path: out/clean-work
+
+      - name: clean it
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: clean-disk
+          interval: "20"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            DISK=$(ls out/clean-work/*.qcow2 | head -1)
+            echo "disk: $DISK"
+            # --disk, not --tag: nothing has been published yet. clean_disk.py copies it into
+            # --work and boots it there, so the artifact the dev job produced is untouched.
+            python3 lib/clean_disk.py \
+              --disk "$DISK" \
+              --kind windows \
+              --out out/windows11-dev.qcow2 \
+              --work out/clean-work \
+              --artifacts out \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --mem 6144
+
+      - name: keep the bootstate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-dev-bootstate-final
+          path: out/clean-work/*.bootstate.tar.gz
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: keep the record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clean-record
+          path: out/clean.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: publish
+        if: success()
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: clean-publish
           interval: "15"
           command: |
             set -euo pipefail
@@ -185,7 +284,7 @@ jobs:
         uses: easydev-org/easyagent-github-ext/actions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: dev-tags
+          name: clean-tags
           interval: "10"
           command: |
             set -euo pipefail

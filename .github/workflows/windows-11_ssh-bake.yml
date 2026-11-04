@@ -170,11 +170,130 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-      - name: publish
+      # THE DISK IS HANDED TO THE CLEAN JOB, NOT PUBLISHED HERE.
+      #
+      # This stage used to publish directly, which meant a cleaned disk and an uncleaned one
+      # were indistinguishable in the package - the clean was a line in this job's log. The
+      # artifact below is the handoff: the clean job pulls it, boots it, cleans it, and
+      # publishes the result under the tag this workflow was asked for.
+      - name: upload the disk
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-ssh-disk
+          path: |
+            out/windows11-ssh.qcow2
+            out/windows11-ssh.qcow2.bootstate.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  # CLEANING IS ITS OWN JOB, AND IT PUBLISHES.
+  #
+  # The reason it is a separate job rather than a step: it has to BOOT the disk and talk to
+  # it over ssh, which is a whole machine's worth of work and has nothing to do with
+  # installing OpenSSH. Keeping them apart means a cleaning change does not re-run the
+  # install, and the run graph shows which of the two failed.
+  #
+  # IT IS ALSO THE ONLY THING THAT PUBLISHES. A disk that was not cleaned never reaches the
+  # package, so "the tag exists" implies "it was cleaned".
+  clean:
+    needs: ssh
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
         uses: easydev-org/easyagent-github-ext/actions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: ssh-publish
+          name: clean-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            python3 lib/ci.py free-disk --need 60
+            if ! command -v sshpass >/dev/null 2>&1; then
+              apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
+                apt-get install -y -qq sshpass
+            fi
+            sshpass -V | head -1
+
+      # THE DISK AND ITS FIRMWARE STATE, TOGETHER, straight from the job above - not from a
+      # tag, because nothing has been published yet. That is what makes the two a sequence
+      # rather than a pipeline with a registry in the middle.
+      #
+      # THEY TRAVEL IN ONE ARTIFACT BECAUSE THEY ARE ONE THING. A disk without its vars file
+      # boots to a firmware that finds no boot entry, and two artifacts is two chances for
+      # one of them to be missing.
+      - name: pull the disk
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-ssh-disk
+          path: out/clean-work
+
+      - name: clean it
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: clean-disk
+          interval: "20"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            DISK=$(ls out/clean-work/*.qcow2 | head -1)
+            echo "disk: $DISK"
+            # --disk, NOT --tag: this disk was built by the job above and has never been
+            # published. clean_disk.py copies it into --work, boots it there, cleans it and
+            # writes --out, so the artifact the ssh job produced is left untouched.
+            #
+            # --bootstate-run IS NOT PASSED. The vars file arrived beside the disk in the
+            # same artifact, and clean_disk.py adopts it by name; a run id here would send it
+            # looking for a second copy of something it already has.
+            python3 lib/clean_disk.py \
+              --disk "$DISK" \
+              --kind windows \
+              --out out/windows11-ssh.qcow2 \
+              --work out/clean-work \
+              --artifacts out \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --mem 6144
+
+      - name: keep the bootstate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-ssh-bootstate-final
+          path: out/clean-work/*.bootstate.tar.gz
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: keep the record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clean-record
+          path: out/clean.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: publish
+        if: success()
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: clean-publish
           interval: "15"
           command: |
             set -euo pipefail
@@ -193,7 +312,7 @@ jobs:
         uses: easydev-org/easyagent-github-ext/actions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: ssh-tags
+          name: clean-tags
           interval: "10"
           command: |
             set -euo pipefail

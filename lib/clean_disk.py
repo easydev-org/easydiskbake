@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import sys
 import time
 
@@ -99,23 +100,54 @@ def restore_bootstate(work: str, disk: str, run_id: str, note) -> bool:
     """
     import bootstate
 
-    archive = os.path.join(work, f"{os.path.basename(disk)}.bootstate.tar.gz")
-    os.makedirs(work, exist_ok=True)
+    # THE ARTIFACT ARRIVES UNDER WHATEVER NAME THE UPLOADING STEP GAVE IT, and restore() only
+    # accepts `<disk>.bootstate.tar.gz`. adopt() is the explicit rename that closes that gap -
+    # it exists because an earlier stage failed with "no archive found" while the archive sat
+    # one rename away. Searching the directory for "any *.bootstate.tar.gz" would fix that
+    # run and quietly break the one with two disks side by side.
+    dest = bootstate.archive_path(disk)
+    if os.path.exists(dest):
+        return bootstate.restore(work, disk)
 
-    if not os.path.exists(archive):
-        note(f"=== NO BOOTSTATE AT {archive} ===")
-        note(f"  run {run_id} was given, so one was expected. Download the artifact named")
-        note("  <disk>.bootstate.tar.gz from that run into the work directory first.")
+    candidates = [
+        os.path.join(work, name)
+        for name in sorted(os.listdir(work))
+        if name.endswith(".bootstate.tar.gz")
+    ] if os.path.isdir(work) else []
+
+    if not candidates:
+        note(f"=== NO BOOTSTATE IN {work} ===")
+        note(f"  run {run_id} was given, so one was expected. The job that uploaded it")
+        note("  names the artifact; download it into the work directory first.")
+        return False
+    if len(candidates) > 1:
+        note("=== MORE THAN ONE BOOTSTATE IN THE WORK DIRECTORY ===")
+        for c in candidates:
+            note(f"  {os.path.basename(c)}")
+        note("  adopt() needs to know which belongs to this disk; clean one at a time")
         return False
 
+    archive = bootstate.adopt(disk, candidates[0])
     note(f"restoring {os.path.basename(archive)} into {work}")
     return bootstate.restore(work, disk)
 
 
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--tag", required=True,
+    # A DISK, OR A TAG THAT NAMES ONE. Both are needed and they are different situations:
+    #
+    #     --tag     a disk that is already in the package, which is how this runs when a
+    #               stage is re-cleaned without rebuilding it
+    #     --disk    a disk the job that just ran built, handed over as an artifact - so the
+    #               bake and its clean are one workflow and nothing is published before it
+    #               has been cleaned
+    #
+    # Exactly one has to be given; asking for both and picking one would be a guess about
+    # which the caller meant.
+    p.add_argument("--tag", default=None,
                    help="the published disk to clean, e.g. windows-ssh-20261103-104941")
+    p.add_argument("--disk", default=None,
+                   help="a local qcow2 instead of a tag, e.g. an artifact from the job above")
     p.add_argument("--kind", required=True, choices=sorted(SYSTEMS),
                    help="which system this disk is")
     p.add_argument("--out", required=True, help="the cleaned qcow2 to write")
@@ -147,8 +179,33 @@ def main(argv: list[str]) -> int:
 
     spec = SYSTEMS[args.kind]
 
-    disk = pull(args.tag, work, note)
-    note(f"disk {disk} ({os.path.getsize(disk) >> 20} MiB)")
+    if not args.disk and not args.tag:
+        note("=== NEITHER --tag NOR --disk ===")
+        note("  there is nothing to clean; pass one")
+        return 2
+    if args.disk and args.tag:
+        note("=== BOTH --tag AND --disk ===")
+        note("  pick one: --disk is for an artifact, --tag is for something already published")
+        return 2
+
+    if args.disk:
+        if not os.path.isfile(args.disk):
+            note(f"=== NO DISK AT {args.disk} ===")
+            return 2
+        # THE DISK IS COPIED INTO THE WORK DIRECTORY, not used in place.
+        #
+        # Booting it writes to its qcow2 - the guest's own filesystem journal, the firmware
+        # variables, the zeroing - and the artifact it came from should stay exactly as the
+        # job above left it. Copying also means a clean that fails half-way has not damaged
+        # the only copy of the disk.
+        disk = os.path.join(work, os.path.basename(args.disk))
+        if os.path.abspath(args.disk) != os.path.abspath(disk):
+            note(f"copying the disk into {work}")
+            shutil.copyfile(args.disk, disk)
+        note(f"disk {disk} ({os.path.getsize(disk) >> 20} MiB)")
+    else:
+        disk = pull(args.tag, work, note)
+        note(f"disk {disk} ({os.path.getsize(disk) >> 20} MiB)")
 
     if spec["bootstate"]:
         if not args.bootstate_run:
