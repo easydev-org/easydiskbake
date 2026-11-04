@@ -79,6 +79,10 @@ def main(argv: list[str]) -> int:
                    help="a local disk to start instead of pulling one")
     p.add_argument("--bootstate", default=None,
                    help="the .bootstate.tar.gz; defaults to the one beside the disk")
+    p.add_argument("--allow-blank-firmware", action="store_true",
+                   help="start with the OVMF template's variables instead of a restored "
+                        "bootstate - for testing whether a disk booted by the UEFI fallback "
+                        "path needs one at all")
     p.add_argument("--artifacts", default="out")
     p.add_argument("--work", default=None)
     p.add_argument("--boot-timeout", type=int, default=900)
@@ -166,7 +170,15 @@ def main(argv: list[str]) -> int:
 
     # --- 3. firmware and TPM state --------------------------------------------
     source_state = args.bootstate or bootstate.archive_path(source)
-    if os.path.isfile(source_state):
+    if args.allow_blank_firmware:
+        # THE POINT OF THE EXPERIMENT: boot with the OVMF template's variables, which contain
+        # no "Windows Boot Manager" entry, and see whether the firmware finds the fallback
+        # loader at \EFI\BOOT\BOOTX64.EFI instead. Nothing is restored, and the variable
+        # store qemu is given is a fresh copy of the template - see step 4 below.
+        note("=== BOOTING WITH A FRESH VARIABLE STORE (--allow-blank-firmware) ===")
+        note("  no bootstate is restored; the firmware has no boot entries at all")
+        note("  the disk was expected to carry a fallback loader at \\EFI\\BOOT\\BOOTX64.EFI")
+    elif os.path.isfile(source_state):
         placed = bootstate.adopt(disk, source_state)
         note(f"bootstate {source_state} -> {placed}")
     else:
@@ -179,11 +191,11 @@ def main(argv: list[str]) -> int:
         note("  has no boot entry and Windows will not start - this is an artifact")
         note("  problem, not a disk problem")
         return finish(1)
-    restored = bootstate.restore(work, disk)
-    if not restored:
-        note(f"FAILED: the archive {source_state} did not restore into {work}")
-        return finish(1)
-    note(f"bootstate restored into {work}")
+    if not args.allow_blank_firmware:
+        if not bootstate.restore(work, disk):
+            note(f"FAILED: the archive {source_state} did not restore into {work}")
+            return finish(1)
+        note(f"bootstate restored into {work}")
 
     # --- 4. start it -----------------------------------------------------------
     firmware_code = os.environ.get("OVMF_CODE", "/usr/share/OVMF/OVMF_CODE_4M.fd")
