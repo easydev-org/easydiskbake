@@ -45,7 +45,12 @@ from __future__ import annotations
 SYSTEMS = {
     "windows": ("winclean", {"user": "docker"}),
     "linux": ("linclean", {}),
-    "freebsd": ("bsdclean", {"user": "docker"}),
+    # NO `user` HERE. linclean and bsdclean talk to the guest as the account every image in
+    # this repository creates, and lib/session.ssh already supplies it; only winclean needs the
+    # name, because it builds its own scp and ssh command lines. Passing it to a cleaner that
+    # does not take it is a TypeError at the moment the clean starts - run 41811218132, after a
+    # completely successful FreeBSD install.
+    "freebsd": ("bsdclean", {}),
     # macOS IS DELIBERATELY ABSENT. Its filesystem is copy-on-write, so writing zeros over the
     # free space allocates new blocks before the old ones are released, and APFS snapshots hold
     # blocks a write cannot reach. "Adding it here" is not the work; measuring whether it saves
