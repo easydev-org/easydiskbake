@@ -158,6 +158,22 @@ def answers() -> list[tuple[str, float]]:
         # puts its sets. The next question is the set list.
         ("", 5),            # Pathname to the sets: the default, 8.0/amd64
         ("*", 5),           # Set name(s): all of them
+        # AND THEN IT ASKS AGAIN. 8.0's set selector is a loop: it prints the list, reads a
+        # reply, re-prints, and only a blank line at its own prompt leaves it. `*` selects
+        # everything but does not commit; the empty answer does.
+        #
+        # Run 41755653644 is the demonstration - `yes`, meant for the next question, went
+        # into this one and was ignored:
+        #
+        #     Set name(s)? (or 'abort' or 'done') [done] *
+        #         [X] bsd  [X] base80.tgz  ...
+        #     Set name(s)? (or 'abort' or 'done') [done] yes
+        #         [X] bsd  [X] base80.tgz  ...
+        #     Set name(s)? (or 'abort' or 'done') [done]
+        #
+        # so the two answers after it landed one question early and the install stopped at
+        # the signature prompt without unpacking anything.
+        ("", 5),            # leave the set selector
         # NO SHA256.sig ON THE MEDIUM, SO IT ASKS WHETHER TO CONTINUE.
         #
         # A release ISO carries SHA256 and SHA256.sig so the installer can verify each
@@ -175,6 +191,159 @@ def answers() -> list[tuple[str, float]]:
         ("", 120),          # unpacking the sets
         ("", 10),           # done; the installer reboots
     ]
+
+
+def answer_prompts(ser, seconds: int) -> None:
+    """Answer the installer by waiting for each question instead of by position.
+
+    WHY NOT A FIXED LIST OF ANSWERS, ONE PER QUESTION. That is what this file did, and it
+    failed four times in a row for the same reason: a list is only correct if the installer
+    asks exactly the questions the list expects, in exactly that order, once each. Every
+    time 8.0 asked one more - a terminal type, an X question, a console speed, a pathname,
+    a second pass through the set selector - every answer after it landed on the wrong
+    question, and the run stopped somewhere plausible with the disk untouched.
+
+    Reading the prompt and replying to it does not have that failure mode. A question that
+    is asked twice is answered twice; one that does not appear costs nothing.
+
+    HOW IT KNOWS THE PROMPT IS COMPLETE. `ser.say` takes a settle time, and the console
+    sink is read after each one. A prompt that has stopped growing is one that is waiting -
+    an installer redrawing a list is not. This is the same shape as the disk-stall rule in
+    the macOS bake: measure quiet, not duration.
+
+    EVERY PROMPT IT DOES NOT KNOW IS ANSWERED WITH A BLANK LINE, which takes the
+    installer's own default. That covers the cases the list never had - and a default is
+    what a person pressing Enter at an unfamiliar prompt would get.
+    """
+    import re
+    import time
+
+    # prompt text -> answer. Matched case-insensitively against the tail of the console,
+    # and the LAST matching entry wins, so a general rule can sit before a specific one.
+    rules: list[tuple[str, str]] = [
+        (r"term type|terminal type", "vt220"),
+        (r"system hostname", "openbsd"),
+        (r"network interface to configure", "vio0"),
+        (r"ipv4 address for vio0", "dhcp"),
+        (r"ipv6 address for vio0", "none"),
+        (r"password for root account", "admin"),
+        (r"start sshd", "yes"),
+        (r"expect to run the x window system", "yes"),
+        (r"started by xenodm", "no"),
+        (r"change the default console", "yes"),
+        (r"speed should com0 use", "115200"),
+        (r"setup a user", "no"),
+        (r"allow root ssh login", "yes"),
+        (r"what timezone", "UTC"),
+        (r"encrypt the root disk", "no"),
+        (r"which disk is the root disk", "sd0"),
+        (r"use \(w\)hole disk", "W"),
+        (r"use \(a\)uto layout", "a"),
+        (r"location of sets", "cd0"),
+        (r"pathname to the sets", ""),
+        (r"set name\(s\)\?", "*"),
+        (r"continue without verification", "yes"),
+    ]
+
+    # THE SECOND RUN THROUGH THE SET SELECTOR LEAVES WITH A BLANK, NOT WITH `*`.
+    #
+    # `*` selects every set; the selector then re-prints and waits, and only an empty
+    # answer leaves it. Answering `*` twice is harmless but never exits.
+    seen_sets = 0
+
+    deadline = time.time() + seconds
+    # THE SAME PROMPT MUST NOT BE ANSWERED TWICE, and it will look unanswered again for a
+    # moment after the reply: the console echoes the answer, but the sink is a file that may
+    # not have caught up. So each prompt line is answered once and counted.
+    answered: dict[str, int] = {}
+
+    while time.time() < deadline:
+        text = _console_tail(ser)
+        if "Installation complete" in text or "CONGRATULATIONS" in text:
+            log("  the installer says the installation is complete")
+            return
+        if "No valid MBR" in text:
+            log("=== NO VALID MBR: THE INSTALLER REJECTED THE DISK ===")
+            return
+
+        prompt = _last_prompt(text)
+        if prompt is None:
+            time.sleep(3)
+            continue
+
+        # The set selector legitimately repeats; every other prompt does not.
+        repeatable = "set name" in prompt.lower()
+        if not repeatable and answered.get(prompt, 0) >= 1:
+            time.sleep(3)
+            continue
+
+        answer = ""
+        for pattern, value in rules:
+            if re.search(pattern, prompt, re.IGNORECASE):
+                answer = value
+                break
+
+        if repeatable:
+            seen_sets += 1
+            if seen_sets > 1:
+                # THE SELECTOR LEAVES ON AN EMPTY LINE, NOT ON `*` REPEATED.
+                answer = ""
+
+        answered[prompt] = answered.get(prompt, 0) + 1
+        log(f"  answering: {prompt[:70]!r} -> {answer!r}")
+        ser.say(answer, wait=4)
+        time.sleep(3)
+
+
+def _console_tail(ser, limit: int = 4000) -> str:
+    """The last few KB the guest said, for prompt matching."""
+    try:
+        with open(ser.sink, "rb") as fh:
+            fh.seek(0, 2)
+            size = fh.tell()
+            fh.seek(max(0, size - limit))
+            return fh.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
+def _last_prompt(text: str) -> str | None:
+    """The most recent UNANSWERED prompt, or None.
+
+    THE ANSWER IS ECHOED AFTER THE DEFAULT, SO AN ANSWERED PROMPT IS VISIBLY ANSWERED.
+    Every one of bsd.rd's questions prints
+
+        <question>? <optional choices> [<default>]
+
+    and then, once replied to, the reply appears after that bracket:
+
+        Which speed should com0 use? (or 'done') [115200] 115200
+
+    So a line whose last bracket is the end of it is waiting, and one with anything after
+    the bracket is done. That single rule replaced a list of special cases, and it holds for
+    every question this installer asks - including the ones it asks twice.
+
+    Verified against a real transcript: the four answered lines above are read as done and
+    the three waiting ones as waiting.
+    """
+    lines = [ln.rstrip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return None
+    last = lines[-1].strip()
+
+    # THE MODE PROMPT IS THE ONE WITH NO DEFAULT BRACKET.
+    #
+    # `(I)nstall, (U)pgrade, (A)utoinstall or (S)hell?` has no [default], so the rule below
+    # - which requires a trailing bracket - would skip it and the whole sequence would
+    # never start.
+    if last.rstrip().endswith("?") and "[" not in last:
+        return None if last.rstrip().endswith(("? i", "? u", "? a", "? s")) else last
+
+    if not last.endswith("]"):
+        return None
+    # Anything after the last bracket is the echoed answer.
+    after = last.rsplit("]", 1)[-1].strip()
+    return None if after else last
 
 
 def console_says_complete(ser) -> bool:
@@ -289,8 +458,7 @@ def main(argv: list[str]) -> int:
         time.sleep(args.boot_seconds)
 
         log("=== answering the installer ===")
-        for line, wait in answers():
-            ser.say(line, wait=wait)
+        answer_prompts(ser, args.timeout)
         ser.close()
 
         log(f"waiting up to {args.timeout}s for the installer to finish")
