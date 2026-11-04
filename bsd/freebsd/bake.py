@@ -99,6 +99,23 @@ def volume_label(iso_path: str) -> str:
     return label
 
 
+def last_console_line(ser) -> str:
+    """The last non-empty line the guest printed, or "".
+
+    THE CONSOLE NAMES THE BLOCKED STEP; the disk size only says that something stopped. When the wait
+    looks stuck, quoting this turns "it hung" into "it hung at step: config".
+    """
+    try:
+        with open(ser.sink, "rb") as fh:
+            text = fh.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+    for line in reversed(text.splitlines()):
+        if line.strip():
+            return line.strip()[-160:]
+    return ""
+
+
 def console_says_umount(ser) -> bool:
     """Has bsdinstall reached its last step? Read from the console sink it writes to.
 
@@ -384,6 +401,8 @@ def main(argv: list[str]) -> int:
         install_started = time.time()
         deadline = install_started + args.timeout
         exited = False
+        last_size = 0
+        last_growth = time.time()
         while time.time() < deadline:
             if not guest.alive():
                 log("the guest exited (bsdinstall reboots when it is done)")
@@ -409,9 +428,33 @@ def main(argv: list[str]) -> int:
                 exited = True
                 break
 
+            # A DISK THAT STOPS GROWING IS THE SIGNAL, NOT THE CLOCK.
+            #
+            # The old line printed the size every two minutes and nothing else, so an install that
+            # hung at "step: config" for thirty-six minutes read as eighteen identical "disk 1104
+            # MiB" lines — technically correct and useless for telling "downloading a package" from
+            # "waiting on something that will never answer".
+            #
+            # pkg install writes continuously for minutes; a size that has not moved for five is not
+            # a slow download. It still waits (the timeout is the backstop), but it says so, and it
+            # quotes the console's last line, which is where the blocked step is named.
             elapsed = int(args.timeout - (deadline - time.time()))
+            size = os.stat(disk).st_blocks * 512 >> 20
+            if size != last_size:
+                last_size, last_growth = size, time.time()
+                stalled_since = 0
+            else:
+                stalled_since = int(time.time() - last_growth)
+
             if elapsed % 120 < 15:
-                log(f"  {elapsed}s, disk {os.stat(disk).st_blocks * 512 >> 20} MiB")
+                note = ""
+                if stalled_since >= 300:
+                    note = f"  [no growth for {stalled_since}s — likely blocked, not downloading]"
+                log(f"  {elapsed}s, disk {size} MiB{note}")
+                if stalled_since >= 300:
+                    tail = last_console_line(ser)
+                    if tail:
+                        log(f"    console last said: {tail}")
             time.sleep(15)
     finally:
         guest.stop()

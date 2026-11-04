@@ -13,6 +13,27 @@
 # depends on the host noticing something has a failure mode that looks like a hang.
 set -eu
 
+# SAY WHY WE STOPPED, ON THE CONSOLE AND ON THE DISK.
+#
+# NOTHING PRINTS WHILE A POST-INSTALL SCRIPT RUNS. bsdinstall's own last console line is
+# "Running installation step: config", and it stays there for as long as this script takes — so a
+# failure here is indistinguishable from a slow package download, and the bake burns its whole
+# timeout before anyone learns anything.
+#
+# THE EXIT TRAP IS NOT A CATCH-ALL FOR `set -e`. `cat > missing/dir` fails at the REDIRECTION, which
+# POSIX sh does not treat as a command failure and therefore does not exit on — that is how the
+# sudoers write failed silently while the script carried on to hang somewhere else. So the trap
+# reports what it can, and each fragile step below checks its own result.
+_finish() {
+    _rc=$?
+    if [ "$_rc" -ne 0 ]; then
+        echo "=== easydiskbake: post-install FAILED (exit $_rc) ===" | tee /etc/easydiskbake-failed
+    else
+        echo "=== easydiskbake: post-install finished ==="
+    fi
+}
+trap _finish EXIT
+
 echo "=== easydiskbake: configuring the installed FreeBSD ==="
 
 # --- accounts ---------------------------------------------------------------
@@ -37,10 +58,20 @@ echo 'admin' | pw usermod docker -h 0
 # /etc/sudoers.d/90-docker-nopasswd, and NixOS gives the account wheel plus
 # security.sudo.wheelNeedsPassword = false. This is the same line, in the file format FreeBSD
 # uses. The mode is 0440 because sudo refuses a sudoers file anyone else can read.
-cat > /usr/local/etc/sudoers.d/90-docker-nopasswd << 'EOF'
-docker ALL=(ALL) NOPASSWD:ALL
-EOF
-chmod 0440 /usr/local/etc/sudoers.d/90-docker-nopasswd
+# THE SUDOERS FILE CANNOT BE WRITTEN HERE, AND THAT IS WHY IT IS WRITTEN LATER.
+#
+# This block used to sit here, at line 68, and the console shows what happened:
+#
+#     /tmp/installscript: cannot create /usr/local/etc/sudoers.d/90-docker-nopasswd:
+#     No such file or directory
+#
+# `sudo` is installed by the `pkg install` further down, so at this point neither the package
+# nor its directory exists - and `mkdir -p /usr/local/etc` would create a directory the package
+# then owns, which is a different way to be wrong.
+#
+# The write moved to just after the `pkg install`, where `sudo` and its /usr/local/etc tree are
+# on the disk. Nothing else about the account changes here: wheel membership is still set by
+# `pw useradd` above, so the only thing that was ever missing is this file.
 
 # ROOT CAN LOG IN TOO, and that is deliberate. This disk has no keys and no network
 # exposure beyond a forwarded port somebody started on purpose; a root that cannot log in
@@ -101,10 +132,32 @@ echo 'PasswordAuthentication yes' >> /etc/ssh/sshd_config
 # dhclient on the interface is what the installer's own netconfig would have run. The name
 # is looked up rather than assumed: vtnet0 on a VM, em0 on some images, and a hardcoded
 # name is a bug that only shows on the machine that is not this one.
+# DHCP IS BOUNDED, BECAUSE A LEASE THAT NEVER ARRIVES MUST NOT BE A HANG.
+#
+# `dhclient` has no default timeout worth relying on: with no server answering it retries for
+# minutes, and on this guest that is INVISIBLE — bsdinstall prints nothing while the post-install
+# script runs, so the console's last line stays "Running installation step: config" and the bake
+# burns its whole 3600s timeout on a disk whose size never changes. That is exactly the shape a
+# 36-minute run with "disk 1104 MiB" repeated eighteen times has.
+#
+# Fifteen seconds is generous for QEMU's built-in DHCP server (10.0.2.2), which answers in
+# milliseconds when it is going to answer at all. Failing here is survivable: the fallback
+# resolv.conf below and the offline pkg repository mean the toolchain can still install.
 iface=$(ifconfig -l | tr ' ' '\n' | grep -vE '^(lo|enc|bridge|pflog|pfsync)' | head -1)
 if [ -n "$iface" ]; then
-    echo "=== easydiskbake: dhcp on $iface ==="
-    dhclient "$iface" || echo "  dhclient failed; the disk still boots, it just has no network"
+    echo "=== easydiskbake: dhcp on $iface (bounded) ==="
+    # NO `timeout(1)`: IT IS NOT IN THE BASE SYSTEM. It ships with coreutils, and at this point the
+    # only packages installed are bsdinstall's own — a missing command under `set -e` would end the
+    # script, which is a worse outcome than the hang it is meant to prevent.
+    #
+    # `dhclient` has no bound of its own worth relying on, so it is backgrounded with a watchdog:
+    # sleep 15, then kill it. Same guarantee, base-system tools only.
+    dhclient "$iface" &
+    _dhcp_pid=$!
+    ( sleep 15; kill "$_dhcp_pid" 2>/dev/null ) &
+    _watchdog=$!
+    wait "$_dhcp_pid" 2>/dev/null || echo "  dhclient did not finish in 15s; continuing without a lease"
+    kill "$_watchdog" 2>/dev/null || true
     # resolv.conf is what actually missing: dhclient writes it, but a failed lease leaves
     # the file absent and every pkg call then reports a resolver failure rather than a
     # network one. Naming the host's resolver is the fallback QEMU's user-mode network
@@ -164,6 +217,15 @@ fi
 #
 # That is run 41660262298, which also showed why the `|| echo` from the previous commit
 # matters: the disk was a complete FreeBSD with no toolchain, instead of no disk at all.
+# SAY WHERE IT IS BEFORE AND AFTER, BECAUSE NOTHING ELSE DOES.
+#
+# bsdinstall prints nothing while this runs, so a console whose last line is "Running
+# installation step: config" cannot distinguish "fetching the tenth package" from "waiting on a
+# prompt that will never be answered". The watch loop in bsd/freebsd/bake.py quotes this line,
+# and a line that names the stage is worth more than a disk size that has stopped moving.
+echo "=== easydiskbake: pkg install starting ==="
+echo "=== easydiskbake: repository is $(cat /etc/pkg/FreeBSD.conf 2>/dev/null | grep -o 'url: *"[^"]*"' | head -1) ==="
+
 pkg install -y \
     git \
     curl \
@@ -180,6 +242,31 @@ pkg install -y \
     lightdm-gtk-greeter \
     xfce4-terminal \
     || echo "=== easydiskbake: pkg install failed; the base system is still complete ==="
+echo "=== easydiskbake: pkg install returned, rc=$? ==="
+
+# --- sudoers ------------------------------------------------------------------
+#
+# AFTER `pkg install sudo`, BECAUSE THAT IS WHAT CREATES /usr/local/etc/sudoers.d.
+#
+# Without this file every `sudo` the clean and launch stages run waits at "Password:" on a
+# session with no terminal to answer - which reads as a hung clean, not as a missing file.
+# The mode is 0440 because sudo refuses a sudoers file anyone else can read.
+#
+# THE RESULT IS CHECKED, NOT ASSUMED. A failed redirection does not trigger `set -e`, so
+# without the `if` the line prints an error and the script carries on with no sudoers file.
+if [ -d /usr/local/etc/sudoers.d ]; then
+    if printf '%s\n' 'docker ALL=(ALL) NOPASSWD:ALL' > /usr/local/etc/sudoers.d/90-docker-nopasswd \
+        && chmod 0440 /usr/local/etc/sudoers.d/90-docker-nopasswd; then
+        echo "  sudo: docker may escalate without a password"
+    else
+        echo "=== easydiskbake: could NOT write the sudoers file; sudo will prompt ==="
+    fi
+else
+    # `pkg install sudo` failed - the block above says so. The disk is still a working FreeBSD
+    # with sshd, and the toolchain stage can install sudo; saying which of the two happened is
+    # the difference between a diagnosable disk and a puzzling one.
+    echo "=== easydiskbake: no /usr/local/etc/sudoers.d, so sudo is not installed ==="
+fi
 
 # --- the desktop --------------------------------------------------------------
 #
