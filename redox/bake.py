@@ -698,27 +698,6 @@ def main(argv: list[str]) -> int:
             note("  logging in as user (empty password)")
             con.key("ret", settle=5.0)
 
-            # A SLOW BOOT IS A BOOT THAT IS NOT READY TO BE CLICKED, and the five runs in this
-            # session divide on exactly that. The number is the seconds from the orchestrator
-            # starting to the login box appearing:
-            #
-            #     11s  a77bd3f   a terminal is open
-            #     12s  1bf4adb   a terminal is open
-            #     13s  f45c29f   a terminal is open
-            #     14s  1a79330   a terminal is open
-            #     17s  366b38e   NO WAY INTO THIS GUEST
-            #
-            # Four fast boots all opened the dock; the one slow boot opened nothing, twice over
-            # (dock, then the VT consoles). A guest still doing the work that made it slow is
-            # not one whose taskbar has finished subscribing to input, and the ten seconds
-            # allowed after "the desktop is up" does not scale with how late that was.
-            #
-            # Login time is known here, so it is used: the settle after this point becomes at
-            # least what a slow boot needs.
-            boot_seconds = time.time() - started_orbital
-            if boot_seconds > 15:
-                log(f"  the login box took {boot_seconds:.0f}s; giving the dock 30s more")
-                time.sleep(30)
 
             # THE DESKTOP IS A PICTURE, SO IT IS MEASURED, NOT READ.
             #
@@ -783,9 +762,23 @@ def main(argv: list[str]) -> int:
             baseline = con.shot("terminal-before")
             before = dark_window_fraction(baseline) if baseline else 0.0
             note(f"  dark fraction before: {before:.2f}")
-            for attempt in range(1, 4):
+            # TEN ATTEMPTS, BECAUSE THE OUTCOME IS A COIN FLIP AND EACH ONE COSTS SECONDS.
+            #
+            # Five bakes this session behaved like this:
+            #
+            #     1bf4adb  f45c29f  1a79330  a77bd3f    opened a terminal on attempt 1
+            #     366b38e  41912935659                  opened nothing, ten seconds at a time
+            #
+            # with byte-identical frames at the moment of the click and identical timing - a
+            # slow boot was the guess, and the second of those runs waited thirty extra
+            # seconds and still opened nothing. Nothing measurable distinguishes them.
+            #
+            # Four in five, repeated ten times, is a failure rate of one in ten million; three
+            # attempts is one in a hundred and twenty-five, which is what the last two runs
+            # drew from.
+            for attempt in range(1, 11):
                 con.click(*DOCK_TERMINAL,
-                          why=f"the terminal icon in the dock (attempt {attempt} of 3)",
+                          why=f"the terminal icon in the dock (attempt {attempt} of 10)",
                           settle=1.0)
                 deadline = time.time() + 10
                 while time.time() < deadline:
@@ -945,6 +938,19 @@ def main(argv: list[str]) -> int:
                 "[groups.sudo]",
                 "gid = 1",
                 f'members = ["{args.user}"]',
+                "",
+                # THE PRIVILEGE-SEPARATION ACCOUNT, IN THE SAME WRITE AS THE OTHERS.
+                #
+                # sshd refuses to start without it - "Privilege separation user sshd does not
+                # exist", exit 255 - and adding it afterwards, with its own append and its own
+                # wait, produced a file that reported SSHDUSER_OK=1 on the same screen as the
+                # same error. A TOML parser stops at the first table it cannot read, so a file
+                # assembled by two separate appends is one chance more than this needs.
+                "[users.sshd]",
+                'password = "*"',
+                "uid = 22",
+                "gid = 22",
+                'shell = "/usr/bin/ion"',
             ]
             for n, line in enumerate(users):
                 op = ">" if n == 0 else ">>"
@@ -1084,54 +1090,6 @@ def main(argv: list[str]) -> int:
             # echo does not contain a digit - so a marker of `sshd_rc=` matched the echo, and a
             # daemon that never started would have passed. What is matched is a value with a
             # digit in it, which only the expansion produces.
-            # SSHD NEEDS ITS PRIVILEGE-SEPARATION USER TO EXIST FIRST.
-            #
-            # Run 41907294831's last frame is the whole story, and it is readable without OCR
-            # because the terminal is one window on a plain wallpaper:
-            #
-            #     root:~# /usr/bin/sshd ; echo SSHD_RC=$?
-            #     [INFO sshd@src/platform/redox/mod.rs:1251] TODO: setgroups(0, 0x0): not implemented
-            #     ... madvise() TODO lines ...
-            #     Privilege separation user sshd does not exist
-            #     SSHD_RC=255
-            #
-            # OpenSSH drops to an unprivileged user for each connection; without that account in
-            # /etc/users.toml it refuses to run at all, exit 255, before it binds anything. The
-            # package does not create one. Redox reads users from that same file the account
-            # step already writes, so the entry goes in the same way.
-            #
-            # ONE LINE WITH ONE MARKER, for the reason recorded above: every wait_for() pass
-            # reads the screen several seconds behind, and a step split into three waits falls
-            # further behind with each one.
-            con.type(
-                "echo '' >> /etc/users.toml "
-                "&& echo '[users.sshd]' >> /etc/users.toml "
-                # A LITERAL PASSWORD, NOT `"!"`. ion is a shell: inside double quotes `!`
-                # is history expansion, and the value that reached the file would not be the
-                # one written here. `*` means "no password authentication is possible", which
-                # is correct for a privilege-separation account nothing logs in as - and it
-                # is one ordinary character that cannot be re-interpreted.
-                "&& echo 'password = \"*\"' >> /etc/users.toml "
-                "&& echo 'uid = 22' >> /etc/users.toml "
-                "&& echo 'gid = 22' >> /etc/users.toml "
-                "&& echo 'shell = \"/usr/bin/ion\"' >> /etc/users.toml "
-                "&& echo SSHDUSER_OK=1",
-                settle=2.0)
-            if not con.wait_for(["sshduser_ok=1"], 300, "the sshd user"):
-                note("=== THE sshd ACCOUNT COULD NOT BE ADDED ===")
-                note("  the frame beside this message is the terminal")
-                return False
-            note("  the sshd account exists")
-
-            # FIRST PRINT WHAT THE GUEST THINKS THE FILE SAYS, so a failure names its cause.
-            #
-            # The last attempt got SSHDUSER_OK=1 on the same screen as the error, which means
-            # the writes landed and sshd still could not find the account. Two readings: the
-            # file is malformed somewhere above the new section (a TOML parser stops at the
-            # first bad table), or sshd asks for a different name than the one appended.
-            #
-            # `test -f` and `-s` are checked before anything else, then the file is printed.
-            # `ion` has `cat` through the base package, and this is one line with one marker.
             con.type("cat /etc/users.toml ; echo USERS_SHOWN=1", settle=2.0)
             con.wait_for(["users_shown=1"], 120, "users.toml printed")
 
