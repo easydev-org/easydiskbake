@@ -204,8 +204,26 @@ class Console:
         """
         deadline = time.time() + seconds
         started = time.time()
+        last_report = 0.0
         while time.time() < deadline:
             text = self.text(what)
+
+            # SAY SOMETHING EVERY 30s, AND SAY WHAT IS ON SCREEN.
+            #
+            # This loop had no output at all until it matched or gave up, and run 41783947010
+            # therefore sat at "=== orbital ===" for twelve minutes with nothing to read.
+            # A wait that is silent is indistinguishable from a hang, and the log is the only
+            # thing a person watching CI has.
+            #
+            # What it prints is the first 160 characters of the last frame the OCR read: that
+            # is enough to tell "still the boot log", "Orbital's login", and "an error nobody
+            # expected" apart without opening the artifact.
+            elapsed = time.time() - started
+            if elapsed - last_report >= 30:
+                last_report = elapsed
+                shown = (self.last_text or "")[:160].replace("\n", " ")
+                log(f"  {elapsed:.0f}s waiting for {what}: {shown!r}")
+
             for marker in markers:
                 if marker in text:
                     log(f"  {what}: {marker!r} after {time.time() - started:.0f}s")
