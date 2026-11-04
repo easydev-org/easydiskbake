@@ -44,15 +44,22 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, REPO)
 
-# `desktop` IS NOT IMPORTED FROM lib HERE, AND IT CANNOT BE BY NAME.
+# TWO IMPORTS, FROM TWO PLACES, AND THE `from lib import` FORM CANNOT REACH THE SECOND.
 #
-# This file is macos/15/desktop.py, and sys.path has macos/15 first so that `machine` and
-# `opencore` resolve - which means `from lib import desktop` finds THIS file, not
-# lib/desktop.py, and fails with "cannot import name 'machine' from 'lib'". Run
-# 41599405096 died on exactly that, before a single line of the bake.
+# `from lib import machine` asks lib/ for a module called machine. It is not there - it is
+# macos/15/machine.py, this file's neighbour - so the import fails before the first line of
+# the bake runs:
 #
-# lib/desktop.py is the wallpaper test. It is loaded under a different name below.
-from lib import compress, live as livelib, machine, smoke, vm  # noqa: E402
+#     ImportError: cannot import name 'machine' from 'lib' (unknown location)
+#
+# which is run 41771020818's drive step, twelve seconds after it started.
+#
+# `from lib import desktop` has the mirror-image problem: sys.path has macos/15 first, so
+# that name resolves to THIS file and lib/desktop.py is unreachable by name. It is loaded
+# by path below, under a name that cannot collide.
+from lib import compress, live as livelib, smoke, vm  # noqa: E402
+
+import machine  # noqa: E402  - macos/15/machine.py, beside this file
 
 
 def _wallpaper_test():

@@ -37,9 +37,17 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, REPO)
 
-# lib/desktop.py IS LOADED BY PATH, NOT BY NAME. macos/15 is on sys.path for `machine`,
-# and macos/15/desktop.py would resolve first - see the same note in that file.
-from lib import compress, live as livelib, machine, smoke, vm  # noqa: E402
+# TWO SOURCES, AS IN macos/15/desktop.py. `machine` is this file's neighbour, not a lib/
+# module, so `from lib import machine` cannot see it:
+#
+#     ImportError: cannot import name 'machine' from 'lib'
+#
+# and lib/desktop.py cannot be reached by name at all, because macos/15 is on sys.path and
+# desktop.py there would win - see the note in desktop.py. It is loaded by path below.
+from lib import compress, live as livelib, smoke, vm  # noqa: E402
+
+sys.path.insert(0, HERE)
+import machine  # noqa: E402  - macos/15/machine.py, beside this file
 
 
 def _wallpaper_test():
