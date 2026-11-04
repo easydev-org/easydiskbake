@@ -1,0 +1,628 @@
+name: windows-11
+
+# The whole Windows chain in one workflow: base -> ssh -> (dev -> launch | launch).
+#
+# WHY ONE WORKFLOW AND NOT FOUR
+#
+# There were four - desktop-bake, ssh-bake, dev-bake, desktop-launch - and each one had to be
+# started by hand with the tag the previous one produced. That is four dispatch forms to fill
+# in, four places for a tag to be typed wrong, and no record anywhere that they are a chain at
+# all: the run graph of a single stage says nothing about what came before it.
+#
+# `needs` makes the chain the definition rather than a sequence of manual steps:
+#
+#     base ──> ssh ──┬──> dev ──> launch_dev
+#                    └──────────> launch_ssh
+#
+# WHAT THE FORK IS FOR
+#
+# After ssh there are two things worth launching, and they answer different questions:
+#
+#     launch_ssh   the disk the ssh stage produced: does it boot, does sshd answer
+#     launch_dev   the disk the dev stage produced: the same, on a disk with a toolchain
+#
+# They are independent - both start from the ssh disk, and the dev stage's launch needs the dev
+# disk - so they run in parallel. A dev bake that fails does not stop launch_ssh from telling
+# you whether the ssh disk was good.
+#
+# WHAT IS PASSED BETWEEN JOBS
+#
+# Tags and run ids only, through `needs.<job>.outputs`. The disks go through ghcr, and the
+# bootstate through run artifacts, because those are the mechanisms that already exist and
+# because a 12 GiB artifact round trip is the thing we spent a day removing.
+#
+# A JOB THAT IS NOT ASKED FOR IS SKIPPED, NOT RUN AND IGNORED. `base` and `ssh` are always
+# run - everything downstream needs them. `dev` and the two launches are controlled by inputs,
+# and a skipped job shows as skipped in the graph rather than as a success that did nothing.
+#
+# MANUAL ONLY, like every workflow here.
+
+on:
+  workflow_dispatch:
+    inputs:
+      # --- what to do -------------------------------------------------------------
+      run_base:
+        description: "Bake the base Windows disk (WARNING: ~90 minutes)"
+        type: boolean
+        default: true
+      run_dev:
+        description: "Install the dev toolchain on the ssh disk (~25 minutes)"
+        type: boolean
+        default: true
+      launch_ssh:
+        description: "Launch the ssh disk after it is built"
+        type: boolean
+        default: true
+      launch_dev:
+        description: "Launch the dev disk after it is built"
+        type: boolean
+        default: true
+
+      # --- where to start ----------------------------------------------------------
+      #
+      # THE CHAIN IS THE DEFINITION, BUT A STAGE CAN STILL BE STARTED FROM A DISK THAT ALREADY
+      # EXISTS. Two ways in, and only one of them runs anything:
+      #
+      #     run_base on,  base_tag empty      bake Windows from an ISO (~90 min)
+      #     run_base off, base_tag set        skip that, use the disk this tag names
+      #
+      # Without this the workflow could only ever run the whole chain, and re-testing a change
+      # to the ssh stage would mean baking Windows again - which is the cost this consolidation
+      # is supposed to remove, not repeat in a new file.
+      base_tag:
+        description: "Skip the base bake and start from this tag (needs run_base off)"
+        default: ""
+      base_bootstate_run:
+        description: "Run id holding that disk's bootstate artifact (used with base_tag)"
+        default: ""
+
+      # --- base -------------------------------------------------------------------
+      image:
+        description: "Which Windows image to bake"
+        default: "windows11"
+      disk_size:
+        description: "Target disk size"
+        default: "64G"
+
+      # --- shared -----------------------------------------------------------------
+      boot_timeout:
+        description: "Seconds to wait for a guest to reach its desktop or sshd"
+        default: "900"
+      resolution:
+        description: "Guest screen as WxH"
+        default: "1920x1080"
+
+      # --- ssh --------------------------------------------------------------------
+      ssh_publish_tag:
+        description: "Tag for the ssh disk; empty for windows-ssh-<stamp>"
+        default: ""
+
+      # --- dev --------------------------------------------------------------------
+      dev_publish_tag:
+        description: "Tag for the dev disk; empty for windows-dev-<stamp>"
+        default: ""
+
+      # --- launch -----------------------------------------------------------------
+      probe_shell:
+        description: "Launch: open PowerShell and run a probe command"
+        type: boolean
+        default: true
+      probe_after:
+        description: "Launch: seconds after the desktop to run the probe (-1 = as soon as it is up)"
+        default: "-1"
+      check_ssh:
+        description: "Launch: also verify sshd answers on the forwarded port"
+        type: boolean
+        default: false
+
+concurrency:
+  group: windows-11-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ===========================================================================
+  # BASE - install Windows, nothing else.
+  # ===========================================================================
+  base:
+    if: inputs.run_base
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+    outputs:
+      # WHEN THE BAKE IS SKIPPED THIS IS THE TAG IT WAS GIVEN. A skipped job still publishes
+      # its outputs, so one expression serves both paths and `ssh` does not need to know which
+      # one happened.
+      tag: ${{ steps.publish.outputs.tag || inputs.base_tag }}
+      bootstate_run: ${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: base-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            python3 lib/ci.py free-disk --need 80
+            python3 lib/ci.py tags --prefix windows-
+
+      - name: bake
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: base-bake
+          interval: "20"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            python3 windows/11/bake.py \
+              --out out/windows11.qcow2 \
+              --answer windows/11/answer \
+              --image "${{ inputs.image || 'windows11' }}" \
+              --disk-size "${{ inputs.disk_size || '64G' }}" \
+              --timeout 5400
+            python3 windows/11/verify.py out/windows11.qcow2
+
+      - name: keep the recording
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows11-bootstate
+          path: out/windows11.qcow2.bootstate.tar.gz
+          if-no-files-found: warn
+          retention-days: 30
+
+      # A PLAIN `run:` STEP, NOT log-stream, AND THAT IS DELIBERATE.
+      #
+      # The tag this job produces is what every downstream job pulls, so it has to reach
+      # `needs.base.outputs.tag` reliably. A `run:` step's GITHUB_OUTPUT is the runner's own
+      # mechanism; routing it through a third-party action would make a job dependency depend
+      # on how that action treats the variable, which is not something this repository can see
+      # or test. The build output still streams through log-stream, where a lost line costs a
+      # log line; here it would cost the chain.
+      - name: publish
+        if: success()
+        id: publish
+        run: |
+          set -euo pipefail
+          python3 lib/ci.py install-oras
+          python3 lib/ci.py login --registry ghcr.io
+          python3 lib/publish_disk.py out/windows11.qcow2 --kind windows-base
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+  # ===========================================================================
+  # SSH - OpenSSH on the base disk, then clean it.
+  # ===========================================================================
+  ssh:
+    needs: base
+    # ALWAYS, BECAUSE A SKIPPED `base` IS A VALID WAY TO START.
+    #
+    # `needs` alone would skip this too when base is skipped, which would make "start from a
+    # tag" impossible. The guard is that base_tag must be set when run_base is off, and the
+    # pull below fails loudly if the tag is wrong.
+    if: always() && (inputs.run_base || inputs.base_tag != '')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+    outputs:
+      tag: ${{ steps.publish.outputs.tag }}
+      bootstate_run: ${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: ssh-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            python3 lib/ci.py free-disk --need 60
+            if ! command -v sshpass >/dev/null 2>&1; then
+              apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
+                apt-get install -y -qq sshpass
+            fi
+
+      # THE BASE BAKED IN THIS RUN IS THE INPUT. `needs.base.outputs.tag` is what base
+      # published, so this cannot pick up a stale tag by accident - which is what a default
+      # value in a dispatch form can do, and did: the old default pointed at a disk from
+      # 2026-11-02.
+      - name: pull the gold disk
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: ssh-pull
+          interval: "15"
+          command: |
+            set -euo pipefail
+            mkdir -p out
+            export GITHUB_TOKEN="${{ github.token }}"
+            python3 windows/11/pull.py "${{ needs.base.outputs.tag }}" out/windows11-gold.qcow2
+
+      # THE BOOTSTATE ONLY COMES FROM THIS RUN WHEN THIS RUN BAKED THE BASE. Starting from a
+      # given tag means the firmware variables are in that tag's own run, which is why
+      # `base_bootstate_run` exists as a second input.
+      - name: pull the bootstate
+        if: inputs.run_base
+        uses: actions/download-artifact@v4
+        with:
+          name: windows11-bootstate
+          path: out
+          github-token: ${{ github.token }}
+
+      - name: pull the bootstate from another run
+        if: ${{ !inputs.run_base && inputs.base_bootstate_run != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: windows11-bootstate
+          path: out
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.base_bootstate_run }}
+
+      - name: install ssh
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: ssh-install
+          interval: "20"
+          command: |
+            set -euo pipefail
+            python3 windows/11/ssh.py \
+              --gold out/windows11-gold.qcow2 \
+              --out out/windows11-ssh.qcow2 \
+              --bootstate out/windows11.qcow2.bootstate.tar.gz \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --no-clean
+
+      # CLEANING IS ITS OWN STEP, AND IT IS TYPED AT THE RUN GRAPH.
+      #
+      # It boots the disk the step above produced, cleans it over ssh and stops it. The install
+      # step passes --no-clean, so this is the only place it happens and the two cannot drift
+      # about what "clean" means.
+      - name: clean the disk
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: ssh-clean
+          interval: "20"
+          command: |
+            set -euo pipefail
+            python3 lib/clean_step.py \
+              --disk out/windows11-ssh.qcow2 \
+              --kind windows \
+              --work out/ssh-work \
+              --artifacts out \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --mem 6144
+
+      - name: keep the bootstate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-ssh-bootstate
+          path: out/windows11-ssh.qcow2.bootstate.tar.gz
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: publish
+        if: success()
+        id: publish
+        run: |
+          set -euo pipefail
+          python3 lib/ci.py install-oras
+          python3 lib/ci.py login --registry ghcr.io
+          TAG="${{ inputs.ssh_publish_tag }}"
+          if [ -z "$TAG" ]; then
+            python3 lib/publish_disk.py out/windows11-ssh.qcow2 --kind windows-ssh
+          else
+            python3 lib/publish_disk.py out/windows11-ssh.qcow2 --kind windows-ssh --tag "$TAG"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+  # ===========================================================================
+  # DEV - the toolchain on top of ssh, then clean.
+  # ===========================================================================
+  dev:
+    needs: ssh
+    if: inputs.run_dev
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+    outputs:
+      tag: ${{ steps.publish.outputs.tag }}
+      bootstate_run: ${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: dev-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            python3 lib/ci.py free-disk --need 60
+            if ! command -v sshpass >/dev/null 2>&1; then
+              apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
+                apt-get install -y -qq sshpass
+            fi
+
+      - name: pull the ssh disk
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: dev-pull
+          interval: "15"
+          command: |
+            set -euo pipefail
+            mkdir -p out
+            export GITHUB_TOKEN="${{ github.token }}"
+            python3 windows/11/pull.py "${{ needs.ssh.outputs.tag }}" out/windows11-ssh.qcow2
+
+      - name: pull the bootstate
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-ssh-bootstate
+          path: out
+          github-token: ${{ github.token }}
+
+      - name: install the toolchain
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: dev-install
+          interval: "25"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            export WINDOWS_ADMIN_PASSWORD=admin
+            python3 windows/11/devtools.py \
+              --ssh out/windows11-ssh.qcow2 \
+              --bootstate out/windows11-ssh.qcow2.bootstate.tar.gz \
+              --out out/windows11-dev.qcow2 \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --no-clean
+
+      - name: clean the disk
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: dev-clean
+          interval: "20"
+          command: |
+            set -euo pipefail
+            python3 lib/clean_step.py \
+              --disk out/windows11-dev.qcow2 \
+              --kind windows \
+              --work out/devtools-work \
+              --artifacts out \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --mem 8192
+
+      - name: keep the bootstate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-dev-bootstate
+          path: out/windows11-dev.qcow2.bootstate.tar.gz
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: publish
+        if: success()
+        id: publish
+        run: |
+          set -euo pipefail
+          python3 lib/ci.py install-oras
+          python3 lib/ci.py login --registry ghcr.io
+          TAG="${{ inputs.dev_publish_tag }}"
+          if [ -z "$TAG" ]; then
+            python3 lib/publish_disk.py out/windows11-dev.qcow2 --kind windows-dev
+          else
+            python3 lib/publish_disk.py out/windows11-dev.qcow2 --kind windows-dev --tag "$TAG"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+  # ===========================================================================
+  # LAUNCH THE SSH DISK - the fork that does not wait for dev.
+  # ===========================================================================
+  launch_ssh:
+    needs: ssh
+    if: inputs.launch_ssh
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      checks: write
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: launch-ssh-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            python3 lib/ci.py free-disk --need 60
+
+      - name: pull the bootstate
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-ssh-bootstate
+          path: out
+          github-token: ${{ github.token }}
+
+      - name: launch it and photograph the screen
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: launch-ssh
+          interval: "20"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            PROBE=""
+            if [ "${{ inputs.probe_shell }}" = "true" ]; then
+              PROBE="--probe-shell --probe-after ${{ inputs.probe_after || '-1' }}"
+            fi
+            CHECK=""
+            if [ "${{ inputs.check_ssh }}" = "true" ]; then CHECK="--check-ssh"; fi
+            ARCHIVE=$(ls out/*.bootstate.tar.gz 2>/dev/null | head -1)
+            if [ -z "$ARCHIVE" ]; then
+              echo "=== NO BOOTSTATE ARCHIVE IN out/ ==="
+              ls -la out/ || true
+              exit 1
+            fi
+            echo "bootstate: $ARCHIVE"
+            python3 lib/launch_windows.py \
+              --tag "${{ needs.ssh.outputs.tag }}" \
+              $CHECK \
+              --bootstate "$ARCHIVE" \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --resolution "${{ inputs.resolution || '1920x1080' }}" \
+              $PROBE \
+              --artifacts out
+
+      # THE FRAME IS THE RESULT. A launch that reports "no desktop" and shows nothing has not
+      # said where it stopped; the picture is what turned nine silent minutes into "the
+      # firmware could not find bootmgfw.efi".
+      - name: keep the screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: launch-ssh-frames
+          path: |
+            out/*.png
+            out/*.ppm
+            out/launch.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+  # ===========================================================================
+  # LAUNCH THE DEV DISK - the other half of the fork.
+  # ===========================================================================
+  launch_dev:
+    needs: dev
+    if: inputs.run_dev
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      checks: write
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: launch-dev-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            python3 lib/ci.py free-disk --need 60
+
+      - name: pull the bootstate
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-dev-bootstate
+          path: out
+          github-token: ${{ github.token }}
+
+      - name: launch it and photograph the screen
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: launch-dev
+          interval: "20"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            PROBE=""
+            if [ "${{ inputs.probe_shell }}" = "true" ]; then
+              PROBE="--probe-shell --probe-after ${{ inputs.probe_after || '-1' }}"
+            fi
+            CHECK=""
+            if [ "${{ inputs.check_ssh }}" = "true" ]; then CHECK="--check-ssh"; fi
+            ARCHIVE=$(ls out/*.bootstate.tar.gz 2>/dev/null | head -1)
+            if [ -z "$ARCHIVE" ]; then
+              echo "=== NO BOOTSTATE ARCHIVE IN out/ ==="
+              ls -la out/ || true
+              exit 1
+            fi
+            echo "bootstate: $ARCHIVE"
+            python3 lib/launch_windows.py \
+              --tag "${{ needs.dev.outputs.tag }}" \
+              $CHECK \
+              --bootstate "$ARCHIVE" \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --resolution "${{ inputs.resolution || '1920x1080' }}" \
+              $PROBE \
+              --artifacts out
+
+      - name: keep the screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: launch-dev-frames
+          path: |
+            out/*.png
+            out/*.ppm
+            out/launch.txt
+          if-no-files-found: warn
+          retention-days: 14
