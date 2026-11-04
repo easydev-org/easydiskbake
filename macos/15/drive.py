@@ -112,6 +112,26 @@ class Driver:
     """
 
     def __init__(self, qmp_path: str, frames_dir: str | None = None):
+        # THE SOCKET IS WAITED FOR, NOT ASSUMED.
+        #
+        # vm.Guest.start() returns as soon as the process exists; qemu binds its sockets a
+        # moment later. Connecting immediately raises
+        #
+        #     FileNotFoundError: [Errno 2] No such file or directory
+        #     self.sock.connect(path)
+        #
+        # which is how run 41775498755's desktop stage failed - after its pull and its
+        # boot assets had both succeeded, so the run looked late-broken when it was a race
+        # at the very first line of the driver. windows/11/ssh.py waits for the same reason;
+        # this is that wait.
+        deadline = time.time() + 120
+        while not os.path.exists(qmp_path):
+            if time.time() > deadline:
+                raise SystemExit(
+                    f"no QMP socket at {qmp_path} after 120s; qemu either failed to start "
+                    f"or was given a different work directory"
+                )
+            time.sleep(1)
         self.q = qmpmod.QMP(qmp_path)
         self.frames = frames_dir
         self.n = 0
