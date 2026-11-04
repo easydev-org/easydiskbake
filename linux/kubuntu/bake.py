@@ -133,7 +133,7 @@ def boot_installed(work: str, args, disk: str) -> bool:
     and the frames that measurement will be taken from.
     """
     shape = vm.Shape(cpus=args.cpus, mem_mb=args.mem, machine="q35", vga="std")
-    guest = vm.Guest(work, extra=["-drive", f"file={disk},if=virtio,format=qcow2"],
+    guest = vm.Guest(work, extra=["-drive", f"file={disk},if=virtio,format=qcow2,discard=unmap"],
                      shape=shape, stdout=os.devnull)
     shots2 = os.path.join(work, "frames2")
     os.makedirs(shots2, exist_ok=True)
@@ -315,7 +315,7 @@ def main(argv: list[str]) -> int:
         "-kernel", kernel,
         "-initrd", initrd,
         "-drive", f"file={iso_path},media=cdrom,readonly=on",
-        "-drive", f"file={disk},if=virtio,format=qcow2",
+        "-drive", f"file={disk},if=virtio,format=qcow2,discard=unmap",
         "-no-reboot",
     ]
     # THE CONSOLE IS A CHARDDEV ON A FIFO, so qemu's own stdout carries only warnings.

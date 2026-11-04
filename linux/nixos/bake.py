@@ -357,7 +357,7 @@ def main(argv: list[str]) -> int:
         "-kernel", kernel,
         "-initrd", initrd,
         "-drive", f"file={iso_path},media=cdrom,readonly=on",
-        "-drive", f"file={disk},if=virtio,format=qcow2",
+        "-drive", f"file={disk},if=virtio,format=qcow2,discard=unmap",
     ]
     # stdout IS /dev/null ON PURPOSE. This guest's console is a chardev on a fifo
     # (Shape.serial_pipe), so qemu's own stdout carries nothing but warnings - and the
@@ -495,7 +495,7 @@ def clean_installed(work: str, args, disk: str) -> bool:
 
     shape = vm.Shape(cpus=args.cpus, mem_mb=args.mem, machine="q35", vga="std",
                      ssh_port=args.ssh_port)
-    guest = vm.Guest(work, extra=["-drive", f"file={disk},if=virtio,format=qcow2"],
+    guest = vm.Guest(work, extra=["-drive", f"file={disk},if=virtio,format=qcow2,discard=unmap"],
                      shape=shape, stdout=os.devnull)
     ok = False
     try:
