@@ -368,19 +368,6 @@ class Console:
         os.makedirs(shots, exist_ok=True)
         # The last frame that OCR read, so a failure can quote it.
         self.last_text = ""
-        # The input connection, opened on first use and kept - see live().
-        self._live = None
-
-    def live(self):
-        """The QMP connection used for input, opened once and kept.
-
-        Input is not a request/response conversation: the guest's view of the pointer is
-        state, and a connection closed between clicks takes that state with it. See click().
-        """
-        if getattr(self, "_live", None) is None:
-            self._live = self.qmp()
-        return self._live
-
     def qmp(self):
         """A QMP connection, waiting for the socket to exist.
 
@@ -459,66 +446,63 @@ class Console:
         return ""
 
     def type(self, text: str, *, settle: float = 0.5) -> None:
-        """Type `text` and press Return. Newlines are refused by lib/keys."""
-        # ONE CONNECTION FOR THE WHOLE LINE, the same one the pointer uses. See live().
-        c = self.live()
-        for kind, code in keylib.for_text(text):
-            if kind == "key":
-                qmpmod.key(c, code)
-            else:
-                qmpmod.key_combo(c, *code)
-            time.sleep(0.03)
-        qmpmod.key(c, "ret")
+        """Type `text` and press Return. Newlines are refused by lib/keys.
+
+        A CONNECTION PER LINE, as on the runs that worked. lib/snapshots.py holds the record
+        socket and this uses the drive socket, so there is no contention to avoid - and the
+        persistent connection introduced while chasing the pointer is gone with the rest of
+        that attempt.
+        """
+        c = self.qmp()
+        try:
+            for kind, code in keylib.for_text(text):
+                if kind == "key":
+                    qmpmod.key(c, code)
+                else:
+                    qmpmod.key_combo(c, *code)
+                time.sleep(0.03)
+            qmpmod.key(c, "ret")
+        finally:
+            c.close()
         time.sleep(settle)
 
     def click(self, x: int, y: int, *, why: str = "", settle: float = 1.5) -> None:
         """A left click at an absolute position, then a frame.
 
-        qmp.click() takes 0..32767 and scales to the screen, so the caller passes pixels and
-        this converts - the same contract lib/qmp.py has, kept here so every call in this
-        file is in the units a screenshot is measured in.
+        THIS IS THE ONE THAT WORKS, AND THE PARTS OF IT THAT LOOK REDUNDANT ARE NOT.
+        Run 41874326761 opened a terminal on its first click with this exact sequence:
+        move, 0.3s, press, 0.15s, release. Run 41875783970 did the same.
+
+        Everything tried since - sending the axes and the press in one event list, walking a
+        relative pointer from a saturated corner, hovering first - failed, on the same
+        coordinate, against the same image. Whatever the theory, this ordering is the one
+        with two successes behind it, so it is the one that ships.
+
+        The connection is still opened and closed per click, as it was on both of those runs.
         """
-        # ONE CONNECTION, KEPT OPEN, AND THE POINTER LEFT WHERE IT WAS PUT.
-        #
-        # This used to open a QMP connection, click and close it - several times per stage,
-        # against another client (lib/snapshots.py) doing the same socket. A usb-tablet reports
-        # absolute position, and the position it reports is only meaningful while something
-        # is tracking it: with the connection torn down after every click, the guest sees a
-        # pointer that appears at a coordinate, presses, releases, and then ceases to exist,
-        # and Orbital's taskbar - which highlights on hover - never believes it is being
-        # pointed at.
-        #
-        # Runs 41874326761 and 41882033727 sent the same click to the same coordinate with the
-        # same timings and got opposite answers; the difference this addresses is that the
-        # pointer now persists long enough to be "over" the icon before and after the press.
-        qmpmod.click(self.live(), x, y)
+        c = self.qmp()
+        try:
+            qmpmod.click(c, x, y)
+        finally:
+            c.close()
         log(f"  click ({x}, {y})" + (f" {why}" if why else ""))
         time.sleep(settle)
 
-    def click_relative(self, x: int, y: int, *, why: str = "",
-                       settle: float = 1.5) -> None:
-        """A click with a PS/2 pointer, for a guest that ignores absolute events.
-
-        Redox's usbhid does not bind `usb-tablet`: the cursor in run 41894870375's recording
-        is still the white arrow at (0, 0) after six absolute clicks, each of which QMP
-        accepted. Its ps2d driver does handle the PS/2 mouse, so this walks the pointer to
-        the coordinate instead of telling the guest where it is. See lib/qmp.py's
-        point_relative().
-        """
-        qmpmod.click_relative(self.live(), x, y)
-        log(f"  click ({x}, {y}) with the PS/2 pointer" + (f" {why}" if why else ""))
-        time.sleep(settle)
-
     def key_combo(self, *qcodes: str, settle: float = 0.5) -> None:
-        """Press several keys together, on the connection the rest of the input uses."""
-        qmpmod.key_combo(self.live(), *qcodes)
+        """Press several keys together, e.g. ctrl+alt+f1 for a VT switch."""
+        c = self.qmp()
+        try:
+            qmpmod.key_combo(c, *qcodes)
+        finally:
+            c.close()
         time.sleep(settle)
 
     def key(self, qcode: str, *, settle: float = 0.5) -> None:
-        # THE SAME CONNECTION AS THE POINTER. A key is not positional, but the guest's input
-        # queue is one queue: mixing it across connections is how a chord and a click get
-        # reordered against each other. See live().
-        qmpmod.key(self.live(), qcode)
+        c = self.qmp()
+        try:
+            qmpmod.key(c, qcode)
+        finally:
+            c.close()
         time.sleep(settle)
 
     def wait_for(self, markers: list[str], seconds: int, what: str) -> str:
@@ -758,151 +742,78 @@ def main(argv: list[str]) -> int:
             #
             # So the thing to wait for is the strip turning light. A dark dock is a
             # placeholder; it is drawn, and it answers nothing.
+            # WAIT FOR THE DOCK TO SETTLE, THEN TRY THE ONLY TWO WAYS IN.
+            #
+            # Orbital's dock is clickable on some boots and not others - 41874326761 and
+            # 41875783970 opened a terminal on the first click, and every run since has been
+            # silent - and the difference is not in the frames. So both routes are tried in
+            # the order of how much they are known to work, and whichever produces a shell is
+            # used. Everything after this point is typed either way.
             log("  letting Orbital finish drawing its panel and dock")
             time.sleep(int(os.environ.get("DESKTOP_SETTLE_SECONDS", "15")))
 
-            # 3. A TERMINAL, OPENED THE WAY A PERSON WOULD - the same shape as
-            #    windows/11/ssh.py's open_powershell().
-            #
-            #    WINDOWS                      REDOX
-            #    Esc                          (nothing to dismiss)
-            #    Win+R                        click the terminal icon in the dock
-            #    type "powershell"            (the icon IS the program)
-            #    Return                       (it starts on click)
-            #
-            #    F2 WAS THE WRONG MECHANISM and this run proved it. The image's own init list
-            #    is
-            #
-            #        30_console_switch      switches the console
-            #        20_orbital             takes VT3 for the compositor
-            #        30_getty_debug.service a getty
-            #
-            #    so 30_console_switch has ALREADY handed VT3 to Orbital by the time a driver
-            #    could press F2, and pressing it afterwards moves nothing. The bake sat on
-            #    "=== orbital ===" for twelve minutes waiting for a text login that was never
-            #    going to appear on that VT.
-            #
-            #    THE DOCK IS THE LAUNCHER. Orbital's launcher is a taskbar that scans /apps/
-            #    for .desktop entries (doc.redox-os.org/book/gui.html), and this image ships
-            #    COSMIC Terminal's icon as /apps/com.system76.CosmicTerm.svg. So the terminal
-            #    is a click on the bottom bar, not a key sequence.
-            # THE MOUSE IS NOT THIS GUEST'S, SO THE KEYBOARD IS TRIED FIRST.
-            #
-            # Every mouse attempt has failed for the same reason, visible in the recordings:
-            # crop 80x60 from the top-left corner of the frame AFTER a click and the white
-            # pointer arrow is still at (0, 0). Absolute events (input-send-event abs) and
-            # relative ones (rel, walked from a saturated corner) both leave it there, so
-            # Redox is not binding either pointing device - and thirty seconds of clicking at
-            # a cursor that has not moved is a test of nothing.
-            #
-            # The KEYBOARD does work: runs 41874326761 and 41875783970 typed `su`, a password,
-            # `id -u`, fourteen echo lines and `pkg --yes install openssh` into a terminal and
-            # read every answer back. So this asks for a text console with a keystroke, and
-            # if one appears the rest of the stage is typed - which is how the login, the
-            # account and the package install were going to run anyway.
-            #
-            # VT 3 IS ORBITAL; the image's own configuration says so:
-            #
-            #     config/desktop-minimal.toml:  nowait VT=3 orbital orblogin launcher
-            #                                   (30_console_switch is overridden to do nothing)
-            #     config/minimal.toml:          inputd -A 2   (the non-desktop switch)
-            #
-            # so Ctrl+Alt+F1 is a VT below Orbital's. A getty there gives "login:" and a root
-            # shell, and nothing below this point needs a pointer.
-            note("=== a text console, by keyboard ===")
-            console = False
-            for vt in ("f1", "f2"):
-                # THE QCODES ARE `ctrl` AND `alt`, NOT `ctrl_l` AND `alt_l`.
-                #
-                # QEMU's QKeyCode enumeration (qapi/ui.json) is
-                #
-                #     'shift', 'shift_r', 'alt', 'alt_r', 'ctrl', 'ctrl_r', 'menu', ...
-                #
-                # - the left-hand modifiers have no suffix, only the right-hand ones do - and
-                # its own ctrl-alt-delete example sends "ctrl", "alt", "delete". The first
-                # attempt at this used the names macOS's chords do, and QEMU refused it:
-                #
-                #     RuntimeError: input-send-event (chord ctrl_l+alt_l+f1) was refused by
-                #     qemu: Parameter 'data' does not accept value 'ctrl_l'
-                #
-                # which is the error the _send() check added earlier exists to produce. It
-                # cost one run instead of a silent ninety-second wait.
-                con.key_combo("ctrl", "alt", vt, settle=1.0)
-                time.sleep(5)
-                if con.wait_for(["login:"], 30, f"a text console on {vt.upper()}"):
-                    note(f"  the text console is on {vt.upper()}")
-                    console = True
-                    break
-                note(f"  no login prompt on {vt.upper()}")
+            tip = None
+            got_shell = False
 
-            if console:
-                # THE GETTY WANTS A NAME. Redox's own default account is `user` with no
-                # password, which is what the login box above was asking for too.
-                con.type("user", settle=4.0)
-                con.key("ret", settle=6.0)
-                if not con.wait_for(["password", "user:", "root:"], 60, "the shell"):
-                    note("=== THE CONSOLE DID NOT GIVE A SHELL ===")
-                    return False
-                # `id -u` is not read: one digit at this size is the thing OCR cannot do.
-                # The prompt is.
-                con.key("ret", settle=2.0)
-                if not con.wait_for(["user:~$", "user:~#"], 30, "a user prompt"):
-                    note("=== NO PROMPT AFTER LOGIN ===")
-                    return False
-                note("  a shell on the text console")
-            else:
-                note("  no text console; falling back to the dock, which has worked twice")
-
-            # ONLY IF THERE IS NO CONSOLE: OPEN A TERMINAL FROM THE DOCK.
-            #
-            # WHAT THE DOCK IS, measured from run 41783947010's last frame: the bottom bar
-            # holds two glyphs at x=1844..1871 and x=1882..1909 (y~1055), both LETTER
-            # PLACEHOLDERS - a bold "K" and a bold "P" on a dark square. Orbital's launcher
-            # falls back to the first letter when it cannot load an icon. Later images ship
-            # real icons at the left edge instead, which is why the coordinate below is at
-            # x=115 rather than x=1850.
-            #
-            # THIS PATH HAS WORKED TWICE AND FAILED EVERY OTHER TIME, and the recordings say
-            # why: the pointer arrow is still at (0, 0) after the click, in both the absolute
-            # and the relative form. It is kept because it is the only route on an image with
-            # no getty, and it is NOT the route this stage depends on any more - the console
-            # above is tried first for exactly that reason.
-            if not console:
-                note("=== a terminal, from the dock ===")
-                import qmp as qmpmod
-
-                baseline = con.shot("terminal-before")
-                before = dark_window_fraction(baseline) if baseline else 0.0
-                note(f"  dark fraction before: {before:.2f}")
-
-                opened = False
-                for attempt in range(1, 4):
-                    con.click(*DOCK_TERMINAL,
-                              why=f"the terminal icon in the dock "
-                                  f"(attempt {attempt} of 3)",
-                              settle=1.0)
-                    deadline = time.time() + 10
-                    while time.time() < deadline:
-                        time.sleep(2)
-                        png = con.shot(f"terminal-{attempt}")
-                        if not png:
-                            continue
-                        now = dark_window_fraction(png)
-                        note(f"    dark fraction {now:.2f}")
-                        # 15 points of the frame turning dark is a window, not a redraw: the
-                        # wallpaper does not change when a terminal opens over it.
-                        if now - before >= 0.15:
-                            opened = True
-                            break
-                    if opened:
+            # --- 1. THE DOCK. Two successes, and the exact sequence they used. -----------
+            note("=== a terminal, from the dock ===")
+            baseline = con.shot("terminal-before")
+            before = dark_window_fraction(baseline) if baseline else 0.0
+            note(f"  dark fraction before: {before:.2f}")
+            for attempt in range(1, 4):
+                con.click(*DOCK_TERMINAL,
+                          why=f"the terminal icon in the dock (attempt {attempt} of 3)",
+                          settle=1.0)
+                deadline = time.time() + 10
+                while time.time() < deadline:
+                    time.sleep(2)
+                    png = con.shot(f"terminal-{attempt}")
+                    if not png:
+                        continue
+                    now = dark_window_fraction(png)
+                    note(f"    dark fraction {now:.2f}")
+                    # 15 points of the frame turning dark is a window, not a redraw: the
+                    # wallpaper does not change when a terminal opens over it.
+                    if now - before >= 0.15:
+                        got_shell = True
                         break
+                if got_shell:
+                    break
 
-                if not opened:
-                    note("=== THE DOCK DID NOT OPEN A TERMINAL ===")
-                    note(f"  clicked {DOCK_TERMINAL} three times, 10s apart, and the frame's")
-                    note(f"  dark fraction stayed near {before:.2f}; this image has no getty")
-                    note("  on a VT and no working pointer, so there is no way in")
-                    return False
+            # --- 2. A TEXT CONSOLE, BY KEYBOARD. The keyboard has never failed. ----------
+            #
+            # The image has no getty on VT 1 or 2 - both were tried on run 41902659023 and
+            # neither produced "login:" - but the switch is kept because it costs one
+            # keystroke per VT and turns "no way in" into "a shell".
+            if not got_shell:
+                note("=== a text console, by keyboard ===")
+                for vt in ("f1", "f2"):
+                    # THE QCODES ARE `ctrl` AND `alt`, NOT `ctrl_l` AND `alt_l`. QEMU's
+                    # QKeyCode enumeration is 'shift', 'shift_r', 'alt', 'alt_r', 'ctrl',
+                    # 'ctrl_r', ... - only the right-hand modifiers take a suffix - and its
+                    # ctrl-alt-delete example sends "ctrl", "alt", "delete".
+                    con.key_combo("ctrl", "alt", vt, settle=1.0)
+                    time.sleep(5)
+                    if con.wait_for(["login:"], 30, f"a text console on {vt.upper()}"):
+                        note(f"  a text console is on {vt.upper()}")
+                        con.type("user", settle=4.0)
+                        con.key("ret", settle=6.0)
+                        if con.wait_for(["password", "user:~$", "user:~#"], 60, "a prompt"):
+                            con.key("ret", settle=2.0)
+                            if con.wait_for(["user:~$", "user:~#"], 30, "a shell"):
+                                tip = "a text console"
+                                got_shell = True
+                                break
+                    note(f"  no login prompt on {vt.upper()}")
+
+            if not got_shell:
+                note("=== NO WAY INTO THIS GUEST ===")
+                note("  the dock opened nothing in three clicks and there is no getty on")
+                note("  VT 1 or 2; the frame beside this message is the desktop")
+                return False
+            if tip:
+                note(f"  a shell on {tip}")
+            else:
                 note("  a terminal is open")
 
             # 4. ROOT, AND WHY NOT `user`.
