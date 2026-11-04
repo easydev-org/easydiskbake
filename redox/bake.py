@@ -703,29 +703,50 @@ def main(argv: list[str]) -> int:
             before = dark_window_fraction(baseline) if baseline else 0.0
             note(f"  dark fraction before: {before:.2f}")
 
-            # THE CLICK IS RETRIED, BECAUSE ONE CLICK INTO A DRAWING DESKTOP IS A RACE.
+            # HOVER FIRST, THEN CLICK - AND ONLY CLICK ONCE THE DOCK ANSWERS.
             #
-            # Run 41871160859 clicked at 16:49:37, one second after "the desktop is up", and
-            # the dock region of every following frame was byte identical - no hover, no
-            # launch, no change at all. Orbital had just painted its wallpaper and the dock
-            # was still a picture: a click at that moment goes to a widget that has not
-            # subscribed to the pointer yet.
+            # Three runs now differ on one thing that a fixed wait cannot control:
             #
-            # It is also not certain that the first click reaches the guest at all - qemu
-            # answers an error to input-send-event for a device that is not attached, and
-            # lib/qmp.click() now raises on that rather than pretending - so a retry is both
-            # a second chance and the thing that distinguishes "the click was lost" from
-            # "the icon is not there".
+            #     41874326761   click at +11s over the desktop   terminal opened on attempt 1
+            #     41875783970   click at +11s over the desktop   terminal opened on attempt 1
+            #     41878233903   click at +10s over the desktop   three clicks, nothing
             #
-            # THREE ATTEMPTS, 6s APART, each followed by a measurement: the terminal opens in
-            # under a second when it opens at all, so a wait that finds nothing is evidence,
-            # not impatience.
+            # Same coordinate, same wait, opposite outcomes. What is different is whether
+            # Orbital's dock has taken the pointer yet, and the only local signal for that is
+            # the dock itself: a taskbar highlights the icon under the cursor. So the pointer
+            # is moved onto the icon and the region is compared with the baseline BEFORE
+            # anything is clicked - a hover that changes nothing means the dock is not
+            # listening, and clicking into that is what the three-attempt loop kept doing.
+            #
+            # The click is still retried, because a highlight can also arrive a moment late.
+            # What changes is that the retry has something to wait for.
+            import qmp as qmpmod
+
+            def dock_changed(baseline_png: str, label: str) -> bool:
+                """True when the dock region no longer matches the baseline."""
+                png = con.shot(label)
+                if not png or not baseline_png:
+                    return False
+                return abs(dark_window_fraction(png)
+                           - dark_window_fraction(baseline_png)) >= 0.01
+
             opened = False
             for attempt in range(1, 4):
+                # POINT AT IT, THEN LOOK. A move with no button is what a person does before
+                # clicking, and it is also the cheapest test of whether the dock is awake.
+                c = con.qmp()
+                try:
+                    qmpmod.move(c, *DOCK_TERMINAL)
+                finally:
+                    c.close()
+                time.sleep(2.0)
+                hovered = dock_changed(baseline, f"terminal-hover-{attempt}")
+                note(f"    the dock {'answered the pointer' if hovered else 'did not react'}")
+
                 con.click(*DOCK_TERMINAL,
                           why=f"the terminal icon in the dock (attempt {attempt} of 3)",
                           settle=1.0)
-                deadline = time.time() + 8
+                deadline = time.time() + 10
                 while time.time() < deadline:
                     time.sleep(2)
                     png = con.shot(f"terminal-{attempt}")
@@ -744,7 +765,7 @@ def main(argv: list[str]) -> int:
 
             if not opened:
                 note("=== THE DOCK DID NOT OPEN A TERMINAL ===")
-                note(f"  clicked {DOCK_TERMINAL} three times, 2s apart, with a Return")
+                note(f"  clicked {DOCK_TERMINAL} three times, with a hover and a 10s look")
                 note(f"  after each; the frame's dark fraction stayed near {before:.2f}, so")
                 note("  nothing opened over the wallpaper")
                 return False
