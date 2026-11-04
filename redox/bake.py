@@ -509,6 +509,11 @@ class Console:
         log(f"  click ({x}, {y}) with the PS/2 pointer" + (f" {why}" if why else ""))
         time.sleep(settle)
 
+    def key_combo(self, *qcodes: str, settle: float = 0.5) -> None:
+        """Press several keys together, on the connection the rest of the input uses."""
+        qmpmod.key_combo(self.live(), *qcodes)
+        time.sleep(settle)
+
     def key(self, qcode: str, *, settle: float = 0.5) -> None:
         # THE SAME CONNECTION AS THE POINTER. A key is not positional, but the guest's input
         # queue is one queue: mixing it across connections is how a chord and a click get
@@ -781,101 +786,109 @@ def main(argv: list[str]) -> int:
             #    for .desktop entries (doc.redox-os.org/book/gui.html), and this image ships
             #    COSMIC Terminal's icon as /apps/com.system76.CosmicTerm.svg. So the terminal
             #    is a click on the bottom bar, not a key sequence.
-            note("=== a terminal, from the dock ===")
-            # WHAT THE DOCK ACTUALLY IS, measured from run 41783947010's last frame:
+            # THE MOUSE IS NOT THIS GUEST'S, SO THE KEYBOARD IS TRIED FIRST.
             #
-            #     the bottom bar holds exactly two glyphs, at x=1844..1871 and x=1882..1909
-            #     (y~1055), and both are LETTER PLACEHOLDERS - a bold "K" and a bold "P" on
-            #     a dark square. They are not icons: Orbital's launcher falls back to the
-            #     first letter when it cannot load an application's icon, and its binary
-            #     carries `failed to find icon ... with size ...` for exactly that path.
+            # Every mouse attempt has failed for the same reason, visible in the recordings:
+            # crop 80x60 from the top-left corner of the frame AFTER a click and the white
+            # pointer arrow is still at (0, 0). Absolute events (input-send-event abs) and
+            # relative ones (rel, walked from a saturated corner) both leave it there, so
+            # Redox is not binding either pointing device - and thirty seconds of clicking at
+            # a cursor that has not moved is a test of nothing.
             #
-            # So the dock cannot be clicked by looking for a terminal picture - there is no
-            # picture. The click below is at the SECOND glyph, which is the position a
-            # taskbar entry occupies, and its outcome is what this stage reports.
-            # THE TERMINAL IS MEASURED, NOT READ - see dark_window_fraction().
+            # The KEYBOARD does work: runs 41874326761 and 41875783970 typed `su`, a password,
+            # `id -u`, fourteen echo lines and `pkg --yes install openssh` into a terminal and
+            # read every answer back. So this asks for a text console with a keystroke, and
+            # if one appears the rest of the stage is typed - which is how the login, the
+            # account and the package install were going to run anyway.
             #
-            # The prompt is a few pixels of text on a wallpaper; tesseract returns the wallpaper.
-            # What opening a terminal actually changes is a large dark rectangle appearing over
-            # a blue screen, and that is a number.
-            # THE BASELINE IS TAKEN NOW, from this moment's frame.
+            # VT 3 IS ORBITAL; the image's own configuration says so:
             #
-            # It used to read `artifacts/desktop-check.ppm`, a name written by the descriptor
-            # loop above - which now copies the recording's newest frame and returns a PNG, so
-            # that file does not exist and the baseline was 0.00. A baseline of zero makes the
-            # comparison below pass on any darkening at all.
-            baseline = con.shot("terminal-before")
-            before = dark_window_fraction(baseline) if baseline else 0.0
-            note(f"  dark fraction before: {before:.2f}")
-
-            # HOVER FIRST, THEN CLICK - AND ONLY CLICK ONCE THE DOCK ANSWERS.
+            #     config/desktop-minimal.toml:  nowait VT=3 orbital orblogin launcher
+            #                                   (30_console_switch is overridden to do nothing)
+            #     config/minimal.toml:          inputd -A 2   (the non-desktop switch)
             #
-            # Three runs now differ on one thing that a fixed wait cannot control:
-            #
-            #     41874326761   click at +11s over the desktop   terminal opened on attempt 1
-            #     41875783970   click at +11s over the desktop   terminal opened on attempt 1
-            #     41878233903   click at +10s over the desktop   three clicks, nothing
-            #
-            # Same coordinate, same wait, opposite outcomes. What is different is whether
-            # Orbital's dock has taken the pointer yet, and the only local signal for that is
-            # the dock itself: a taskbar highlights the icon under the cursor. So the pointer
-            # is moved onto the icon and the region is compared with the baseline BEFORE
-            # anything is clicked - a hover that changes nothing means the dock is not
-            # listening, and clicking into that is what the three-attempt loop kept doing.
-            #
-            # The click is still retried, because a highlight can also arrive a moment late.
-            # What changes is that the retry has something to wait for.
-            import qmp as qmpmod
-
-            def dock_changed(baseline_png: str, label: str) -> bool:
-                """True when the dock region no longer matches the baseline."""
-                png = con.shot(label)
-                if not png or not baseline_png:
-                    return False
-                return abs(dark_window_fraction(png)
-                           - dark_window_fraction(baseline_png)) >= 0.01
-
-            opened = False
-            for attempt in range(1, 4):
-                # POINT AT IT, THEN LOOK. A move with no button is what a person does before
-                # clicking, and it is also the cheapest test of whether the dock is awake.
-                # THE SAME CONNECTION AS THE CLICK THAT FOLLOWS. Opening a second one to
-                # hover and closing it before the click is the pattern this whole change
-                # removed; it also made qmp() connect while snapshots.py held the socket,
-                # which timed out in run 41886018594.
-                qmpmod.point_relative(con.live(), *DOCK_TERMINAL)
-                time.sleep(2.0)
-                hovered = dock_changed(baseline, f"terminal-hover-{attempt}")
-                note(f"    the dock {'answered the pointer' if hovered else 'did not react'}")
-
-                con.click_relative(*DOCK_TERMINAL,
-                                   why=f"the terminal icon in the dock "
-                                       f"(attempt {attempt} of 3)",
-                                   settle=1.0)
-                deadline = time.time() + 10
-                while time.time() < deadline:
-                    time.sleep(2)
-                    png = con.shot(f"terminal-{attempt}")
-                    if not png:
-                        continue
-                    now = dark_window_fraction(png)
-                    note(f"    dark fraction {now:.2f}")
-                    # 15 points of the frame turning dark is a window, not a redraw: the
-                    # wallpaper does not change when a terminal opens over it.
-                    if now - before >= 0.15:
-                        opened = True
-                        break
-                if opened:
+            # so Ctrl+Alt+F1 is a VT below Orbital's. A getty there gives "login:" and a root
+            # shell, and nothing below this point needs a pointer.
+            note("=== a text console, by keyboard ===")
+            console = False
+            for vt in ("f1", "f2"):
+                con.key_combo("ctrl_l", "alt_l", vt, settle=1.0)
+                time.sleep(5)
+                if con.wait_for(["login:"], 30, f"a text console on {vt.upper()}"):
+                    note(f"  the text console is on {vt.upper()}")
+                    console = True
                     break
-                con.key("ret", settle=0.5)
+                note(f"  no login prompt on {vt.upper()}")
 
-            if not opened:
-                note("=== THE DOCK DID NOT OPEN A TERMINAL ===")
-                note(f"  clicked {DOCK_TERMINAL} three times, with a hover and a 10s look")
-                note(f"  after each; the frame's dark fraction stayed near {before:.2f}, so")
-                note("  nothing opened over the wallpaper")
-                return False
-            note("  a terminal is open")
+            if console:
+                # THE GETTY WANTS A NAME. Redox's own default account is `user` with no
+                # password, which is what the login box above was asking for too.
+                con.type("user", settle=4.0)
+                con.key("ret", settle=6.0)
+                if not con.wait_for(["password", "user:", "root:"], 60, "the shell"):
+                    note("=== THE CONSOLE DID NOT GIVE A SHELL ===")
+                    return False
+                # `id -u` is not read: one digit at this size is the thing OCR cannot do.
+                # The prompt is.
+                con.key("ret", settle=2.0)
+                if not con.wait_for(["user:~$", "user:~#"], 30, "a user prompt"):
+                    note("=== NO PROMPT AFTER LOGIN ===")
+                    return False
+                note("  a shell on the text console")
+            else:
+                note("  no text console; falling back to the dock, which has worked twice")
+
+            # ONLY IF THERE IS NO CONSOLE: OPEN A TERMINAL FROM THE DOCK.
+            #
+            # WHAT THE DOCK IS, measured from run 41783947010's last frame: the bottom bar
+            # holds two glyphs at x=1844..1871 and x=1882..1909 (y~1055), both LETTER
+            # PLACEHOLDERS - a bold "K" and a bold "P" on a dark square. Orbital's launcher
+            # falls back to the first letter when it cannot load an icon. Later images ship
+            # real icons at the left edge instead, which is why the coordinate below is at
+            # x=115 rather than x=1850.
+            #
+            # THIS PATH HAS WORKED TWICE AND FAILED EVERY OTHER TIME, and the recordings say
+            # why: the pointer arrow is still at (0, 0) after the click, in both the absolute
+            # and the relative form. It is kept because it is the only route on an image with
+            # no getty, and it is NOT the route this stage depends on any more - the console
+            # above is tried first for exactly that reason.
+            if not console:
+                note("=== a terminal, from the dock ===")
+                import qmp as qmpmod
+
+                baseline = con.shot("terminal-before")
+                before = dark_window_fraction(baseline) if baseline else 0.0
+                note(f"  dark fraction before: {before:.2f}")
+
+                opened = False
+                for attempt in range(1, 4):
+                    con.click(*DOCK_TERMINAL,
+                              why=f"the terminal icon in the dock "
+                                  f"(attempt {attempt} of 3)",
+                              settle=1.0)
+                    deadline = time.time() + 10
+                    while time.time() < deadline:
+                        time.sleep(2)
+                        png = con.shot(f"terminal-{attempt}")
+                        if not png:
+                            continue
+                        now = dark_window_fraction(png)
+                        note(f"    dark fraction {now:.2f}")
+                        # 15 points of the frame turning dark is a window, not a redraw: the
+                        # wallpaper does not change when a terminal opens over it.
+                        if now - before >= 0.15:
+                            opened = True
+                            break
+                    if opened:
+                        break
+
+                if not opened:
+                    note("=== THE DOCK DID NOT OPEN A TERMINAL ===")
+                    note(f"  clicked {DOCK_TERMINAL} three times, 10s apart, and the frame's")
+                    note(f"  dark fraction stayed near {before:.2f}; this image has no getty")
+                    note("  on a VT and no working pointer, so there is no way in")
+                    return False
+                note("  a terminal is open")
 
             # 4. ROOT, AND WHY NOT `user`.
             #
