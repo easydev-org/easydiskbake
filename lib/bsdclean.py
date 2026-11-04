@@ -62,13 +62,26 @@ USED = "df -m / | awk 'NR==2 {print $3}'"
 # THE ZEROING. Same contract as linclean.ZERO: sync first so the writes above are accounted
 # for, a 200 MB margin so the last block does not fail while looking like success, and a
 # partial dd reported rather than treated as failure - the blocks it reached are zero.
+# THE ZEROING, IN FREEBSD'S OWN dd SYNTAX.
+#
+# Every option here was checked against FreeBSD's dd, not GNU's:
+#
+#     bs=1m          FreeBSD accepts lower case; 1M works too but this is the documented form
+#     `status=none`  DOES NOT EXIST in FreeBSD's dd - it is a GNU extension. Passing it makes
+#                    dd treat it as a file to read, which is why run 41814852442 sat at
+#                    "zeroing the free space" for the full 900 s and then reported that the
+#                    space had not been zeroed at all
+#     count=$t       $t is in MiB because df -m is, so it matches bs=1m
+#
+# The output redirection is the portable way to keep dd quiet, and `2>/dev/null` is not
+# needed on a command whose only output is the progress line.
 ZERO = (
     "sync; "
     "f=$(df -m / | awk 'NR==2 {print $4}'); "
     "echo \"FREE_MB=$f\"; "
     "if [ \"${f:-0}\" -gt 500 ]; then "
     "  t=$((f-200)); echo \"ZERO_MB=$t\"; "
-    "  sudo dd if=/dev/zero of=/zero.fill bs=1m count=$((t)) status=none "
+    "  sudo dd if=/dev/zero of=/zero.fill bs=1m count=$t >/dev/null 2>&1 "
     "    || echo ZERO_PARTIAL; "
     "  sync; sudo rm -f /zero.fill; echo ZERO_DONE; "
     "else echo ZERO_SKIPPED; fi"
