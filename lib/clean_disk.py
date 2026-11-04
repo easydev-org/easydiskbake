@@ -45,8 +45,11 @@ from __future__ import annotations
 SYSTEMS = {
     "windows": ("winclean", {"user": "docker"}),
     "linux": ("linclean", {}),
-    # A DISK THAT NEEDS NEITHER IS NOT CLEANED BY GUESSING. Adding BSD or macOS here means
-    # writing the steps for it first - the zeroing is shared, the rest is not.
+    "freebsd": ("bsdclean", {"user": "docker"}),
+    # macOS IS DELIBERATELY ABSENT. Its filesystem is copy-on-write, so writing zeros over the
+    # free space allocates new blocks before the old ones are released, and APFS snapshots hold
+    # blocks a write cannot reach. "Adding it here" is not the work; measuring whether it saves
+    # anything is, and that has not been done.
 }
 
 

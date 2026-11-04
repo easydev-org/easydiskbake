@@ -27,6 +27,21 @@ echo "=== easydiskbake: configuring the installed FreeBSD ==="
 pw useradd docker -m -s /bin/sh -G wheel -c "easydiskbake"
 echo 'admin' | pw usermod docker -h 0
 
+# SUDO MUST NOT ASK FOR A PASSWORD, BECAUSE NOTHING CAN TYPE ONE.
+#
+# The comment above says why wheel was chosen, but no sudoers file was ever written - so
+# `sudo pkg clean` on this disk waits at "Password:" and the ssh session has no terminal to
+# answer with. It reads as a hung clean, not as a missing configuration.
+#
+# Every other image here already does this: Ubuntu's autoinstall writes
+# /etc/sudoers.d/90-docker-nopasswd, and NixOS gives the account wheel plus
+# security.sudo.wheelNeedsPassword = false. This is the same line, in the file format FreeBSD
+# uses. The mode is 0440 because sudo refuses a sudoers file anyone else can read.
+cat > /usr/local/etc/sudoers.d/90-docker-nopasswd << 'EOF'
+docker ALL=(ALL) NOPASSWD:ALL
+EOF
+chmod 0440 /usr/local/etc/sudoers.d/90-docker-nopasswd
+
 # ROOT CAN LOG IN TOO, and that is deliberate. This disk has no keys and no network
 # exposure beyond a forwarded port somebody started on purpose; a root that cannot log in
 # out of the box buys nothing and costs an emergency-console recovery when a stage has to

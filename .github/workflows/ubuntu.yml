@@ -1,0 +1,320 @@
+name: ubuntu
+
+# Ubuntu: bake -> clean -> publish, then launch. One workflow, and every job can start from a
+# tag that already exists.
+#
+#     bake ──> launch
+#
+# WHY ONE WORKFLOW
+#
+# It was two - bake and launch - and each had to be started by hand with a tag the other one
+# produced. A launch's run graph said nothing about which bake made the disk it was testing.
+#
+# EVERY JOB TAKES A TAG
+#
+#     <job>_run       should this job run
+#     <job>_from      the tag to pull; empty means "use what the job above produced"
+#
+# so a change to `launch` can be tested against a disk that already exists, which is the whole
+# reason for having the pair. Ubuntu needs no bootstate: the firmware variables are only load
+# bearing for Windows and macOS, where the boot entry lives in them.
+#
+# NO SCREEN IS READ AT ANY POINT. The ISO's own kernel is booted with -kernel/-initrd and one
+# kernel argument carries the address of the autoinstall document; the installer fetches it,
+# partitions, installs, enables ssh and reboots. The completion test is the disk - subiquity's
+# console scrolls and its last act is a reboot, so the guest exiting is the fact.
+#
+# MANUAL ONLY.
+
+on:
+  workflow_dispatch:
+    inputs:
+      # --- what to run -------------------------------------------------------------
+      bake_run:
+        description: "Install Ubuntu (the disk is ~24 GB, ~30 minutes)"
+        type: boolean
+        default: true
+      launch_run:
+        description: "Start the disk and prove it boots"
+        type: boolean
+        default: true
+
+      # --- where each job starts ---------------------------------------------------
+      bake_from:
+        description: "bake: pull this tag instead of installing"
+        default: ""
+      launch_from:
+        description: "launch: the tag to start; empty for the bake job's output"
+        default: ""
+
+      # --- bake --------------------------------------------------------------------
+      disk_size:
+        description: "bake: guest disk size"
+        default: "24G"
+      bake_timeout:
+        description: "bake: seconds EACH phase may run - the install, then the boot it cleans over ssh"
+        # TWO PHASES USE THIS NUMBER, so it is a budget per phase and not for the job.
+        default: "3600"
+      publish_tag:
+        description: "bake: tag to publish under; empty for linux-ubuntu"
+        default: "linux-ubuntu"
+
+      # --- launch ------------------------------------------------------------------
+      boot_timeout:
+        description: "launch: seconds to wait for the system and its session"
+        default: "900"
+      resolution:
+        description: "launch: guest screen as WxH"
+        default: "1920x1080"
+      mem:
+        description: "launch: guest memory in MB"
+        default: "6144"
+
+concurrency:
+  group: ubuntu-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ===========================================================================
+  # BAKE - autoinstall, clean, publish.
+  # ===========================================================================
+  bake:
+    if: inputs.bake_run || inputs.bake_from != ''
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    timeout-minutes: 200
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+    outputs:
+      # ONE EXPRESSION SERVES BOTH PATHS: given a tag, this job installs nothing and the
+      # output is what it was given.
+      tag: ${{ inputs.bake_from || inputs.publish_tag || 'linux-ubuntu' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: ubuntu-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            # the ISO, the disk, and the compressed copy made from it
+            python3 lib/ci.py free-disk --need 30
+            # THE SECOND BOOT IS VERIFIED OVER SSH, so the client that supplies the
+            # password has to be here. Its absence is not an error at the point of use -
+            # lib/session.ssh() returns 127 and says "sshpass is not installed" - but the
+            # caller sees only a timeout. Run 41660216876 spent its whole 600-second ssh
+            # budget that way and then published the disk as "did not reach a desktop".
+            if ! command -v sshpass >/dev/null 2>&1; then
+              apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
+                apt-get install -y -qq sshpass
+            fi
+            sshpass -V | head -1
+            python3 lib/ci.py tags --prefix iso-ubuntu
+
+      - name: install
+        if: inputs.bake_from == ''
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: ubuntu-install
+          interval: "15"
+          command: |
+            set -euo pipefail
+            mkdir -p out
+            export GITHUB_TOKEN="${{ github.token }}"
+            python3 linux/ubuntu/bake.py \
+              --out out/ubuntu.qcow2 \
+              --disk-size "${{ inputs.disk_size || '24G' }}" \
+              --timeout "${{ inputs.bake_timeout || '3600' }}"
+
+      # THE CONSOLE IS THE RECORD. THERE IS NO VIDEO, AND THAT IS DELIBERATE.
+      #
+      # This used to upload install.mp4 and last-frame.png. What those held was 12 MiB of
+      # `curtin command in-target` scrolling past at 720x400, every character smeared by the
+      # yuv420p encode into something unreadable - because `console=ttyS0` moves the kernel's
+      # console to the serial port and the VGA adapter only ever shows a mirror of that text at
+      # 80x25. A recording of a text console nobody can read is not evidence.
+      - name: keep the console
+        if: always() && inputs.bake_from == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-console
+          path: |
+            # THE GUEST'S CONSOLE. It is not console.log any more: the bake puts the serial on
+            # a fifo chardev so it can be read and driven, and lib/serial.py writes what the
+            # guest said to serial.out.log. qemu's own stdout carries only warnings.
+            out/serial.out.log
+            out/console.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      # CLEANING IS ITS OWN STEP.
+      #
+      # It boots the disk the install produced, cleans it over ssh and stops it. The install
+      # above does not clean at all: this is the only place it happens, so the run graph shows
+      # "clean the disk: failed" rather than a line buried in an install log.
+      #
+      # discard=unmap on the drive is what lets `fstrim` inside the guest reach the qcow2.
+      # Without it the guest's trim goes nowhere, and the zeros this writes end up STORED by the
+      # image before convert reads them - run 41792511802 showed that cost:
+      #
+      #     disk pulled              4962 MiB
+      #     after writing zeros     24362 MiB
+      #     compressed result        3110 MiB
+      - name: clean the disk
+        if: inputs.bake_from == ''
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: ubuntu-clean
+          interval: "20"
+          command: |
+            set -euo pipefail
+            python3 lib/clean_step.py \
+              --disk out/ubuntu.qcow2 \
+              --kind linux \
+              --work out \
+              --artifacts out \
+              --boot-timeout "${{ inputs.bake_timeout || '3600' }}" \
+              --mem 4096
+
+      - name: upload the disk
+        if: success() && inputs.bake_from == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-qcow2
+          path: out/ubuntu.qcow2
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      # A FIXED TAG, SO THE LAUNCH JOB CAN NAME WHAT IT IS TESTING.
+      #
+      # Without --tag this pushes linux-ubuntu-<timestamp>, which is right for an install that
+      # is a dated release and wrong for a disk another job has to find. The launch used to ask
+      # for ":linux-ubuntu" by name and failed with "no manifest for tag 'linux-ubuntu'" on all
+      # four of 6e26b2d's launches.
+      #
+      # A plain `run:` step rather than log-stream, because this is where the tag that the next
+      # job pulls comes from: GITHUB_OUTPUT is the runner's own mechanism, and routing it
+      # through a third-party action would make the chain depend on how that action treats the
+      # variable.
+      - name: push the disk
+        if: success() && inputs.bake_from == ''
+        id: publish
+        run: |
+          set -euo pipefail
+          python3 lib/ci.py install-oras
+          python3 lib/ci.py login --registry ghcr.io
+          python3 lib/publish_disk.py out/ubuntu.qcow2 --kind linux-ubuntu \
+            --tag "${{ inputs.publish_tag || 'linux-ubuntu' }}"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+  # ===========================================================================
+  # LAUNCH - does the tag actually start.
+  # ===========================================================================
+  launch:
+    needs: bake
+    # ALWAYS, BECAUSE `needs` ALONE WOULD SKIP THIS WHEN bake IS SKIPPED - and starting from a
+    # tag is exactly that case. The real precondition is that there is a tag to pull.
+    if: |
+      always() && inputs.launch_run
+      && (inputs.launch_from != '' || needs.bake.outputs.tag != '')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      packages: read
+      checks: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: launch-ubuntu-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            python3 lib/ci.py free-disk --need 30
+            # THE VERDICT IS READ OVER SSH, so the client that supplies the password has to
+            # exist. Assert it here rather than discover its absence as a timeout.
+            if ! command -v sshpass >/dev/null 2>&1; then
+              apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
+                apt-get install -y -qq sshpass
+            fi
+            sshpass -V | head -1
+            python3 lib/ci.py tags --prefix linux-
+
+      # THE QUESTIONS, EACH A PRECONDITION OF THE NEXT
+      #
+      #     1. the serial console reaches userspace     the kernel and init ran
+      #     2. sshd answers and accepts the account     the system is up and configured
+      #     3. the desktop's Wayland session is running the desktop came up, Wayland not X11
+      #
+      # None of that is proved by the bake: a disk whose bootloader was never written installs
+      # perfectly and then does nothing, and the only way to see it is to start the artifact
+      # with no installer attached.
+      - name: launch it
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: launch-ubuntu
+          interval: "20"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            python3 lib/launch_linux.py \
+              --tag "${{ inputs.launch_from || needs.bake.outputs.tag }}" \
+              --kind ubuntu \
+              --artifacts "out/ubuntu-launch" \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --resolution "${{ inputs.resolution || '1920x1080' }}" \
+              --mem "${{ inputs.mem || '6144' }}"
+
+      # THE CONSOLE AND THE VERDICT ARE THE RESULT. launch.txt says what was asked and what
+      # answered; the console says what the guest did before it could answer anything.
+      - name: keep the verdict
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-launch
+          path: |
+            out/ubuntu-launch/launch.txt
+            out/ubuntu-launch/console.log
+            out/ubuntu-launch/screen.png
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: the verdict
+        if: always()
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: launch-ubuntu-verdict
+          interval: "10"
+          command: |
+            set -euo pipefail
+            F="out/ubuntu-launch/launch.txt"
+            echo "=== ubuntu ==="
+            if [ -f "$F" ]; then cat "$F"; else echo "no verdict was written"; fi

@@ -1,0 +1,265 @@
+name: freebsd
+
+# FreeBSD: bake -> clean -> publish, then launch. One workflow, and every job can start from a
+# tag that already exists.
+#
+#     bake ──> launch
+#
+# WHY ONE WORKFLOW
+#
+# It was two - bake and launch - and each had to be started by hand with a tag the other one
+# produced. A launch's run graph said nothing about which bake made the disk it was testing.
+#
+# EVERY JOB TAKES A TAG
+#
+#     <job>_run       should this job run
+#     <job>_from      the tag to pull; empty means "use what the job above produced"
+#
+# so a change to `launch` can be tested against a disk that already exists. FreeBSD needs no
+# bootstate: the firmware variables are only load bearing for Windows and macOS.
+#
+# NO SCREEN IS READ. bsdinstall runs from a script supplied on the medium and never prompts, so
+# the completion test is the guest exiting and the disk holding a UFS filesystem - see
+# lib/bsdinstall.py.
+#
+# MANUAL ONLY.
+
+on:
+  workflow_dispatch:
+    inputs:
+      # --- what to run -------------------------------------------------------------
+      bake_run:
+        description: "Install FreeBSD (~30 minutes)"
+        type: boolean
+        default: true
+      launch_run:
+        description: "Start the disk and prove it boots"
+        type: boolean
+        default: true
+
+      # --- where each job starts ---------------------------------------------------
+      bake_from:
+        description: "bake: pull this tag instead of installing"
+        default: ""
+      launch_from:
+        description: "launch: the tag to start; empty for the bake job's output"
+        default: ""
+
+      # --- bake --------------------------------------------------------------------
+      disk_size:
+        description: "bake: guest disk size"
+        default: "24G"
+      bake_timeout:
+        description: "bake: seconds each phase may run"
+        default: "3600"
+      publish_tag:
+        description: "bake: tag to publish under; empty for bsd-freebsd"
+        default: "bsd-freebsd"
+
+      # --- launch ------------------------------------------------------------------
+      boot_timeout:
+        description: "launch: seconds to wait for the system and its session"
+        default: "900"
+      resolution:
+        description: "launch: guest screen as WxH"
+        default: "1920x1080"
+      mem:
+        description: "launch: guest memory in MB"
+        default: "2048"
+
+concurrency:
+  group: freebsd-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bake:
+    if: inputs.bake_run || inputs.bake_from != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+    outputs:
+      tag: ${{ inputs.bake_from || inputs.publish_tag || 'bsd-freebsd' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: freebsd-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            python3 lib/ci.py free-disk --need 30
+            # THE CLEAN AND THE LAUNCH READ THE GUEST OVER SSH.
+            if ! command -v sshpass >/dev/null 2>&1; then
+              apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
+                apt-get install -y -qq sshpass
+            fi
+            sshpass -V | head -1
+            python3 lib/ci.py tags --prefix iso-freebsd
+
+      - name: install
+        if: inputs.bake_from == ''
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: freebsd-install
+          interval: "15"
+          command: |
+            set -euo pipefail
+            mkdir -p out
+            export GITHUB_TOKEN="${{ github.token }}"
+            python3 bsd/freebsd/bake.py \
+              --out out/freebsd.qcow2 \
+              --disk-size "${{ inputs.disk_size || '24G' }}" \
+              --timeout "${{ inputs.bake_timeout || '3600' }}"
+
+      # THE CONSOLE IS THE RECORD. THERE IS NO VIDEO, AND THAT IS DELIBERATE.
+      #
+      # This used to upload install.mp4. What it held was 731 frames and 64 KiB - an entire hour
+      # of black with one white pixel in the corner - because bsdinstall is a text console on
+      # ttyS0 and the framebuffer is never drawn to.
+      - name: keep the console
+        if: always() && inputs.bake_from == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: freebsd-console
+          path: |
+            out/serial.out.log
+            out/console.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      # CLEANING IS ITS OWN STEP. It boots the disk the install produced, cleans it over ssh and
+      # stops it; the install above does not clean at all.
+      - name: clean the disk
+        if: inputs.bake_from == ''
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: freebsd-clean
+          interval: "20"
+          command: |
+            set -euo pipefail
+            python3 lib/clean_step.py \
+              --disk out/freebsd.qcow2 \
+              --kind freebsd \
+              --work out \
+              --artifacts out \
+              --boot-timeout "${{ inputs.bake_timeout || '3600' }}" \
+              --mem 2048
+
+      - name: upload the disk
+        if: success() && inputs.bake_from == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: freebsd-qcow2
+          path: out/freebsd.qcow2
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      # A FIXED TAG, SO THE LAUNCH JOB CAN NAME WHAT IT IS TESTING - and a plain `run:` step,
+      # because this is where the tag the next job pulls comes from.
+      - name: push the disk
+        if: success() && inputs.bake_from == ''
+        id: publish
+        run: |
+          set -euo pipefail
+          python3 lib/ci.py install-oras
+          python3 lib/ci.py login --registry ghcr.io
+          python3 lib/publish_disk.py out/freebsd.qcow2 --kind bsd-freebsd \
+            --tag "${{ inputs.publish_tag || 'bsd-freebsd' }}"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+  launch:
+    needs: bake
+    if: |
+      always() && inputs.launch_run
+      && (inputs.launch_from != '' || needs.bake.outputs.tag != '')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      packages: read
+      checks: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: launch-freebsd-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            python3 lib/ci.py free-disk --need 30
+            # THE VERDICT IS READ OVER SSH, so the client that supplies the password has to exist.
+            if ! command -v sshpass >/dev/null 2>&1; then
+              apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
+                apt-get install -y -qq sshpass
+            fi
+            sshpass -V | head -1
+            python3 lib/ci.py tags --prefix bsd-
+
+      - name: launch it
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: launch-freebsd
+          interval: "20"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            python3 lib/launch_linux.py \
+              --tag "${{ inputs.launch_from || needs.bake.outputs.tag }}" \
+              --kind freebsd \
+              --artifacts "out/freebsd-launch" \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --resolution "${{ inputs.resolution || '1920x1080' }}" \
+              --mem "${{ inputs.mem || '2048' }}"
+
+      - name: keep the verdict
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: freebsd-launch
+          path: |
+            out/freebsd-launch/launch.txt
+            out/freebsd-launch/console.log
+            out/freebsd-launch/screen.png
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: the verdict
+        if: always()
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: launch-freebsd-verdict
+          interval: "10"
+          command: |
+            set -euo pipefail
+            F="out/freebsd-launch/launch.txt"
+            echo "=== freebsd ==="
+            if [ -f "$F" ]; then cat "$F"; else echo "no verdict was written"; fi

@@ -51,6 +51,7 @@ def log(message: str) -> None:
 SYSTEMS = {
     "windows": {"ssh_port": 2222, "clean": "windows", "bootstate": True},
     "linux": {"ssh_port": 2222, "clean": "linux", "bootstate": False},
+    "freebsd": {"ssh_port": 2222, "clean": "freebsd", "bootstate": False},
 }
 
 
