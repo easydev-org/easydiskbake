@@ -83,24 +83,72 @@ def _used(port: int) -> int | None:
     return int(lines[-1]) if lines else None
 
 
-# THE ZEROING. Same contract as linclean.ZERO: sync first so the writes above are accounted
-# for, a 200 MB margin so the last block does not fail while looking like success, and a
-# partial dd reported rather than treated as failure - the blocks it reached are zero.
 # NO ZEROING. FREEBSD RELEASES ITS OWN BLOCKS.
 #
 # The reason is the same one lib/linclean.py records at length: writing zeros over the free
 # space was how this made `qemu-img convert` skip deleted files' blocks, and on a 128 GB disk it
 # costs the whole free space in writes and re-allocates clusters that were never allocated.
 #
-# FreeBSD has the trim: `kern.cam.da.*.delete_method` is set to `DISABLE` on some images, so the
-# command is run with the sysctl set first - and if the trim releases nothing the caller is told
-# so, with the fallback named.
+# `fstrim` DOES NOT EXIST ON FREEBSD, AND THIS MODULE CALLED IT FOR ONE RUN.
 #
-#     fstrim -v /              fstrim(8), in the base system since FreeBSD 10.4
+# fstrim(8) is util-linux. FreeBSD's base system has no such command, and run 41835299937 said
+# so in one line, after a completely successful install:
 #
-# `-v` prints the bytes released, which is the only evidence that it did anything.
-
-TRIM = "sudo sysctl kern.cam.da.0.delete_method=DISABLE >/dev/null 2>&1; sudo timeout 120 fstrim -v / 2>&1"
+#     [clean-step 13:14:23]     timeout: exec(fstrim): No such file or directory
+#     [clean-step 13:14:23] === fstrim RELEASED NOTHING ===
+#
+# The `timeout` wrapper printed that, which is why it read as a timeout rather than as a missing
+# binary. The fallback message then named zerofree - which is also Linux-only. Both halves of
+# that advice were wrong for this system.
+#
+# WHAT FREEBSD HAS IS `fsck_ffs -E`, and it is the same operation by a different name. From the
+# fsck_ffs(8) manual for 15.1:
+#
+#     -E   Clear unallocated blocks, notifying the underlying device that they are not used and
+#          that their contents may be discarded. This is useful for filesystems which have been
+#          mounted on systems without TRIM support, or with TRIM support disabled, as well as
+#          filesystems which have been copied from one device to another.
+#
+# and from pass5.c, during the cylinder-group scan, every run of free fragments is passed to
+#
+#     clear_blocks() -> blerase() -> ioctl(fd, DIOCGDELETE, {offset, size})
+#
+# so the discard reaches the block device, and `discard=unmap` on the qemu -drive drops the
+# clusters. Nothing is written: the blocks are already free and blerase only tells the device so.
+#
+# IT WORKS ON A MOUNTED FILE SYSTEM, which is what makes it usable here. The manual says so
+# ("useful for filesystems which have been mounted ... with TRIM support disabled"), and the
+# kernel keeps a mounted UFS consistent during the check. The one thing it does not do is
+# report bytes, unlike fstrim's `-v`: fsck_ffs prints a summary line of files, used and free
+# blocks. So the evidence is that line plus the image size afterwards, and the caller measures
+# the image itself.
+#
+#     fsck_ffs -y -E "$(df / | awk 'NR==2 {print $1}')"
+#
+# `-y` IS WHAT MAKES IT NOT HANG. Without it fsck_ffs is interactive: it prompts before each
+# correction, and on a mounted read-write root it always finds something to correct. The ssh
+# here allocates no tty, so a prompt reads EOF and the command's behaviour depends on how
+# reply() treats a closed stdin - which is not a thing to rely on in a pipeline. `-y` answers
+# every question in advance. It is the man page's "free license to continue after essentially
+# unlimited trouble", and that is the correct trade for a scratch image rebuilt from an ISO.
+#
+# NOT `-p`. Preen mode skips a file system marked clean, which is exactly the file system this
+# needs to erase blocks on: a bsdinstall leaves it clean, and the run would print
+# "FILE SYSTEM CLEAN; SKIPPING CHECKS" and release nothing while looking like success.
+#
+# THE DEVICE IS READ FROM `df`, NOT ASSUMED. A bsdinstall with PARTITIONS=DEFAULT labels the
+# root `gpt/rootfs` on this image, and that is what the console shows - but the label is a
+# property of the installer, not of this command, and a name that does not exist produces
+# "could not find special device", which reads as a permissions error rather than as a wrong
+# path. `df /` reports what is actually mounted there.
+#
+# THE WHOLE LINE IS ONE REMOTE SHELL COMMAND. lib/session.ssh builds an argv list, so the local
+# shell never sees this string and the quoting below is the remote sh's, not Python's.
+TRIM = (
+    "dev=$(df / | awk 'NR==2 {print $1}'); "
+    "echo \"root filesystem: $dev\"; "
+    "sudo fsck_ffs -y -E \"$dev\" 2>&1"
+)
 
 
 def clean(*, port: int, note=print, ssh_seconds: int = 900,
@@ -137,29 +185,47 @@ def clean(*, port: int, note=print, ssh_seconds: int = 900,
             note("    continuing; the trim below is what decides")
         previous = now
 
-    note("  releasing the free blocks (fstrim)")
-    status, out = ssh(port, TRIM, timeout=180)
-    trimmed = ""
+    # `fsck_ffs -E` REPORTS NO BYTES, SO THE EVIDENCE IS DIFFERENT.
+    #
+    # fstrim -v prints "trimmed 116.3 GiB", which is why the Linux cleaner's contract is "the
+    # trim reported bytes or the clean failed". fsck_ffs prints a summary of files, used and
+    # free blocks instead - the same line it prints after any check:
+    #
+    #     123456 files, 1234567 used, 20000000 free (1234 frags, 5678 blocks, 0.0% fragmentation)
+    #
+    # and its exit status is 0 on success or 4 when a mounted file system was modified. Both
+    # mean the free blocks were erased; only 4 says the check also wrote metadata, which is
+    # normal on a live root and is why the guest is shut down properly afterwards.
+    note("  releasing the free blocks (fsck_ffs -E)")
+    status, out = ssh(port, TRIM, timeout=600)
+    released = ""
+    summary = ""
     for line in (out or "").splitlines():
         text = line.strip()
         if not text or text.startswith("Warning: Permanently added"):
             continue
-        note(f"    {text[:150]}")
-        if "trimmed" in text:
-            trimmed = text
+        note(f"    {text[:170]}")
+        if text.startswith("root filesystem:"):
+            released = text
+        elif "free" in text and "used" in text:
+            summary = text
 
-    if status != 0 or not trimmed:
-        note("=== fstrim RELEASED NOTHING ===")
-        note("  FreeBSD disables the delete method on some virtual disks; if the trim above")
-        note("  reported bytes, the image will be small, and if it did not, the correct")
-        note("  fallback is zerofree - not a dd over the whole free space.")
+    # 4 IS SUCCESS WITH A WRITE. See the note above: it is what fsck_ffs returns when the
+    # file system was mounted read-write and the check changed something.
+    if status not in (0, 4) or not released:
+        note(f"=== fsck_ffs -E DID NOT RUN (exit {status}) ===")
+        note("  if it could not find the device or said 'NOT A DISK DEVICE', the root")
+        note("  filesystem is not where this expected it and the command above names what")
+        note("  it was given; if it printed an I/O error, the disk itself is the problem.")
         if disk:
             note(f"  the image was NOT shrunk: {disk}")
         return False
 
     end = _used(port)
     note(f"  freed by deleting: {start - previous} MB")
-    note(f"  released by trim:  {trimmed}")
+    note(f"  erased by trim:    {released}")
+    if summary:
+        note(f"  the filesystem:    {summary}")
     if end is not None:
         note(f"  used after:        {end} MB")
     return True
