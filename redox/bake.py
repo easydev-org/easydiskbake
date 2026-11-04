@@ -119,6 +119,49 @@ def log(message: str) -> None:
     print(f"[redox-bake {time.strftime('%H:%M:%S')}] {message}", flush=True)
 
 
+# ORBITAL IS A PICTURE, AND OCR CANNOT READ IT.
+#
+# The desktop's only text is the dock's labels, drawn a few pixels tall; tesseract returns
+# nonsense for the whole frame - run 41807177256's log shows
+#
+#     waiting for the desktop: '> <r : : fr "~ fad { ls aes ae 4 : . " rs rears et v ; .'
+#
+# which is the wallpaper being read as letters. What separates Orbital from the login box is
+# not what it says but what it IS: a wallpaper and a panel, against two dark rectangles on a
+# flat background. lib/redox/launch.py measures that as mean brightness and chroma, and these
+# are the same numbers - the probe recorded Orbital at 91.7/93.5 and the bootloader menu at
+# 9.9/0.0.
+ORBITAL_MEAN = 20.0
+ORBITAL_CHROMA = 6.0
+
+
+def frame_stats(ppm: str) -> tuple[float, float]:
+    """Mean grey and mean channel spread of a PPM."""
+    try:
+        with open(ppm, "rb") as fh:
+            if fh.readline().strip() != b"P6":
+                return (0.0, 0.0)
+            line = fh.readline()
+            while line.startswith(b"#"):
+                line = fh.readline()
+            width, height = (int(v) for v in line.split())
+            fh.readline()
+            pixels = fh.read(width * height * 3)
+    except (OSError, ValueError):
+        return (0.0, 0.0)
+    if not pixels:
+        return (0.0, 0.0)
+    total = spread = count = 0
+    for i in range(0, len(pixels), 97 * 3):
+        r, g, b = pixels[i], pixels[i + 1], pixels[i + 2]
+        total += r + g + b
+        spread += max(r, g, b) - min(r, g, b)
+        count += 1
+    if not count:
+        return (0.0, 0.0)
+    return (total / (count * 3), spread / count)
+
+
 def ocr(path: str) -> str:
     """The text on a screenshot, lower-cased, read from the places this needs to watch.
 
@@ -449,14 +492,35 @@ def main(argv: list[str]) -> int:
             note("  logging in as user (empty password)")
             con.key("ret", settle=5.0)
 
-            # THE DOCK IS THE PROOF THAT THE LOGIN WORKED. It is drawn by the launcher, which
-            # only runs inside a session; on the login box the whole bottom bar is absent.
-            if not con.wait_for(["redox", "orbital", "user"], 120, "the desktop"):
+            # THE DESKTOP IS A PICTURE, SO IT IS MEASURED, NOT READ.
+            #
+            # This waited for the words "redox", "orbital" or "user" and tesseract returned
+            # wallpaper noise instead:
+            #
+            #     waiting for the desktop: '> <r : : fr "~ fad { ls aes ae 4 : . " rs rears'
+            #
+            # Orbital's only text is the dock's labels, drawn a few pixels tall. What
+            # distinguishes it from the login box is a wallpaper and a panel - brightness and
+            # colour - which is exactly what the probe measured and what redox/launch.py
+            # already uses.
+            note("  waiting for Orbital to draw")
+            deadline = time.time() + 120
+            shot = os.path.join(artifacts, "desktop-check")
+            while time.time() < deadline:
+                png = con.shot("desktop")
+                if png:
+                    ppm = png[:-4] + ".ppm"
+                    mean, chroma = frame_stats(ppm)
+                    note(f"    mean {mean:.1f} chroma {chroma:.1f}")
+                    if mean >= ORBITAL_MEAN and chroma >= ORBITAL_CHROMA:
+                        note("  the desktop is up")
+                        break
+                time.sleep(4)
+            else:
                 note("=== THE LOGIN DID NOT REACH A DESKTOP ===")
                 note("  the frame beside this message is either the login box again - a wrong")
                 note("  password - or a blank screen, which is a session that failed to start")
                 return False
-            note("  the desktop is up")
 
             # 3. A TERMINAL, OPENED THE WAY A PERSON WOULD - the same shape as
             #    windows/11/ssh.py's open_powershell().
