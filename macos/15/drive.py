@@ -89,11 +89,23 @@ COUNTRY_LIST = (900, 500)
 #     Set up as new                               y=501 -> 676
 #
 # x=548 is the radio column, and 548 * 1.5 = 822.
+# THE RADIO CIRCLES THEMSELVES, not the text beside them, and these are the numbers that
+# were confirmed by eye against a 1920x1080 grid built from this run's own frame.
+#
+#     (820, 596)  From a Mac, Time Machine, or startup disk
+#     (820, 625)  From a Windows PC
+#     (820, 652)  Set up with iPhone or iPad
+#     (820, 679)  Set up as new
+#
+# WHY THE CIRCLE AND NOT THE LABEL. A macOS radio button is about 16px across, and the click
+# has to land on it - clicking the words selects nothing, which is what made an earlier
+# attempt look like it had worked while the first row stayed filled in. The label starts at
+# x≈845 and is not part of the control.
 TRANSFER_ROWS = {
-    "From a Mac": (822, 599),
-    "From a Windows PC": (822, 625),
-    "iPhone": (822, 651),
-    "Set up as new": (822, 676),
+    "From a Mac": (820, 596),
+    "From a Windows PC": (820, 625),
+    "iPhone": (820, 652),
+    "Set up as new": (820, 679),
 }
 FIRST_RADIO = TRANSFER_ROWS["From a Mac"]
 UNITED_STATES = (764, 615)
@@ -179,9 +191,9 @@ class Driver:
     def shot(self, label: str) -> str | None:
         """Save a frame. Returns its path, or None when the screenshot failed.
 
-        THE PATH IS RETURNED BECAUSE ONE CALLER READS IT. Every other use in this file takes
-        the frame for the record only; pane_says() needs to OCR the thing it just saved, and
-        reconstructing the filename outside would be a second copy of this format string.
+        THE PATH IS RETURNED SO A CALLER COULD READ IT. Nothing does today - every frame here
+        is for the record only - but the filename is built here, and a caller that wants the
+        image should not have to rebuild it from a second copy of this format string.
         """
         if not self.frames:
             return None
@@ -334,79 +346,24 @@ def set_up_as_new(d: Driver) -> None:
     """
     d.wait(8, "transfer pane settles")
 
-    d.click(TRANSFER_ROWS["From a Mac"], "focus the transfer radio list", settle=2.0)
-    d.key("down", times=3, settle=2.0)
-    d.click(CONTINUE, "transfer Continue, Set up as new selected", settle=8.0)
-
-    # DID IT WORK? Four runs were spent not knowing.
+    # CLICK THE CIRCLE OF THE LAST ROW. Not the label, and not three Downs.
     #
-    # Choosing "Set up as new" means the next pane is not a transfer pane. If "Transfer
-    # information to this Mac" - the second one, with [AssetData] and Not now - is on screen
-    # now, the selection did not take, and this stops with the phrase it saw instead of
-    # clicking Continue twelve more times into a pane that is not moving.
+    # Three Downs were tried twice and moved nothing, because no control had keyboard focus
+    # when the pane appeared - the focus was still on the Continue button the previous pane's
+    # click had left it on. Clicking the circle focuses the group and selects the row in one
+    # action, which is what a person does with this pane.
     #
-    # This never chooses anything; the sequence stays fixed. It answers one question: did the
-    # step I just took do what it says.
-    if pane_says(d, "transfer information", seconds=25):
-        raise SystemExit(
-            "=== THE TRANSFER PANE DID NOT MOVE ON ===\n"
-            "  three Downs from the first row did not reach 'Set up as new', and the\n"
-            "  wizard is on the second transfer pane. The frame beside this run shows\n"
-            "  which row is filled in."
-        )
+    # The coordinate is the circle itself, confirmed by eye against a 1920x1080 grid built
+    # from this run's own frame: see TRANSFER_ROWS. The label starts at x~845 and is not part
+    # of the control - a click on the words selects nothing, which is how an earlier attempt
+    # looked like it had worked while the first row stayed filled in.
+    d.click(TRANSFER_ROWS["Set up as new"], "Set up as new (the radio circle)", settle=2.5)
 
-
-def pane_says(d: Driver, phrase: str, seconds: int = 20) -> bool:
-    """Whether the wizard's current pane carries `phrase`. Reads the bottom strip only.
-
-    WHY THIS EXISTS AT ALL, IN A FILE THAT SAYS "NO LOOKING".
-
-    The rule in this file is that the SEQUENCE is fixed and no decision is made from the
-    screen. That is still true - nothing here chooses an action. What this answers is a
-    different question, and it is the one that has cost four runs: DID THE STEP I JUST TOOK
-    DO ANYTHING AT ALL?
-
-    Runs 41784951651 and 41787686321 both clicked "Set up as new", both clicked Continue,
-    and both ended on the TRANSFER INFORMATION pane - the one that only appears when "From a
-    Mac" is selected. The log could not tell the difference between "the click worked and a
-    later step went back" and "the click never worked", because every line in it was written
-    by this file rather than read from the guest.
-
-    So the check is a fact about the guest, taken after the action, and it never feeds back
-    into which action comes next. When it fails the stage stops and says which phrase was
-    missing, rather than continuing for twelve more clicks.
-
-    The title strip is y=300..360 at 1920x1080 - where the wizard prints "Transfer Your Data
-    to This Mac" and "Transfer information to this Mac", which differ by one word and
-    therefore by the thing that matters.
-    """
-    try:
-        import assistant
-    except Exception:  # noqa: BLE001
-        return True  # no reader: do not fail a run over a missing tool
-
-    for _ in range(max(1, seconds // 5)):
-        ppm = d.shot("pane-check")
-        if not ppm:
-            time.sleep(5)
-            continue
-        # THE TITLE LINE, AND NOTHING AROUND IT.
-        #
-        # Measured from run 41784951651's own frames, which are 1280x800 while the guest is
-        # 1920x1080: the title sits at y=225..255 in the recording, which is y=304..344 on
-        # the guest. The first version of this box was (300, 290, 1620, 370) - too tall and
-        # far too wide - and tesseract returned NOTHING for it, because at that size the
-        # surrounding paragraph is more ink than the title and page segmentation drops both.
-        #
-        # A box that reads everything around the thing it is looking for is a box that reads
-        # nothing, which is the same lesson as the whole-frame OCR in redox/bake.py.
-        text = assistant.ocr_text_cropped(ppm, (420, 300, 1500, 350), scale=4)
-        if phrase.lower() in (text or "").lower():
-            log(f"  the pane says {phrase!r}")
-            return True
-        time.sleep(5)
-    log(f"  !=== THE PANE DOES NOT SAY {phrase!r} ===")
-    return False
+    # FIVE SECONDS FOR THE PANE TO ACCEPT IT, THEN CONTINUE. No check on what is on screen:
+    # the sequence is fixed, and a reading step in the middle of it is the thing this file
+    # avoids. What the next pane turns out to be is answered by the recording.
+    d.wait(5, "the radio selection registers")
+    d.click(CONTINUE, "transfer Continue", settle=8.0)
 
 
 def languages(d: Driver) -> None:
@@ -488,25 +445,13 @@ def tail(d: Driver) -> None:
     # the end lands on Back's neighbour in the fixed footer - which is how run 41784951651
     # ended fifteen panes back on the transfer pane.
     #
-    # NOTHING HERE READS THE SCREEN TO DECIDE WHAT TO DO. The count and the coordinate are
-    # fixed, as this file requires; what changed is that the LAST pane is now followed by a
-    # check that the wizard is gone, so a run that still has panes left says so instead of
-    # hoping.
+    # NOTHING HERE READS THE SCREEN. The count and the coordinate are fixed, and whether the
+    # wizard finished is answered by the recording rather than by a check in the middle of
+    # the sequence.
     for i in range(6):
         d.wait(6, f"pane {i + 1} settles")
         d.key("ret", settle=3.0)
         d.click(CONTINUE, f"pane {i + 1} Continue", settle=3.0)
-
-    # THE WIZARD SHOULD BE FINISHED. If a transfer or setup pane is still up, the click
-    # above did not take and the desktop will never appear - the stage would then sit for
-    # its full desktop timeout, which is the pattern every failure in this file has had.
-    for leftover in ("transfer information", "transfer your data", "select your country"):
-        if pane_says(d, leftover, seconds=10):
-            raise SystemExit(
-                f"=== THE WIZARD IS STILL ON {leftover!r} AFTER THE TAIL ===\n"
-                "  the sequence ran to its end without leaving this pane, so the desktop\n"
-                "  will not appear. The frame beside this message is what it is showing."
-            )
 
 
 def run_sequence(qmp_path: str, frames_dir: str | None, user: str, password: str) -> None:
