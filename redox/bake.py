@@ -658,16 +658,40 @@ def main(argv: list[str]) -> int:
             con.type("su", settle=3.0)
             con.type(ROOT_PASSWORD, settle=5.0)
 
-            # A SANITY CHECK THAT DOES NOT DEPEND ON FONT SIZE: `id -u` prints ONE NUMERIC
-            # CHARACTER, and a single digit on a dark background is the one thing tesseract can
-            # still read. Zero is root; anything else means the su did not take.
+            # A SANITY CHECK THAT READS THE PROMPT, NOT THE NUMBER.
+            #
+            # This used to wait for the string "0" on screen, on the reasoning that `id -u`
+            # prints one digit and one digit is the only thing OCR can still manage on a dark
+            # terminal. It cannot: run 41819642279's last frame shows, plainly enough to read
+            # by eye,
+            #
+            #     user:~$ su
+            #     password:
+            #     root:~# id -u
+            #     0
+            #     root:~#
+            #
+            # - a root shell that had already worked - and the check failed anyway with
+            #
+            #     === id -u printed 0: NONE OF ['0'] IN 60s ===
+            #
+            # because the single glyph is a few pixels and tesseract returned the surrounding
+            # noise instead. `root:` IS read out of the same frame; the prompt is rendered at
+            # the same size as the rest of the text and there is a whole word of it.
+            #
+            # So the marker is the prompt. `id -u` still runs, because the prompt appearing
+            # after it is what proves the command finished in a root shell rather than that
+            # the word "root" was already somewhere on the screen - it is in the title bar,
+            # which is why the marker is `root:~#` and not `root`.
             con.type("id -u", settle=3.0)
-            marker = con.wait_for(["0"], 60, "id -u printed 0")
+            marker = con.wait_for(["root:~#", "root:~$", "root:/root#"],
+                                  60, "a root prompt")
             if not marker:
                 note("=== su DID NOT GIVE A ROOT SHELL ===")
-                note("  `id -u` did not print 0; the frame beside this message is the terminal")
+                note("  no `root:~#` prompt appeared after `id -u`; the frame beside this")
+                note("  message is the terminal")
                 return False
-            note("  a root shell")
+            note(f"  a root shell ({marker!r})")
 
             # 5. THE ACCOUNT. Redox reads /etc/users.toml; there is no /etc/passwd to edit.
             #
@@ -724,8 +748,16 @@ def main(argv: list[str]) -> int:
             #     failed to initialize FILETABLE: Function not implemented
             #
             # so the check that the account landed is `wc -l`, which reports a number.
-            con.type("wc -l /etc/users.toml", settle=2.0)
-            if not con.wait_for([str(len(users))], 60, f"users.toml has {len(users)} lines"):
+            #
+            # THE EXIT STATUS IS READ, NOT THE NUMBER. Waiting for "15" on screen is the same
+            # mistake as waiting for "0" above: a two-digit count at terminal size is a few
+            # pixels, and the tesseract pass that could not read `0` cannot be relied on to
+            # read `15` either. `test` compares the count inside the guest, so what comes back
+            # is `USERS_OK=0` - seven characters at the size the prompt is read at.
+            con.type(f"test \"$(wc -l < /etc/users.toml)\" -eq {len(users)} ; echo USERS_OK=$?",
+                     settle=2.0)
+            if not con.wait_for(["users_ok=0"], 60,
+                                f"users.toml has {len(users)} lines"):
                 note("=== /etc/users.toml DOES NOT HAVE THE EXPECTED LINES ===")
                 note(f"  expected {len(users)}; the frame beside this message shows what it has")
                 return False
