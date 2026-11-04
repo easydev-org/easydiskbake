@@ -211,22 +211,25 @@ def build_args(work: str, extra: list[str] | None = None,
     shape = shape or Shape.from_env()
     paths = Paths(work)
 
-    # KVM IS THE DEFAULT AND TCG IS AN OPT-OUT FOR A MACHINE THAT HAS NO /dev/kvm.
+    # KVM, ALWAYS, AND A MACHINE WITHOUT IT IS A MACHINE THAT DOES NOT RUN THIS.
     #
-    # Every workflow runs on a runner with KVM, and a bake under TCG is twenty to fifty
-    # times slower - so this is not a fallback that turns on by itself. It is an explicit
-    # switch for developing a driver on a machine without the device, where the alternative
-    # is not testing the driver at all. Redox's bake found three bugs this way (a missing
-    # frame directory, a socket race, and the order of the two) in minutes rather than in
-    # three CI runs.
+    # There was a VM_ACCEL=tcg switch here for one revision. It is gone. Software emulation
+    # is twenty to fifty times slower, which turns a twenty-minute bake into an hour and
+    # makes every timing in every driver wrong - a settle that is right under KVM is far too
+    # short under TCG, so a run that passes says nothing about the run that matters. A
+    # fallback like that does not let you test the driver; it lets you test a different
+    # machine and then be surprised by CI.
     #
-    # THE CPU IS NOT "host" UNDER TCG, because there is no host CPU to describe: qemu's
-    # default is what TCG can emulate. A shape that names its own cpu string keeps it.
-    accel = [] if os.environ.get("VM_ACCEL") == "tcg" else ["-enable-kvm"]
-    cpu = shape.cpu or ("max" if accel == [] else "host")
+    # So there is no fallback and no detection. qemu is told to use KVM, and on a host
+    # without /dev/kvm it exits with
+    #
+    #     Could not access KVM kernel module: No such file or directory
+    #
+    # which is the correct answer: this repository's bakes run on GitHub's runners, and they
+    # have KVM. lib/ci.py checks for it before any of this is reached.
     args: list[str] = [
         QEMU,
-        *accel, "-cpu", cpu,
+        "-enable-kvm", "-cpu", shape.cpu or "host",
         "-smp", shape.smp_topology or str(shape.cpus), "-m", str(shape.mem_mb),
         "-display", "none",
         "-vnc", f"{shape.vnc_bind}:{shape.vnc_display}",
