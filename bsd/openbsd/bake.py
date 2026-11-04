@@ -158,6 +158,20 @@ def answers() -> list[tuple[str, float]]:
         # puts its sets. The next question is the set list.
         ("", 5),            # Pathname to the sets: the default, 8.0/amd64
         ("*", 5),           # Set name(s): all of them
+        # NO SHA256.sig ON THE MEDIUM, SO IT ASKS WHETHER TO CONTINUE.
+        #
+        # A release ISO carries SHA256 and SHA256.sig so the installer can verify each
+        # set against a signed manifest. This medium is a REPACK - see bsd/openbsd/
+        # media.py, which unpacks the ISO and writes boot.conf and install.conf back -
+        # and the repack does not reproduce the signature file, so the installer asks:
+        #
+        #     Directory does not contain SHA256.sig. Continue without verification? [no]
+        #
+        # Yes, because the sets themselves came from the signed release ISO that
+        # iso-publish pulled and verified; the signature is what is missing, not the
+        # integrity of what is being unpacked. Answering no here ends the install with
+        # "no sets installed", which is what run 41752821200 would have done next.
+        ("yes", 5),         # Continue without verification
         ("", 120),          # unpacking the sets
         ("", 10),           # done; the installer reboots
     ]
