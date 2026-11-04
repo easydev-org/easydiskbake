@@ -118,6 +118,11 @@ def parse(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--rdp-port", type=int, default=3389,
                    help="host port forwarded to the guest's 3389; the arrival check")
     p.add_argument("--answer", default=ANSWER)
+    p.add_argument("--self-boot", action="store_true", default=True,
+                   help="also write the loader to \\EFI\\BOOT\\BOOTX64.EFI, so a firmware "
+                        "with a blank variable store can start the disk (default)")
+    p.add_argument("--no-self-boot", dest="self_boot", action="store_false",
+                   help="leave only the NVRAM route, which requires the bootstate")
     p.add_argument("--tpm", action="store_true",
                    help="provide a TPM 2.0. Off by default, the way dockur/windows does "
                         "it: the answer file bypasses the check, and a TPM turns the "
@@ -546,6 +551,34 @@ class Baker:
             # file to push. A disk that fails here is not publishable at any size.
             log("=== THE DISK FAILED ITS CHECKS; refusing to produce an artifact ===")
             return False
+
+        # THE DISK IS MADE SELF-BOOTING BEFORE IT IS COMPRESSED, AND THAT IS WHAT MAKES
+        # THE BOOTSTATE OPTIONAL.
+        #
+        # Windows writes its loader to \EFI\Microsoft\Boot\bootmgfw.efi and reaches it only
+        # through a Boot#### entry in OVMF's NVRAM - which is why every stage here used to
+        # carry a bootstate archive. The firmware also has a standard fallback,
+        # \EFI\BOOT\BOOTX64.EFI, which it tries when no entry resolves.
+        #
+        # So the same loader is written there as well. It is additive: the existing path and
+        # the NVRAM entry are untouched, so a disk that boots today still boots the same way.
+        # What it adds is a second way in that does not depend on state living outside the
+        # disk.
+        #
+        # DONE HERE, ON THE RAW DISK, AND BEFORE compress - the published artifact is then
+        # self-contained rather than becoming so only if somebody runs a fix-up later.
+        if self.args.self_boot:
+            log("writing the UEFI fallback loader, so the disk does not need a bootstate")
+            import subprocess as sp
+            r = sp.run([sys.executable, os.path.join(HERE, "fixedboot.py"),
+                        "--disk", self.disk], capture_output=True, text=True)
+            for line in (r.stdout or "").splitlines():
+                log(f"  {line}")
+            if r.returncode != 0:
+                log("=== THE FALLBACK LOADER COULD NOT BE WRITTEN ===")
+                log(f"  {(r.stderr or r.stdout or '')[-400:]}")
+                return False
+            log("  the disk now carries \\EFI\\BOOT\\BOOTX64.EFI")
 
         log("compressing")
         # lib/compress.py probes what this qemu-img can do rather than assuming; the
