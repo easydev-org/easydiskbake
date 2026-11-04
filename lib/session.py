@@ -94,12 +94,25 @@ def ssh(port: int, command: str, timeout: int = 30) -> tuple[int, str]:
     return result.returncode, (result.stdout + result.stderr).strip()
 
 
-def wait_for_ssh(port: int, seconds: int, note=log, settle: int = 10) -> bool:
+def wait_for_ssh(port: int, seconds: int, note=log, settle: int = 10,
+                 probe: str = "true") -> bool:
     """Wait until sshd answers and the account can log in.
 
     A BANNER IS NOT ENOUGH - this runs a command, because a socket that accepts a
     connection and then refuses authentication is a different failure and has been one
-    here before. `true` is the smallest command that proves a shell ran.
+    here before. The probe is the smallest command that proves a shell ran.
+
+    THE PROBE IS A PARAMETER BECAUSE `true` IS NOT A WINDOWS COMMAND. This module is used
+    by Linux, FreeBSD and Windows guests, and the default is the POSIX shell's builtin; a
+    Windows guest runs cmd.exe, where it is
+
+        'true' is not recognized as an internal or external command,
+
+    which is what run 41844808248 reported after a Windows sshd that was answering
+    perfectly - the banner had already been read, `install ssh` had already verified
+    `(Get-Service sshd).Status` was Running, and this wait then timed out for fifteen
+    minutes on a command the shell did not have. Callers with a Windows guest pass
+    probe="echo ok".
 
     A MISSING CLIENT FAILS IMMEDIATELY. ssh() returns 127 and the string "sshpass is not
     installed" when the binary is absent, and waiting minutes for a program that will
@@ -116,12 +129,13 @@ def wait_for_ssh(port: int, seconds: int, note=log, settle: int = 10) -> bool:
     started = time.time()
     out = ""
     while time.time() < deadline:
-        status, out = ssh(port, "true", timeout=20)
+        status, out = ssh(port, probe, timeout=20)
         if status == 0:
             note(f"ssh answers after {time.time() - started:.0f}s")
             return True
         time.sleep(settle)
     note(f"=== SSH DID NOT ANSWER IN {seconds}s ===")
+    note(f"  the probe was: {probe}")
     note(f"  last output: {out[:300]}")
     return False
 

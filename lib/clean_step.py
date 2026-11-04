@@ -181,7 +181,11 @@ def main(argv: list[str]) -> int:
         import session
 
         note("waiting for ssh")
-        if not session.wait_for_ssh(spec["ssh_port"], args.boot_timeout, note):
+        # WINDOWS RUNS cmd.exe, SO THE PROBE IS NOT `true`. See session.wait_for_ssh: the
+        # default is the POSIX builtin and this guest reports
+        # "'true' is not recognized as an internal or external command".
+        if not session.wait_for_ssh(spec["ssh_port"], args.boot_timeout, note,
+                                    probe="echo ok"):
             note("=== THE DISK DID NOT ANSWER ON SSH ===")
             note("  it cannot be cleaned if it cannot be reached; the disk is unchanged")
 
