@@ -140,24 +140,87 @@ ORBITAL_MEAN = 20.0
 ORBITAL_CHROMA = 6.0
 
 
-def frame_stats(ppm: str) -> tuple[float, float]:
-    """Mean grey and mean channel spread of a PPM."""
+def _as_ppm(path: str) -> bytes | None:
+    """The file's pixels as P6 bytes, converting anything else through ffmpeg.
+
+    BOTH READERS BELOW PARSED A PPM AND NOTHING ELSE, and Console.shot() returns a PNG -
+    which it always did, and which became the only thing it returns when the second
+    screendump was removed. So run 41868427701 measured
+
+        mean 0.0 chroma 0.0
+
+    for forty seconds against a screen that had drawn Orbital's wallpaper, because
+    `open("...png")` read the PNG header, found no "P6", and answered (0.0, 0.0). The
+    login was correct and the measurement could not see it.
+
+    Converted here rather than at each call site: there are two readers and three callers,
+    and a caller that had to remember would be a fourth place to get it wrong.
+    """
+    if not os.path.isfile(path):
+        return None
     try:
+        with open(path, "rb") as fh:
+            data = fh.read()
+    except OSError:
+        return None
+    if data.startswith(b"P6"):
+        return data
+
+    import subprocess
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(suffix=".ppm", delete=False) as tmp:
+        ppm = tmp.name
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+             "-i", path, "-pix_fmt", "rgb24", "-f", "image2", "-vcodec", "ppm", ppm],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            return None
         with open(ppm, "rb") as fh:
-            if fh.readline().strip() != b"P6":
-                return (0.0, 0.0)
+            return fh.read()
+    except OSError:
+        return None
+    finally:
+        try:
+            os.unlink(ppm)
+        except OSError:
+            pass
+
+
+def _parse_ppm(data: bytes | None) -> tuple[int, int, bytes] | None:
+    """(width, height, pixels) from P6 bytes."""
+    if not data:
+        return None
+    import io
+
+    fh = io.BytesIO(data)
+    try:
+        if fh.readline().strip() != b"P6":
+            return None
+        line = fh.readline()
+        while line.startswith(b"#"):
             line = fh.readline()
-            while line.startswith(b"#"):
-                line = fh.readline()
-            width, height = (int(v) for v in line.split())
-            fh.readline()
-            pixels = fh.read(width * height * 3)
-    except (OSError, ValueError):
-        return (0.0, 0.0)
+        width, height = (int(v) for v in line.split())
+        fh.readline()
+        pixels = fh.read(width * height * 3)
+    except (ValueError, OSError):
+        return None
     if not pixels:
+        return None
+    return width, height, pixels
+
+
+def frame_stats(path: str) -> tuple[float, float]:
+    """Mean grey and mean channel spread of a frame, in any format ffmpeg reads."""
+    parsed = _parse_ppm(_as_ppm(path))
+    if parsed is None:
         return (0.0, 0.0)
+    _, _, pixels = parsed
     total = spread = count = 0
-    for i in range(0, len(pixels), 97 * 3):
+    for i in range(0, len(pixels) - 2, 97 * 3):
         r, g, b = pixels[i], pixels[i + 1], pixels[i + 2]
         total += r + g + b
         spread += max(r, g, b) - min(r, g, b)
@@ -181,20 +244,10 @@ def dark_window_fraction(ppm: str) -> float:
 
     - the wallpaper, again - while the terminal was open the whole time.
     """
-    try:
-        with open(ppm, "rb") as fh:
-            if fh.readline().strip() != b"P6":
-                return 0.0
-            line = fh.readline()
-            while line.startswith(b"#"):
-                line = fh.readline()
-            width, height = (int(v) for v in line.split())
-            fh.readline()
-            pixels = fh.read(width * height * 3)
-    except (OSError, ValueError):
+    parsed = _parse_ppm(_as_ppm(ppm))
+    if parsed is None:
         return 0.0
-    if not pixels:
-        return 0.0
+    width, height, pixels = parsed
     dark = total = 0
     for i in range(0, len(pixels), 61 * 3):
         r, g, b = pixels[i], pixels[i + 1], pixels[i + 2]
@@ -574,12 +627,10 @@ def main(argv: list[str]) -> int:
             # already uses.
             note("  waiting for Orbital to draw")
             deadline = time.time() + 120
-            shot = os.path.join(artifacts, "desktop-check")
             while time.time() < deadline:
                 png = con.shot("desktop")
                 if png:
-                    ppm = png[:-4] + ".ppm"
-                    mean, chroma = frame_stats(ppm)
+                    mean, chroma = frame_stats(png)
                     note(f"    mean {mean:.1f} chroma {chroma:.1f}")
                     if mean >= ORBITAL_MEAN and chroma >= ORBITAL_CHROMA:
                         note("  the desktop is up")
@@ -633,7 +684,14 @@ def main(argv: list[str]) -> int:
             # The prompt is a few pixels of text on a wallpaper; tesseract returns the wallpaper.
             # What opening a terminal actually changes is a large dark rectangle appearing over
             # a blue screen, and that is a number.
-            before = dark_window_fraction(os.path.join(artifacts, "desktop-check.ppm"))
+            # THE BASELINE IS TAKEN NOW, from this moment's frame.
+            #
+            # It used to read `artifacts/desktop-check.ppm`, a name written by the descriptor
+            # loop above - which now copies the recording's newest frame and returns a PNG, so
+            # that file does not exist and the baseline was 0.00. A baseline of zero makes the
+            # comparison below pass on any darkening at all.
+            baseline = con.shot("terminal-before")
+            before = dark_window_fraction(baseline) if baseline else 0.0
             note(f"  dark fraction before: {before:.2f}")
             con.click(*DOCK_TERMINAL, why="the terminal icon in the dock")
 
@@ -644,7 +702,7 @@ def main(argv: list[str]) -> int:
                 png = con.shot("terminal")
                 if not png:
                     continue
-                now = dark_window_fraction(png[:-4] + ".ppm")
+                now = dark_window_fraction(png)
                 note(f"    dark fraction {now:.2f}")
                 # 15 points of the frame turning dark is a window, not a redraw: the wallpaper
                 # does not change when a terminal opens over it.
