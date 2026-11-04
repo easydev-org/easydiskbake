@@ -1,0 +1,122 @@
+name: trim-check
+
+# Does a guest's fstrim actually make a qcow2 smaller?
+#
+# THE QUESTION, AND WHY IT DECIDES EVERYTHING ELSE
+#
+# The cleaners in this repository spend most of their time writing zeros over free space, and on
+# a 128 GB virtual disk that is 119 GB of writes - which is why both Linux bakes timed out at
+# fifteen minutes. The alternative is to let the guest tell the image which blocks it has
+# released, so qemu drops the clusters instead of storing them:
+#
+#     -drive ...,discard=unmap          the qcow2 driver accepts discards
+#     fstrim -v /                       the guest says which blocks are free
+#
+# If that works, the zeroing is unnecessary for Linux. If it does not, the only correct
+# alternative is `zerofree` - and the wrong alternative, which is what is in the tree now,
+# writes the whole free space and calls it a day.
+#
+# WHAT IS MEASURED
+#
+#     allocated size     `qemu-img info`'s "disk size" - what the qcow2 actually occupies
+#     virtual size       unchanged, and printed so the two cannot be confused
+#     free space         `df` inside the guest, to prove the trim ran over something real
+#
+# THE DISK IS A COPY. This only reads what the guest does; it publishes nothing and does not
+# touch the tag it pulls.
+#
+# MANUAL ONLY.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The disk to test a trim on"
+        default: "linux-ubuntu"
+      kind:
+        description: "Which system it is, for the ssh port and the account"
+        type: choice
+        options: [linux, freebsd]
+        default: linux
+      boot_timeout:
+        description: "Seconds to wait for ssh"
+        default: "600"
+      fstrim_timeout:
+        description: "Seconds to let fstrim run"
+        default: "600"
+
+concurrency:
+  group: trim-check-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      checks: write
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: trim-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            python3 lib/ci.py free-disk --need 40
+            if ! command -v sshpass >/dev/null 2>&1; then
+              apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
+                apt-get install -y -qq sshpass
+            fi
+            sshpass -V | head -1
+
+      - name: the experiment
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: trim-check
+          interval: "20"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            mkdir -p out
+            python3 lib/trim_check.py \
+              --tag "${{ inputs.tag }}" \
+              --kind "${{ inputs.kind }}" \
+              --work out/trim-work \
+              --artifacts out \
+              --boot-timeout "${{ inputs.boot_timeout || '600' }}" \
+              --fstrim-timeout "${{ inputs.fstrim_timeout || '600' }}"
+
+      - name: keep the numbers
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trim-check
+          path: out/trim.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: the verdict
+        if: always()
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: trim-verdict
+          interval: "10"
+          command: |
+            set -euo pipefail
+            echo "=== does fstrim shrink a qcow2? ==="
+            if [ -f out/trim.txt ]; then cat out/trim.txt; else echo "no verdict"; fi
