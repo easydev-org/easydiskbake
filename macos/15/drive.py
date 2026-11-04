@@ -148,10 +148,27 @@ UNITED_STATES = (764, 615)
 #
 # The first version of dockur's table was 38-68px too high, so every click landed on the
 # label above the box it meant and the full name received "hi" instead of "docker".
-FULL_NAME = (900, 498)
-PASSWORD = (860, 618)
-VERIFY = (1020, 618)
-HINT = (900, 667)
+# MEASURED FROM THE RECORDING, WRITTEN IN 1920x1080 UNITS.
+#
+# The recording is 1280x800 - the guest's actual resolution - and the form sits at these rows
+# in it:
+#
+#     Full name      (630, 331)
+#     Account name   (630, 353)      <- filled from Full name by macOS itself
+#     Password       (567, 393)
+#     Verify         (724, 393)
+#     Hint           (650, 412)
+#
+# converted by x*1.5, y*1.35, which is what these constants are.
+#
+# THE PREVIOUS VALUES WERE 66 TO 111 PIXELS LOW, and that is why every field ended up holding
+# the same word: run 41799999986 typed docker, admin, admin, hint and the frame shows "hint" in
+# Full name, empty Password, and "hint" in Hint - four clicks that all landed on or below the
+# last field, so each one typed into the field the one before had already focused.
+FULL_NAME = (945, 447)
+PASSWORD = (850, 531)
+VERIFY = (1086, 531)
+HINT = (975, 556)
 
 # The "Are you sure you want to skip sign in?" sheet - Skip is the right-hand of its pair.
 SHEET_SKIP = (1026, 634)
