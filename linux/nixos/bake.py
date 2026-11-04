@@ -273,7 +273,7 @@ def main(argv: list[str]) -> int:
     p.add_argument("--work", default=None)
     p.add_argument("--mem", type=int, default=6144)
     p.add_argument("--cpus", type=int, default=4)
-    p.add_argument("--disk-size", default="20G")
+    p.add_argument("--disk-size", default="128G")
     p.add_argument("--timeout", type=int, default=3600,
                    help="seconds the whole guest may run")
     args = p.parse_args(argv)

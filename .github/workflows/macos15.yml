@@ -71,7 +71,7 @@ on:
         default: "15"
       disk_size:
         description: "setup: guest disk size"
-        default: "64G"
+        default: "128G"
       install_timeout:
         description: "setup: seconds the installer may run"
         default: "7200"
@@ -155,7 +155,7 @@ jobs:
             python3 macos/15/bake.py \
               --out "out/macos15.qcow2" \
               --release "15" \
-              --disk-size "${{ inputs.disk_size || '64G' }}" \
+              --disk-size "${{ inputs.disk_size || '128G' }}" \
               --timeout "${{ inputs.install_timeout || '7200' }}" \
               --assistant-timeout "${{ inputs.assistant_timeout || '2700' }}" \
               --desktop-timeout "${{ inputs.desktop_timeout || '1800' }}"

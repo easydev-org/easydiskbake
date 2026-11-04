@@ -48,7 +48,7 @@ on:
       # --- bake --------------------------------------------------------------------
       disk_size:
         description: "bake: guest disk size"
-        default: "24G"
+        default: "128G"
       bake_timeout:
         description: "bake: seconds each phase may run"
         default: "3600"
@@ -122,7 +122,7 @@ jobs:
             export GITHUB_TOKEN="${{ github.token }}"
             python3 bsd/freebsd/bake.py \
               --out out/freebsd.qcow2 \
-              --disk-size "${{ inputs.disk_size || '24G' }}" \
+              --disk-size "${{ inputs.disk_size || '128G' }}" \
               --timeout "${{ inputs.bake_timeout || '3600' }}"
 
       # THE CONSOLE IS THE RECORD. THERE IS NO VIDEO, AND THAT IS DELIBERATE.

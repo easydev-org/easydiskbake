@@ -172,7 +172,7 @@ def main(argv: list[str]) -> int:
     p.add_argument("--work", default=None)
     p.add_argument("--mem", type=int, default=4096)
     p.add_argument("--cpus", type=int, default=4)
-    p.add_argument("--disk-size", default="24G")
+    p.add_argument("--disk-size", default="128G")
     # ONE NUMBER, TWO PHASES. The installer gets this, and so does the boot of the
     # installed disk that follows it - see boot_installed(). The job's ceiling in the
     # workflow is the sum of both plus the encode.

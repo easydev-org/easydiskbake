@@ -50,7 +50,7 @@ on:
       # --- bake --------------------------------------------------------------------
       disk_size:
         description: "bake: guest disk size"
-        default: "24G"
+        default: "128G"
       bake_timeout:
         description: "bake: seconds EACH phase may run - the install, then the boot it cleans over ssh"
         # TWO PHASES USE THIS NUMBER, so it is a budget per phase and not for the job.
@@ -135,7 +135,7 @@ jobs:
             export GITHUB_TOKEN="${{ github.token }}"
             python3 linux/kubuntu/bake.py \
               --out out/kubuntu.qcow2 \
-              --disk-size "${{ inputs.disk_size || '24G' }}" \
+              --disk-size "${{ inputs.disk_size || '128G' }}" \
               --timeout "${{ inputs.bake_timeout || '3600' }}"
 
       # THE CONSOLE IS THE RECORD. THERE IS NO VIDEO, AND THAT IS DELIBERATE.

@@ -67,7 +67,7 @@ on:
       # --- base ----------------------------------------------------------------------
       disk_size:
         description: "base: guest disk size"
-        default: "20G"
+        default: "128G"
       install_timeout:
         description: "base: seconds the install and the boot may each run"
         default: "3600"
@@ -147,7 +147,7 @@ jobs:
             export GITHUB_TOKEN="${{ github.token }}"
             python3 linux/nixos/bake.py \
               --out out/nixos-base.qcow2 \
-              --disk-size "${{ inputs.disk_size || '20G' }}" \
+              --disk-size "${{ inputs.disk_size || '128G' }}" \
               --timeout "${{ inputs.install_timeout || '3600' }}"
 
       # THE CONSOLE IS THE ONLY RECORD OF WHAT THE GUEST DID. NixOS has no framebuffer worth

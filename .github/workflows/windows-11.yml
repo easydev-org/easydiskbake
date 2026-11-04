@@ -106,7 +106,7 @@ on:
         default: "windows11"
       disk_size:
         description: "base: target disk size"
-        default: "64G"
+        default: "128G"
       base_publish_tag:
         description: "base: tag to publish under; empty for windows-base-<stamp>"
         default: ""
@@ -195,7 +195,7 @@ jobs:
               --out out/windows11.qcow2 \
               --answer windows/11/answer \
               --image "${{ inputs.image || 'windows11' }}" \
-              --disk-size "${{ inputs.disk_size || '64G' }}" \
+              --disk-size "${{ inputs.disk_size || '128G' }}" \
               --timeout 5400
             python3 windows/11/verify.py out/windows11.qcow2
 

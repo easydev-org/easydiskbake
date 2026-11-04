@@ -74,7 +74,7 @@ def parse(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Bake a macOS disk.")
     p.add_argument("--out", default="out/macos15.qcow2")
     p.add_argument("--release", default="15", choices=sorted(RELEASES))
-    p.add_argument("--disk-size", default="64G")
+    p.add_argument("--disk-size", default="128G")
     p.add_argument("--mem", type=int, default=8192,
                    help="MB; macOS needs 4 GB to install and more to be useful")
     p.add_argument("--cpus", type=int, default=4)

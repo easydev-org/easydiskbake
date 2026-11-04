@@ -111,7 +111,7 @@ def parse(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Bake a Windows 11 disk.")
     p.add_argument("--out", default="out/windows11.qcow2")
     p.add_argument("--image", default="windows11", choices=sorted(images.WINDOWS))
-    p.add_argument("--disk-size", default="64G")
+    p.add_argument("--disk-size", default="128G")
     p.add_argument("--mem", type=int, default=8192, help="MB; Windows 11 wants 4 GB minimum")
     p.add_argument("--cpus", type=int, default=4)
     p.add_argument("--timeout", type=int, default=5400, help="seconds the installer may run")

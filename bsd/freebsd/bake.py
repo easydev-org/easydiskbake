@@ -294,7 +294,7 @@ def main(argv: list[str]) -> int:
     p.add_argument("--work", default=None)
     p.add_argument("--mem", type=int, default=4096)
     p.add_argument("--cpus", type=int, default=4)
-    p.add_argument("--disk-size", default="24G")
+    p.add_argument("--disk-size", default="128G")
     p.add_argument("--timeout", type=int, default=3600)
     args = p.parse_args(argv)
 
