@@ -133,7 +133,27 @@ NOTHING_DRAWN = install15.NOTHING_DRAWN
 # sequence of clicks. The detail-pane rectangle is the one already proven on 15 - it is what
 # selected 68.72 GB out of three rows - and the window is the same size on both releases
 # because lib/opencore pins the resolution.
-PANE_DETAIL = (690, 540, 1490, 680)     # Disk Utility's capacity table
+# TWO PANES, TWO DIFFERENT RECTANGLES, AND DIFFERENT WORDS.
+#
+# Disk Utility's detail pane prints "Capacity:" and "Child count:". The installer's
+# DESTINATION pane prints "Select the disk where you want to install macOS" above two cards
+# whose captions read "<n> GB total" and "<n> GB available". They are not the same window
+# and they do not share a single word - the destination check was asking for "capacity" and
+# therefore never matched, which is why run 41768543366 stopped with
+#
+#     === THE DESTINATION DETAIL NEVER APPEARED ===
+#
+# on a screen where two disks were plainly offered.
+PANE_DETAIL = (690, 540, 1490, 680)     # Disk Utility: capacity table
+# THE RECTANGLE COVERS BOTH THE INSTRUCTION LINE AND THE CARDS, MEASURED ON A REAL FRAME:
+#
+#     (700, 430, 1250, 780) at 3x
+#     -> 'select the disk where you want to install macos. main 102.87 gb total 102.75 gb
+#         available back'
+#
+# which is both facts this needs: that the pane arrived, and that a card carries a size.
+# The tighter crop below the instruction line reads only the cards and misses the line.
+PANE_DESTINATION = (700, 430, 1250, 780)
 PANE_SHEET = (700, 440, 1410, 560)      # the erase sheet's question line
 # THE LICENCE ROW IS HIGHER ON TAHOE THAN ON SEQUOIA.
 #
@@ -271,8 +291,16 @@ def run_installation(qmp_path: str, frames_dir: str | None,
         d.click(install15.AGREE_SHEET, "Agree in the sheet", settle=5)
 
         # -- the destination, which is where the disk must be found ------------
-        if not wait_for_says(d, PANE_DETAIL, ("capacity",), 180, "destination detail"):
-            log("  no capacity table, so no disk is being offered")
+        # THE DESTINATION PANE SAYS "select the disk" AND SHOWS GB PER CARD.
+        #
+        # Waiting for "capacity" here was asking the wrong window for the wrong word; the
+        # installer's destination pane has never contained it. What it does contain, on
+        # every release measured, is the instruction line and at least one card with a size.
+        # ONE WAIT FOR BOTH FACTS, because they arrive together and the rectangle holds
+        # both: the pane has arrived, and at least one card carries a size.
+        if not wait_for_says(d, PANE_DESTINATION,
+                             ("select the disk", "gb total"), 180, "destination pane"):
+            log("  no destination pane with a sized disk card appeared")
             return 1
         d.click(DISK_CARD, "the main disk card", settle=5)
         d.click(install15.PANE_CONTINUE, "destination Continue", settle=20)
