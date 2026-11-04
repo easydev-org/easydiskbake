@@ -84,6 +84,10 @@ RUN set -eux; \
         ovmf \
         aria2 \
         p7zip-full \
+        # zstd is what decompresses Redox OS's images (`.img.zst`). It is NOT for qcow2:
+        # lib/compress.py writes compression_type=zstd through qemu-img, which needs no
+        # binary at all. This one is for a vendor that publishes raw images compressed.
+        zstd \
         mtools \
         samba \
         nodejs \
