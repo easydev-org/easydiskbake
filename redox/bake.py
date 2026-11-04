@@ -929,8 +929,12 @@ def main(argv: list[str]) -> int:
             # the word "root" was already somewhere on the screen - it is in the title bar,
             # which is why the marker is `root:~#` and not `root`.
             con.type("id -u", settle=3.0)
+            # 300 SECONDS, NOT 60. This is the same reader lag the other waits were widened
+            # for, and it has now cost a run: 41922820567 had a terminal open on screen with
+            # `su` typed into it, and the 60-second window closed while the OCR was still
+            # reading the wallpaper behind the window.
             marker = con.wait_for(["root:~#", "root:~$", "root:/root#"],
-                                  60, "a root prompt")
+                                  300, "a root prompt")
             if not marker:
                 note("=== su DID NOT GIVE A ROOT SHELL ===")
                 note("  no `root:~#` prompt appeared after `id -u`; the frame beside this")
