@@ -674,6 +674,29 @@ def main(argv: list[str]) -> int:
             # THE FILE IS BUILT WITH A HEREDOC because the console has no clipboard and the
             # content has quotes and newlines. `ion` handles them the way sh does.
             note("=== the account ===")
+            # ION HAS NO HEREDOC. THE FILE IS BUILT ONE LINE AT A TIME.
+            #
+            # The previous version typed
+            #
+            #     cat > /etc/users.toml << EOF
+            #     [users.root]
+            #     ...
+            #     EOF
+            #
+            # and the frame from run 41817639644 shows what ion did with it:
+            #
+            #     root:~# shell = "/usr/bin/ion"
+            #     ion: command not found: shell
+            #     root:~# [groups.sudo]
+            #     ion: command not found: groups.sudo
+            #     root:~# EOF
+            #     ion: command not found: EOF
+            #
+            # Every line was executed as a command. `USERS_WRITTEN=0` then passed because the
+            # redirection itself succeeded - the file exists and is empty.
+            #
+            # So the first line truncates with a single-quoted redirect and the rest append.
+            # Single quotes around each line, because the TOML has double quotes in it.
             users = [
                 "[users.root]",
                 'password = "password"',
@@ -691,31 +714,41 @@ def main(argv: list[str]) -> int:
                 "gid = 1",
                 f'members = ["{args.user}"]',
             ]
-            con.type("cat > /etc/users.toml << EOF")
-            for line in users:
-                con.type(line, settle=0.15)
-            con.type("EOF", settle=1.0)
-            con.type("echo USERS_WRITTEN=$?")
-            if not con.wait_for(["users_written=0"], 60, "users.toml written"):
-                note("=== /etc/users.toml COULD NOT BE WRITTEN ===")
-                return False
-            con.type(f"grep -c {args.user} /etc/users.toml")
-            if not con.wait_for(["2"], 60, "the account is in the file"):
-                note("=== THE ACCOUNT IS NOT IN THE FILE TWICE ===")
-                note("  expected the [users.<name>] line and the sudo members line")
+            for n, line in enumerate(users):
+                op = ">" if n == 0 else ">>"
+                con.type(f"echo '{line}' {op} /etc/users.toml", settle=0.25)
+
+            # `grep -c` PANICS ON THIS SYSTEM. The frame has
+            #
+            #     RELIBC PANIC: panicked at src/start.rs:188:18:
+            #     failed to initialize FILETABLE: Function not implemented
+            #
+            # so the check that the account landed is `wc -l`, which reports a number.
+            con.type("wc -l /etc/users.toml", settle=2.0)
+            if not con.wait_for([str(len(users))], 60, f"users.toml has {len(users)} lines"):
+                note("=== /etc/users.toml DOES NOT HAVE THE EXPECTED LINES ===")
+                note(f"  expected {len(users)}; the frame beside this message shows what it has")
                 return False
             note("  the account is written")
 
             # 6. OPENSSH. Not in the desktop image; installed from the vendor's package server,
             #    which the image already points at (/etc/pkg.d/50_redox).
             note("=== openssh ===")
-            con.type("pkg install openssh ; echo PKG_RC=$?")
+            # `-y` IS NOT A DETAIL. Without it pkg asks
+            #
+            #     Proceed with this transaction? [Y/n]:
+            #
+            # and the NEXT command typed - `ls /usr/bin/sshd ; echo HASSSHD=$?` - becomes the
+            # answer to that prompt. The frame from run 41817639644 shows exactly that: the
+            # prompt line has the ls command in it, and the check for sshd never ran.
+            con.type("pkg install -y openssh ; echo PKG_RC=$?", settle=2.0)
             if not con.wait_for(["pkg_rc="], 900, "pkg install openssh"):
                 note("=== pkg COULD NOT INSTALL openssh ===")
                 note("  it needs the network; qemu's user-mode net is 10.0.2.x and the image")
                 note("  ships /etc/net/ip = 10.0.2.15, so a failure here is the package server")
                 return False
-            con.type("ls /usr/bin/sshd ; echo HASSSHD=$?")
+            # `test -f` RATHER THAN `ls`: one exit status, no output to read past.
+            con.type("test -f /usr/bin/sshd ; echo HASSSHD=$?")
             if not con.wait_for(["hassshd=0"], 180, "sshd installed"):
                 note("=== openssh INSTALLED BUT THERE IS NO /usr/bin/sshd ===")
                 note("  the package may put it elsewhere; `pkg list openssh` says where")
@@ -733,10 +766,10 @@ def main(argv: list[str]) -> int:
             #    services are numbered files in /etc/init.d/. `90_` sorts after the network and
             #    the console, which sshd needs.
             note("=== the init.d entry ===")
-            con.type("cat > /etc/init.d/90_sshd << EOF")
-            for line in ("#!/usr/bin/ion", "/usr/bin/sshd -D &"):
-                con.type(line, settle=0.15)
-            con.type("EOF", settle=1.0)
+            # ONE LINE AT A TIME, FOR THE SAME REASON AS users.toml: ion has no heredoc.
+            for n, line in enumerate(("#!/usr/bin/ion", "/usr/bin/sshd -D &")):
+                op = ">" if n == 0 else ">>"
+                con.type(f"echo '{line}' {op} /etc/init.d/90_sshd", settle=0.3)
             con.type("chmod +x /etc/init.d/90_sshd ; echo CHMOD_RC=$?")
             if not con.wait_for(["chmod_rc=0"], 60, "init.d entry"):
                 note("=== THE init.d ENTRY COULD NOT BE MADE EXECUTABLE ===")
