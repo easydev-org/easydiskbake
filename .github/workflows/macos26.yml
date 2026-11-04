@@ -1,0 +1,185 @@
+name: macos26
+
+# macOS 26: recovery -> Setup Assistant. The desktop, ssh and dev stages are not here yet.
+#
+#     setup
+#
+# WHY ONLY ONE JOB
+#
+# 15 has four stages and 26 has one, because that is what exists. macos/26/ has bake.py and
+# install.py - its own coordinates, measured from Tahoe's own panes - and no desktop.py, ssh.py
+# or dev.py. Writing those job definitions now would be writing the sequence before the
+# positions are measured, which is the mistake every earlier macOS run was: a plausible
+# coordinate and a recording that disagreed with it.
+#
+# The other three stages join this file when they have something to run.
+#
+# WHY ONE WORKFLOW
+#
+# These were four workflows, and each had to be started by hand with the tag the previous one
+# produced: a form per stage, a chance per stage to type the tag wrong, and nothing in any run
+# graph recording that they are a chain at all. The chain is four stages here because macOS
+# genuinely fails in four different places - the installer, the wizard, Remote Login, the
+# toolchain - and each is worth its own job and its own timeout.
+#
+# EVERY JOB TAKES A TAG, AND THAT IS THE POINT
+#
+#     <job>_run          should this job run
+#     <job>_from         the tag to pull; empty means "use what the job above produced"
+#     <job>_bootstate    the run holding that tag's firmware variables
+#
+# A disk here does not boot from itself: its boot entry lives in the OVMF variables, which qemu
+# writes to the work directory and which travel as an artifact of the run that made the disk.
+# OpenCore's boot entry is in there too. Without that run id a job can pull the disk and still
+# start a machine that finds nothing - so the tag and the run id are always asked for together.
+#
+# `if: always() && ...` on every downstream job is what lets one start in the middle: `needs`
+# alone skips a job when the one above was skipped, and that is exactly the case of starting
+# from a tag. The real precondition is that there is a tag to pull, so that is what it tests.
+#
+# MANUAL ONLY.
+
+on:
+  workflow_dispatch:
+    inputs:
+      # --- what to run ---------------------------------------------------------------
+      setup_run:
+        description: "Install macOS 26 and stop at the Setup Assistant (~60 minutes)"
+        type: boolean
+        default: true
+
+      # --- where each job starts -----------------------------------------------------
+      setup_from:
+        description: "setup: pull this tag instead of installing"
+        default: ""
+      setup_bootstate:
+        description: "setup: the run whose artifact holds that disk's OVMF variables"
+        default: ""
+
+      # --- setup ----------------------------------------------------------------------
+      release:
+        description: "setup: macOS release"
+        default: "26"
+      disk_size:
+        description: "setup: guest disk size"
+        default: "64G"
+      install_timeout:
+        description: "setup: seconds the installer may run"
+        default: "7200"
+      assistant_timeout:
+        description: "setup: seconds the Setup Assistant driver may run"
+        default: "2700"
+
+      # --- ssh / dev -------------------------------------------------------------------
+      publish_tag:
+        description: "the tag to publish under; empty for macos26-<stage>"
+        default: ""
+
+concurrency:
+  group: macos26-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ===========================================================================
+  # SETUP - install to the Setup Assistant and stop there.
+  # ===========================================================================
+  setup:
+    if: inputs.setup_run || inputs.setup_from != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+    outputs:
+      tag: ${{ inputs.setup_from || inputs.publish_tag || 'macos26-setup' }}
+      bootstate: ${{ inputs.setup_bootstate || github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: macos26-setup-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            python3 lib/ci.py free-disk --need 80
+            python3 lib/ci.py tags --prefix macos-
+
+      - name: bake
+        if: inputs.setup_from == ''
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: macos26-setup
+          interval: "20"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            export SNAPSHOT_INTERVAL="${{ inputs.snapshot_interval || '1' }}"
+            export RECORD_FPS=1
+            export MACOS_USER=docker
+            export MACOS_PASSWORD=admin
+            python3 macos/26/bake.py \
+              --out "out/macos26.qcow2" \
+              --release "26" \
+              --disk-size "${{ inputs.disk_size || '64G' }}" \
+              --timeout "${{ inputs.install_timeout || '7200' }}" \
+              --assistant-timeout "${{ inputs.assistant_timeout || '2700' }}" \
+              --desktop-timeout 1800
+
+      - name: keep the recording
+        if: always() && inputs.setup_from == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos26-setup-recording
+          path: |
+            out/install.mp4
+            out/last-frame.png
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: keep the last frame
+        if: always() && inputs.setup_from == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos26-setup-last-frame
+          path: out/last-frame.png
+          if-no-files-found: warn
+          retention-days: 7
+
+      # THE BOOTSTATE GOES WITH THE DISK. OpenCore's boot entry and the firmware variables live
+      # in the work directory, not on the disk and not in the tag.
+      - name: keep the bootstate
+        if: always() && inputs.setup_from == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos26-setup-bootstate
+          path: out/*.bootstate.tar.gz
+          if-no-files-found: warn
+          retention-days: 30
+
+      # A PLAIN `run:` STEP, BECAUSE THIS IS WHERE THE NEXT JOB'S TAG COMES FROM. GITHUB_OUTPUT
+      # is the runner's own mechanism; routing it through a third-party action would make the
+      # chain depend on how that action treats the variable.
+      - name: push the disk
+        if: success() && inputs.setup_from == ''
+        id: publish
+        run: |
+          set -euo pipefail
+          python3 lib/ci.py install-oras
+          python3 lib/ci.py login --registry ghcr.io
+          python3 lib/publish_disk.py out/macos26.qcow2 --kind macos26-setup \
+            --tag "${{ inputs.publish_tag || 'macos26-setup' }}"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+

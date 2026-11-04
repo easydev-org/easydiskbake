@@ -1,0 +1,314 @@
+name: redox
+
+# Redox: bake -> ssh -> launch.
+#
+#     bake ──> ssh ──> launch
+#
+# WHY THIS CHAIN IS THREE STAGES
+#
+# Each answers a different question and fails in a different place:
+#
+#     bake    can the vendor image be turned into a gold disk at all - the account, the
+#             package, the init script, all typed at a console that has no serial port
+#     ssh     does the account that was written into /etc/users.toml actually log in
+#     launch  does Orbital draw, and does sshd answer at boot with nobody having started it
+#
+# THE BAKE DOES NOT CLEAN, AND THAT IS NOT AN OVERSIGHT
+#
+# RedoxFS is copy-on-write, and the vendor image is 650 MiB with a 647 MiB root - there is
+# almost no free space to zero. The step that makes the other systems' images small would here
+# write a few megabytes and complicate a driver whose read-only path already panics (see the
+# notes in redox/bake.py about `snapshot=on`). Measuring it would be a run; assuming it is
+# worth it would be the kind of change this repository keeps having to undo.
+#
+# EVERY JOB TAKES A TAG
+#
+#     <job>_run       should this job run
+#     <job>_from      the tag to pull; empty means "use what the job above produced"
+#
+# and `if: always() && ...` on each downstream job is what lets one start in the middle: `needs`
+# alone skips a job when the one above was skipped, which is that same case.
+#
+# MANUAL ONLY.
+
+on:
+  workflow_dispatch:
+    inputs:
+      # --- what to run ---------------------------------------------------------------
+      bake_run:
+        description: "Bake the vendor image into a gold disk"
+        type: boolean
+        default: true
+      ssh_run:
+        description: "Log in as the account the bake wrote"
+        type: boolean
+        default: true
+      launch_run:
+        description: "Start the disk and photograph Orbital"
+        type: boolean
+        default: true
+
+      # --- where each job starts -----------------------------------------------------
+      bake_from:
+        description: "bake: pull this tag instead of baking"
+        default: ""
+      ssh_from:
+        description: "ssh: pull this tag instead of the bake job's output"
+        default: ""
+      launch_from:
+        description: "launch: pull this tag instead of the ssh job's output"
+        default: ""
+
+      # --- shared --------------------------------------------------------------------
+      boot_timeout:
+        description: "seconds to wait for the console, the shell or Orbital"
+        default: "900"
+      mem:
+        description: "guest memory in MB"
+        default: "2048"
+
+      # --- bake ----------------------------------------------------------------------
+      cpus:
+        description: "bake: guest CPUs"
+        default: "2"
+      publish_tag:
+        description: "bake: tag to publish under; empty for redox-desktop"
+        default: "redox-desktop"
+
+concurrency:
+  group: redox-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ===========================================================================
+  # BAKE
+  # ===========================================================================
+  bake:
+    if: inputs.bake_run || inputs.bake_from != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+    outputs:
+      tag: ${{ inputs.bake_from || inputs.publish_tag || 'redox-desktop' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: redox-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            python3 lib/ci.py free-disk --need 8
+            zstd --version | head -1
+            command -v tesseract >/dev/null || { echo "no tesseract: the console cannot be read"; exit 1; }
+
+      - name: bake
+        if: inputs.bake_from == ''
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: redox-bake
+          interval: "20"
+          command: |
+            set -euo pipefail
+            mkdir -p out
+            python3 redox/bake.py \
+              --out out/redox.qcow2 \
+              --work out/redox-work \
+              --artifacts out \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --mem "${{ inputs.mem || '2048' }}" \
+              --cpus "${{ inputs.cpus || '2' }}"
+
+      # THE FRAMES AND THE RECORDING ARE THE EVIDENCE. "It worked" is not something this stage
+      # can claim from an exit code: the console is what was typed at, and the video is what a
+      # person looks at when a marker did not appear.
+      - name: keep the recording
+        if: always() && inputs.bake_from == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: redox-bake
+          path: |
+            out/bake.txt
+            out/install.mp4
+            out/last-frame.png
+          if-no-files-found: warn
+          retention-days: 14
+
+      # A PLAIN `run:` STEP, BECAUSE THIS IS WHERE THE NEXT JOB'S TAG COMES FROM.
+      - name: publish
+        if: success() && inputs.bake_from == ''
+        id: publish
+        run: |
+          set -euo pipefail
+          python3 lib/ci.py install-oras
+          python3 lib/ci.py login --registry ghcr.io
+          python3 lib/publish_disk.py out/redox.qcow2 --kind redox-desktop \
+            --tag "${{ inputs.publish_tag || 'redox-desktop' }}"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+  # ===========================================================================
+  # SSH - does the account log in.
+  # ===========================================================================
+  ssh:
+    needs: bake
+    if: |
+      always() && inputs.ssh_run
+      && (inputs.ssh_from != '' || needs.bake.outputs.tag != '')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      checks: write
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: redox-ssh-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            python3 lib/ci.py free-disk --need 8
+            if ! command -v sshpass >/dev/null 2>&1; then
+              apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
+                apt-get install -y -qq sshpass
+            fi
+            sshpass -V | head -1
+            python3 lib/ci.py tags --prefix redox-
+
+      - name: log in
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: redox-ssh
+          interval: "20"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            python3 redox/ssh.py \
+              --tag "${{ inputs.ssh_from || needs.bake.outputs.tag }}" \
+              --artifacts out/redox-ssh \
+              --boot-timeout "${{ inputs.boot_timeout || '600' }}" \
+              --mem "${{ inputs.mem || '2048' }}"
+
+      - name: keep the verdict
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: redox-ssh
+          path: |
+            out/redox-ssh/ssh.txt
+            out/redox-ssh/boot.ppm
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: the verdict
+        if: always()
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: redox-ssh-verdict
+          interval: "10"
+          command: |
+            set -euo pipefail
+            echo "=== redox ssh ==="
+            if [ -f out/redox-ssh/ssh.txt ]; then cat out/redox-ssh/ssh.txt; else echo "no verdict"; fi
+
+  # ===========================================================================
+  # LAUNCH - Orbital, and sshd at boot with nobody having started it.
+  # ===========================================================================
+  launch:
+    needs: ssh
+    if: |
+      always() && inputs.launch_run
+      && (inputs.launch_from != '' || needs.ssh.outputs.tag != '' || needs.bake.outputs.tag != '')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      checks: write
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: redox-launch-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            python3 lib/ci.py free-disk --need 8
+            python3 lib/ci.py tags --prefix redox-
+
+      - name: launch it
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: redox-launch
+          interval: "20"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            python3 redox/launch.py \
+              --tag "${{ inputs.launch_from || needs.bake.outputs.tag }}" \
+              --artifacts out/redox-launch \
+              --boot-timeout "${{ inputs.boot_timeout || '600' }}" \
+              --mem "${{ inputs.mem || '2048' }}"
+
+      - name: keep the verdict
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: redox-launch
+          path: |
+            out/redox-launch/launch.txt
+            out/redox-launch/screen.png
+            out/redox-launch/boot.png
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: the verdict
+        if: always()
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: redox-launch-verdict
+          interval: "10"
+          command: |
+            set -euo pipefail
+            echo "=== redox launch ==="
+            if [ -f out/redox-launch/launch.txt ]; then cat out/redox-launch/launch.txt; else echo "no verdict"; fi

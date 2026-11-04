@@ -1,0 +1,566 @@
+name: macos15
+
+# macOS 15: recovery -> Setup Assistant -> desktop -> ssh -> dev.
+#
+#     setup ──> desktop ──> ssh ──> dev
+#
+# WHY ONE WORKFLOW
+#
+# These were four workflows, and each had to be started by hand with the tag the previous one
+# produced: a form per stage, a chance per stage to type the tag wrong, and nothing in any run
+# graph recording that they are a chain at all. The chain is four stages here because macOS
+# genuinely fails in four different places - the installer, the wizard, Remote Login, the
+# toolchain - and each is worth its own job and its own timeout.
+#
+# EVERY JOB TAKES A TAG, AND THAT IS THE POINT
+#
+#     <job>_run          should this job run
+#     <job>_from         the tag to pull; empty means "use what the job above produced"
+#     <job>_bootstate    the run holding that tag's firmware variables
+#
+# A disk here does not boot from itself: its boot entry lives in the OVMF variables, which qemu
+# writes to the work directory and which travel as an artifact of the run that made the disk.
+# OpenCore's boot entry is in there too. Without that run id a job can pull the disk and still
+# start a machine that finds nothing - so the tag and the run id are always asked for together.
+#
+# `if: always() && ...` on every downstream job is what lets one start in the middle: `needs`
+# alone skips a job when the one above was skipped, and that is exactly the case of starting
+# from a tag. The real precondition is that there is a tag to pull, so that is what it tests.
+#
+# MANUAL ONLY.
+
+on:
+  workflow_dispatch:
+    inputs:
+      # --- what to run ---------------------------------------------------------------
+      setup_run:
+        description: "Install macOS 15 and stop at the Setup Assistant (~60 minutes)"
+        type: boolean
+        default: true
+      desktop_run:
+        description: "Drive the Setup Assistant to a desktop (~20 minutes)"
+        type: boolean
+        default: true
+      ssh_run:
+        description: "Turn on Remote Login"
+        type: boolean
+        default: true
+      dev_run:
+        description: "Install the toolchain over ssh"
+        type: boolean
+        default: true
+
+      # --- where each job starts -----------------------------------------------------
+      setup_from:
+        description: "setup: pull this tag instead of installing"
+        default: ""
+      setup_bootstate:
+        description: "setup: the run whose artifact holds that disk's OVMF variables"
+        default: ""
+      desktop_from:
+        description: "desktop: pull this tag instead of the setup job's output"
+        default: ""
+      desktop_bootstate:
+        description: "desktop: the run whose artifact holds that disk's OVMF variables"
+        default: ""
+      ssh_from:
+        description: "ssh: pull this tag instead of the desktop job's output"
+        default: ""
+      ssh_bootstate:
+        description: "ssh: the run whose artifact holds that disk's OVMF variables"
+        default: ""
+      dev_from:
+        description: "dev: pull this tag instead of the ssh job's output"
+        default: ""
+      dev_bootstate:
+        description: "dev: the run whose artifact holds that disk's OVMF variables"
+        default: ""
+
+      # --- setup ----------------------------------------------------------------------
+      release:
+        description: "setup: macOS release"
+        default: "15"
+      disk_size:
+        description: "setup: guest disk size"
+        default: "64G"
+      install_timeout:
+        description: "setup: seconds the installer may run"
+        default: "7200"
+      assistant_timeout:
+        description: "setup: seconds the Setup Assistant driver may run"
+        default: "2700"
+      desktop_timeout:
+        description: "desktop: seconds to wait for a desktop after the wizard"
+        default: "1800"
+      inspect_after:
+        description: >-
+          desktop: stop this many seconds after the wizard's last click, keep the recording
+          and publish nothing. For looking at what the wizard did instead of waiting out
+          desktop_timeout. Empty means a normal run.
+        default: ""
+
+      # --- ssh / dev -------------------------------------------------------------------
+      ssh_port:
+        description: "ssh: host port forwarded to the guest's sshd"
+        default: "2223"
+      boot_timeout:
+        description: "ssh: seconds to wait for the desktop"
+        default: "900"
+      publish_tag:
+        description: "the tag to publish under; empty for macos15-<stage>"
+        default: ""
+
+concurrency:
+  group: macos15-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ===========================================================================
+  # SETUP - install to the Setup Assistant and stop there.
+  # ===========================================================================
+  setup:
+    if: inputs.setup_run || inputs.setup_from != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+    outputs:
+      tag: ${{ inputs.setup_from || inputs.publish_tag || 'macos15-setup' }}
+      bootstate: ${{ inputs.setup_bootstate || github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: macos15-setup-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            python3 lib/ci.py free-disk --need 80
+            python3 lib/ci.py tags --prefix macos-
+
+      - name: bake
+        if: inputs.setup_from == ''
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: macos15-setup
+          interval: "20"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            export SNAPSHOT_INTERVAL="${{ inputs.snapshot_interval || '1' }}"
+            export RECORD_FPS=1
+            export MACOS_USER=docker
+            export MACOS_PASSWORD=admin
+            python3 macos/15/bake.py \
+              --out "out/macos15.qcow2" \
+              --release "15" \
+              --disk-size "${{ inputs.disk_size || '64G' }}" \
+              --timeout "${{ inputs.install_timeout || '7200' }}" \
+              --assistant-timeout "${{ inputs.assistant_timeout || '2700' }}" \
+              --desktop-timeout "${{ inputs.desktop_timeout || '1800' }}"
+
+      - name: keep the recording
+        if: always() && inputs.setup_from == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos15-setup-recording
+          path: |
+            out/install.mp4
+            out/last-frame.png
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: keep the last frame
+        if: always() && inputs.setup_from == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos15-setup-last-frame
+          path: out/last-frame.png
+          if-no-files-found: warn
+          retention-days: 7
+
+      # THE BOOTSTATE GOES WITH THE DISK. OpenCore's boot entry and the firmware variables live
+      # in the work directory, not on the disk and not in the tag.
+      - name: keep the bootstate
+        if: always() && inputs.setup_from == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos15-setup-bootstate
+          path: out/*.bootstate.tar.gz
+          if-no-files-found: warn
+          retention-days: 30
+
+      # A PLAIN `run:` STEP, BECAUSE THIS IS WHERE THE NEXT JOB'S TAG COMES FROM. GITHUB_OUTPUT
+      # is the runner's own mechanism; routing it through a third-party action would make the
+      # chain depend on how that action treats the variable.
+      - name: push the disk
+        if: success() && inputs.setup_from == ''
+        id: publish
+        run: |
+          set -euo pipefail
+          python3 lib/ci.py install-oras
+          python3 lib/ci.py login --registry ghcr.io
+          python3 lib/publish_disk.py out/macos15.qcow2 --kind macos15-setup \
+            --tag "${{ inputs.publish_tag || 'macos15-setup' }}"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+  # ===========================================================================
+  # DESKTOP - drive the Setup Assistant.
+  # ===========================================================================
+  desktop:
+    needs: setup
+    if: |
+      always() && inputs.desktop_run
+      && (inputs.desktop_from != '' || needs.setup.outputs.tag != '')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+    outputs:
+      tag: ${{ inputs.desktop_from || inputs.publish_tag || 'macos15-desktop' }}
+      bootstate: ${{ inputs.desktop_bootstate || github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: macos15-desktop-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            python3 lib/ci.py free-disk --need 80
+            python3 lib/ci.py tags --prefix macos-
+
+      - name: pull the setup disk
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: desktop-pull
+          interval: "15"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            python3 lib/pull_disk.py \
+              "${{ inputs.desktop_from || needs.setup.outputs.tag }}" --dest out
+
+      - name: pull the bootstate
+        uses: actions/download-artifact@v4
+        with:
+          name: macos15-setup-bootstate
+          path: out
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.desktop_bootstate || needs.setup.outputs.bootstate }}
+
+      # THE WIZARD IS DRIVEN BY COORDINATES AND KEYS, and whether it worked is answered by the
+      # recording. Every failure in this stage has been a wrong position or a pane that did not
+      # move, and a video is the only thing that shows which.
+      - name: drive the Setup Assistant
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: desktop-drive
+          interval: "15"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            export SNAPSHOT_INTERVAL=1
+            export MACOS_USER=docker
+            export MACOS_PASSWORD=admin
+            DISK=$(ls out/*.qcow2 | head -1)
+            echo "setup disk: $DISK"
+            python3 macos/15/desktop.py \
+              --disk "$DISK" \
+              --out out/macos15-desktop.qcow2 \
+              --assistant-timeout "${{ inputs.assistant_timeout || '2700' }}" \
+              --desktop-timeout "${{ inputs.desktop_timeout || '1800' }}" \
+              ${{ inputs.inspect_after != '' && format('--inspect-after {0}', inputs.inspect_after) || '' }}
+
+      - name: keep the recording
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos15-desktop-recording
+          path: |
+            out/install.mp4
+            out/last-frame.png
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: keep the last frame
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos15-desktop-last-frame
+          path: out/last-frame.png
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: keep the bootstate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos15-desktop-bootstate
+          path: out/*.bootstate.tar.gz
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: push the disk
+        if: success()
+        id: publish
+        run: |
+          set -euo pipefail
+          python3 lib/ci.py install-oras
+          python3 lib/ci.py login --registry ghcr.io
+          python3 lib/publish_disk.py out/macos15-desktop.qcow2 --kind macos15-desktop \
+            --tag "${{ inputs.publish_tag || 'macos15-desktop' }}"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+  # ===========================================================================
+  # SSH - Remote Login.
+  # ===========================================================================
+  ssh:
+    needs: desktop
+    if: |
+      always() && inputs.ssh_run
+      && (inputs.ssh_from != '' || needs.desktop.outputs.tag != '')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+    outputs:
+      tag: ${{ inputs.ssh_from || inputs.publish_tag || 'macos15-ssh' }}
+      bootstate: ${{ inputs.ssh_bootstate || github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: macos15-ssh-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            python3 lib/ci.py free-disk --need 80
+            if ! command -v sshpass >/dev/null 2>&1; then
+              apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
+                apt-get install -y -qq sshpass
+            fi
+            sshpass -V | head -1
+            python3 lib/ci.py tags --prefix macos-
+
+      - name: pull the desktop disk
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: ssh-pull
+          interval: "15"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            python3 lib/pull_disk.py \
+              "${{ inputs.ssh_from || needs.desktop.outputs.tag }}" --dest out
+
+      - name: pull the bootstate
+        uses: actions/download-artifact@v4
+        with:
+          name: macos15-desktop-bootstate
+          path: out
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.ssh_bootstate || needs.desktop.outputs.bootstate }}
+
+      # REMOTE LOGIN IS TURNED ON FROM THE GUEST'S OWN TERMINAL, opened with a keyboard
+      # shortcut and typed into - there is no ssh yet, which is the thing being enabled.
+      - name: enable Remote Login
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: ssh-enable
+          interval: "15"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            export SNAPSHOT_INTERVAL=1
+            export MACOS_USER=docker
+            export MACOS_PASSWORD=admin
+            DISK=$(ls out/*.qcow2 | head -1)
+            python3 macos/15/ssh.py \
+              --disk "$DISK" \
+              --out out/macos15-ssh.qcow2 \
+              --ssh-port "${{ inputs.ssh_port || '2223' }}" \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}"
+
+      - name: keep the recording
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos15-ssh-recording
+          path: |
+            out/install.mp4
+            out/last-frame.png
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: keep the last frame
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos15-ssh-last-frame
+          path: out/last-frame.png
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: keep the bootstate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos15-ssh-bootstate
+          path: out/*.bootstate.tar.gz
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: push the disk
+        if: success()
+        id: publish
+        run: |
+          set -euo pipefail
+          python3 lib/ci.py install-oras
+          python3 lib/ci.py login --registry ghcr.io
+          python3 lib/publish_disk.py out/macos15-ssh.qcow2 --kind macos15-ssh \
+            --tag "${{ inputs.publish_tag || 'macos15-ssh' }}"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+  # ===========================================================================
+  # DEV - the toolchain, over the ssh the stage above turned on.
+  # ===========================================================================
+  dev:
+    needs: ssh
+    if: |
+      always() && inputs.dev_run
+      && (inputs.dev_from != '' || needs.ssh.outputs.tag != '')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: macos15-dev-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            python3 lib/ci.py free-disk --need 80
+            if ! command -v sshpass >/dev/null 2>&1; then
+              apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
+                apt-get install -y -qq sshpass
+            fi
+            sshpass -V | head -1
+            python3 lib/ci.py tags --prefix macos-
+
+      - name: pull the ssh disk
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: dev-pull
+          interval: "15"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            python3 lib/pull_disk.py \
+              "${{ inputs.dev_from || needs.ssh.outputs.tag }}" --dest out
+
+      - name: pull the bootstate
+        uses: actions/download-artifact@v4
+        with:
+          name: macos15-ssh-bootstate
+          path: out
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.dev_bootstate || needs.ssh.outputs.bootstate }}
+
+      # EVERYTHING BELOW IS ORDINARY REMOTE WORK: an ssh server is running, so no keyboard and
+      # no screen - the toolchain is installed over a forwarded port.
+      - name: install the toolchain
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: dev-install
+          interval: "20"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            DISK=$(ls out/*.qcow2 | head -1)
+            python3 macos/15/dev.py \
+              --disk "$DISK" \
+              --out out/macos15-dev.qcow2 \
+              --ssh-port "${{ inputs.ssh_port || '2223' }}" \
+              --clean
+
+      - name: keep the last frame
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos15-dev-last-frame
+          path: out/last-frame.png
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: push the disk
+        if: success()
+        id: publish
+        run: |
+          set -euo pipefail
+          python3 lib/ci.py install-oras
+          python3 lib/ci.py login --registry ghcr.io
+          python3 lib/publish_disk.py out/macos15-dev.qcow2 --kind macos15-dev \
+            --tag "${{ inputs.publish_tag || 'macos15-dev' }}"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}

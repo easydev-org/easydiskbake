@@ -303,7 +303,7 @@ def main(argv: list[str]) -> int:
                 disk = iso.fetch_tag(args.tag, disk)
             except iso.IsoError as exc:
                 note(f"=== {args.tag} IS NOT PUBLISHED: {exc}")
-                note("  run linux-nixos-bake for this desktop first")
+                note("  run the nixos workflow for this desktop first")
                 return finish(2)
     if not os.path.exists(disk):
         note(f"=== NO DISK AT {disk} ===")

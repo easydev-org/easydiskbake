@@ -1,0 +1,390 @@
+name: nixos
+
+# NixOS: one base system, six desktops derived from it, each launched.
+#
+#     base ──> derive (matrix: 6 desktops) ──> launch (matrix: the same 6)
+#
+# WHY ONE WORKFLOW
+#
+# It was three - bake, launch, and the derive job lived inside the bake - and the launch had to
+# be started by hand for each desktop, one dispatch per desktop, each with a tag typed in. The
+# six desktops were already parallel; what was missing was the record that they come from one
+# base.
+#
+# THE SHAPE IS A FAN-OUT, AND THAT IS THE POINT
+#
+# The base is one disk with no desktop on it. Each derived disk adds a session, and they are
+# independent of each other - so the matrix is real parallelism, not a convenience. `fail-fast:
+# false` because one desktop failing to derive says nothing about the other five, and seeing all
+# six outcomes is worth more than stopping at the first.
+#
+# EVERY JOB TAKES A TAG
+#
+#     <job>_run          should this job run
+#     <job>_from         the tag to pull; empty means "use what the job above produced"
+#
+# The derive and launch jobs are matrices, so `<job>_from` is a PREFIX: a tag of
+# `nixos-<desktop>` is what each parallel entry pulls. NixOS needs no bootstate - the firmware
+# variables are only load bearing for Windows and macOS.
+#
+# MANUAL ONLY.
+
+on:
+  workflow_dispatch:
+    inputs:
+      # --- what to run ---------------------------------------------------------------
+      base_run:
+        description: "Install the base system (~30 minutes)"
+        type: boolean
+        default: true
+      derive_run:
+        description: "Derive the desktop disks from the base"
+        type: boolean
+        default: true
+      launch_run:
+        description: "Start every derived disk and photograph it"
+        type: boolean
+        default: true
+
+      # --- which desktops ------------------------------------------------------------
+      desktops:
+        description: >-
+          JSON list, e.g. ["labwc","gnome"]. Empty means all six:
+          labwc, gnome, kde, cosmic, hyprland, miracle
+        default: ""
+
+      # --- where each job starts -----------------------------------------------------
+      base_from:
+        description: "base: pull this tag instead of installing"
+        default: ""
+      derive_from:
+        description: "derive: a tag PREFIX to pull instead of the base job's output (empty = nixos-<desktop>)"
+        default: ""
+      launch_from:
+        description: "launch: a tag PREFIX to start instead of the derive job's output"
+        default: ""
+
+      # --- base ----------------------------------------------------------------------
+      disk_size:
+        description: "base: guest disk size"
+        default: "20G"
+      install_timeout:
+        description: "base: seconds the install and the boot may each run"
+        default: "3600"
+      derive_timeout:
+        description: "derive: seconds each desktop's derivation and clean may each run"
+        default: "3600"
+
+      # --- launch --------------------------------------------------------------------
+      boot_timeout:
+        description: "launch: seconds to wait for the system and its session"
+        default: "900"
+      resolution:
+        description: "launch: guest screen as WxH"
+        default: "1920x1080"
+      mem:
+        description: "launch: guest memory in MB"
+        default: "6144"
+
+concurrency:
+  group: nixos-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ===========================================================================
+  # BASE - a bare system. Cleaned, because the base is published too.
+  # ===========================================================================
+  base:
+    if: inputs.base_run || inputs.base_from != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+    outputs:
+      tag: ${{ inputs.base_from || 'nixos-base' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: nixos-base-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            python3 lib/ci.py free-disk --need 40
+            python3 lib/ci.py tags --prefix iso-nixos
+
+      - name: install the base
+        if: inputs.base_from == ''
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: nixos-base
+          interval: "15"
+          command: |
+            set -euo pipefail
+            mkdir -p out
+            export GITHUB_TOKEN="${{ github.token }}"
+            python3 linux/nixos/bake.py \
+              --out out/nixos-base.qcow2 \
+              --disk-size "${{ inputs.disk_size || '20G' }}" \
+              --timeout "${{ inputs.install_timeout || '3600' }}"
+
+      # THE CONSOLE IS THE ONLY RECORD OF WHAT THE GUEST DID. NixOS has no framebuffer worth
+      # photographing during an install - it is a text console - so the log is the artifact that
+      # explains a failure, and it is uploaded on every outcome.
+      - name: keep the base console
+        if: always() && inputs.base_from == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: nixos-base-console
+          path: |
+            out/console.log
+            out/serial.out.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      # CLEANING IS ITS OWN STEP. It boots the disk the install produced, cleans it over ssh and
+      # stops it. The install does not clean at all, so this is the only place it happens and the
+      # run graph shows "clean the disk: failed" rather than a line in an install log.
+      - name: clean the disk
+        if: inputs.base_from == ''
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: nixos-base-clean
+          interval: "20"
+          command: |
+            set -euo pipefail
+            python3 lib/clean_step.py \
+              --disk out/nixos-base.qcow2 \
+              --kind linux \
+              --work out \
+              --artifacts out \
+              --boot-timeout "${{ inputs.install_timeout || '3600' }}" \
+              --mem 4096
+
+      # A PLAIN `run:` STEP, BECAUSE THIS IS WHERE THE DERIVE JOB'S TAG COMES FROM.
+      - name: push the base
+        if: success() && inputs.base_from == ''
+        id: publish
+        run: |
+          set -euo pipefail
+          python3 lib/ci.py install-oras
+          python3 lib/ci.py login --registry ghcr.io
+          python3 lib/publish_disk.py out/nixos-base.qcow2 --kind nixos-base --tag nixos-base
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+  # ===========================================================================
+  # DERIVE - one disk per desktop, in parallel, each cleaned.
+  # ===========================================================================
+  derive:
+    needs: base
+    if: |
+      always() && inputs.derive_run
+      && (inputs.derive_from != '' || needs.base.outputs.tag != '')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+    strategy:
+      # ONE DESKTOP FAILING SAYS NOTHING ABOUT THE OTHER FIVE. Seeing all six outcomes is worth
+      # more than stopping at the first.
+      fail-fast: false
+      matrix:
+        desktop: ${{ fromJSON(github.event.inputs.desktops == '' && '["labwc","gnome","kde","cosmic","hyprland","miracle"]' || github.event.inputs.desktops) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: nixos-derive-prepare-${{ matrix.desktop }}
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            python3 lib/ci.py free-disk --need 40
+            if ! command -v sshpass >/dev/null 2>&1; then
+              apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
+                apt-get install -y -qq sshpass
+            fi
+            python3 lib/ci.py tags --prefix nixos-
+
+      - name: pull the base
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: nixos-pull-${{ matrix.desktop }}
+          interval: "15"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            python3 lib/pull_disk.py "${{ needs.base.outputs.tag }}" --dest out/base
+
+      - name: derive
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: derive-${{ matrix.desktop }}
+          interval: "15"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            BASE=$(find out/base -name '*.qcow2' | head -1)
+            echo "base disk: $BASE"
+            python3 linux/nixos/derive.py \
+              --base "$BASE" \
+              --desktop "${{ matrix.desktop }}" \
+              --out "out/nixos-${{ matrix.desktop }}.qcow2" \
+              --timeout "${{ inputs.derive_timeout || '3600' }}"
+
+      # EVERY DERIVED DESKTOP IS CLEANED, NOT ONLY THE BASE.
+      #
+      # The base is a bare NixOS with no desktop; each derived disk adds a session, its
+      # compositor, and whatever the first login writes. Those disks are the ones that get
+      # published and booted, so they are the ones whose size matters - cleaning only the base
+      # would leave six published artifacts carrying a desktop's first-boot caches.
+      - name: clean the disk
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: clean-${{ matrix.desktop }}
+          interval: "20"
+          command: |
+            set -euo pipefail
+            python3 lib/clean_step.py \
+              --disk "out/nixos-${{ matrix.desktop }}.qcow2" \
+              --kind linux \
+              --work out \
+              --artifacts out \
+              --boot-timeout "${{ inputs.derive_timeout || '3600' }}" \
+              --mem 4096
+
+      - name: keep the console
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nixos-${{ matrix.desktop }}-console
+          path: |
+            out/console.log
+            out/serial.out.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: push the disk
+        if: success()
+        id: publish
+        run: |
+          set -euo pipefail
+          python3 lib/ci.py install-oras
+          python3 lib/ci.py login --registry ghcr.io
+          python3 lib/publish_disk.py "out/nixos-${{ matrix.desktop }}.qcow2" \
+            --kind "nixos-${{ matrix.desktop }}" --tag "nixos-${{ matrix.desktop }}"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+  # ===========================================================================
+  # LAUNCH - every desktop, in parallel, against the disk derive published.
+  # ===========================================================================
+  launch:
+    needs: derive
+    if: |
+      always() && inputs.launch_run
+      && (inputs.launch_from != '' || needs.derive.result == 'success')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      checks: write
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        desktop: ${{ fromJSON(github.event.inputs.desktops == '' && '["labwc","gnome","kde","cosmic","hyprland","miracle"]' || github.event.inputs.desktops) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: launch-prepare-${{ matrix.desktop }}
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            python3 lib/ci.py free-disk --need 40
+            if ! command -v sshpass >/dev/null 2>&1; then
+              apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
+                apt-get install -y -qq sshpass
+            fi
+            python3 lib/ci.py tags --prefix nixos-
+
+      - name: launch it and photograph the screen
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: launch-${{ matrix.desktop }}
+          interval: "20"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            export SNAPSHOT_INTERVAL=1
+            python3 linux/nixos/launch.py \
+              --tag "${{ inputs.launch_from != '' && format('{0}-{1}', inputs.launch_from, matrix.desktop) || format('nixos-{0}', matrix.desktop) }}" \
+              --desktop "${{ matrix.desktop }}" \
+              --artifacts "out/nixos-${{ matrix.desktop }}-launch" \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --resolution "${{ inputs.resolution || '1920x1080' }}" \
+              --mem "${{ inputs.mem || '6144' }}"
+
+      - name: keep the screenshot and the verdict
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nixos-${{ matrix.desktop }}-launch
+          path: |
+            out/nixos-${{ matrix.desktop }}-launch/**
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: the verdict
+        if: always()
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: launch-${{ matrix.desktop }}-verdict
+          interval: "10"
+          command: |
+            set -euo pipefail
+            F="out/nixos-${{ matrix.desktop }}-launch/launch.txt"
+            echo "=== nixos ${{ matrix.desktop }} ==="
+            if [ -f "$F" ]; then cat "$F"; else echo "no verdict was written"; fi

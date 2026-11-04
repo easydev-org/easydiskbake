@@ -4,7 +4,7 @@
 
 WHAT THE INPUT IS
 
-macos-15_setup-bake's output: a disk with a complete macOS on it that boots into the
+the macos15 workflow's setup job: a disk with a complete macOS on it that boots into the
 Setup Assistant. Not a disk that reaches a desktop - the wizard has never been answered.
 
 WHAT THIS DOES

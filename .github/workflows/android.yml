@@ -1,0 +1,271 @@
+name: android
+
+# Android: bake an AVD -> validate it -> publish, then launch it.
+#
+#     bake ──> launch
+#
+# WHY ONE WORKFLOW
+#
+# It was two - bake and launch - and the launch had to be started by hand with the tag the bake
+# produced. The bake's own validate step also belongs to the bake: it unpacks the archive the
+# bake just made and boots it, which is the artifact's own proof and not a separate stage.
+#
+# EVERY JOB TAKES A TAG
+#
+#     <job>_run       should this job run
+#     <job>_from      the tag to pull; empty means "use what the job above produced"
+#
+# Android needs no bootstate: the emulator boots from the AVD directory in the archive, with no
+# firmware variables involved.
+#
+# WHAT THE ARTIFACT IS
+#
+# A compressed tar of an AVD directory - config.ini plus system.img, vendor.img, userdata.img
+# and the kernel/ramdisk. The bake pulls it from ghcr and never talks to Google; that is what
+# android-15_aosp-publish is for, and it stays a separate workflow because it is not a stage of
+# this chain - it is the shared cache every bake starts from.
+#
+# MANUAL ONLY.
+
+on:
+  workflow_dispatch:
+    inputs:
+      # --- what to run ---------------------------------------------------------------
+      bake_run:
+        description: "Build the AVD and validate it"
+        type: boolean
+        default: true
+      launch_run:
+        description: "Start the AVD and photograph the screen"
+        type: boolean
+        default: true
+
+      # --- where each job starts -----------------------------------------------------
+      bake_from:
+        description: "bake: pull this tag instead of building"
+        default: ""
+      launch_from:
+        description: "launch: the tag to start; empty for the bake job's output"
+        default: ""
+
+      # --- shared --------------------------------------------------------------------
+      boot_timeout:
+        description: "seconds to wait for the guest to finish booting"
+        default: "900"
+      memory_mb:
+        description: "guest memory in MB"
+        default: "4096"
+
+      # --- launch --------------------------------------------------------------------
+      settle:
+        description: "launch: seconds to let the screen settle before the screenshot"
+        default: "20"
+      wipe_data:
+        description: "launch: start from a wiped /data instead of the baked one"
+        type: boolean
+        default: false
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ===========================================================================
+  # BAKE - build the AVD, validate it by booting it again, publish.
+  # ===========================================================================
+  bake:
+    if: inputs.bake_run || inputs.bake_from != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/${{ github.repository }}:android-builder
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+    outputs:
+      tag: ${{ inputs.bake_from || 'android-15-aosp' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: android-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            python3 lib/ci.py free-disk --need 20
+            python3 lib/ci.py tags --prefix sysimg-
+
+      - name: bake
+        if: inputs.bake_from == ''
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: android-bake
+          interval: "15"
+          command: |
+            set -euo pipefail
+            mkdir -p out
+            export GITHUB_TOKEN="${{ github.token }}"
+            export SNAPSHOT_INTERVAL=1
+            export RECORD_FPS=1
+            python3 android/15/bake.py \
+              --out out/android15.tar.zst \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --memory-mb "${{ inputs.memory_mb || '4096' }}"
+
+      # A SEPARATE PROCESS, AND A SEPARATE BOOT, WITHOUT --wipe-data.
+      #
+      # The bake already saw sys.boot_completed on the machine it built. This unpacks the
+      # archive it produced, starts a guest on that /data, and reads back the marker the bake
+      # wrote. Without this step the artifact is "a system image we booted once"; with it, it is
+      # "this disk, which boots".
+      #
+      # THE ARCHIVE NAME IS WHATEVER THE BAKE WROTE. It cannot be a .tar.zst - 7z has no zstd
+      # method for a 7z container - so pack() names it .7z and returns that path. Finding it
+      # rather than naming it keeps this step from breaking the next time the format moves.
+      - name: validate the gold disk
+        if: inputs.bake_from == ''
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: android-validate
+          interval: "15"
+          command: |
+            set -euo pipefail
+            AVD=$(ls out/android15.* 2>/dev/null | head -1)
+            if [ -z "$AVD" ]; then
+              echo "=== NO AVD ARCHIVE IN out/ ==="
+              ls -la out/ || true
+              exit 1
+            fi
+            echo "validating $AVD"
+            python3 android/15/validate.py \
+              --avd "$AVD" \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --memory-mb "${{ inputs.memory_mb || '4096' }}"
+
+      - name: keep the recording
+        if: always() && inputs.bake_from == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-recording
+          path: |
+            out/install.mp4
+            out/emulator.log
+            out/frames/shots/frames.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+      # WHEN THE ENCODING NEVER RUNS, THE PICTURES ARE ALL THERE IS.
+      #
+      # A run that is cancelled or times out never reaches the encoding call at all, so
+      # `keep the recording` would upload a frames.txt that lists files nobody can open. That
+      # happened to run 41446883463 - 454 frames on the runner, and the artifact was 32 KB.
+      - name: keep the last frame
+        if: always() && inputs.bake_from == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-last-frame
+          path: out/last-frame.png
+          if-no-files-found: warn
+          retention-days: 7
+
+      # A PLAIN `run:` STEP, BECAUSE THIS IS WHERE THE LAUNCH JOB'S TAG COMES FROM.
+      - name: push the AVD
+        if: success() && inputs.bake_from == ''
+        id: publish
+        run: |
+          set -euo pipefail
+          python3 lib/ci.py install-oras
+          python3 lib/ci.py login --registry ghcr.io
+          AVD=$(ls out/android15.* | head -1)
+          python3 lib/publish_disk.py "$AVD" --kind android-15-aosp
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+  # ===========================================================================
+  # LAUNCH
+  # ===========================================================================
+  launch:
+    needs: bake
+    if: |
+      always() && inputs.launch_run
+      && (inputs.launch_from != '' || needs.bake.outputs.tag != '')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/${{ github.repository }}:android-builder
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      checks: write
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: launch-android-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            python3 lib/ci.py free-disk --need 20
+            python3 lib/ci.py tags --prefix android-
+
+      - name: launch it and photograph the screen
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: launch-android
+          interval: "20"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            export SNAPSHOT_INTERVAL=1
+            WIPE=""
+            if [ "${{ inputs.wipe_data }}" = "true" ]; then WIPE="--wipe-data"; fi
+            python3 lib/launch_android.py \
+              --tag "${{ inputs.launch_from || needs.bake.outputs.tag }}" \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --settle "${{ inputs.settle || '20' }}" \
+              --artifacts out \
+              $WIPE
+
+      - name: keep the screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-launch
+          path: |
+            out/screen.png
+            out/last-frame.png
+            out/launch.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: the verdict
+        if: always()
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: launch-android-verdict
+          interval: "10"
+          command: |
+            set -euo pipefail
+            echo "=== android ==="
+            if [ -f out/launch.txt ]; then cat out/launch.txt; else echo "no verdict"; fi
