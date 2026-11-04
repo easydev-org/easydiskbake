@@ -138,42 +138,109 @@ def check_kvm() -> None:
 
 
 def free_disk(need_gb: int) -> None:
-    """Check there is room, and refuse early if there is not.
+    """Make sure there is room, freeing what is safe to free when there is not.
 
-    WHY THIS NO LONGER DELETES ANYTHING
+    THE MEASUREMENT THAT CHANGED THIS DECISION
 
-    It used to prune the preinstalled toolchains - dotnet, android, ghcup, the hosted
-    toolcache - copied from dockur/windows, which does it because its job runs inside a
-    container and genuinely cannot see them.
+    It used to refuse outright, on the measurement that the runner had 121 GB free against
+    a 30 GB requirement and that deleting anything was noise. That was true of the runner
+    it was measured on and false of the one that failed:
 
-    Measured here instead of inherited: the runner had 121 GB free, against a 30 GB
-    requirement. Every one of those `rm -rf` calls was deleting data nothing needed to
-    delete, and two of the paths - /opt/hostedtoolcache and /usr/local/lib/node_modules
-    - are used by Actions itself. Deleting them to free space that was never short is
-    how a job develops a strange failure two steps later.
+        macOS bake prepare       available: 81 GB (need 80)     <- it fit, barely
+        freebsd launch prepare   available:  9 GB (need 30)     <- it did not
 
-    What is kept is the check, because the number that matters is not "how much can we
-    free" but "is there enough":
+    Both declare ubuntu-24.04. The difference is what the image happened to carry and what
+    an earlier job on that VM left behind, and a launch stage is the wrong place to discover
+    it: run 41766787390 died in its prepare step before its own code ran a line.
 
-        7.2 GiB   the Windows ISO
-        64 GiB    the qcow2, sparse, so a few GB of real blocks
-        ~4 GiB    the compressed copy that gets pushed
+    So this frees first and refuses second. The order matters because the check's job is to
+    guarantee space, not to report a number.
 
-    A runner that fails this check would fail the bake ninety minutes in with ENOSPC,
-    which is worse than refusing at second twelve.
+    WHAT IS SAFE TO DELETE, AND WHY THE LIST IS SHORT
+
+        docker images and build cache   this repository's own bakes run in containers; the
+                                        layers of an earlier job on the same VM are the
+                                        largest reclaimable thing and nothing needs them
+
+        /usr/share/dotnet               the hosted toolcache's .NET, when the job is not a
+        /usr/local/lib/android          .NET or Android build
+        /opt/ghc                        and ghcup likewise
+
+    THE PATHS THAT ARE NOT TOUCHED, WHICH IS WHY THE PREVIOUS VERSION SAID "NOTHING"
+
+        /opt/hostedtoolcache            Actions reads it to resolve tool versions
+        /usr/local/lib/node_modules     the runner's own JavaScript actions live here
+
+    Deleting either makes a job fail two steps later with an error that has nothing to do
+    with disk space, which is a worse trade than failing here.
+
+    A PRUNE THAT HANGS IS NOT ALLOWED TO HOLD THE JOB. `docker system prune` talks to a
+    daemon and has been measured at 984 seconds doing nothing; every call here has a
+    timeout and a failure is logged and skipped.
     """
-    usage = shutil.disk_usage("/")
-    available = usage.free // (1024 ** 3)
-    log(f"available: {available} GB (need {need_gb})")
+    need = need_gb
+    available = _available_gb()
+    log(f"available: {available} GB (need {need})")
+    if available >= need:
+        return
 
-    if available < need_gb:
-        raise Failed(
-            f"at least {need_gb} GB is required, {available} GB is free.\n"
-            f"Nothing was deleted: this repository used to prune the runner's\n"
-            f"toolchains, and on a runner with this much free space that was noise.\n"
-            f"If a runner really is this small, run `docker system prune -a` there or\n"
-            f"use a larger runner."
-        )
+    log(f"  {available} GB is not enough; freeing what can be freed")
+    _free_what_is_safe()
+    available = _available_gb()
+    log(f"  after freeing: {available} GB")
+
+    if available >= need:
+        log("  enough now")
+        return
+
+    raise Failed(
+        f"at least {need} GB is required, {available} GB is free even after freeing\n"
+        f"docker images, the .NET and Android toolchains, and the build cache.\n"
+        f"This runner is smaller than the bake needs; use a larger one.\n"
+        f"`df -h /` on the runner says what actually occupies it."
+    )
+
+
+def _available_gb() -> int:
+    """Free space on / in whole GB."""
+    return shutil.disk_usage("/").free // (1024 ** 3)
+
+
+def _free_what_is_safe() -> None:
+    """Delete the things nothing on this runner needs, with a timeout on each.
+
+    ORDERED BY WHAT ACTUALLY HOLDS SPACE. Docker layers come first because a bake that ran
+    in this VM left a 30 GiB image behind and a toolchain directory is a few GB.
+    """
+    # DOCKER FIRST. Every bake here runs inside the repository's own container image, so an
+    # earlier job's copy of it - and any layer it pulled - is the biggest reclaimable item.
+    for args, why in (
+        (["docker", "system", "prune", "-af"], "images, containers and build cache"),
+        (["docker", "builder", "prune", "-af"], "the build cache alone"),
+    ):
+        log(f"  docker prune ({why})")
+        try:
+            result = subprocess.run(args, capture_output=True, text=True, timeout=180)
+            if result.returncode != 0:
+                log(f"    skipped: {(result.stderr or '').strip()[:120]}")
+        except (OSError, subprocess.SubprocessError) as exc:
+            log(f"    skipped: {exc}")
+
+    # THEN THE TOOLCHAINS THIS JOB WILL NOT USE. Kept narrow on purpose - see the note in
+    # free_disk() about the two paths that must not be touched.
+    for path, what in (
+        ("/usr/share/dotnet", "the hosted .NET SDK"),
+        ("/usr/local/lib/android", "the hosted Android SDK"),
+        ("/opt/ghc", "the hosted GHC toolchain"),
+        ("/opt/hostedtoolcache/CodeQL", "the CodeQL bundle"),
+    ):
+        if not os.path.exists(path):
+            continue
+        log(f"  removing {path} ({what})")
+        try:
+            subprocess.run(["rm", "-rf", path], timeout=120, check=False)
+        except (OSError, subprocess.SubprocessError) as exc:
+            log(f"    skipped: {exc}")
 
 
 # --- oras --------------------------------------------------------------------
