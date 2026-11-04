@@ -158,6 +158,39 @@ def main(argv: list[str]) -> int:
         # not enough and produced "the guest did not power off within 60s; killing it".
         guest.stop(acpi_first=ok, acpi_timeout=300)
 
+    if not ok:
+        return 1
+
+    # COMPRESS AGAIN, BECAUSE THE CLEAN LEFT THE IMAGE BIGGER THAN IT FOUND IT.
+    #
+    # THIS IS THE STEP THAT WAS MISSING, and it cost 12 GiB on every Linux disk. The order
+    # used to be:
+    #
+    #     bake       compress 4453 MiB
+    #     clean      boot it, write 13247 MB of zeros -> the qcow2 grows to 16536 MiB
+    #     publish    push 16536 MiB
+    #
+    # Writing zeros INTO an already-compressed qcow2 allocates clusters, because qemu stores
+    # the zero blocks like any other data - discard=unmap helps the fstrim pass but it cannot
+    # help the zeros that are written afterwards. The image only shrinks when convert reads it
+    # and skips the blocks that are zero, and nothing did that after the clean.
+    #
+    # So the disk is compressed here, in place. The compress is the same call the bakes use,
+    # which is what makes the published size the size of what is actually in the disk.
+    note("compressing the cleaned disk")
+    import compress
+
+    # THE RAW SIZE IS REPORTED FIRST, because the ratio is the only number that says whether
+    # the clean did anything: a disk that compresses to the same size it had before was cleaned
+    # and not improved.
+    before = os.path.getsize(args.disk)
+    compress.compress(args.disk, args.disk)
+    after = os.path.getsize(args.disk)
+    note(f"  {before >> 20} MiB -> {after >> 20} MiB")
+
+    note(f"CLEANED {args.disk}")
+    return 0
+
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))

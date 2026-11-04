@@ -215,10 +215,15 @@ def compress(source: str, dest: str) -> str:
             f"{result.stdout[-800:]}\n{result.stderr[-800:]}"
         )
 
+    # THE RATIO IS MEASURED BEFORE THE REPLACE, BECAUSE `source` AND `dest` CAN BE THE SAME
+    # FILE. lib/clean_step.py compresses its disk in place - the clean left it bigger than it
+    # found it and nothing else would shrink it again - and after os.replace the two paths are
+    # one file, so the ratio would read 100% of itself.
+    source_size = os.path.getsize(source)
     os.replace(tmp, dest)
-    log(f"{dest}: {os.path.getsize(dest) >> 20} MiB "
-        f"({os.path.getsize(dest) * 100 // max(os.path.getsize(source), 1)}% of "
-        f"{os.path.getsize(source) >> 20} MiB)")
+    dest_size = os.path.getsize(dest)
+    log(f"{dest}: {dest_size >> 20} MiB "
+        f"({dest_size * 100 // max(source_size, 1)}% of {source_size >> 20} MiB)")
     return dest
 
 
