@@ -31,21 +31,27 @@ The first version printed `apt archives: ok` and nothing else, and a run then re
 which says the image is 17% of the disk. It is 17% of the PARTITION - 20 GiB of virtual
 capacity, most of which was never written - and the number made a clean that removed 200 MB
 look like one that removed 16 GB. A metric wrong in a plausible direction is worse than none,
-so each step is measured against `df` before and after, and the total is printed beside the
-amount that was zeroed. Those two numbers together are the honest answer:
+so each step is measured against `df` before and after.
 
-    freed by deleting     what the steps actually removed
-    written as zeros      what qemu-img convert will now skip
+THE TRIM IS THE STEP THAT MATTERS, AND IT IS NOT THE ONE THIS MODULE USED TO DO
 
-WHY THE ZEROING IS THE STEP THAT MATTERS
+Deleting a file marks its blocks free and leaves the bytes where they were, so `qemu-img
+convert` still stores them and the image keeps the size of its high-water mark. The old answer
+was to write zeros over the whole free space, which works and which this module did for years.
 
-`qemu-img convert -O qcow2` only skips clusters that are ALREADY ZERO. Deleting a file marks
-its blocks free and leaves the bytes where they were, so convert stores them and the qcow2
-comes out the size of the disk's high-water mark. Writing zeros over the free space is what
-makes those blocks zero when convert looks.
+It stopped being usable when the disks became 128 GB. Measured in one clean, run 41824878061:
 
-So deleting is what CREATES the free space and zeroing is what makes it count. A disk that
-skips the zeroing is correctly cleaned and exactly the same size.
+    12:10:25  discarding the free blocks (fstrim, up to 120s)
+    12:10:26  /: 116.3 GiB (124887408640 bytes) trimmed      <- one second
+    12:11:15  writing 9129 MB of zeros over the free space   <- forty-nine seconds
+
+One second released 116 GiB, and the forty-nine that followed allocated 9 GB of clusters back,
+because qemu stores zeros like any other data. The image came out at 12.33 GiB against 4 GiB
+before any of it ran.
+
+`fstrim` is the mechanism: virtio-blk discards, the qcow2 driver drops the clusters, nothing is
+written. A filesystem that cannot discard needs `zerofree` - block bitmap, free AND non-zero -
+and that is the fallback this now names rather than a blanket dd.
 """
 
 from __future__ import annotations
@@ -116,63 +122,41 @@ STEPS: list[tuple[str, str]] = [
 # number that has to go down for a smaller image to come out.
 USED = "df -m / | awk 'NR==2 {print $3}'"
 
-# THE ZEROING, AS ONE STATEMENT, BECAUSE IT NEEDS ITS OWN VARIABLES.
+# NO ZEROING. THE FILESYSTEM RELEASES ITS OWN BLOCKS.
 #
-# sync first, so the writes above are accounted for before the free space is measured; a
-# 200 MB margin so the last block does not fail and leave the file behind while looking like
-# success. A partial dd is still useful - the blocks it reached are zero - so it is reported
-# rather than treated as failure.
-# THE ZEROING DOES NOT HAVE TO COVER THE WHOLE FREE SPACE, AND ON A 128 GB DISK IT MUST NOT.
+# Writing zeros over the free space was this repository's way of making `qemu-img convert`
+# skip the blocks that deleted files had left behind. It works, and on a 128 GB disk it is
+# absurd: it writes the whole free space, which both takes minutes and RE-ALLOCATES clusters
+# that were never allocated, because qemu stores the zeros like any other data.
 #
-# Measured: a qcow2 holds only the clusters that were written. A 128 GB virtual disk with 100 MB
-# in it is a 100 MB file, and convert keeps it that way. What zeroing is for is the OTHER case -
-# blocks that WERE written and whose file was then deleted, because deleting marks them free and
-# leaves their bytes, so convert still stores them.
+# Measured on run 41824878061, in one clean:
 #
-# So the quantity that matters is not "free space" but "space that has been touched and
-# released", and on a fresh install that is a fraction of the used size rather than 119 GB.
+#     12:10:25  discarding the free blocks (fstrim, up to 120s)
+#     12:10:26  /: 116.3 GiB (124887408640 bytes) trimmed        <- one second
+#     12:11:15  writing 9129 MB of zeros over the free space     <- forty-nine seconds
 #
-# THE BOUND: write what the filesystem SAYS IT HAS USED, once. That is a cheap over-estimate -
-# the touched-and-released blocks cannot exceed the total ever written, and a system that has
-# just been installed has written roughly what it holds. It is also the number that does not
-# grow when the virtual disk does, which is the property the old version lacked: raising
-# --disk-size from 24G to 128G made the clean write 119 GB instead of 20 GB, and both of the
-# Linux bakes then timed out at fifteen minutes.
+# One second released 116 GiB. The forty-nine that followed allocated 9 GB of clusters back.
 #
-# `fstrim` above is the cheap path and drops most of it without any writes; this is what
-# catches the rest, and both are bounded now.
-ZERO = (
-    "sync; "
-    "u=$(df -m / | awk 'NR==2 {print $3}'); "
-    "f=$(df -m / | awk 'NR==2 {print $4}'); "
-    "echo \"USED_MB=$u FREE_MB=$f\"; "
-    "t=$((u < f ? u : f)); "
-    "t=$((t > 200 ? t - 200 : 0)); "
-    "if [ \"$t\" -gt 500 ]; then "
-    "  echo \"ZERO_MB=$t\"; "
-    "  sudo dd if=/dev/zero of=/zero.fill bs=1M count=$t status=none "
-    "    || echo ZERO_PARTIAL; "
-    "  sync; sudo rm -f /zero.fill; echo ZERO_DONE; "
-    "else echo ZERO_SKIPPED; fi"
-)
+# `fstrim` is the right mechanism and the only one needed: virtio-blk discards, the qcow2
+# driver drops the clusters, and nothing is written. What it cannot cover is a filesystem that
+# does not support discard - and for that the answer is `zerofree`, which reads the block
+# bitmap and zeroes only the blocks that are free AND non-zero. Not a blanket dd.
+
+# THE TRIM IS BOUNDED, AND ITS EFFECT IS CHECKED RATHER THAN ASSUMED.
+#
+# 120 s is generous: the run above finished in one. A trim that returns non-zero, or that
+# releases nothing, is reported - the caller decides whether that is fatal, and the number
+# `fstrim` prints is the only evidence that it did anything.
+TRIM = "sudo timeout 120 fstrim -v / 2>&1"
 
 
-def _used(port: int) -> int | None:
-    """Used MiB on /, or None if the guest stopped answering."""
-    from session import ssh
+def clean(*, port: int, note=print, ssh_seconds: int = 900,
+          disk: str | None = None) -> bool:
+    """Run the steps over ssh, then release the free blocks. True when the trim worked.
 
-    status, out = ssh(port, USED, timeout=120)
-    if status != 0:
-        return None
-    lines = [x.strip() for x in (out or "").splitlines() if x.strip().isdigit()]
-    return int(lines[-1]) if lines else None
-
-
-def clean(*, port: int, note=print, ssh_seconds: int = 900) -> bool:
-    """Run the steps over ssh, then zero the free space. True only when all of it happened.
-
-    `port` is the forwarded host port; lib/session.ssh supplies the password, because every
-    guest here uses the same account and there is no tty to prompt at.
+    `disk` is the qcow2 on the host, when the caller has it. It is used only to report how much
+    the image actually shrank - the trim's own output says what the guest released, and those
+    are different numbers.
     """
     from session import ssh
 
@@ -181,13 +165,10 @@ def clean(*, port: int, note=print, ssh_seconds: int = 900) -> bool:
     start = _used(port)
     if start is None:
         note("=== THE GUEST DID NOT ANSWER `df` ===")
-        note("  nothing was measured, so nothing will be reported - and a clean that cannot")
-        note("  be measured is not worth running")
+        note("  nothing was measured, so nothing will be reported")
         return False
     note(f"  used before: {start} MB")
 
-    # EACH STEP IS MEASURED. This is the part the first version omitted, and it is what made
-    # "17% of 23070 MiB" the only number in the log.
     previous = start
     for what, command in STEPS:
         status, out = ssh(port, command, timeout=ssh_seconds)
@@ -200,8 +181,6 @@ def clean(*, port: int, note=print, ssh_seconds: int = 900) -> bool:
             return False
 
         freed = previous - now
-        # A NEGATIVE NUMBER IS REAL AND WORTH PRINTING: a daemon can write more while the step
-        # runs than the step removes, and a report that clamps at zero would hide it.
         suffix = f"{freed:+d} MB" if freed else "no change"
         note(f"  {what}: {suffix} (now {now} MB)")
 
@@ -210,87 +189,33 @@ def clean(*, port: int, note=print, ssh_seconds: int = 900) -> bool:
             if what.startswith("apt") and "not found" in (out or ""):
                 note("    no apt on this system; skipping")
             else:
-                note("    continuing; the free space at the end is what decides")
+                note("    continuing; the trim below is what decides")
         previous = now
 
-    # THE PART THAT MAKES THE ZEROING FREE INSTEAD OF EXPENSIVE.
-    #
-    # Writing 20 GB of zeros into an ext4 filesystem inside a qcow2 makes the qcow2 GROW:
-    # qemu stores those blocks like any other data, because it cannot know they are zero
-    # until convert reads them. Run 41792511802 showed the cost exactly:
-    #
-    #     disk pulled:            4962 MiB
-    #     after writing zeros:   24362 MiB   (the file that convert then read)
-    #     compressed result:      3110 MiB
-    #
-    # `fstrim` is what fixes this. It tells the block layer which blocks are free, and the
-    # qcow2 driver behind virtio-blk then DISCARDS them - so the clusters are dropped from
-    # the image instead of being written and later re-read. On a virtio-blk disk with
-    # discard=unmap this turns 20 GB of writes into a bitmap operation.
-    #
-    # It runs BEFORE the zeroing, so the zeros are only written to what fstrim could not
-    # reach (ext4 refuses to trim blocks it has not journaled). It is not a replacement for
-    # the zeros: a filesystem that does not support discard, or a qemu built without it,
-    # silently does nothing and the zeroing is still what makes the image small.
-    # `fstrim` IS BOUNDED, AND IT HAS TO BE. On a 128 GB virtual disk with 119 GB free, trim
-    # walks the whole free extent and asks the qcow2 driver to discard each block. Run
-    # 41817662336 sat in it from 11:13:50 until the zeroing timed out fifteen minutes later -
-    # the trim never returned, so nothing after it ran.
-    #
-    # 120 seconds is generous for the blocks a fresh install actually has, and the zeroing
-    # below is what makes the image small either way: fstrim is the cheap path, not the only
-    # one. `timeout` is coreutils on these images, which is why it can be used here and could
-    # not in the FreeBSD installer's chroot.
-    note("  discarding the free blocks (fstrim, up to 120s)")
-    status, out = ssh(port,
-                      "sudo timeout 120 fstrim -v / 2>&1 || echo FSTRIM_UNAVAILABLE",
-                      timeout=180)
+    note("  releasing the free blocks (fstrim)")
+    status, out = ssh(port, TRIM, timeout=180)
+    trimmed = ""
     for line in (out or "").splitlines():
         text = line.strip()
-        if text and not text.startswith("Warning: Permanently added"):
-            note(f"    {text[:140]}")
-    if "FSTRIM_UNAVAILABLE" in (out or ""):
-        note("    not supported here; the zeroing below still does the work")
-
-    note("  zeroing the free space")
-    status, out = ssh(port, ZERO, timeout=ssh_seconds)
-    zeroed = 0
-    for line in (out or "").splitlines():
-        text = line.strip()
-        if text.startswith("ZERO_MB="):
-            zeroed = int(text.split("=", 1)[1] or 0)
-            note(f"    writing {zeroed} MB of zeros over the free space")
-        elif text in ("ZERO_DONE", "ZERO_PARTIAL", "ZERO_SKIPPED"):
+        if not text or text.startswith("Warning: Permanently added"):
             continue
-        elif text and not text.startswith("Warning: Permanently added"):
-            note(f"    {text[:140]}")
+        note(f"    {text[:150]}")
+        if "trimmed" in text:
+            trimmed = text
 
-    if "ZERO_SKIPPED" in (out or ""):
-        note("  under 500 MB free, so nothing was written - which is itself suspicious")
-    if "ZERO_PARTIAL" in (out or ""):
-        note("  dd stopped early; the blocks it reached are zeroed")
-    if "ZERO_DONE" not in (out or ""):
-        note("=== THE FREE SPACE WAS NOT ZEROED ===")
-        note("  the disk is clean and still the size of its high-water mark")
+    if status != 0 or not trimmed:
+        note("=== fstrim RELEASED NOTHING ===")
+        note("  the guest either does not support discard or the drive does not pass it on.")
+        note("  The correct fallback is zerofree - it reads the block bitmap and zeroes the")
+        note("  blocks that are free AND non-zero, which is megabytes, not the 100+ GB that")
+        note("  writing the whole free space costs on a 128 GB disk.")
+        if disk:
+            note(f"  the image was NOT shrunk: {disk}")
         return False
 
     end = _used(port)
-    if end is None:
-        note("  the guest stopped answering after the zeroing; not measured")
-        note(f"  freed by deleting: {start - previous} MB, written as zeros: {zeroed} MB")
-        return True
-
-    # THE TWO NUMBERS THAT ANSWER "what did this do", SEPARATED BECAUSE THEY MEAN DIFFERENT
-    # THINGS:
-    #
-    #     freed by deleting    space the steps actually reclaimed
-    #     written as zeros     space qemu-img convert will now skip
-    #
-    # The disk's Used goes UP by the zeroed amount and comes back when zero.fill is deleted,
-    # which is why `end` is not `start - freed`. Reporting one "freed" number over both is how
-    # the first version produced a figure that described neither.
     note(f"  freed by deleting: {start - previous} MB")
-    note(f"  written as zeros:  {zeroed} MB   (this is what convert will skip)")
-    note(f"  used after:        {end} MB")
-    note("  what the image becomes is decided by `compress`, from these clusters")
+    note(f"  released by trim:  {trimmed}")
+    if end is not None:
+        note(f"  used after:        {end} MB")
     return True

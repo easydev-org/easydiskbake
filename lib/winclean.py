@@ -47,7 +47,28 @@ SCRIPT = os.path.join(HERE, "windows", "11", "clean.ps1")
 DONE = "CLEAN_DONE"
 
 
-def clean(*, port: int, user: str = "docker", note=print, timeout: int = 1800) -> bool:
+def _allocated_mib(disk: str) -> int:
+    """Bytes the qcow2 occupies, in MiB; -1 when it cannot be read.
+
+    THE ABSOLUTE qemu-img, for the reason lib/compress.py documents: the bare name is the
+    Android SDK's copy on this image's PATH and it cannot open a disk whose clusters use
+    compression_type=zstd.
+    """
+    import json
+    import subprocess
+
+    try:
+        from compress import qemu_img
+
+        r = subprocess.run([qemu_img(), "info", "--output=json", disk],
+                           capture_output=True, text=True)
+        return (json.loads(r.stdout).get("actual-size") or 0) >> 20
+    except (OSError, ValueError):
+        return -1
+
+
+def clean(*, port: int, user: str = "docker", note=print, timeout: int = 1800,
+          disk: str | None = None) -> bool:
     """Copy clean.ps1 into the guest, run it, and report what it freed.
 
     OVER SSH, LIKE EVERY OTHER GUEST IN THIS REPOSITORY. An earlier version took scp and
@@ -63,6 +84,13 @@ def clean(*, port: int, user: str = "docker", note=print, timeout: int = 1800) -
     if not os.path.isfile(SCRIPT):
         raise SystemExit(f"{SCRIPT} is missing; the disk would ship with its build traces")
 
+    # THE IMAGE IS MEASURED TOO, AND THE TWO NUMBERS ARE DIFFERENT.
+    #
+    # The guest reports what the trim released; the qcow2 reports what it actually occupies.
+    # A trim can release 116 GiB inside the guest and leave an image holding every cluster it
+    # ever allocated, if the discard never reached the driver - and only this pair of numbers
+    # says which happened.
+    before = _allocated_mib(disk) if disk else -1
     note("cleaning the guest")
     remote = f"C:/Users/{user}/clean.ps1"
 
@@ -108,4 +136,8 @@ def clean(*, port: int, user: str = "docker", note=print, timeout: int = 1800) -
         return False
 
     note("clean complete" + (" — " + ", ".join(summary) if summary else ""))
+    if disk and before >= 0:
+        after = _allocated_mib(disk)
+        if after >= 0:
+            note(f"  the image: {before} MiB -> {after} MiB ({before - after:+d})")
     return True

@@ -62,51 +62,26 @@ USED = "df -m / | awk 'NR==2 {print $3}'"
 # THE ZEROING. Same contract as linclean.ZERO: sync first so the writes above are accounted
 # for, a 200 MB margin so the last block does not fail while looking like success, and a
 # partial dd reported rather than treated as failure - the blocks it reached are zero.
-# THE ZEROING, IN FREEBSD'S OWN dd SYNTAX.
+# NO ZEROING. FREEBSD RELEASES ITS OWN BLOCKS.
 #
-# Every option here was checked against FreeBSD's dd, not GNU's:
+# The reason is the same one lib/linclean.py records at length: writing zeros over the free
+# space was how this made `qemu-img convert` skip deleted files' blocks, and on a 128 GB disk it
+# costs the whole free space in writes and re-allocates clusters that were never allocated.
 #
-#     bs=1m          FreeBSD accepts lower case; 1M works too but this is the documented form
-#     `status=none`  DOES NOT EXIST in FreeBSD's dd - it is a GNU extension. Passing it makes
-#                    dd treat it as a file to read, which is why run 41814852442 sat at
-#                    "zeroing the free space" for the full 900 s and then reported that the
-#                    space had not been zeroed at all
-#     count=$t       $t is in MiB because df -m is, so it matches bs=1m
+# FreeBSD has the trim: `kern.cam.da.*.delete_method` is set to `DISABLE` on some images, so the
+# command is run with the sysctl set first - and if the trim releases nothing the caller is told
+# so, with the fallback named.
 #
-# The output redirection is the portable way to keep dd quiet, and `2>/dev/null` is not
-# needed on a command whose only output is the progress line.
-ZERO = (
-    "sync; "
-    # BOUNDED BY WHAT THE DISK HAS USED, NOT BY WHAT IS FREE - see the longer note in
-    # lib/linclean.py. A 128 GB disk with 6 GB in it does not need 119 GB of zeros written;
-    # it needs the blocks that were written and released, which is on the order of the used
-    # size.
-    "u=$(df -m / | awk 'NR==2 {print $3}'); "
-    "f=$(df -m / | awk 'NR==2 {print $4}'); "
-    "echo \"USED_MB=$u FREE_MB=$f\"; "
-    "t=$((u < f ? u : f)); "
-    "t=$((t > 200 ? t - 200 : 0)); "
-    "if [ \"$t\" -gt 500 ]; then "
-    "  echo \"ZERO_MB=$t\"; "
-    "  sudo dd if=/dev/zero of=/zero.fill bs=1m count=$t >/dev/null 2>&1 "
-    "    || echo ZERO_PARTIAL; "
-    "  sync; sudo rm -f /zero.fill; echo ZERO_DONE; "
-    "else echo ZERO_SKIPPED; fi"
-)
+#     fstrim -v /              fstrim(8), in the base system since FreeBSD 10.4
+#
+# `-v` prints the bytes released, which is the only evidence that it did anything.
+
+TRIM = "sudo sysctl kern.cam.da.0.delete_method=DISABLE >/dev/null 2>&1; sudo timeout 120 fstrim -v / 2>&1"
 
 
-def _used(port: int) -> int | None:
-    from session import ssh
-
-    status, out = ssh(port, USED, timeout=120)
-    if status != 0:
-        return None
-    lines = [x.strip() for x in (out or "").splitlines() if x.strip().isdigit()]
-    return int(lines[-1]) if lines else None
-
-
-def clean(*, port: int, note=print, ssh_seconds: int = 900) -> bool:
-    """Run the steps over ssh, then zero the free space. True only when all of it happened."""
+def clean(*, port: int, note=print, ssh_seconds: int = 900,
+          disk: str | None = None) -> bool:
+    """Run the steps over ssh, then trim the free blocks. True when the trim worked."""
     from session import ssh
 
     note("=== cleaning the guest, over ssh ===")
@@ -135,34 +110,32 @@ def clean(*, port: int, note=print, ssh_seconds: int = 900) -> bool:
 
         if status != 0:
             note(f"    exit {status}: {last}")
-            note("    continuing; the free space at the end is what decides")
+            note("    continuing; the trim below is what decides")
         previous = now
 
-    note("  zeroing the free space")
-    status, out = ssh(port, ZERO, timeout=ssh_seconds)
-    zeroed = 0
+    note("  releasing the free blocks (fstrim)")
+    status, out = ssh(port, TRIM, timeout=180)
+    trimmed = ""
     for line in (out or "").splitlines():
         text = line.strip()
-        if text.startswith("ZERO_MB="):
-            zeroed = int(text.split("=", 1)[1] or 0)
-            note(f"    writing {zeroed} MB of zeros over the free space")
-        elif text in ("ZERO_DONE", "ZERO_PARTIAL", "ZERO_SKIPPED"):
+        if not text or text.startswith("Warning: Permanently added"):
             continue
-        elif text and not text.startswith("Warning: Permanently added"):
-            note(f"    {text[:140]}")
+        note(f"    {text[:150]}")
+        if "trimmed" in text:
+            trimmed = text
 
-    if "ZERO_SKIPPED" in (out or ""):
-        note("  under 500 MB free, so nothing was written - which is itself suspicious")
-    if "ZERO_PARTIAL" in (out or ""):
-        note("  dd stopped early; the blocks it reached are zeroed")
-    if "ZERO_DONE" not in (out or ""):
-        note("=== THE FREE SPACE WAS NOT ZEROED ===")
-        note("  the disk is clean and still the size of its high-water mark")
+    if status != 0 or not trimmed:
+        note("=== fstrim RELEASED NOTHING ===")
+        note("  FreeBSD disables the delete method on some virtual disks; if the trim above")
+        note("  reported bytes, the image will be small, and if it did not, the correct")
+        note("  fallback is zerofree - not a dd over the whole free space.")
+        if disk:
+            note(f"  the image was NOT shrunk: {disk}")
         return False
 
     end = _used(port)
     note(f"  freed by deleting: {start - previous} MB")
-    note(f"  written as zeros:  {zeroed} MB   (this is what convert will skip)")
+    note(f"  released by trim:  {trimmed}")
     if end is not None:
         note(f"  used after:        {end} MB")
     return True

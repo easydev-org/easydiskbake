@@ -153,44 +153,42 @@ Write-Output ("  cleared " + $cleared + " logs")
 #
 # Slower and kinder than sdelete -c: a file grown to fill the disk with zero writes, then
 # deleted, so the clusters are genuinely zero when convert looks at them.
- Write-Output "--- zeroing free space ---"
- $writtenTotal = 0
- $zeroStart = Get-Date
- $free = (Get-PSDrive C -ErrorAction SilentlyContinue).Free
- $used = (Get-PSDrive C -ErrorAction SilentlyContinue).Used
- Write-Output ("  free before: " + [math]::Round($free/1GB,2) + " GB")
- # BOUNDED BY WHAT THE DISK HAS USED, NOT BY WHAT IS FREE - see lib/linclean.py.
+ # --- TRIM, AND NO WRITE-ZERO PASS --------------------------------
  #
- # A qcow2 holds only the clusters that were written, so a 128 GB disk with 16 GB in it is a
- # 16 GB file. What zeroing is for is the blocks that WERE written and then released, and that
- # cannot exceed what the disk ever held. The old bound was the free space, which grew with the
- # virtual size: raising --disk-size to 128G would have made this write 110 GB.
- $cap = [Math]::Min($free, $used)
- Write-Output ("  will zero up to: " + [math]::Round($cap/1GB,2) + " GB (used " + [math]::Round($used/1GB,2) + ")")
- if ($cap -gt 500MB) {
-     $tmp = Join-Path $env:SystemDrive "zero.fill"
+ # Writing zeros over the free space was how this made qemu-img convert skip the blocks that
+ # deleted files had left behind. It works, and on a 128 GB disk it is the wrong tool: it costs
+ # the whole free space in writes, and it RE-ALLOCATES clusters that were never allocated,
+ # because the image stores zeros like any other data.
+ #
+ # Windows drives the mechanism itself. NTFS on a disk that reports TRIM support lets the
+ # volume tell the device which clusters are no longer in use, and the qcow2 driver behind
+ # virtio-blk drops them. Nothing is written.
+ #
+ #     Optimize-Volume -ReTrim        retrim the volume (Windows 8 and later)
+ #
+ # The verbose stream is what shows the result. Without it the cmdlet is silent and there is no
+ # evidence it did anything - which, for a step whose whole value is "the image got smaller",
+ # is the one thing that cannot be skipped.
+ Write-Output "--- trim (no zeroing) ---"
+ $trimStart = Get-Date
+ $trimmed = $false
+ foreach ($vol in (Get-Volume | Where-Object { $_.DriveLetter -and $_.FileSystemType -eq 'NTFS' })) {
+     Write-Output ("  retrimming " + $vol.DriveLetter + ":")
      try {
-         $fs = [System.IO.File]::Create($tmp)
-         $buf = New-Object byte[] (4MB)
-         $written = 0
-         $limit = $cap - 200MB
-         while ($written -lt $limit) {
-             $fs.Write($buf, 0, $buf.Length)
-             $written += $buf.Length
-         }
-         $fs.Close()
-         $writtenTotal = $written
-         Write-Output ("  wrote " + [math]::Round($written/1GB,2) + " GB of zeros")
+         $out = Optimize-Volume -DriveLetter $vol.DriveLetter -ReTrim -Verbose 4>&1
+         $out | ForEach-Object { Write-Output ("    " + $_) }
+         $trimmed = $true
      } catch {
-         $writtenTotal = $written
-         Write-Output ("  stopped at " + [math]::Round($written/1GB,2) + " GB: " + $_.Exception.Message)
-     } finally {
-         Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+         Write-Output ("  retrim failed on " + $vol.DriveLetter + ": " + $_.Exception.Message)
      }
- } else {
-     Write-Output "  not enough free space to bother"
  }
- Write-Output ("  took " + [int]((Get-Date) - $zeroStart).TotalSeconds + "s")
+ if (-not $trimmed) {
+     Write-Output "=== NO VOLUME WAS RETRIMMED ==="
+     Write-Output "  the disk is clean and its image will be the size of its high-water mark"
+     Write-Output "  Windows disables TRIM on some virtual disks; the alternative is zerofree"
+     Write-Output "  on a filesystem that supports it, not a dd over the whole free space"
+ }
+ Write-Output ("  took " + [int]((Get-Date) - $trimStart).TotalSeconds + "s")
 
 # 11. The ssh known_hosts entries this pipeline wrote, and any saved credentials.
 Write-Output "--- ssh and credentials ---"
@@ -198,27 +196,10 @@ $kh = Join-Path $env:USERPROFILE ".ssh\known_hosts"
 if (Test-Path $kh) { Remove-Item $kh -Force -ErrorAction SilentlyContinue; Write-Output "  known_hosts removed" } else { Write-Output "  known_hosts absent" }
 cmdkey /list 2>$null | Select-String "Target:" | ForEach-Object { Write-Output ("  credential: " + $_.Line) }
 
-# WHAT THE ZEROING ACTUALLY ACHIEVED, AND WHY "USED" IS THE WRONG NUMBER FOR IT.
+# ONE LINE, BECAUSE THE TRIM ALREADY SAID WHAT IT RELEASED.
 #
-# The first version printed `used after:` and `freed:` from Get-PSDrive, and run 41785167409
-# reported
-#
-#     used before: 33382 MB
-#     used after:  64301 MB
-#     freed:       -30919 MB
-#
-# which reads as "the clean added 30 GB". It did not. Writing zeros into zero.fill really did
-# consume 31.38 GB - that is the whole point, the blocks are no longer free - and when the
-# file is deleted NTFS marks those clusters free WITHOUT zeroing them again, because they are
-# already zero. `Used` counts live files, so after the delete it should have gone back.
-#
-# It did not, because this ran in the same session: Get-PSDrive caches, and the value it
-# returned still included the file. So the number this prints is not a measurement of the
-# disk, and a metric that is wrong in a plausible direction is worse than no metric.
-#
-# WHAT IS REPORTED INSTEAD is the thing that was measured directly and cannot be misread:
-# how many bytes of zeros were written. That is the quantity qemu-img convert will skip, and
-# it is printed by the loop that wrote them.
-Write-Output ("zeroed:      " + [math]::Round($writtenTotal/1MB,1) + " MB written over free space")
+# There used to be a "zeroed: N MB" figure here, and before that a "freed:" figure computed by
+# subtracting two Get-PSDrive readings - which produced "-30919 MB" for a clean that had removed
+# 8 GB, because that cmdlet caches within a session and still counted the deleted zero file.
 Write-Output ("used before: " + [math]::Round($before/1MB,0) + " MB (for reference only)")
 Write-Output "CLEAN_DONE"

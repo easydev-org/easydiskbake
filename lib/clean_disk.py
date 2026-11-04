@@ -58,7 +58,30 @@ SYSTEMS = {
 }
 
 
-def clean_running(kind: str, *, port: int, note=print, **extra) -> bool:
+def allocated_mib(disk: str) -> int:
+    """Bytes the qcow2 actually occupies, in MiB. `qemu-img info`'s "disk size".
+
+    THE ABSOLUTE BINARY, for the reason lib/compress.py documents: the bare name resolves to
+    the Android SDK's qemu-img on this image's PATH, and that build cannot open a qcow2 whose
+    clusters use compression_type=zstd - which is what every published disk is.
+    """
+    import json
+    import subprocess
+
+    from compress import qemu_img
+
+    r = subprocess.run([qemu_img(), "info", "--output=json", disk],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        return -1
+    try:
+        return (json.loads(r.stdout).get("actual-size") or 0) >> 20
+    except ValueError:
+        return -1
+
+
+def clean_running(kind: str, *, port: int, note=print, disk: str | None = None,
+                  **extra) -> bool:
     """Clean the guest on `port`. True only when every step that matters ran.
 
     THE CALLER OWNS THE MACHINE. This does not start or stop anything: it is called while the
@@ -78,4 +101,12 @@ def clean_running(kind: str, *, port: int, note=print, **extra) -> bool:
 
     module = importlib.import_module(module_name)
     kwargs = {**defaults, **extra}
+
+    # `disk` IS PASSED TO THE CLEANER, NOT USED HERE. The cleaners report how much the image
+    # shrank as well as what the guest released, and those are different numbers: a trim can
+    # release 116 GiB inside the guest and leave a qcow2 that still holds every cluster it ever
+    # allocated, if the discard never reached the driver. Only the cleaner knows where its
+    # messages go, so it gets the path.
+    if disk:
+        kwargs["disk"] = disk
     return module.clean(port=port, note=note, **kwargs)

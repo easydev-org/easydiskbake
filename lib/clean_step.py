@@ -209,7 +209,8 @@ def main(argv: list[str]) -> int:
 
         import clean_disk
 
-        ok = clean_disk.clean_running(spec["clean"], port=spec["ssh_port"], note=note)
+        ok = clean_disk.clean_running(spec["clean"], port=spec["ssh_port"],
+                                     note=note, disk=args.disk)
         if not ok:
             note("=== THE CLEAN DID NOT FINISH ===")
             return 1
