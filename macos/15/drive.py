@@ -483,21 +483,30 @@ def apple_account(d: Driver) -> None:
     So the click is followed by Return: on this pane Return activates the focused control, and
     the click has just focused it. Two ways to leave, one of which is a key.
     """
-    # CREATING THE ACCOUNT TAKES SEVENTY-TWO SECONDS. MEASURED, NOT ESTIMATED.
-    #
-    # OCR on run 41809206003's own recording, one frame every two seconds:
+    # CREATING THE ACCOUNT TAKES SEVENTY-TWO SECONDS ON THE RUN IT WAS MEASURED ON, AND THAT
+    # IS NOT A BOUND. It was measured from run 41809206003's own recording, one frame every
+    # two seconds:
     #
     #     316s   "Creating account..."          <- what appears after the form's Continue
     #     390s   "Sign In to Your Apple Account" <- the pane this function needs
     #
     # and the drive log puts that Continue at 10:24:21 against a recording that started at
-    # 10:19:03, which is video second 318 - so the gap is 72 seconds.
+    # 10:19:03, which is video second 318 - so the gap is 72 seconds on that machine.
     #
-    # THE PREVIOUS VALUES WERE 6 AND THEN 25, and both clicked into a pane that did not exist
-    # yet. 25 was three times better than 6 and still a third of what the machine needed.
+    # THE PREVIOUS VALUES WERE 6, THEN 25, THEN 80, AND 80 WAS STILL NOT ENOUGH.
     #
-    # 80 SECONDS, because the margin has to survive a slower runner as well as this one.
-    d.wait(80, "apple account pane: the account is being created")
+    # Run 41855475794 clicked Continue at 15:32:37 and clicked Set Up Later at 15:34:00 - 80
+    # seconds later - and the recording shows the form still spinning. `Set Up Later` only
+    # exists on the Apple Account pane; on a form that has not finished it is whatever is
+    # underneath, so the click went somewhere else and the wizard came back to the account
+    # pane and stayed there. The last frame is "Sign In to Your Apple Account", which is
+    # EARLIER than the run before it reached.
+    #
+    # 180 SECONDS, because the number that matters is not how long it takes but how long it
+    # can take: this is a first boot on a shared CI runner with a cold disk, and the account
+    # creation writes a home directory, generates keys and talks to the keychain. Waiting too
+    # long costs idle seconds and is recoverable; clicking too early throws away the run.
+    d.wait(180, "apple account pane: the account is being created")
     d.click(NOT_NOW, "Set Up Later", settle=2.0)
     d.key("ret", settle=3.0)
 
