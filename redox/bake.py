@@ -1061,6 +1061,45 @@ def main(argv: list[str]) -> int:
             # echo does not contain a digit - so a marker of `sshd_rc=` matched the echo, and a
             # daemon that never started would have passed. What is matched is a value with a
             # digit in it, which only the expansion produces.
+            # SSHD NEEDS ITS PRIVILEGE-SEPARATION USER TO EXIST FIRST.
+            #
+            # Run 41907294831's last frame is the whole story, and it is readable without OCR
+            # because the terminal is one window on a plain wallpaper:
+            #
+            #     root:~# /usr/bin/sshd ; echo SSHD_RC=$?
+            #     [INFO sshd@src/platform/redox/mod.rs:1251] TODO: setgroups(0, 0x0): not implemented
+            #     ... madvise() TODO lines ...
+            #     Privilege separation user sshd does not exist
+            #     SSHD_RC=255
+            #
+            # OpenSSH drops to an unprivileged user for each connection; without that account in
+            # /etc/users.toml it refuses to run at all, exit 255, before it binds anything. The
+            # package does not create one. Redox reads users from that same file the account
+            # step already writes, so the entry goes in the same way.
+            #
+            # ONE LINE WITH ONE MARKER, for the reason recorded above: every wait_for() pass
+            # reads the screen several seconds behind, and a step split into three waits falls
+            # further behind with each one.
+            con.type(
+                "echo '' >> /etc/users.toml "
+                "&& echo '[users.sshd]' >> /etc/users.toml "
+                # A LITERAL PASSWORD, NOT `"!"`. ion is a shell: inside double quotes `!`
+                # is history expansion, and the value that reached the file would not be the
+                # one written here. `*` means "no password authentication is possible", which
+                # is correct for a privilege-separation account nothing logs in as - and it
+                # is one ordinary character that cannot be re-interpreted.
+                "&& echo 'password = \"*\"' >> /etc/users.toml "
+                "&& echo 'uid = 22' >> /etc/users.toml "
+                "&& echo 'gid = 22' >> /etc/users.toml "
+                "&& echo 'shell = \"/usr/bin/ion\"' >> /etc/users.toml "
+                "&& echo SSHDUSER_OK=1",
+                settle=2.0)
+            if not con.wait_for(["sshduser_ok=1"], 300, "the sshd user"):
+                note("=== THE sshd ACCOUNT COULD NOT BE ADDED ===")
+                note("  the frame beside this message is the terminal")
+                return False
+            note("  the sshd account exists")
+
             con.type("/usr/bin/sshd ; echo SSHD_RC=$?")
             if not con.wait_for(["sshd_rc=0"], 180, "sshd started"):
                 note("=== sshd WOULD NOT START ===")
