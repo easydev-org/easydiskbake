@@ -935,15 +935,37 @@ def main(argv: list[str]) -> int:
                 return False
 
             # 8. THE STARTUP SCRIPT. The desktop variant has no systemd and no rustysd;
-            #    services are numbered files in /etc/init.d/. `90_` sorts after the network and
-            #    the console, which sshd needs.
+            #    services are numbered files in /usr/lib/init.d/.
+            #
+            # /etc/init.d DOES NOT EXIST ON THIS SYSTEM, and every redox bake so far has
+            # failed here believing it did. Run 41875783970's last frame reads:
+            #
+            #     root:~# echo '#!/usr/bin/ion' > /etc/init.d/90_sshd
+            #     ion: pipeline execution error: failed to redirect stdout to file
+            #          '/etc/init.d/90_sshd': No such file or directory (os error 2)
+            #     root:~# chmod +x /etc/init.d/90_sshd ; echo CHMOD_RC=$?
+            #     chmod: cannot access '/etc/init.d/90_sshd': No such file or directory
+            #     CHMOD_RC=1
+            #
+            # - two redirections that failed and a chmod on a file that was never written.
+            # The directory is a Debian convention; Redox's own boot-process documentation
+            # puts the filesystem init's configuration in /usr/lib/init.d, and that is what
+            # is on the image.
+            #
+            # `90_` sorts after the network and the console, which sshd needs. The directory
+            # is created first because `mkdir -p` on an existing one is silent and the
+            # redirection is what fails loudly when it is not there.
             note("=== the init.d entry ===")
+            con.type("mkdir -p /usr/lib/init.d ; echo MKDIR_RC=$?", settle=1.0)
+            if not con.wait_for(["mkdir_rc=0"], 120, "the init.d directory"):
+                note("=== /usr/lib/init.d COULD NOT BE CREATED ===")
+                return False
             # ONE LINE AT A TIME, FOR THE SAME REASON AS users.toml: ion has no heredoc.
             for n, line in enumerate(("#!/usr/bin/ion", "/usr/bin/sshd -D &")):
                 op = ">" if n == 0 else ">>"
-                con.type(f"echo '{line}' {op} /etc/init.d/90_sshd", settle=0.3)
-            con.type("chmod +x /etc/init.d/90_sshd ; echo CHMOD_RC=$?")
-            # 60 WAS NOT ENOUGH, AND THE REASON IS THE READER, NOT THE COMMAND.
+                con.type(f"echo '{line}' {op} /usr/lib/init.d/90_sshd", settle=0.3)
+            con.type("chmod +x /usr/lib/init.d/90_sshd ; echo CHMOD_RC=$?")
+            # 300s BECAUSE THE READER LAGS, NOT THE COMMAND.
             #
             # Run 41874326761 saw, at 32s and again at 62s, the screen still showing
             #
@@ -951,11 +973,7 @@ def main(argv: list[str]) -> int:
             #
             # - four commands behind. Each wait_for() takes a screenshot, reads three crops
             # with tesseract and then the whole frame, so a pass costs several seconds and
-            # the text it returns lags the terminal by however many beeps have queued. The
-            # chmod itself takes no time at all.
-            #
-            # 300s, the same budget the host key above needed 19s of, so a slow OCR pass
-            # cannot fail a command that ran.
+            # the text it returns lags the terminal by however many commands have queued.
             if not con.wait_for(["chmod_rc=0"], 300, "init.d entry"):
                 note("=== THE init.d ENTRY COULD NOT BE MADE EXECUTABLE ===")
                 return False
