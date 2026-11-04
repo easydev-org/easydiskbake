@@ -246,7 +246,7 @@ def key(q, qcode):
     ])
 
 
-def key_combo(q, *qcodes):
+def key_combo(q, *qcodes, hold: float = 0.0):
     """Press several keys together, e.g. key_combo(q, "meta_l", "spc") for Cmd-Space.
 
     QMP delivers held state, so a chord is the modifiers down, the key down and up, then
@@ -267,6 +267,42 @@ def key_combo(q, *qcodes):
         {"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": qcode}}}
         for qcode in reversed(qcodes)
     ]
+    # A HOLD LONG ENOUGH FOR THE GUEST TO SEE, WHEN THE GUEST IS NOT A HID STACK.
+    #
+    # One event list is right for macOS and Windows: their input stacks deliver a modifier
+    # and a key from the same message as a chord. Redox is not that. Its fbcond reads /dev
+    # events and the launcher is handed super-key presses through a
+    # `code >= 0x1000_0000` marker - a state the kernel sets while meta is DOWN - so a
+    # modifier that goes down and up inside the same input message never produces a super
+    # event at all.
+    #
+    # Measured on run 41920674838: Super+T sent this way opened nothing, and its launcher
+    # never logged the keystroke.
+    #
+    # IT IS OPT-IN (`hold=<seconds>`), AND THAT IS DELIBERATE. macOS and Windows are driven
+    # through this same function with the single-list form and both are verified working -
+    # four macOS shortcuts and a Windows Win+R among them. Changing what they receive to fix
+    # a Redox quirk would be trading a known-good path for a guess.
+    #
+    # So the chord is sent as two requests with the modifier held between them:
+    #
+    #     press meta + t     (one list, so both arrive together)
+    #     150ms              long enough for the event to be read with meta down
+    #     release t + meta   (one list, in reverse)
+    #
+    # The release order is still reversed, so a guest that does see it as one chord is
+    # unaffected.
+    if hold and len(qcodes) > 1:
+        presses = [{"type": "key",
+                    "data": {"down": True, "key": {"type": "qcode", "data": qcode}}}
+                   for qcode in qcodes]
+        _send(q, "chord down " + "+".join(qcodes), presses)
+        time.sleep(hold)
+        releases = [{"type": "key",
+                     "data": {"down": False, "key": {"type": "qcode", "data": qcode}}}
+                    for qcode in reversed(qcodes)]
+        _send(q, "chord up " + "+".join(qcodes), releases)
+        return
     _send(q, "chord " + "+".join(qcodes), events)
 
 

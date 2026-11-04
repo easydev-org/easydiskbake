@@ -488,11 +488,17 @@ class Console:
         log(f"  click ({x}, {y})" + (f" {why}" if why else ""))
         time.sleep(settle)
 
-    def key_combo(self, *qcodes: str, settle: float = 0.5) -> None:
-        """Press several keys together, e.g. ctrl+alt+f1 for a VT switch."""
+    def key_combo(self, *qcodes: str, settle: float = 0.5,
+                  hold: float = 0.15) -> None:
+        """Press several keys together, e.g. meta+t or ctrl+alt+f1.
+
+        `hold` makes the modifier stay down between two requests - see lib/qmp.py. Redox's
+        super marker is set while meta is held, so a chord delivered in one message never
+        produces one.
+        """
         c = self.qmp()
         try:
-            qmpmod.key_combo(c, *qcodes)
+            qmpmod.key_combo(c, *qcodes, hold=hold)
         finally:
             c.close()
         time.sleep(settle)
@@ -775,19 +781,24 @@ def main(argv: list[str]) -> int:
             # six of eleven bakes and not the other five, with byte-identical frames at the
             # moment of the click - and the keyboard has never failed to reach this guest.
             note("=== a terminal, with Super+T ===")
-            con.key_combo("meta_l", "t", settle=3.0)
-            time.sleep(3)
-            try:
-                png = con.shot("super-t")
-                if png:
-                    now = dark_window_fraction(png)
-                    note(f"    dark fraction {now:.2f}")
-                    if now >= 0.55:
-                        got_shell = True
-            except Exception:  # noqa: BLE001
-                pass
-            if got_shell:
-                note("  Super+T opened a terminal")
+            # BOTH SUPER KEYS, AND THEN BOTH AGAIN. The launcher's handler is fed by a
+            # `code >= 0x1000_0000` marker that the kernel sets while a meta key is held, so
+            # whether the left or the right one produces it depends on the keymap the image
+            # was built with - and nothing here can ask. Trying both costs two keystrokes.
+            for meta in ("meta_l", "meta_r"):
+                con.key_combo(meta, "t", settle=2.0)
+                time.sleep(4)
+                png = con.shot(f"super-t-{meta}")
+                if not png:
+                    continue
+                now = dark_window_fraction(png)
+                note(f"    {meta}+t: dark fraction {now:.2f}")
+                if now >= 0.55:
+                    got_shell = True
+                    note(f"  {meta}+T opened a terminal")
+                    break
+            if not got_shell:
+                note("  Super+T opened nothing")
 
             # --- 1b. THE DOCK, IF Super+T DID NOT. --------------------------------------
             if not got_shell:
