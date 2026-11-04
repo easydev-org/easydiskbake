@@ -74,7 +74,22 @@ ROW_X = install15.ROW_X
 ROW_Y = install15.ROW_Y
 CONTINUE_MENU = install15.CONTINUE_MENU
 DISK_NAME = install15.DISK_NAME
-ERASE_CONFIRM = install15.ERASE_CONFIRM
+# THE ERASE BUTTON IS NOT WHERE 15 PUTS IT, AND THAT IS MEASURED.
+#
+# Run 41756640403's frame at 01:56:13 - the sheet with `main` just typed - was read by
+# scanning for the button's own fill colour against the dialog's background, because the
+# labels are too low-contrast for OCR at this size:
+#
+#     Cancel   x 1030..1099   centre (1064, 661)
+#     Erase    x 1112..1181   centre (1146, 661)
+#
+# 15 has (1155, 646). Nine pixels right and fifteen up, which lands on the dialog's
+# background rather than the button - so the click did nothing, the sheet stayed open, and
+# everything after it was sent to a window that never closed.
+#
+# Measured on a 1920x1080 screendump scaled from the recording, and it is the value for
+# THIS release. 15 keeps its own.
+ERASE_CONFIRM = (1146, 661)
 ERASE_DONE = install15.ERASE_DONE
 NOTHING_DRAWN = install15.NOTHING_DRAWN
 
