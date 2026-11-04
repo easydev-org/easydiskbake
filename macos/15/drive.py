@@ -157,7 +157,7 @@ UNITED_STATES = (764, 615)
 #     Account name   (630, 353)      <- filled from Full name by macOS itself
 #     Password       (567, 393)
 #     Verify         (724, 393)
-#     Hint           (650, 412)
+#     Hint           (650, 412)      <- not used: optional, and the wizard accepts it empty
 #
 # converted by x*1.5, y*1.35, which is what these constants are.
 #
@@ -168,7 +168,6 @@ UNITED_STATES = (764, 615)
 FULL_NAME = (945, 447)
 PASSWORD = (850, 531)
 VERIFY = (1086, 531)
-HINT = (975, 556)
 
 # The "Are you sure you want to skip sign in?" sheet - Skip is the right-hand of its pair.
 SHEET_SKIP = (1026, 634)
@@ -437,11 +436,17 @@ def account(d: Driver, user: str, password: str) -> None:
     arriving faster than it can check get dropped.
     """
     d.wait(6, "account pane settles")
+    # THE HINT IS LEFT ALONE, AND IT IS OPTIONAL.
+    #
+    # The form marks it "(optional)" and the wizard accepts the pane with it empty - measured
+    # from run 41809206003's own frames, where the successful account had a hint only because
+    # this typed one. Filling it costs a click, a clear, six keystrokes and a two-second
+    # settle on a form that validates every keystroke, which is eight seconds of the slowest
+    # part of the wizard for a field nobody reads.
     for xy, value, label in (
         (FULL_NAME, user, "full name"),
         (PASSWORD, password, "password"),
         (VERIFY, password, "verify"),
-        (HINT, "hint", "hint"),
     ):
         # 2.5s after the click into a field, and 2s after typing into it: this form
         # validates on every keystroke, and the next field's click arriving while the
@@ -465,20 +470,21 @@ def apple_account(d: Driver) -> None:
     So the click is followed by Return: on this pane Return activates the focused control, and
     the click has just focused it. Two ways to leave, one of which is a key.
     """
-    # THE ACCOUNT FORM TAKES ABOUT TWENTY SECONDS TO FINISH, AND SIX WAS NOT ENOUGH.
+    # CREATING THE ACCOUNT TAKES SEVENTY-TWO SECONDS. MEASURED, NOT ESTIMATED.
     #
-    # The recording puts this at:
+    # OCR on run 41809206003's own recording, one frame every two seconds:
     #
-    #     330s   Create a Mac Account / "Creating account..."      <- still working
-    #     350s   Sign In to Your Apple Account
+    #     316s   "Creating account..."          <- what appears after the form's Continue
+    #     390s   "Sign In to Your Apple Account" <- the pane this function needs
     #
-    # and run 41805713652 clicked at 347s - inside the gap. The click landed on a pane that had
-    # not finished appearing, so "Set Up Later" was not there yet to receive it, and the next
-    # sixteen actions were spent on the account form's disabled Continue.
+    # and the drive log puts that Continue at 10:24:21 against a recording that started at
+    # 10:19:03, which is video second 318 - so the gap is 72 seconds.
     #
-    # 25 SECONDS, NOT 6. The cost is idle time on the fast path; the cost of being early is the
-    # whole rest of the wizard, which is what fifteen runs have been paying.
-    d.wait(25, "apple account pane: the account is being created")
+    # THE PREVIOUS VALUES WERE 6 AND THEN 25, and both clicked into a pane that did not exist
+    # yet. 25 was three times better than 6 and still a third of what the machine needed.
+    #
+    # 80 SECONDS, because the margin has to survive a slower runner as well as this one.
+    d.wait(80, "apple account pane: the account is being created")
     d.click(NOT_NOW, "Set Up Later", settle=2.0)
     d.key("ret", settle=3.0)
 
