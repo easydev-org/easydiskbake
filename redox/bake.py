@@ -812,7 +812,22 @@ def main(argv: list[str]) -> int:
             note("=== a text console, by keyboard ===")
             console = False
             for vt in ("f1", "f2"):
-                con.key_combo("ctrl_l", "alt_l", vt, settle=1.0)
+                # THE QCODES ARE `ctrl` AND `alt`, NOT `ctrl_l` AND `alt_l`.
+                #
+                # QEMU's QKeyCode enumeration (qapi/ui.json) is
+                #
+                #     'shift', 'shift_r', 'alt', 'alt_r', 'ctrl', 'ctrl_r', 'menu', ...
+                #
+                # - the left-hand modifiers have no suffix, only the right-hand ones do - and
+                # its own ctrl-alt-delete example sends "ctrl", "alt", "delete". The first
+                # attempt at this used the names macOS's chords do, and QEMU refused it:
+                #
+                #     RuntimeError: input-send-event (chord ctrl_l+alt_l+f1) was refused by
+                #     qemu: Parameter 'data' does not accept value 'ctrl_l'
+                #
+                # which is the error the _send() check added earlier exists to produce. It
+                # cost one run instead of a silent ninety-second wait.
+                con.key_combo("ctrl", "alt", vt, settle=1.0)
                 time.sleep(5)
                 if con.wait_for(["login:"], 30, f"a text console on {vt.upper()}"):
                     note(f"  the text console is on {vt.upper()}")
