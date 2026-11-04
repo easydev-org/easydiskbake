@@ -812,11 +812,11 @@ def main(argv: list[str]) -> int:
             for attempt in range(1, 4):
                 # POINT AT IT, THEN LOOK. A move with no button is what a person does before
                 # clicking, and it is also the cheapest test of whether the dock is awake.
-                c = con.qmp()
-                try:
-                    qmpmod.move(c, *DOCK_TERMINAL)
-                finally:
-                    c.close()
+                # THE SAME CONNECTION AS THE CLICK THAT FOLLOWS. Opening a second one to
+                # hover and closing it before the click is the pattern this whole change
+                # removed; it also made qmp() connect while snapshots.py held the socket,
+                # which timed out in run 41886018594.
+                qmpmod.move(con.live(), *DOCK_TERMINAL)
                 time.sleep(2.0)
                 hovered = dock_changed(baseline, f"terminal-hover-{attempt}")
                 note(f"    the dock {'answered the pointer' if hovered else 'did not react'}")

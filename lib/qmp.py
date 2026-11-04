@@ -44,12 +44,33 @@ SCREEN_H = int(os.environ.get("SCREEN_H", "1080"))
 
 
 class QMP:
-    def __init__(self, path):
+    """A QMP connection.
+
+    QEMU SERVES ONE CLIENT AT A TIME on a socket, and this repository opens two kinds: the
+    frame recorder (lib/snapshots.py, which holds its connection for the whole bake) and the
+    driver that types and clicks. A second connection is accepted by the listening socket and
+    then queued - so the connect() succeeds and the GREETING never arrives:
+
+        File "lib/qmp.py", line 52, in __init__
+            self.greeting = self._read_message()
+        TimeoutError: timed out
+
+    which is run 41886018594, after the desktop had drawn.
+
+    There is no version of this that avoids the wait - the socket is single-client by design
+    - so the wait is explicit and long enough for a frame write, rather than a 30-second
+    timeout that reads as "qemu is dead". A caller that has one connection and keeps it (see
+    redox/bake.py's Console.live()) never pays this.
+    """
+
+    def __init__(self, path, *, greeting_timeout: int = 120):
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.settimeout(30)
+        self.sock.settimeout(greeting_timeout)
         self.sock.connect(path)
         self.buf = b""
         self.greeting = self._read_message()
+        # Once the greeting is in, a request should be answered promptly again.
+        self.sock.settimeout(30)
         self.execute("qmp_capabilities")
 
     def _read_message(self):
