@@ -190,8 +190,26 @@ def take_screenshot(guest, artifacts: str, note) -> str:
     ALWAYS TAKEN, PASS OR FAIL. It is the artifact a person looks at; the verdict is the
     session, but a picture is what turns "the session is running" into something reviewable
     and what explains a failure at a glance.
+
+    SETTLES FIRST, BECAUSE A SESSION THAT EXISTS HAS NOT NECESSARILY DRAWN YET.
+
+    The verdict is read over ssh the moment logind reports a session, and that happens
+    before the compositor has painted anything - GNOME registers its session and then spends
+    several seconds drawing. Run 41650668823's screenshot for gnome is the kernel's boot
+    log, not a desktop: the check passed at 09:56 and the picture was taken in the same
+    second.
+
+    Five seconds is enough for every one of these six; the ones that need longer (COSMIC on
+    a cold profile) already spend it starting, and this only moves the camera later. A
+    screendump of a half-drawn desktop is worse than one taken a minute late, because the
+    former looks like a failure.
     """
     import qmp as qmpmod
+
+    settle = float(os.environ.get("LAUNCH_SCREENSHOT_SETTLE", "5"))
+    if settle > 0:
+        note(f"  letting the session paint for {settle:g}s before the screenshot")
+        time.sleep(settle)
 
     shot = os.path.join(artifacts, "screen.ppm")
     png = os.path.join(artifacts, "screen.png")

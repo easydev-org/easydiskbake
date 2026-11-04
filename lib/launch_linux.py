@@ -110,8 +110,19 @@ def wait_for_console(console: str, marker: str, seconds: int, note) -> bool:
 
 
 def take_screenshot(guest, artifacts: str, note) -> str:
-    """One screendump as PNG. Always attempted; never a verdict."""
+    """One screendump as PNG. Always attempted; never a verdict.
+
+    SETTLES FIRST. The verdict is read over ssh the moment logind reports a session, which
+    is before the compositor has painted - GNOME registers its session and then spends
+    seconds drawing. The NixOS launch stage produced a screenshot of the kernel boot log
+    that way; the same sequence is used here.
+    """
     import qmp as qmpmod
+
+    settle = float(os.environ.get("LAUNCH_SCREENSHOT_SETTLE", "5"))
+    if settle > 0:
+        note(f"  letting the session paint for {settle:g}s before the screenshot")
+        time.sleep(settle)
 
     shot = os.path.join(artifacts, "screen.ppm")
     png = os.path.join(artifacts, "screen.png")
