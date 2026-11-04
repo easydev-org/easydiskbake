@@ -19,8 +19,9 @@ name: windows11
 # change to the ssh stage would mean baking Windows again. So each job has the same pair of
 # inputs:
 #
-#     run_<job>      should this job run at all
-#     <job>_from     the tag to pull; empty means "use what the job above produced"
+#     <job>_run          should this job run at all
+#     <job>_from         the tag to pull; empty means "use what the job above produced"
+#     <job>_bootstate    the run holding that tag's firmware variables
 #
 # and the tag expression is always `inputs.<job>_from || needs.<above>.outputs.tag`. When a job
 # is given a tag it does not look upstream for anything except, on Windows, the bootstate.
@@ -42,23 +43,23 @@ on:
   workflow_dispatch:
     inputs:
       # --- what to run -------------------------------------------------------------
-      run_base:
-        description: "Bake Windows from an ISO (run_base_from) - ~90 minutes"
+      base_run:
+        description: "Bake Windows from an ISO - ~90 minutes"
         type: boolean
         default: false
-      run_ssh:
+      ssh_run:
         description: "Install OpenSSH on top of the base disk"
         type: boolean
         default: true
-      run_dev:
+      dev_run:
         description: "Install the dev toolchain on top of the ssh disk - ~25 minutes"
         type: boolean
         default: true
-      run_launch_ssh:
+      launch_ssh_run:
         description: "Launch the ssh disk and photograph it"
         type: boolean
         default: true
-      run_launch_dev:
+      launch_dev_run:
         description: "Launch the dev disk and photograph it"
         type: boolean
         default: true
@@ -69,34 +70,34 @@ on:
       # disk that already exists, which is how a change to one stage is tested without
       # re-baking the ones before it.
       base_from:
-        description: "base: pull this tag instead of baking from an ISO"
+        description: "base: pull this tag instead of baking from an ISO (base_from)"
         default: ""
-      base_bootstate_run:
-        description: "base: run id holding that tag's bootstate artifact"
+      base_bootstate:
+        description: "base: the run whose artifact holds that tag's firmware variables"
         default: ""
       ssh_from:
         description: "ssh: pull this tag instead of the base job's output"
         default: ""
-      ssh_bootstate_run:
-        description: "ssh: run id holding that tag's bootstate artifact"
+      ssh_bootstate:
+        description: "ssh: the run whose artifact holds that tag's firmware variables"
         default: ""
       dev_from:
         description: "dev: pull this tag instead of the ssh job's output"
         default: ""
-      dev_bootstate_run:
-        description: "dev: run id holding that tag's bootstate artifact"
+      dev_bootstate:
+        description: "dev: the run whose artifact holds that tag's firmware variables"
         default: ""
       launch_ssh_from:
         description: "launch_ssh: the tag to launch; empty for the ssh job's output"
         default: ""
-      launch_ssh_bootstate_run:
-        description: "launch_ssh: run id holding that tag's bootstate artifact"
+      launch_ssh_bootstate:
+        description: "launch_ssh: the run whose artifact holds that tag's firmware variables"
         default: ""
       launch_dev_from:
         description: "launch_dev: the tag to launch; empty for the dev job's output"
         default: ""
-      launch_dev_bootstate_run:
-        description: "launch_dev: run id holding that tag's bootstate artifact"
+      launch_dev_bootstate:
+        description: "launch_dev: the run whose artifact holds that tag's firmware variables"
         default: ""
 
       # --- base ---------------------------------------------------------------------
@@ -146,7 +147,7 @@ jobs:
   # BASE - install Windows, nothing else.
   # ===========================================================================
   base:
-    if: inputs.run_base || inputs.base_from != ''
+    if: inputs.base_run || inputs.base_from != ''
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     container:
@@ -163,7 +164,7 @@ jobs:
       # ONE EXPRESSION SERVES BOTH PATHS. Given a tag, this job publishes nothing and the
       # outputs are what it was given; baked here, they are what it produced.
       tag: ${{ inputs.base_from || steps.publish.outputs.tag }}
-      bootstate_run: ${{ inputs.base_bootstate_run || github.run_id }}
+      bootstate_run: ${{ inputs.base_bootstate || github.run_id }}
       ran: ${{ steps.publish.outcome == 'success' }}
     steps:
       - uses: actions/checkout@v4
@@ -240,7 +241,7 @@ jobs:
     # tag is exactly that case. The real precondition is that there is a tag to pull, which is
     # the expression below.
     if: |
-      always() && inputs.run_ssh
+      always() && inputs.ssh_run
       && (inputs.ssh_from != '' || needs.base.outputs.tag != '')
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -256,7 +257,7 @@ jobs:
       packages: write
     outputs:
       tag: ${{ inputs.ssh_from || steps.publish.outputs.tag }}
-      bootstate_run: ${{ inputs.ssh_bootstate_run || github.run_id }}
+      bootstate_run: ${{ inputs.ssh_bootstate || github.run_id }}
     steps:
       - uses: actions/checkout@v4
 
@@ -297,7 +298,7 @@ jobs:
           name: windows11-bootstate
           path: out
           github-token: ${{ github.token }}
-          run-id: ${{ inputs.ssh_bootstate_run || needs.base.outputs.bootstate_run }}
+          run-id: ${{ inputs.ssh_bootstate || needs.base.outputs.bootstate_run }}
 
       - name: install ssh
         uses: easydev-org/easyagent-github-ext/actions/log-stream@main
@@ -363,7 +364,7 @@ jobs:
   dev:
     needs: ssh
     if: |
-      always() && inputs.run_dev
+      always() && inputs.dev_run
       && (inputs.dev_from != '' || needs.ssh.outputs.tag != '')
     runs-on: ubuntu-24.04
     timeout-minutes: 240
@@ -379,7 +380,7 @@ jobs:
       packages: write
     outputs:
       tag: ${{ inputs.dev_from || steps.publish.outputs.tag }}
-      bootstate_run: ${{ inputs.dev_bootstate_run || github.run_id }}
+      bootstate_run: ${{ inputs.dev_bootstate || github.run_id }}
     steps:
       - uses: actions/checkout@v4
 
@@ -418,7 +419,7 @@ jobs:
           name: windows-ssh-bootstate
           path: out
           github-token: ${{ github.token }}
-          run-id: ${{ inputs.dev_bootstate_run || needs.ssh.outputs.bootstate_run }}
+          run-id: ${{ inputs.dev_bootstate || needs.ssh.outputs.bootstate_run }}
 
       - name: install the toolchain
         uses: easydev-org/easyagent-github-ext/actions/log-stream@main
@@ -484,7 +485,7 @@ jobs:
   launch_ssh:
     needs: ssh
     if: |
-      always() && inputs.run_launch_ssh
+      always() && inputs.launch_ssh_run
       && (inputs.launch_ssh_from != '' || needs.ssh.outputs.tag != '')
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -518,7 +519,7 @@ jobs:
           name: windows-ssh-bootstate
           path: out
           github-token: ${{ github.token }}
-          run-id: ${{ inputs.launch_ssh_bootstate_run || needs.ssh.outputs.bootstate_run }}
+          run-id: ${{ inputs.launch_ssh_bootstate || needs.ssh.outputs.bootstate_run }}
 
       - name: launch it and photograph the screen
         uses: easydev-org/easyagent-github-ext/actions/log-stream@main
@@ -572,7 +573,7 @@ jobs:
   launch_dev:
     needs: dev
     if: |
-      always() && inputs.run_launch_dev
+      always() && inputs.launch_dev_run
       && (inputs.launch_dev_from != '' || needs.dev.outputs.tag != '')
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -606,7 +607,7 @@ jobs:
           name: windows-dev-bootstate
           path: out
           github-token: ${{ github.token }}
-          run-id: ${{ inputs.launch_dev_bootstate_run || needs.dev.outputs.bootstate_run }}
+          run-id: ${{ inputs.launch_dev_bootstate || needs.dev.outputs.bootstate_run }}
 
       - name: launch it and photograph the screen
         uses: easydev-org/easyagent-github-ext/actions/log-stream@main
