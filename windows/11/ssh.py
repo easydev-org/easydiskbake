@@ -513,48 +513,6 @@ def main(argv: list[str]) -> int:
             kb.shot("no-ssh")
             return 1
 
-        # CLEAN HERE, NOT IN THE BAKE, AND NOT LATER.
-        #
-        # The disk this stage publishes is the one every later stage starts from, so whatever
-        # this run put on it - the winget caches, the installer it downloaded, the helper
-        # scripts, the PowerShell history - is copied forward into the dev disk and then into
-        # every artifact after that. Cleaning at the end of the last stage would leave the
-        # intermediate disks carrying all of it, and each stage would grow the pile.
-        #
-        # THIS IS ALSO THE FIRST MOMENT IT CAN BE DONE OVER SSH. Everything before this line
-        # had to go through the keyboard, because sshd did not exist yet; clean.ps1 is 190
-        # lines and cannot be typed. The check on the line above is what makes it possible,
-        # which is why the order is: prove ssh, then use it.
-        #
-        # The zeroing is the part that decides the artifact's size - see lib/winclean.py.
-        from lib.winclean import clean as clean_guest
-
-        def _ssh(command: str, timeout: int = 1800):
-            return subprocess.run(
-                ["sshpass", "-p", GUEST_PASSWORD, "ssh",
-                 "-o", "StrictHostKeyChecking=no",
-                 "-o", "UserKnownHostsFile=/dev/null",
-                 "-o", "ConnectTimeout=15",
-                 "-p", str(HOST_SSH_PORT), f"{GUEST_USER}@127.0.0.1", command],
-                capture_output=True, text=True, timeout=timeout,
-            )
-
-        def _scp(local: str, remote: str) -> None:
-            result = subprocess.run(
-                ["sshpass", "-p", GUEST_PASSWORD, "scp",
-                 "-o", "StrictHostKeyChecking=no",
-                 "-o", "UserKnownHostsFile=/dev/null",
-                 "-P", str(HOST_SSH_PORT), local, f"{GUEST_USER}@127.0.0.1:{remote}"],
-                capture_output=True, text=True, timeout=300,
-            )
-            if result.returncode != 0:
-                raise RuntimeError((result.stderr or result.stdout or "").strip()[:300])
-
-        if not clean_guest(scp=_scp, ssh_run=_ssh, user=GUEST_USER, note=log):
-            log("=== THE GUEST WAS NOT CLEANED; THE DISK IS NOT PUBLISHED ===")
-            log("  an uncleaned disk is copied forward into every later stage")
-            return 1
-
         ok = True
         return 0
     finally:

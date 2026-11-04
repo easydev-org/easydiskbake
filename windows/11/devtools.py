@@ -347,12 +347,6 @@ def clean() -> bool:
     convert still stores them and the qcow2 comes out the same size. A file grown to fill
     the disk with zeros, then deleted, is what actually makes it smaller.
     """
-    # THE SAME CLEANING windows/11/ssh.py RUNS, from lib/winclean.py. Two stages reach the
-    # guest differently - this one is already over ssh, that one has only a keyboard - and
-    # the cleaning is identical, including the zeroing that decides the artifact's size.
-    from lib.winclean import clean as clean_guest
-
-    return clean_guest(scp=scp_to, ssh_run=ssh_run, user=SSH_USER, note=log)
 
 
 def main(argv: list[str]) -> int:

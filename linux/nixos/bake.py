@@ -237,52 +237,8 @@ def partition_script() -> list[tuple[str, float]]:
         #
         # The sleep before poweroff gives the serial drain time to flush; without it the
         # last line can be lost between the write and qemu noticing the machine stopped.
-        # CLEANING RUNS AFTER THE INSTALL AND BEFORE THE POWEROFF, AND IT IS THE STEP THAT
-        # DECIDES THE ARTIFACT'S SIZE.
-        #
-        # qemu-img convert only skips clusters that are ALREADY ZERO. Deleting a file marks
-        # its blocks free and leaves the bytes, so convert stores them and the qcow2 comes
-        # out as large as the disk's high-water mark. Writing zeros over the free space is
-        # what makes those blocks zero when convert looks.
-        #
-        # THE NIX STORE IS COLLECTED FIRST, and that matters more here than anywhere else:
-        # a nixos-install leaves the source system's store in the guest, and every closure
-        # member that the new system does not reference is dead weight. `--delete-old` runs
-        # the collector far enough to drop them; the store is then optimised, which is a
-        # hard-link pass and cannot make it larger.
-        #
-        # EACH STATEMENT IS JOINED WITH `;` AND THE RESULT IS CAPTURED, because this is one
-        # line typed at a serial console: a failure in any of them must still reach
-        # INSTALL_RC rather than ending the line early.
         ("sudo nixos-install --root /mnt --no-root-password --no-channel-copy 2>&1; "
-         "INSTALL_STATUS=$?; "
-         "echo INSTALL_RC=$INSTALL_STATUS | sudo tee /mnt/easydiskbake-rc; "
-         "if [ $INSTALL_STATUS -eq 0 ]; then "
-         "  echo CLEAN_BEGIN; "
-         # The installed system's own store, collected through a chroot so it is the one
-         # that shrinks rather than the installer's.
-         "  sudo nix-collect-garbage -d --store /mnt 2>&1 | tail -3; "
-         "  sudo nix-store --optimise --store /mnt 2>&1 | tail -2; "
-         # The installer's own store, which the guest does not need at all once the target
-         # is written.
-         "  sudo nix-collect-garbage -d 2>&1 | tail -2; "
-         # Logs, temp, and the autoinstall-style traces.
-         "  sudo rm -rf /mnt/var/log/* /mnt/tmp/* /mnt/var/tmp/* "
-         "         /mnt/root/.cache /mnt/root/.nix-defexpr 2>/dev/null; "
-         "  sudo find /mnt/var/log -type f -size +1M -exec truncate -s 0 {} + 2>/dev/null; "
-         "  sudo rm -f /mnt/root/.bash_history /mnt/root/.nix-profile; "
-         # THE ZEROING. df is read on the mounted target, the 200 MB margin keeps the last
-         # block from failing, and the file is removed either way.
-         "  FREE=$(df -m /mnt | awk 'NR==2 {print $4}'); "
-         "  echo \"FREE_MB=$FREE\"; "
-         "  if [ \"${FREE:-0}\" -gt 500 ]; then "
-         "    TARGET=$((FREE-200)); echo \"ZERO_MB=$TARGET\"; "
-         "    sudo dd if=/dev/zero of=/mnt/zero.fill bs=1M count=$TARGET status=none "
-         "      || echo ZERO_PARTIAL; "
-         "    sync; sudo rm -f /mnt/zero.fill; echo ZERO_DONE; "
-         "  else echo ZERO_SKIPPED; fi; "
-         "  echo CLEAN_DONE; "
-         "fi; "
+         "echo INSTALL_RC=$? | sudo tee /mnt/easydiskbake-rc; "
          "sync; sleep 5; sudo poweroff -f", 40),
     ]
 
@@ -503,30 +459,6 @@ def main(argv: list[str]) -> int:
         log("=== THE DISK FAILED ITS CHECKS; refusing to produce an artifact ===")
         return 1
 
-    # THE CLEAN HAS TO HAVE HAPPENED, AND THAT IS A VERDICT OF ITS OWN.
-    #
-    # A disk that installed and did not clean is a disk that boots and is the size of its
-    # high-water mark. Nothing downstream reads the size, so without this check the artifact
-    # would be published and the only symptom would be that it is larger than the last one -
-    # which is the kind of change nobody notices on a registry.
-    #
-    # The markers are read from the console rather than the disk because they are printed by
-    # the line that just ran, and the console is what this stage already captures.
-    try:
-        with open(console, "rb") as fh:
-            transcript = fh.read().decode("utf-8", "replace")
-    except OSError:
-        transcript = ""
-    if "CLEAN_DONE" not in transcript:
-        log("=== THE DISK WAS NOT CLEANED ===")
-        log("  CLEAN_DONE never appeared after the install; the zeroing is what makes")
-        log("  the qcow2 small, so this disk would publish at its high-water mark")
-        if "ZERO_SKIPPED" in transcript:
-            log("  ZERO_SKIPPED: there was under 500 MB free, which is itself suspicious")
-        if "ZERO_PARTIAL" in transcript:
-            log("  ZERO_PARTIAL: dd stopped early; the blocks it reached are zeroed")
-        return 1
-    log("the disk was cleaned and its free space zeroed")
 
     log("compressing")
     compress.compress(disk, args.out)

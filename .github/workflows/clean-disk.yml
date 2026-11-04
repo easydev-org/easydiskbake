@@ -1,0 +1,185 @@
+name: clean-disk
+
+# Boot a published disk, clean it over ssh, shut it down, and publish the result.
+#
+# WHY THIS IS A JOB OF ITS OWN, AND NOT A STEP IN THE BAKES
+#
+# It was a step first. That cost four separate implementations of "boot, connect, clean,
+# shut down" - Windows reached the guest with sshpass, Linux fetched a script from its seed
+# server, NixOS typed commands into a serial console - and each one was a different place for
+# the same bug. It also made a cleaning change cost a full reinstall: half an hour of macOS
+# installation to test a `dd` command.
+#
+# So this runs on a disk that is ALREADY PUBLISHED. Everything it needs comes from the tag;
+# nothing is passed between jobs except that tag and, for Windows, the run holding the
+# firmware variables.
+#
+#     windows-11_ssh-bake   ->  clean-disk (windows)  ->  windows-11_dev-bake
+#     windows-11_dev-bake   ->  clean-disk (windows)
+#     linux-ubuntu-bake     ->  clean-disk (linux)
+#     linux-kubuntu-bake    ->  clean-disk (linux)
+#     linux-nixos-bake      ->  clean-disk (linux)
+#
+# WHAT MAKES THE DISK SMALLER, AND WHY IT IS THE LAST STEP
+#
+# qemu-img convert -O qcow2 only skips clusters that are ALREADY ZERO. Deleting a file marks
+# its blocks free and leaves the bytes where they were, so convert stores them and the image
+# comes out the size of the disk's high-water mark. The guest writes zeros over its own free
+# space while it is running, and then this compresses - in that order, because the zeroing
+# has to happen to the running filesystem.
+#
+# MANUAL ONLY, like every other workflow here.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The published disk to clean"
+        required: true
+      kind:
+        description: "Which system it is"
+        type: choice
+        options: [windows, linux]
+        default: windows
+      publish_kind:
+        description: "Prefix for the published tag (e.g. windows-ssh, linux-ubuntu)"
+        required: true
+      publish_tag:
+        description: "Exact tag to publish under; empty for <publish_kind>-<stamp>"
+        default: ""
+      bootstate_run:
+        description: "Run id holding the bootstate artifact (Windows only)"
+        default: ""
+      boot_timeout:
+        description: "Seconds to wait for ssh"
+        default: "900"
+      mem:
+        description: "Guest memory in MB"
+        default: "6144"
+
+concurrency:
+  group: clean-disk-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  clean:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: clean-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            # the disk is uncompressed while this runs, so leave room for it and the output
+            python3 lib/ci.py free-disk --need 60
+            if ! command -v sshpass >/dev/null 2>&1; then
+              apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
+                apt-get install -y -qq sshpass
+            fi
+            sshpass -V | head -1
+            python3 lib/ci.py tags --prefix "${{ inputs.publish_kind }}"
+
+      # THE FIRMWARE VARIABLES TRAVEL WITH THE DISK FOR WINDOWS. They are a separate artifact
+      # because they are written by qemu, not by anything this repository controls - without
+      # them the machine starts and finds no boot entry, which reads as a disk that does not
+      # boot.
+      - name: pull the bootstate
+        if: inputs.bootstate_run != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.kind == 'windows' && 'windows-ssh-bootstate' || 'windows-dev-bootstate' }}
+          path: out/clean-work
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.bootstate_run }}
+
+      - name: clean it
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: clean-disk
+          interval: "20"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            python3 lib/clean_disk.py \
+              --tag "${{ inputs.tag }}" \
+              --kind "${{ inputs.kind }}" \
+              --out "out/clean-${{ inputs.kind }}.qcow2" \
+              --work out/clean-work \
+              --artifacts out \
+              --bootstate-run "${{ inputs.bootstate_run }}" \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --mem "${{ inputs.mem || '6144' }}"
+
+      # THE BOOTSTATE THAT GOES WITH THE CLEANED DISK. Booting wrote to the vars file, so what
+      # this stage ended with is what the next stage needs - not what came in.
+      - name: keep the bootstate
+        if: always() && inputs.kind == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-dev-bootstate
+          path: out/clean-work/*.bootstate.tar.gz
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: keep the record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clean-record
+          path: |
+            out/clean.txt
+            out/clean-work/*.bootstate.tar.gz
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: publish
+        if: success()
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: clean-publish
+          interval: "15"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py install-oras
+            python3 lib/ci.py login --registry ghcr.io
+            TAG="${{ inputs.publish_tag }}"
+            if [ -z "$TAG" ]; then
+              python3 lib/publish_disk.py "out/clean-${{ inputs.kind }}.qcow2" \
+                --kind "${{ inputs.publish_kind }}"
+            else
+              python3 lib/publish_disk.py "out/clean-${{ inputs.kind }}.qcow2" \
+                --kind "${{ inputs.publish_kind }}" --tag "$TAG"
+            fi
+
+      - name: the verdict
+        if: always()
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: clean-verdict
+          interval: "10"
+          command: |
+            set -euo pipefail
+            echo "=== clean ${{ inputs.tag }} ==="
+            if [ -f out/clean.txt ]; then cat out/clean.txt; else echo "no verdict was written"; fi

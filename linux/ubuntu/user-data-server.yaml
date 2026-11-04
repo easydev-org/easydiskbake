@@ -189,22 +189,5 @@ autoinstall:
     # told apart from one built by something else, without a manifest beside it.
     - curtin in-target -- sh -c "echo 'built by easydiskbake linux-ubuntu' > /etc/easydiskbake"
 
-    # CLEAN THE DISK BEFORE IT IS EXPORTED, AND THE ZEROING IS THE HALF THAT MATTERS.
-    #
-    # The script is served from the same seed server as this document - see serve() in
-    # linux/ubuntu/bake.py, which puts lib/linux-clean.sh beside user-data. It cannot be
-    # inline: it is 5.5 KiB and this document is meant to be read.
-    #
-    # 10.0.2.2 is qemu's user-mode gateway, which is this host; the seed URL at the top of
-    # this file is what proves that address reaches the server.
-    #
-    # ORDER IS DELIBERATE. This runs last: everything else in late-commands writes things
-    # (the autologin file, the sudoers line, the marker), and cleaning before them would
-    # leave those behind and zero a disk that is about to receive more writes.
-    #
-    # A FAILURE HERE FAILS THE INSTALL. || true would produce a disk that boots and is the
-    # size of its high-water mark - which is the problem this step exists to solve - and
-    # nothing downstream reads the disk's size, so it would never be noticed.
-    - curtin in-target -- sh -c "curl -fsS -o /tmp/linux-clean.sh http://10.0.2.2:8000/autoinstall/linux-clean.sh && sh /tmp/linux-clean.sh"
 
   shutdown: reboot

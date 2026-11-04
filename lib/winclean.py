@@ -47,27 +47,49 @@ SCRIPT = os.path.join(HERE, "windows", "11", "clean.ps1")
 DONE = "CLEAN_DONE"
 
 
-def clean(*, scp, ssh_run, user: str, note=print, timeout: int = 1800) -> bool:
+def clean(*, port: int, user: str = "docker", note=print, timeout: int = 1800) -> bool:
     """Copy clean.ps1 into the guest, run it, and report what it freed.
 
-    `scp(local, remote)` puts a file in the guest.
-    `ssh_run(command, timeout=...)` runs a command there and returns .stdout/.stderr.
+    OVER SSH, LIKE EVERY OTHER GUEST IN THIS REPOSITORY. An earlier version took scp and
+    ssh_run as callbacks, because it was called from inside a bake that already had a
+    connection. As a stage of its own it makes its own, and the callbacks go away - the
+    password and the account are the same everywhere.
+
+    `port` is the forwarded host port.
     """
+    import subprocess
+
+    from session import SSH_PASSWORD
     if not os.path.isfile(SCRIPT):
         raise SystemExit(f"{SCRIPT} is missing; the disk would ship with its build traces")
 
     note("cleaning the guest")
     remote = f"C:/Users/{user}/clean.ps1"
 
+    # THE SCRIPT GOES UP WITH scp, because it is 190 lines and the keyboard is not an option
+    # even when a keyboard is what installed sshd.
     try:
-        scp(SCRIPT, remote)
-    except (OSError, RuntimeError) as exc:
+        copied = subprocess.run(
+            ["sshpass", "-p", SSH_PASSWORD, "scp",
+             "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+             "-P", str(port), SCRIPT, f"{user}@127.0.0.1:{remote}"],
+            capture_output=True, text=True, timeout=300,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
         note(f"=== CLEAN.PS1 COULD NOT BE COPIED: {exc} ===")
         return False
+    if copied.returncode != 0:
+        detail = (copied.stderr or copied.stdout or "").strip().splitlines()
+        note(f"=== CLEAN.PS1 COULD NOT BE COPIED: {detail[-1][:200] if detail else ''} ===")
+        return False
 
-    result = ssh_run(
-        f"powershell -NoProfile -ExecutionPolicy Bypass -File {remote}",
-        timeout=timeout,
+    result = subprocess.run(
+        ["sshpass", "-p", SSH_PASSWORD, "ssh",
+         "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+         "-o", "ConnectTimeout=15",
+         "-p", str(port), f"{user}@127.0.0.1",
+         f"powershell -NoProfile -ExecutionPolicy Bypass -File {remote}"],
+        capture_output=True, text=True, timeout=timeout,
     )
     out = (result.stdout or "") + (result.stderr or "")
 
