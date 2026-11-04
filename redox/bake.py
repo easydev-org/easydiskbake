@@ -642,6 +642,15 @@ def main(argv: list[str]) -> int:
                 note("  password - or a blank screen, which is a session that failed to start")
                 return False
 
+            # THE WALLPAPER IS NOT THE DESKTOP. Let Orbital finish before touching it.
+            #
+            # The brightness test fires on the wallpaper, which is painted before the panel
+            # and the dock subscribe to input. Run 41871160859 clicked one second after this
+            # point and the dock never reacted. Ten seconds is what the desktop took to
+            # settle in the run that got its terminal open.
+            log("  letting Orbital finish drawing its panel and dock")
+            time.sleep(10)
+
             # 3. A TERMINAL, OPENED THE WAY A PERSON WOULD - the same shape as
             #    windows/11/ssh.py's open_powershell().
             #
@@ -693,26 +702,51 @@ def main(argv: list[str]) -> int:
             baseline = con.shot("terminal-before")
             before = dark_window_fraction(baseline) if baseline else 0.0
             note(f"  dark fraction before: {before:.2f}")
-            con.click(*DOCK_TERMINAL, why="the terminal icon in the dock")
 
+            # THE CLICK IS RETRIED, BECAUSE ONE CLICK INTO A DRAWING DESKTOP IS A RACE.
+            #
+            # Run 41871160859 clicked at 16:49:37, one second after "the desktop is up", and
+            # the dock region of every following frame was byte identical - no hover, no
+            # launch, no change at all. Orbital had just painted its wallpaper and the dock
+            # was still a picture: a click at that moment goes to a widget that has not
+            # subscribed to the pointer yet.
+            #
+            # It is also not certain that the first click reaches the guest at all - qemu
+            # answers an error to input-send-event for a device that is not attached, and
+            # lib/qmp.click() now raises on that rather than pretending - so a retry is both
+            # a second chance and the thing that distinguishes "the click was lost" from
+            # "the icon is not there".
+            #
+            # THREE ATTEMPTS, 6s APART, each followed by a measurement: the terminal opens in
+            # under a second when it opens at all, so a wait that finds nothing is evidence,
+            # not impatience.
             opened = False
-            deadline = time.time() + 90
-            while time.time() < deadline:
-                time.sleep(4)
-                png = con.shot("terminal")
-                if not png:
-                    continue
-                now = dark_window_fraction(png)
-                note(f"    dark fraction {now:.2f}")
-                # 15 points of the frame turning dark is a window, not a redraw: the wallpaper
-                # does not change when a terminal opens over it.
-                if now - before >= 0.15:
-                    opened = True
+            for attempt in range(1, 4):
+                con.click(*DOCK_TERMINAL,
+                          why=f"the terminal icon in the dock (attempt {attempt} of 3)",
+                          settle=1.0)
+                deadline = time.time() + 8
+                while time.time() < deadline:
+                    time.sleep(2)
+                    png = con.shot(f"terminal-{attempt}")
+                    if not png:
+                        continue
+                    now = dark_window_fraction(png)
+                    note(f"    dark fraction {now:.2f}")
+                    # 15 points of the frame turning dark is a window, not a redraw: the
+                    # wallpaper does not change when a terminal opens over it.
+                    if now - before >= 0.15:
+                        opened = True
+                        break
+                if opened:
                     break
+                con.key("ret", settle=0.5)
+
             if not opened:
                 note("=== THE DOCK DID NOT OPEN A TERMINAL ===")
-                note(f"  clicked {DOCK_TERMINAL}; the frame's dark fraction stayed near")
-                note(f"  {before:.2f}, so nothing opened over the wallpaper")
+                note(f"  clicked {DOCK_TERMINAL} three times, 2s apart, with a Return")
+                note(f"  after each; the frame's dark fraction stayed near {before:.2f}, so")
+                note("  nothing opened over the wallpaper")
                 return False
             note("  a terminal is open")
 

@@ -84,20 +84,60 @@ def to_abs(pixel, extent):
     return max(0, min(ABS_MAX, value))
 
 
+def _send(q, what, events):
+    """Send one input event list and RAISE IF QEMU REFUSED IT.
+
+    EVERY CALLER HERE USED TO DROP THE REPLY. qemu answers
+
+        {"error": {"class": "GenericError", "desc": "..."}}
+
+    for a device that is not attached, an axis it does not know, or a fd that has gone
+    away - and a dropped reply turns that into a keystroke that silently did not happen,
+    followed by a log line saying it did. Run 41871160859 clicked the dock for ninety
+    seconds and the dock region of every frame was byte identical: the pointer never moved
+    and nothing said so.
+    """
+    reply = q.execute("input-send-event", events=events)
+    if isinstance(reply, dict) and "error" in reply:
+        raise RuntimeError(
+            f"input-send-event ({what}) was refused by qemu: {reply['error']}. "
+            f"The input did not reach the guest; a caller that logs it as though it did "
+            f"is testing the screen saver."
+        )
+
+
 def move(q, x, y):
-    q.execute("input-send-event", events=[
+    return q.execute("input-send-event", events=[
         {"type": "abs", "data": {"axis": "x", "value": to_abs(x, SCREEN_W)}},
         {"type": "abs", "data": {"axis": "y", "value": to_abs(y, SCREEN_H)}},
     ])
 
 
 def click(q, x, y):
+    """Move, then press and release, and REFUSE TO PRETEND IT WORKED.
+
+    `execute()` returns the reply, and every caller here used to drop it - so a qemu that
+    answered
+
+        {"error": {"class": "GenericError", "desc": "..."}}
+
+    to `input-send-event` produced no click, no exception, and a caller that logged
+    "click (115, 1051)" as though it had happened. Run 41871160859 is what that looks like
+    from the outside: the dock region of the frame was BYTE IDENTICAL before and after the
+    click, twenty times over ninety seconds, because the pointer never moved.
+
+    A device that is not there, an axis QEMU does not know, a `usb-tablet` that did not
+    attach - all of those answer an error, and all of them were invisible.
+    """
     move(q, x, y)
+    # THE GAP BETWEEN PRESS AND RELEASE IS STILL HERE, and it has to be: at 0.15s the
+    # guest sees a button that was down and came up, which is a click. Sent back to back,
+    # a widget that polls reads the same state twice and opens nothing.
     time.sleep(0.3)
-    q.execute("input-send-event", events=[
+    _send(q, f"press at ({x}, {y})", [
         {"type": "btn", "data": {"down": True, "button": "left"}}])
     time.sleep(0.15)
-    q.execute("input-send-event", events=[
+    _send(q, f"release at ({x}, {y})", [
         {"type": "btn", "data": {"down": False, "button": "left"}}])
 
 
@@ -117,7 +157,7 @@ def key(q, qcode):
     in the same way: "sending down and up as one events list keeps the pair inside a
     single lock acquisition".
     """
-    q.execute("input-send-event", events=[
+    _send(q, f"key {qcode}", [
         {"type": "key", "data": {"down": True, "key": {"type": "qcode", "data": qcode}}},
         {"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": qcode}}},
     ])
@@ -144,7 +184,7 @@ def key_combo(q, *qcodes):
         {"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": qcode}}}
         for qcode in reversed(qcodes)
     ]
-    q.execute("input-send-event", events=events)
+    _send(q, "chord " + "+".join(qcodes), events)
 
 
 def main():
