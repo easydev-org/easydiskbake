@@ -55,6 +55,11 @@ DESKTOPS = ("labwc", "gnome", "kde", "cosmic", "hyprland", "miracle")
 
 CONFIG_PORT = 8000
 
+# THE SMALLEST DISK THIS STAGE WILL RUN IN, IN GiB. Every disk in this repository is 128G,
+# so this is a floor rather than a target: the resize below only happens if a base somehow
+# arrives smaller than this, and a desktop closure needs the room when it does.
+MIN_DISK_GIB = 24
+
 
 def log(message: str) -> None:
     print(f"[derive {time.strftime('%H:%M:%S')}] {message}", flush=True)
@@ -161,16 +166,44 @@ def main(argv: list[str]) -> int:
     # and nothing else, because capture_output swallowed the sentence that said why.
     # compress.qemu_img() already resolves this correctly, so it is used rather than
     # re-derived.
+    #
+    # GROWING ONLY, AND THE BASE IS NOW ALREADY BIGGER THAN 24G.
+    #
+    # Every disk in this repository became 128G, so this unconditional `resize 24G` is a
+    # SHRINK - and qemu-img refuses one without --shrink, with a warning that says exactly
+    # what is at stake:
+    #
+    #     qemu-img: Use the --shrink option to perform a shrink operation.
+    #     qemu-img: warning: Shrinking an image will delete all data beyond the
+    #                     shrunken image's end.
+    #
+    # `--shrink` is the wrong answer: it would truncate the base's own filesystem. The right
+    # one is not to resize at all, because the disk is already large enough - so this asks
+    # the image its virtual size and only grows when it is under the floor.
     import compress
 
-    resized = subprocess.run(
-        [compress.qemu_img(), "resize", disk, "24G"],
+    digest = subprocess.run(
+        [compress.qemu_img(), "info", "--output=json", disk],
         capture_output=True, text=True,
     )
-    if resized.returncode != 0:
+    if digest.returncode != 0:
         raise SystemExit(
-            f"could not grow {disk} to 24G: "
-            f"{(resized.stderr or resized.stdout).strip()[:400]}")
+            f"could not read {disk}: {(digest.stderr or digest.stdout).strip()[:400]}")
+    import json
+
+    virtual_gib = (json.loads(digest.stdout).get("virtual-size") or 0) / float(1 << 30)
+    if virtual_gib < MIN_DISK_GIB:
+        log(f"growing the disk from {virtual_gib:.0f}G to {MIN_DISK_GIB}G")
+        resized = subprocess.run(
+            [compress.qemu_img(), "resize", disk, f"{MIN_DISK_GIB}G"],
+            capture_output=True, text=True,
+        )
+        if resized.returncode != 0:
+            raise SystemExit(
+                f"could not grow {disk} to {MIN_DISK_GIB}G: "
+                f"{(resized.stderr or resized.stdout).strip()[:400]}")
+    else:
+        log(f"the disk is {virtual_gib:.0f}G; nothing to grow")
 
     server = serve(work, args.desktop)
     # THE GUEST SCRIPT IS SERVED, NOT TYPED - see guest_script().

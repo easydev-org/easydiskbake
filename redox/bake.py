@@ -766,25 +766,46 @@ def main(argv: list[str]) -> int:
             # 6. OPENSSH. Not in the desktop image; installed from the vendor's package server,
             #    which the image already points at (/etc/pkg.d/50_redox).
             note("=== openssh ===")
-            # `-y` IS NOT A DETAIL. Without it pkg asks
+            # `--yes` IS A LONG OPTION AND THERE IS NO `-y`. Redox's pkg is a Rust program
+            # (redox-os/pkgutils, clap-derived), and clap rejects the short form outright:
+            #
+            #     root:~# pkg install -y openssh ; echo PKG_RC=$?
+            #     error: unexpected argument '-y' found
+            #       tip: to pass '-y' as a value, use '-- -y'
+            #     Usage: pkg install [OPTIONS] [PACKAGES]...
+            #     PKG_RC=2
+            #
+            # which is run 41859057018's last frame, after this line had been changed TO `-y`
+            # on the reasoning that pkg asks
             #
             #     Proceed with this transaction? [Y/n]:
             #
-            # and the NEXT command typed - `ls /usr/bin/sshd ; echo HASSSHD=$?` - becomes the
-            # answer to that prompt. The frame from run 41817639644 shows exactly that: the
-            # prompt line has the ls command in it, and the check for sshd never ran.
-            con.type("pkg install -y openssh ; echo PKG_RC=$?", settle=2.0)
-            if not con.wait_for(["pkg_rc="], 900, "pkg install openssh"):
+            # and that something was needed to answer it. The prompt was real; the flag was
+            # from a different pkg. From pkg-cli's Cli struct, the global flags are `--curl`,
+            # `--yes`, `--nocheck` and `--user`, and the comment on `--yes` is "Always reply
+            # with yes even with interactive tty".
+            #
+            # `--yes` GOES BEFORE THE SUBCOMMAND, because it is declared
+            # `global = true` on the top-level Cli rather than on Install - so
+            # `pkg install openssh --yes` also parses, and `pkg --yes install openssh` is the
+            # form the declaration describes. This uses that one.
+            con.type("pkg --yes install openssh ; test -f /usr/bin/sshd ; echo PKG_OK=$?",
+                     settle=2.0)
+            # `pkg_rc=` MATCHED THE ECHO OF THE COMMAND LINE ITSELF.
+            #
+            # The line above types `... ; echo PKG_RC=$?`, the terminal echoes it back, and
+            # the OCR reads the echo - so the wait returned after 13 seconds, "successfully",
+            # for a pkg that had exited 2. The frame from run 41859057018 shows both: the
+            # echoed command near the top and `PKG_RC=2` eight lines below.
+            #
+            # What is waited for now is a value that the echo cannot contain: the expansion
+            # of a success test rather than the text of the command that produced it.
+            if not con.wait_for(["pkg_ok=0"], 900, "pkg install openssh"):
                 note("=== pkg COULD NOT INSTALL openssh ===")
                 note("  it needs the network; qemu's user-mode net is 10.0.2.x and the image")
                 note("  ships /etc/net/ip = 10.0.2.15, so a failure here is the package server")
                 return False
-            # `test -f` RATHER THAN `ls`: one exit status, no output to read past.
-            con.type("test -f /usr/bin/sshd ; echo HASSSHD=$?")
-            if not con.wait_for(["hassshd=0"], 180, "sshd installed"):
-                note("=== openssh INSTALLED BUT THERE IS NO /usr/bin/sshd ===")
-                note("  the package may put it elsewhere; `pkg list openssh` says where")
-                return False
+            note("  openssh installed")
 
             # 7. THE HOST KEY. sshd refuses to start without one, and it is generated once, on
             #    the disk, not at every boot.
@@ -810,18 +831,28 @@ def main(argv: list[str]) -> int:
             # 9. START IT NOW AND PROVE IT LISTENS. The init.d entry only matters at the next
             #    boot; this run has to verify the daemon before the disk is published.
             note("=== starting sshd ===")
+            # THE SAME ECHO FAULT AS `pkg_rc=`, AND FIXED THE SAME WAY. `/usr/bin/sshd ; echo
+            # SSHD_RC=$?` is echoed by the terminal before it runs, and `SSHD_RC=$?` in that
+            # echo does not contain a digit - so a marker of `sshd_rc=` matched the echo, and a
+            # daemon that never started would have passed. What is matched is a value with a
+            # digit in it, which only the expansion produces.
             con.type("/usr/bin/sshd ; echo SSHD_RC=$?")
-            if not con.wait_for(["sshd_rc="], 180, "sshd started"):
+            if not con.wait_for(["sshd_rc=0"], 180, "sshd started"):
                 note("=== sshd WOULD NOT START ===")
                 note("  `sshd -d` prints why; the frame beside this message is the console")
                 return False
 
             # 10. THE ACCOUNT CAN REACH IT, from the guest's own network - the same address
             #     qemu forwards to, so this proves the port rather than just the process.
+            #
+            # `-y` IS NOT NEEDED AND `true` IS NOT A REDOX COMMAND. The probe is `echo`, which
+            # ion has; and the check is the exit status of the whole ssh, so an auth failure
+            # and a missing binary are the same answer here - which is correct, because both
+            # mean the account cannot log in.
             note("=== ssh from the guest to itself ===")
             con.type(f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
-                     f"{args.user}@10.0.2.15 true ; echo SSHTEST=$?")
-            if not con.wait_for(["sshtest="], 300, "ssh login"):
+                     f"{args.user}@10.0.2.15 echo ok ; echo SSHTEST=$?")
+            if not con.wait_for(["sshtest=0"], 300, "ssh login"):
                 note("=== sshd IS UP BUT THE ACCOUNT CANNOT LOG IN ===")
                 note("  a password prompt that never accepts an empty line is the usual cause,")
                 note("  and `ssh -v` on the frame beside this message says which check failed")
