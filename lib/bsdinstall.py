@@ -10,10 +10,8 @@ THE TWO BSDs ANSWER DIFFERENTLY AND THE TRANSPORT IS THE DIFFERENCE
               preamble of environment variables and, after a #! line, a shell script that
               runs chrooted in the new system. Nothing prompts.
 
-    OpenBSD   the responder reads /etc/install.conf, one directive per line. Same
-              shape, different syntax, different file name.
 
-Neither fetches an answer file from the network by default, and neither has an answer
+FreeBSD does not fetch an answer file from the network by default, and has no answer
 file mechanism that can be handed over on the kernel command line the way Ubuntu's can.
 So the file has to be ON the medium, and this module is the two documented ways of
 getting it there:
@@ -192,7 +190,7 @@ def iso_boot_files(iso_path: str) -> dict[str, str]:
 
     THE EL TORITO RECORD DIFFERS BETWEEN THE TWO BSDs and guessing it wrong produces an
     ISO that looks right and does not boot. FreeBSD's live media boots boot/cdboot;
-    OpenBSD's boots /3.5/amd64/cdbr or its own eltorito image. Reported rather than
+    Rebuilding it means naming the boot record, and this reports what it found rather than
     assumed, so a caller can say what it found when a boot fails.
     """
     found: dict[str, str] = {}

@@ -25,11 +25,10 @@ Worth deciding before writing anything, because they do not share an installer:
 | system | installer | unattended? |
 |---|---|---|
 | FreeBSD | `bsdinstall` | scripted via `bsdinstall script` |
-| OpenBSD | its own | `install.conf` (autoinstall, since 5.x) |
 | NetBSD | `sysinst` | limited |
 
 FreeBSD's scripted install is the closest to the Linux answer-file model and would be
-the natural first one. OpenBSD's `install.conf` is arguably simpler still.
+the natural first one.
 
 ## What a bake would produce
 

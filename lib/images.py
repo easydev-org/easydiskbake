@@ -293,7 +293,7 @@ LINUX = {
 # a BSD bake needs tools lib/smoke.py does not have (ufs, not ext4 - see bsd/README.md).
 #
 # WHICH ONES. FreeBSD's bsdinstall is scriptable and its release media is a single
-# .img.xz; OpenBSD's install.conf is the simplest unattended format of the three; NetBSD
+# .img.xz; FreeBSD's installerconfig is the unattended format used here; NetBSD
 # is left out because sysinst offers no comparable non-interactive path.
 BSD = {
     "freebsd": {
@@ -306,12 +306,6 @@ BSD = {
         # From the vendor's own CHECKSUM.SHA256-FreeBSD-15.1-RELEASE-amd64.
         "sha256": "fa27646f05a1440fd26ffbb85e06a50bc86e128242a4e9cb7bb3ea76e1aa5fd9",
         "size": 1352255488,
-    },
-    "openbsd": {
-        "url": "https://cdn.openbsd.org/pub/OpenBSD/8.0/amd64/install80.iso",
-        # From the vendor's SHA256 file beside the image.
-        "sha256": "bc85d747c6ee4354d14fbfeee38087500386a2e9d86fa7b5ab13d840d902aa33",
-        "size": 832565248,
     },
 }
 

@@ -315,7 +315,7 @@ def main(argv: list[str]) -> int:
                      serial_pipe=ser.stdin.removesuffix(".in"))
     # -boot d: TRY THE CD FIRST, EXPLICITLY. The disk is empty, so a firmware that
     # starts with the hard disk would find nothing - and this machine has no boot entry
-    # to fall through to. FreeBSD happened to reach its loader anyway; OpenBSD, whose
+    # to fall through to. FreeBSD happened to reach its loader anyway, because its
     # cdbr is position-dependent and whose media has one boot entry rather than two, did
     # not. Naming the order removes the difference between them.
     # -no-reboot, WHICH THE DOCSTRING ABOVE HAS NAMED SINCE THE FILE WAS WRITTEN AND

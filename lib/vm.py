@@ -347,7 +347,7 @@ class Guest:
         log(f"ssh    localhost:{self.shape.ssh_port} -> guest:22")
         log(f"qmp    drive={self.paths.drive} record={self.paths.record}")
         # SAY WHICH CONSOLE, NOT A CONSTANT. This line used to read "serial stdio"
-        # whatever the shape said, and during the OpenBSD debugging it read that way for
+        # whatever the shape said, and during an earlier debugging pass it read that way for
         # a run that was in fact using a chardev - so the log argued against the code.
         log(f"serial {'chardev ' + self.shape.serial_pipe if self.shape.serial_pipe else 'stdio'}")
         if self.shape.machine:

@@ -46,7 +46,6 @@ leaves behind:
     kubuntu  10240 MiB   measured 11960
     freebsd   2048 MiB   measured a complete install in the GB range; 1104 MiB was
                          the aborted one from 41638444422
-    openbsd   1024 MiB   a set install with X11 is about this size
 
 They are deliberately conservative: the purpose is to catch "the disk is essentially
 empty", not to police the size of a legitimate install that shrank a little.
@@ -62,7 +61,6 @@ FLOOR_MIB = {
     "ubuntu": 8192,
     "kubuntu": 10240,
     "freebsd": 2048,
-    "openbsd": 1024,
 }
 
 

@@ -61,7 +61,6 @@ import vm  # noqa: E402
 #
 #     ubuntu, kubuntu   systemd's own banner, which both print on ttyS0
 #     freebsd           the multiuser transition
-#     openbsd           its copyright banner, printed as the kernel starts
 #
 # An empty marker means "do not wait for one" - used by nothing today, kept because a
 # distribution whose console is silent would otherwise fail before ssh is even tried.
@@ -69,7 +68,6 @@ BOOTED_MARKER = {
     "ubuntu": "Ubuntu",
     "kubuntu": "Ubuntu",
     "freebsd": "FreeBSD/amd64",
-    "openbsd": "OpenBSD",
 }
 
 # THE COMPOSITOR THAT PROVES A DESKTOP SESSION, or "" for a system that has none.
@@ -83,10 +81,9 @@ COMPOSITOR = {
     "ubuntu": "gnome-shell",
     "kubuntu": "kwin_wayland",
     "freebsd": "xfce4-session",
-    "openbsd": "",
 }
 
-# DISKS WHOSE DESKTOP IS AN X SESSION BY DESIGN. Only FreeBSD, for the reason above; OpenBSD
+# DISKS WHOSE DESKTOP IS AN X SESSION BY DESIGN. Only FreeBSD, for the reason above.
 # has no display manager at all and its entry is "" so this is never consulted for it.
 ALLOW_X11 = {"freebsd"}
 

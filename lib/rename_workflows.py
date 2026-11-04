@@ -41,7 +41,6 @@ THE RULE, as decided:
     linux-ubuntu_desktop-bake  autoinstall
     linux-kubuntu_desktop-bake autoinstall, KDE flavour
     bsd-freebsd-bake           scripted bsdinstall, ssh and toolchain included
-    bsd-openbsd-bake           install.conf, ssh and toolchain included
 
 Utility workflows keep the same shape with a single-part version:
 
