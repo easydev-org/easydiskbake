@@ -460,3 +460,7 @@ def main(argv: list[str]) -> int:
     compress.compress(disk, args.out)
     note(f"BAKED redox -> {args.out} ({os.path.getsize(args.out) >> 20} MiB)")
     return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

@@ -95,6 +95,32 @@ HINT = (900, 667)
 # The "Are you sure you want to skip sign in?" sheet - Skip is the right-hand of its pair.
 SHEET_SKIP = (1026, 634)
 
+# THE TRANSFER PANE'S "Not now", AND THE ALERT THAT CAN COVER IT.
+#
+# Run 41777784309 sat on the transfer pane for the whole 1800s desktop timeout. The frame
+# says why, and it is not the click:
+#
+#     Transfer information to this Mac
+#       [AssetData]  <- the install medium, offered as a migration source
+#       Other Server...
+#         +---------------------------------------+
+#         |  The selected source cannot be used   |
+#         |  for migration.                       |
+#         |  This source is using a Case Sensitive |
+#         |  filesystem, while your Mac is not.   |
+#         |              [ OK ]                   |
+#         +---------------------------------------+
+#     Not now                          Back  Continue
+#
+# Something selected the AssetData volume and Migration Assistant refused it with a MODAL
+# alert. A modal alert swallows every click sent at the pane behind it, so the sequence's
+# remaining actions - all of them "successful" in the log - landed on a sheet that ate them.
+#
+# Two numbers, and they are measured from that frame at 1920x1080:
+TRANSFER_NOT_NOW = (604, 803)
+# The alert's OK is centred in a 250x170 sheet whose top edge is at y=535.
+TRANSFER_ALERT_OK = (958, 620)
+
 # Not Now on a two-button pane: the pairing pane after Data & Privacy. Continue is
 # disabled there, so Not Now is the only control that moves the wizard.
 NOT_NOW_LEFT = (1132, 796)
@@ -223,10 +249,37 @@ def pick_country(d: Driver) -> None:
 
 
 def set_up_as_new(d: Driver) -> None:
+    """Leave the transfer pane without transferring, whatever it is showing.
+
+    THE PANE HAS THREE STATES AND THE OLD CODE KNEW ONE.
+
+        no source selected    card 4 selects "Set up as new", Continue moves on
+        a source selected     a modal alert says why it cannot be used, and it EATS clicks
+        a source offered      clicking the card is not needed; Not now is the way out
+
+    Run 41777784309 was in the second state and the sequence was written for the first:
+    the alert swallowed Continue, and every later step of a "fixed sequence" was spent
+    clicking at a sheet.
+
+    Not now is clicked unconditionally, and it is idempotent: on a pane that has already
+    moved on it lands on the next pane's lower-left corner, which is empty on every
+    remaining pane of this wizard. OK is clicked after it, because an alert that was up
+    needs dismissing either way and the OK position is empty when there is no alert.
+    """
     d.wait(8, "transfer pane settles")
-    # Card 4 directly. Three Downs also work, but a click at the measured position needs
-    # nothing else to be true: it selects the row it lands on.
+
+    # CARD 4 FIRST, because when nothing is selected this is the only way forward and the
+    # card position is inert once a source is already selected.
     d.click(SET_UP_AS_NEW, "card 4, Set up as new", settle=2.5)
+
+    # THE ALERT, IF THE CLICK ON THE CARD RAISED ONE. Clicking a card for a volume that
+    # cannot be migrated raises the modal; clicking OK is the way back to the pane.
+    d.click(TRANSFER_ALERT_OK, "dismiss the migration alert, if there is one", settle=2.0)
+
+    # NOT NOW IS THE EXIT THAT DOES NOT DEPEND ON WHICH STATE THE PANE IS IN.
+    d.click(TRANSFER_NOT_NOW, "Not now on the transfer pane", settle=3.0)
+
+    # AND CONTINUE, FOR THE CASE WHERE NOT NOW WAS ALREADY TAKEN AND THIS IS THE NEXT PANE.
     d.click(CONTINUE, "transfer Continue", settle=8.0)
 
 
@@ -294,6 +347,13 @@ def tail(d: Driver) -> None:
     """
     for i in range(12):
         d.wait(5, f"pane {i + 1} settles")
+        # A MODAL ALERT CAN APPEAR ON ANY PANE, AND Return DOES NOT DISMISS IT.
+        #
+        # The transfer pane's alert is dismissed above, but "you haven't provided all of the
+        # requested information" and the Siri and FileVault prompts are the same shape, and
+        # any of them swallows the rest of the sequence. One click at the alert's OK costs
+        # nothing on a pane that has no alert, because that point is inside the pane body.
+        d.click(TRANSFER_ALERT_OK, f"pane {i + 1}: dismiss an alert if one is up", settle=1.0)
         d.key("ret", settle=2.0)
         d.click(CONTINUE, f"pane {i + 1} Continue", settle=2.5)
 

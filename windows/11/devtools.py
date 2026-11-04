@@ -86,15 +86,29 @@ def log(msg: str) -> None:
 # THE ORDER IS THE POINT, not alphabetical convenience: PowerShell 7 goes last because its
 # MSI restarts the session it is installed through, and everything after it would be
 # running over a connection that no longer exists.
+#
+# THE FIFTH FIELD IS THE PROBE, AND IT IS WHAT REPLACED ASKING WINGET.
+#
+# Run 41778185290 skipped the .NET SDK entirely because `winget list` contained a package
+# whose id starts with "Microsoft.DotNet", and nothing was on disk:
+#
+#     === Microsoft.DotNet.SDK.10 already installed ===
+#     candidate: C:\Program Files\dotnet\dotnet.exe exists=False
+#
+# So "is it installed" is now answered by windows/11/probe.ps1, which looks for the
+# executable the next stage uses. winget is still what INSTALLS; it is no longer what
+# decides whether to.
 PACKAGES = [
     ("Microsoft.VisualStudio.2022.BuildTools", "17.14.44",
      "--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools "
      "--includeRecommended",
-     "MSVC, the Windows SDK and CMake, from a version whose manifest knows this OS"),
-    ("Microsoft.WindowsSDK.10.0.26100", None, None, "the SDK on its own"),
-    ("Microsoft.DotNet.SDK.10", None, None, "the .NET SDK, which VCTools does not include"),
+     "MSVC, the Windows SDK and CMake, from a version whose manifest knows this OS",
+     "msvc"),
+    ("Microsoft.WindowsSDK.10.0.26100", None, None, "the SDK on its own", "winsdk"),
+    ("Microsoft.DotNet.SDK.10", None, None, "the .NET SDK, which VCTools does not include",
+     "dotnet"),
     ("Microsoft.PowerShell", None, None,
-     "PowerShell 7; last because its MSI can drop the ssh session"),
+     "PowerShell 7; last because its MSI can drop the ssh session", "pwsh"),
 ]
 
 
@@ -129,22 +143,46 @@ def scp_to(local: str, remote: str, *, timeout: int = 300) -> None:
         )
 
 
-def installed_packages() -> set[str]:
-    """Ask winget what is on the machine, once, instead of per package.
+def probe(name: str) -> tuple[bool, str]:
+    """Is this package on the machine, asked of the machine.
 
-    A package that is already installed is skipped rather than reinstalled: the BuildTools
-    install alone is twenty minutes, and a re-run of this stage after a failure at the
-    verification step should not pay for it again.
+    THE SAME SCRIPT THE VERIFICATION USES, so "already installed, skipped" and "verified"
+    cannot mean different things. A package that the probe says is present but the
+    verification cannot use is a bug in one of them, and that is worth seeing.
+
+    A probe that cannot RUN is not "present". Anything other than exit 0 means install.
     """
-    result = ssh_run("winget list --source winget", timeout=300)
-    text = (result.stdout or "") + (result.stderr or "")
-    found = set()
-    for pid, _v, _o, _w in PACKAGES:
-        # winget's table truncates long ids with an ellipsis, so the check is on the first
-        # segment, which is distinctive enough for these four.
-        head = pid.split(".")[0] + "." + pid.split(".")[1] if "." in pid else pid
-        if pid in text or head in text:
-            found.add(pid)
+    local = os.path.join(HERE, "probe.ps1")
+    if not os.path.isfile(local):
+        raise SystemExit(f"{local} is missing; the install order cannot be decided without it")
+    remote = f"C:/Users/{SSH_USER}/probe.ps1"
+    scp_to(local, remote)
+    result = ssh_run(
+        f"powershell -NoProfile -ExecutionPolicy Bypass -File {remote} {name}",
+        timeout=300,
+    )
+    text = ((result.stdout or "") + (result.stderr or "")).strip()
+    detail = ""
+    for line in text.splitlines():
+        if line.strip() and not line.startswith("Warning: Permanently added"):
+            detail = line.strip()
+    return (result.returncode == 0, detail)
+
+
+def installed_packages() -> dict[str, str]:
+    """Which packages are present, by asking each one's own probe.
+
+    WHY WINGET IS NOT ASKED. It answered for run 41778185290 and was wrong in the one way
+    that matters: `Microsoft.DotNet.SDK.10` matched a two-segment prefix in a list that
+    contained some other Microsoft.DotNet package, so the SDK was skipped and the stage
+    ended with `DOTNET_MISSING`. A second opinion from the same source is the same answer;
+    this asks the disk.
+    """
+    found: dict[str, str] = {}
+    for pid, _v, _o, _w, probe_name in PACKAGES:
+        present, detail = probe(probe_name)
+        if present:
+            found[pid] = detail
     return found
 
 
@@ -211,10 +249,13 @@ def verify() -> bool:
     """
     failures = []
 
-    log("asking winget what it installed")
+    # THE MACHINE IS ASKED, NOT WINGET. See installed_packages() for the run that made
+    # this necessary: winget listed an SDK that was not on disk.
+    log("asking the machine what is installed")
     present = installed_packages()
-    for pid, _v, _o, _w in PACKAGES:
-        log(f"  {pid:45} {'installed' if pid in present else 'MISSING'}")
+    for pid, _v, _o, _w, probe_name in PACKAGES:
+        detail = present.get(pid, "")
+        log(f"  {pid:45} {detail if detail else 'MISSING'}")
         if pid not in present:
             failures.append(pid)
 
@@ -457,9 +498,9 @@ def main(argv: list[str]) -> int:
             return 1
 
         present = installed_packages()
-        for pid, version, override, why in PACKAGES:
+        for pid, version, override, why, probe_name in PACKAGES:
             if pid in present:
-                log(f"=== {pid} already installed ===")
+                log(f"=== {pid} already installed ({present[pid]}) ===")
                 continue
             log(f"=== {pid} ===")
             log(f"  {why}")
