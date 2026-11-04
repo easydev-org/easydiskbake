@@ -92,20 +92,34 @@ COUNTRY_LIST = (900, 500)
 # THE RADIO CIRCLES THEMSELVES, not the text beside them, and these are the numbers that
 # were confirmed by eye against a 1920x1080 grid built from this run's own frame.
 #
-#     (820, 596)  From a Mac, Time Machine, or startup disk
-#     (820, 625)  From a Windows PC
-#     (820, 652)  Set up with iPhone or iPad
-#     (820, 679)  Set up as new
+#     (825, 597)  From a Mac, Time Machine, or startup disk
+#     (825, 621)  From a Windows PC
+#     (825, 645)  Set up with iPhone or iPad
+#     (825, 669)  Set up as new
+#
+# MEASURED BY SCANNING THE FRAME FOR THE CIRCLES, not by eye. In the recording - which is
+# 1280x800, the GUEST's actual resolution, not the 1920x1080 the plist asks for - the four
+# circles span these rows at x=543..556:
+#
+#     y=434..450   From a Mac          centre 442
+#     y=455..465   From a Windows PC   centre 460
+#     y=472..483   Set up with iPhone  centre 478
+#     y=490..501   Set up as new       centre 496
+#
+# and 496 * 1080/800 = 669. The previous value, 679, was ten pixels low - which is more than
+# half a circle's diameter, so the click landed below the control and the first row stayed
+# selected. That is the same failure as the very first attempt with (743, 714), one decimal
+# place smaller.
 #
 # WHY THE CIRCLE AND NOT THE LABEL. A macOS radio button is about 16px across, and the click
 # has to land on it - clicking the words selects nothing, which is what made an earlier
 # attempt look like it had worked while the first row stayed filled in. The label starts at
 # x≈845 and is not part of the control.
 TRANSFER_ROWS = {
-    "From a Mac": (820, 596),
-    "From a Windows PC": (820, 625),
-    "iPhone": (820, 652),
-    "Set up as new": (820, 679),
+    "From a Mac": (825, 597),
+    "From a Windows PC": (825, 621),
+    "iPhone": (825, 645),
+    "Set up as new": (825, 669),
 }
 FIRST_RADIO = TRANSFER_ROWS["From a Mac"]
 UNITED_STATES = (764, 615)

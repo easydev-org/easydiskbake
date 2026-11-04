@@ -26,12 +26,13 @@ name: macos26
 #
 #     <job>_run          should this job run
 #     <job>_from         the tag to pull; empty means "use what the job above produced"
-#     <job>_bootstate    the run holding that tag's firmware variables
 #
-# A disk here does not boot from itself: its boot entry lives in the OVMF variables, which qemu
-# writes to the work directory and which travel as an artifact of the run that made the disk.
-# OpenCore's boot entry is in there too. Without that run id a job can pull the disk and still
-# start a machine that finds nothing - so the tag and the run id are always asked for together.
+# NO BOOTSTATE IS PASSED BETWEEN THESE JOBS, AND THAT IS DIFFERENT FROM WINDOWS.
+#
+# A Windows disk boots by a boot entry in its OVMF variables, so every stage there needs the run
+# id that holds them. macOS does not: lib/opencore.build() writes a fresh copy of the firmware
+# variables from a pinned template every time a machine starts, and OpenCore is booted from
+# boot.img, which travels inside the disk's own directory. The tag is the whole handoff.
 #
 # `if: always() && ...` on every downstream job is what lets one start in the middle: `needs`
 # alone skips a job when the one above was skipped, and that is exactly the case of starting
@@ -51,9 +52,6 @@ on:
       # --- where each job starts -----------------------------------------------------
       setup_from:
         description: "setup: pull this tag instead of installing"
-        default: ""
-      setup_bootstate:
-        description: "setup: the run whose artifact holds that disk's OVMF variables"
         default: ""
 
       # --- setup ----------------------------------------------------------------------
@@ -99,7 +97,6 @@ jobs:
       packages: write
     outputs:
       tag: ${{ inputs.setup_from || inputs.publish_tag || 'macos26-setup' }}
-      bootstate: ${{ inputs.setup_bootstate || github.run_id }}
     steps:
       - uses: actions/checkout@v4
 
@@ -159,15 +156,6 @@ jobs:
 
       # THE BOOTSTATE GOES WITH THE DISK. OpenCore's boot entry and the firmware variables live
       # in the work directory, not on the disk and not in the tag.
-      - name: keep the bootstate
-        if: always() && inputs.setup_from == ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos26-setup-bootstate
-          path: out/*.bootstate.tar.gz
-          if-no-files-found: warn
-          retention-days: 30
-
       # A PLAIN `run:` STEP, BECAUSE THIS IS WHERE THE NEXT JOB'S TAG COMES FROM. GITHUB_OUTPUT
       # is the runner's own mechanism; routing it through a third-party action would make the
       # chain depend on how that action treats the variable.

@@ -16,12 +16,13 @@ name: macos15
 #
 #     <job>_run          should this job run
 #     <job>_from         the tag to pull; empty means "use what the job above produced"
-#     <job>_bootstate    the run holding that tag's firmware variables
 #
-# A disk here does not boot from itself: its boot entry lives in the OVMF variables, which qemu
-# writes to the work directory and which travel as an artifact of the run that made the disk.
-# OpenCore's boot entry is in there too. Without that run id a job can pull the disk and still
-# start a machine that finds nothing - so the tag and the run id are always asked for together.
+# NO BOOTSTATE IS PASSED BETWEEN THESE JOBS, AND THAT IS DIFFERENT FROM WINDOWS.
+#
+# A Windows disk boots by a boot entry in its OVMF variables, so every stage there needs the run
+# id that holds them. macOS does not: lib/opencore.build() writes a fresh copy of the firmware
+# variables from a pinned template every time a machine starts, and OpenCore is booted from
+# boot.img, which travels inside the disk's own directory. The tag is the whole handoff.
 #
 # `if: always() && ...` on every downstream job is what lets one start in the middle: `needs`
 # alone skips a job when the one above was skipped, and that is exactly the case of starting
@@ -54,26 +55,14 @@ on:
       setup_from:
         description: "setup: pull this tag instead of installing"
         default: ""
-      setup_bootstate:
-        description: "setup: the run whose artifact holds that disk's OVMF variables"
-        default: ""
       desktop_from:
         description: "desktop: pull this tag instead of the setup job's output"
-        default: ""
-      desktop_bootstate:
-        description: "desktop: the run whose artifact holds that disk's OVMF variables"
         default: ""
       ssh_from:
         description: "ssh: pull this tag instead of the desktop job's output"
         default: ""
-      ssh_bootstate:
-        description: "ssh: the run whose artifact holds that disk's OVMF variables"
-        default: ""
       dev_from:
         description: "dev: pull this tag instead of the ssh job's output"
-        default: ""
-      dev_bootstate:
-        description: "dev: the run whose artifact holds that disk's OVMF variables"
         default: ""
 
       # --- setup ----------------------------------------------------------------------
@@ -134,7 +123,6 @@ jobs:
       packages: write
     outputs:
       tag: ${{ inputs.setup_from || inputs.publish_tag || 'macos15-setup' }}
-      bootstate: ${{ inputs.setup_bootstate || github.run_id }}
     steps:
       - uses: actions/checkout@v4
 
@@ -194,15 +182,6 @@ jobs:
 
       # THE BOOTSTATE GOES WITH THE DISK. OpenCore's boot entry and the firmware variables live
       # in the work directory, not on the disk and not in the tag.
-      - name: keep the bootstate
-        if: always() && inputs.setup_from == ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos15-setup-bootstate
-          path: out/*.bootstate.tar.gz
-          if-no-files-found: warn
-          retention-days: 30
-
       # A PLAIN `run:` STEP, BECAUSE THIS IS WHERE THE NEXT JOB'S TAG COMES FROM. GITHUB_OUTPUT
       # is the runner's own mechanism; routing it through a third-party action would make the
       # chain depend on how that action treats the variable.
@@ -240,7 +219,6 @@ jobs:
       packages: write
     outputs:
       tag: ${{ inputs.desktop_from || inputs.publish_tag || 'macos15-desktop' }}
-      bootstate: ${{ inputs.desktop_bootstate || github.run_id }}
     steps:
       - uses: actions/checkout@v4
 
@@ -267,14 +245,6 @@ jobs:
             export GITHUB_TOKEN="${{ github.token }}"
             python3 lib/pull_disk.py \
               "${{ inputs.desktop_from || needs.setup.outputs.tag }}" --dest out
-
-      - name: pull the bootstate
-        uses: actions/download-artifact@v4
-        with:
-          name: macos15-setup-bootstate
-          path: out
-          github-token: ${{ github.token }}
-          run-id: ${{ inputs.desktop_bootstate || needs.setup.outputs.bootstate }}
 
       # THE WIZARD IS DRIVEN BY COORDINATES AND KEYS, and whether it worked is answered by the
       # recording. Every failure in this stage has been a wrong position or a pane that did not
@@ -320,15 +290,6 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-      - name: keep the bootstate
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos15-desktop-bootstate
-          path: out/*.bootstate.tar.gz
-          if-no-files-found: warn
-          retention-days: 30
-
       - name: push the disk
         if: success()
         id: publish
@@ -363,7 +324,6 @@ jobs:
       packages: write
     outputs:
       tag: ${{ inputs.ssh_from || inputs.publish_tag || 'macos15-ssh' }}
-      bootstate: ${{ inputs.ssh_bootstate || github.run_id }}
     steps:
       - uses: actions/checkout@v4
 
@@ -395,14 +355,6 @@ jobs:
             export GITHUB_TOKEN="${{ github.token }}"
             python3 lib/pull_disk.py \
               "${{ inputs.ssh_from || needs.desktop.outputs.tag }}" --dest out
-
-      - name: pull the bootstate
-        uses: actions/download-artifact@v4
-        with:
-          name: macos15-desktop-bootstate
-          path: out
-          github-token: ${{ github.token }}
-          run-id: ${{ inputs.ssh_bootstate || needs.desktop.outputs.bootstate }}
 
       # REMOTE LOGIN IS TURNED ON FROM THE GUEST'S OWN TERMINAL, opened with a keyboard
       # shortcut and typed into - there is no ssh yet, which is the thing being enabled.
@@ -444,15 +396,6 @@ jobs:
           path: out/last-frame.png
           if-no-files-found: warn
           retention-days: 7
-
-      - name: keep the bootstate
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos15-ssh-bootstate
-          path: out/*.bootstate.tar.gz
-          if-no-files-found: warn
-          retention-days: 30
 
       - name: push the disk
         if: success()
@@ -517,14 +460,6 @@ jobs:
             export GITHUB_TOKEN="${{ github.token }}"
             python3 lib/pull_disk.py \
               "${{ inputs.dev_from || needs.ssh.outputs.tag }}" --dest out
-
-      - name: pull the bootstate
-        uses: actions/download-artifact@v4
-        with:
-          name: macos15-ssh-bootstate
-          path: out
-          github-token: ${{ github.token }}
-          run-id: ${{ inputs.dev_bootstate || needs.ssh.outputs.bootstate }}
 
       # EVERYTHING BELOW IS ORDINARY REMOTE WORK: an ssh server is running, so no keyboard and
       # no screen - the toolchain is installed over a forwarded port.
