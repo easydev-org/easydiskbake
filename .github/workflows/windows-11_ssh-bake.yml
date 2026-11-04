@@ -122,6 +122,7 @@ jobs:
               --gold out/windows11-gold.qcow2 \
               --out out/windows11-ssh.qcow2 \
               --bootstate out/windows11.qcow2.bootstate.tar.gz \
+              --no-clean \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}"
 
       # THE PUBLISHED DISK AND ITS BOOTSTATE ARE RENAMED THE SAME WAY, and this step is
@@ -169,6 +170,35 @@ jobs:
           path: out/windows11-ssh.qcow2.bootstate.tar.gz
           if-no-files-found: warn
           retention-days: 30
+
+
+      # CLEANING IS ITS OWN STEP, AND IT IS TYPED AT THE RUN GRAPH.
+      #
+      # It boots the disk this stage produced, cleans it over ssh and stops it. That is one
+      # extra boot, and it buys a step whose name is in the run: "clean the disk: failed"
+      # says which half broke, where a line inside the install step's log does not.
+      #
+      # --no-clean on the step above is what makes this the only place it happens, so the
+      # two cannot both run and cannot drift about what "clean" means.
+      #
+      # The disk is modified in place, because this is the last thing before compress and
+      # publish - a copy would have to be moved back, and a copy-back that failed would
+      # publish the dirty one.
+      - name: clean the disk
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: ssh-clean
+          interval: "20"
+          command: |
+            set -euo pipefail
+            python3 lib/clean_step.py \
+              --disk out/windows11-ssh.qcow2 \
+              --kind windows \
+              --work out/ssh-work \
+              --artifacts out \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --mem 6144
 
       # PUBLISHED HERE, AFTER THE CLEAN THE STAGE ITSELF RAN.
       #

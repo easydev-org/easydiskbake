@@ -377,6 +377,8 @@ def main(argv: list[str]) -> int:
     p.add_argument("--tpm", action="store_true",
                    help="provide a TPM 2.0; off by default, because the answer file "
                         "bypasses the check and the disk boots without one")
+    p.add_argument("--no-clean", dest="clean", action="store_false",
+                   help="leave the disk as it is; the workflow runs lib/clean_step.py next")
     p.add_argument("--bootstate", default=None,
                    help="the .bootstate.tar.gz published with the disk; "
                         "without it the firmware has no boot entry")
@@ -513,21 +515,28 @@ def main(argv: list[str]) -> int:
             kb.shot("no-ssh")
             return 1
 
-        # CLEAN HERE, AND NOT AS A LATER JOB.
+        # CLEANING IS ITS OWN WORKFLOW STEP, so this stage can be asked to skip it.
         #
-        # The guest is running, ssh is connected, and the disk is on local storage. A separate
-        # clean job would upload this disk to an artifact and download it again - 12 GiB each
-        # way - to arrive at the same machine in the same state.
+        # --no-clean is what the workflow passes: the clean runs as the step after this one,
+        # using lib/clean_step.py, which boots the disk again and cleans it there. That costs
+        # a boot, and it buys a step in the run graph that says "clean the disk: failed"
+        # rather than a line buried in the middle of this stage's log.
         #
-        # It also has to be after the check above, because clean.ps1 is 190 lines and cannot
-        # be typed at a keyboard: ssh is not merely convenient here, it is the only channel
-        # that can carry the script.
-        from lib.clean_disk import clean_running
+        # THE DEFAULT IS TO CLEAN, because a disk that is not cleaned should not leave this
+        # stage: everything after this one starts from it, and an uncleaned ssh disk carries
+        # its winget caches into the dev disk and then into every artifact after that.
+        if args.clean:
+            # It has to be after the check above, because clean.ps1 is 190 lines and cannot be
+            # typed at a keyboard: ssh is not merely convenient here, it is the only channel
+            # that can carry the script.
+            from lib.clean_disk import clean_running
 
-        if not clean_running("windows", port=HOST_SSH_PORT, note=log):
-            log("=== THE GUEST WAS NOT CLEANED; THE DISK IS NOT PUBLISHED ===")
-            log("  an uncleaned disk carries this run's installers into every later stage")
-            return 1
+            if not clean_running("windows", port=HOST_SSH_PORT, note=log):
+                log("=== THE GUEST WAS NOT CLEANED; THE DISK IS NOT PUBLISHED ===")
+                log("  an unclaimed disk carries this run's installers into every later stage")
+                return 1
+        else:
+            log("not cleaning here; the next step does it (lib/clean_step.py)")
 
         ok = True
         return 0

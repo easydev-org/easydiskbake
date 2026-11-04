@@ -339,6 +339,8 @@ def main(argv: list[str]) -> int:
                    help="MB; the BuildTools installer is what needs this")
     p.add_argument("--cpus", type=int, default=4)
     p.add_argument("--boot-timeout", type=int, default=900)
+    p.add_argument("--no-clean", dest="clean", action="store_false",
+                   help="leave the disk as it is; the workflow runs lib/clean_step.py next")
     p.add_argument("--tpm", action="store_true",
                    help="provide a TPM 2.0; off by default, because the answer file "
                         "bypasses the check and the disk boots without one")
@@ -473,19 +475,22 @@ def main(argv: list[str]) -> int:
         if not verify():
             return 1
 
-        # CLEAN HERE, WHILE THE GUEST IS UP AND CONNECTED.
+        # CLEANING IS ITS OWN WORKFLOW STEP, so this stage can be asked to skip it.
         #
-        # A separate job would upload this 16 GiB disk and download it again to clean the same
-        # machine, and the toolchain install is the thing that makes the disk big in the first
-        # place - so this is where most of the waste is.
+        # --no-clean is what the workflow passes; lib/clean_step.py runs as the next step and
+        # boots the disk to clean it. The cost is one extra boot; what it buys is a step in
+        # the run graph that fails visibly, instead of a line inside this stage's log.
         #
-        # The cleaning itself is lib/clean_disk.py -> lib/winclean.py, shared with the ssh
-        # stage, so the two cannot drift about what "clean" means.
-        from lib.clean_disk import clean_running
+        # The default is to clean, because an uncleaned dev disk carries its installers and
+        # its payload caches into the published artifact.
+        if args.clean:
+            from lib.clean_disk import clean_running
 
-        if not clean_running("windows", port=SSH_PORT, note=log):
-            log("=== THE GUEST WAS NOT CLEANED; THE DISK IS NOT PUBLISHED ===")
-            return 1
+            if not clean_running("windows", port=SSH_PORT, note=log):
+                log("=== THE GUEST WAS NOT CLEANED; THE DISK IS NOT PUBLISHED ===")
+                return 1
+        else:
+            log("not cleaning here; the next step does it (lib/clean_step.py)")
 
         ok = True
         return 0
