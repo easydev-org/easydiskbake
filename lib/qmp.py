@@ -129,13 +129,25 @@ def click(q, x, y):
     A device that is not there, an axis QEMU does not know, a `usb-tablet` that did not
     attach - all of those answer an error, and all of them were invisible.
     """
-    move(q, x, y)
-    # THE GAP BETWEEN PRESS AND RELEASE IS STILL HERE, and it has to be: at 0.15s the
-    # guest sees a button that was down and came up, which is a click. Sent back to back,
-    # a widget that polls reads the same state twice and opens nothing.
-    time.sleep(0.3)
-    _send(q, f"press at ({x}, {y})", [
-        {"type": "btn", "data": {"down": True, "button": "left"}}])
+    # THE POSITION AND THE PRESS GO IN THE SAME EVENT LIST.
+    #
+    # Three separate requests - move, then press, then release - leave the guest free to
+    # handle the button before it has applied the coordinates, and Orbital did: run
+    # 41882033727 clicked (115, 1051) six times across three attempts and the dock only
+    # flickered (dark fraction 0.40 -> 0.41 -> 0.40). The frames show the dock redrawing
+    # around the cursor and no launch, which is what a click delivered at the OLD pointer
+    # position looks like - the pointer had not moved yet when the button arrived.
+    #
+    # QMP does not reorder events inside one input-send-event, so putting the axes and the
+    # press together makes "at (x, y), pressed" a single fact. The release follows in its
+    # own request after the same 0.15s, because a widget that polls needs to see the button
+    # down for at least one poll - sent back to back, the guest reads up/up and opens
+    # nothing.
+    _send(q, f"move and press at ({x}, {y})", [
+        {"type": "abs", "data": {"axis": "x", "value": to_abs(x, SCREEN_W)}},
+        {"type": "abs", "data": {"axis": "y", "value": to_abs(y, SCREEN_H)}},
+        {"type": "btn", "data": {"down": True, "button": "left"}},
+    ])
     time.sleep(0.15)
     _send(q, f"release at ({x}, {y})", [
         {"type": "btn", "data": {"down": False, "button": "left"}}])
