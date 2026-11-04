@@ -77,10 +77,17 @@ USED = "df -m / | awk 'NR==2 {print $3}'"
 # needed on a command whose only output is the progress line.
 ZERO = (
     "sync; "
+    # BOUNDED BY WHAT THE DISK HAS USED, NOT BY WHAT IS FREE - see the longer note in
+    # lib/linclean.py. A 128 GB disk with 6 GB in it does not need 119 GB of zeros written;
+    # it needs the blocks that were written and released, which is on the order of the used
+    # size.
+    "u=$(df -m / | awk 'NR==2 {print $3}'); "
     "f=$(df -m / | awk 'NR==2 {print $4}'); "
-    "echo \"FREE_MB=$f\"; "
-    "if [ \"${f:-0}\" -gt 500 ]; then "
-    "  t=$((f-200)); echo \"ZERO_MB=$t\"; "
+    "echo \"USED_MB=$u FREE_MB=$f\"; "
+    "t=$((u < f ? u : f)); "
+    "t=$((t > 200 ? t - 200 : 0)); "
+    "if [ \"$t\" -gt 500 ]; then "
+    "  echo \"ZERO_MB=$t\"; "
     "  sudo dd if=/dev/zero of=/zero.fill bs=1m count=$t >/dev/null 2>&1 "
     "    || echo ZERO_PARTIAL; "
     "  sync; sudo rm -f /zero.fill; echo ZERO_DONE; "

@@ -157,14 +157,23 @@ Write-Output ("  cleared " + $cleared + " logs")
  $writtenTotal = 0
  $zeroStart = Get-Date
  $free = (Get-PSDrive C -ErrorAction SilentlyContinue).Free
+ $used = (Get-PSDrive C -ErrorAction SilentlyContinue).Used
  Write-Output ("  free before: " + [math]::Round($free/1GB,2) + " GB")
- if ($free -gt 500MB) {
+ # BOUNDED BY WHAT THE DISK HAS USED, NOT BY WHAT IS FREE - see lib/linclean.py.
+ #
+ # A qcow2 holds only the clusters that were written, so a 128 GB disk with 16 GB in it is a
+ # 16 GB file. What zeroing is for is the blocks that WERE written and then released, and that
+ # cannot exceed what the disk ever held. The old bound was the free space, which grew with the
+ # virtual size: raising --disk-size to 128G would have made this write 110 GB.
+ $cap = [Math]::Min($free, $used)
+ Write-Output ("  will zero up to: " + [math]::Round($cap/1GB,2) + " GB (used " + [math]::Round($used/1GB,2) + ")")
+ if ($cap -gt 500MB) {
      $tmp = Join-Path $env:SystemDrive "zero.fill"
      try {
          $fs = [System.IO.File]::Create($tmp)
          $buf = New-Object byte[] (4MB)
          $written = 0
-         $limit = $free - 200MB
+         $limit = $cap - 200MB
          while ($written -lt $limit) {
              $fs.Write($buf, 0, $buf.Length)
              $written += $buf.Length

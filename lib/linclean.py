@@ -122,12 +122,34 @@ USED = "df -m / | awk 'NR==2 {print $3}'"
 # 200 MB margin so the last block does not fail and leave the file behind while looking like
 # success. A partial dd is still useful - the blocks it reached are zero - so it is reported
 # rather than treated as failure.
+# THE ZEROING DOES NOT HAVE TO COVER THE WHOLE FREE SPACE, AND ON A 128 GB DISK IT MUST NOT.
+#
+# Measured: a qcow2 holds only the clusters that were written. A 128 GB virtual disk with 100 MB
+# in it is a 100 MB file, and convert keeps it that way. What zeroing is for is the OTHER case -
+# blocks that WERE written and whose file was then deleted, because deleting marks them free and
+# leaves their bytes, so convert still stores them.
+#
+# So the quantity that matters is not "free space" but "space that has been touched and
+# released", and on a fresh install that is a fraction of the used size rather than 119 GB.
+#
+# THE BOUND: write what the filesystem SAYS IT HAS USED, once. That is a cheap over-estimate -
+# the touched-and-released blocks cannot exceed the total ever written, and a system that has
+# just been installed has written roughly what it holds. It is also the number that does not
+# grow when the virtual disk does, which is the property the old version lacked: raising
+# --disk-size from 24G to 128G made the clean write 119 GB instead of 20 GB, and both of the
+# Linux bakes then timed out at fifteen minutes.
+#
+# `fstrim` above is the cheap path and drops most of it without any writes; this is what
+# catches the rest, and both are bounded now.
 ZERO = (
     "sync; "
+    "u=$(df -m / | awk 'NR==2 {print $3}'); "
     "f=$(df -m / | awk 'NR==2 {print $4}'); "
-    "echo \"FREE_MB=$f\"; "
-    "if [ \"${f:-0}\" -gt 500 ]; then "
-    "  t=$((f-200)); echo \"ZERO_MB=$t\"; "
+    "echo \"USED_MB=$u FREE_MB=$f\"; "
+    "t=$((u < f ? u : f)); "
+    "t=$((t > 200 ? t - 200 : 0)); "
+    "if [ \"$t\" -gt 500 ]; then "
+    "  echo \"ZERO_MB=$t\"; "
     "  sudo dd if=/dev/zero of=/zero.fill bs=1M count=$t status=none "
     "    || echo ZERO_PARTIAL; "
     "  sync; sudo rm -f /zero.fill; echo ZERO_DONE; "
@@ -210,9 +232,19 @@ def clean(*, port: int, note=print, ssh_seconds: int = 900) -> bool:
     # reach (ext4 refuses to trim blocks it has not journaled). It is not a replacement for
     # the zeros: a filesystem that does not support discard, or a qemu built without it,
     # silently does nothing and the zeroing is still what makes the image small.
-    note("  discarding the free blocks (fstrim)")
-    status, out = ssh(port, "sudo fstrim -v / 2>&1 || echo FSTRIM_UNAVAILABLE",
-                      timeout=ssh_seconds)
+    # `fstrim` IS BOUNDED, AND IT HAS TO BE. On a 128 GB virtual disk with 119 GB free, trim
+    # walks the whole free extent and asks the qcow2 driver to discard each block. Run
+    # 41817662336 sat in it from 11:13:50 until the zeroing timed out fifteen minutes later -
+    # the trim never returned, so nothing after it ran.
+    #
+    # 120 seconds is generous for the blocks a fresh install actually has, and the zeroing
+    # below is what makes the image small either way: fstrim is the cheap path, not the only
+    # one. `timeout` is coreutils on these images, which is why it can be used here and could
+    # not in the FreeBSD installer's chroot.
+    note("  discarding the free blocks (fstrim, up to 120s)")
+    status, out = ssh(port,
+                      "sudo timeout 120 fstrim -v / 2>&1 || echo FSTRIM_UNAVAILABLE",
+                      timeout=180)
     for line in (out or "").splitlines():
         text = line.strip()
         if text and not text.startswith("Warning: Permanently added"):
