@@ -120,9 +120,26 @@ on:
         description: "launch: open PowerShell and run a probe command"
         type: boolean
         default: true
+      # 0 MEANS "WAIT THE WHOLE boot_timeout", WHICH IS THE ONLY SENSIBLE DEFAULT FOR A
+      # LAUNCH. The value was -1, copied from a description that said "-1 = immediately" -
+      # and in lib/launch_windows.py `-1` means the OPPOSITE: probe the firmware shell
+      # as soon as qemu is up, do not wait for a desktop at all.
+      #
+      #     --probe-after -1   do not wait: probe the firmware shell at once
+      #     --probe-after 60   give it a minute
+      #     0                  the whole --boot-timeout
+      #
+      # With probe_shell defaulting to true and probe_after to -1, every launch ran with a
+      # zero-second budget. Run 41855500060's launch_ssh reported
+      #
+      #     === NO DESKTOP ===
+      #     1 frames captured over 70s
+      #
+      # against a disk that had listed Boot0001 and started it - the picture was one frame
+      # of the firmware, taken before Windows had a chance to draw anything.
       probe_after:
-        description: "launch: seconds after the desktop to run the probe (-1 = immediately)"
-        default: "-1"
+        description: "launch: seconds to wait for a desktop before probing the firmware shell (0 = the whole boot_timeout)"
+        default: "0"
       check_ssh:
         description: "launch: also verify sshd answers on the forwarded port"
         type: boolean
@@ -468,7 +485,7 @@ jobs:
             export GITHUB_TOKEN="${{ github.token }}"
             PROBE=""
             if [ "${{ inputs.probe_shell }}" = "true" ]; then
-              PROBE="--probe-shell --probe-after ${{ inputs.probe_after || '-1' }}"
+              PROBE="--probe-shell --probe-after ${{ inputs.probe_after || '0' }}"
             fi
             CHECK=""
             if [ "${{ inputs.check_ssh }}" = "true" ]; then CHECK="--check-ssh"; fi
@@ -540,7 +557,7 @@ jobs:
             export GITHUB_TOKEN="${{ github.token }}"
             PROBE=""
             if [ "${{ inputs.probe_shell }}" = "true" ]; then
-              PROBE="--probe-shell --probe-after ${{ inputs.probe_after || '-1' }}"
+              PROBE="--probe-shell --probe-after ${{ inputs.probe_after || '0' }}"
             fi
             CHECK=""
             if [ "${{ inputs.check_ssh }}" = "true" ]; then CHECK="--check-ssh"; fi
