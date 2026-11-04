@@ -278,7 +278,18 @@ def wait_for_desktop(guest: vm.Guest, frames: str, timeout: int) -> bool:
     stopping the guest in the middle of that is what produces a disk that needs to repair
     itself on every later boot.
     """
-    shots = os.path.join(frames, "shots")
+    # THE RECORDING'S OWN FRAMES, NOT drive.py's SCREENSHOTS.
+    #
+    # lib/snapshots.py writes frame-NNNN.jpg into `frames` - that is the directory that gets
+    # one per second for the whole run, and the one the video is built from. `frames/shots`
+    # is where drive.py puts the handful of pictures it takes around its own clicks, and it
+    # holds a few dozen files from the wizard, none of them the desktop.
+    #
+    # `reached_desktop` looks at the newest five. Pointed at frames/shots it was looking at
+    # wizard panes forever, which is exactly what run 41893311699 did for its whole
+    # 1800-second budget while the desktop was on screen: the frame uploaded as that run's
+    # last-frame.png passes the identical test in one call.
+    shots = frames
     deadline = time.time() + timeout
     started = time.time()
     while time.time() < deadline:
