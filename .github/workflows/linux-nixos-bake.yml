@@ -108,6 +108,39 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+
+      # CLEANING IS ITS OWN STEP, EXACTLY AS IT IS FOR WINDOWS.
+      #
+      # It boots the disk the install produced, cleans it over ssh and stops it. The install
+      # stage above no longer cleans at all: this is the only place it happens, so the run
+      # graph shows "clean the disk: failed" rather than a line buried in an install log.
+      #
+      # The disk is modified in place, because this is the last thing before the push - a copy
+      # would have to be moved back, and a copy-back that failed would publish the dirty one.
+      #
+      # discard=unmap on the drive is what lets `fstrim` inside the guest reach the qcow2.
+      # Without it the guest's trim goes nowhere, and the 20 GB of zeros this writes end up
+      # STORED by the image before convert reads them - run 41792511802 showed that cost:
+      #
+      #     disk pulled              4962 MiB
+      #     after writing zeros     24362 MiB
+      #     compressed result        3110 MiB
+      - name: clean the disk
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: nixos-clean
+          interval: "20"
+          command: |
+            set -euo pipefail
+            python3 lib/clean_step.py \
+              --disk out/nixos-base.qcow2 \
+              --kind linux \
+              --work out \
+              --artifacts out \
+              --boot-timeout "${{ inputs.install_timeout || '3600' }}" \
+              --mem 4096
+
       - name: push the base
         if: ${{ success() && (inputs.publish == true || inputs.publish == null) }}
         uses: easydev-org/easyagent-github-ext/actions/log-stream@main
@@ -197,6 +230,31 @@ jobs:
               --desktop "${{ matrix.desktop }}" \
               --out "out/nixos-${{ matrix.desktop }}.qcow2" \
               --timeout "${{ inputs.derive_timeout || '3600' }}"
+
+      # EVERY DERIVED DESKTOP IS CLEANED, NOT ONLY THE BASE.
+      #
+      # The base is a bare NixOS with no desktop; each derived disk adds a session, its
+      # compositor, and whatever the first login writes. Those disks are the ones that get
+      # published and booted, so they are the ones whose size matters - and cleaning only the
+      # base would leave six published artifacts carrying a desktop's first-boot caches.
+      #
+      # This runs per matrix entry, on the disk that entry just built, in place: it is the
+      # last thing before the push.
+      - name: clean the disk
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: clean-${{ matrix.desktop }}
+          interval: "20"
+          command: |
+            set -euo pipefail
+            python3 lib/clean_step.py \
+              --disk "out/nixos-${{ matrix.desktop }}.qcow2" \
+              --kind linux \
+              --work out \
+              --artifacts out \
+              --boot-timeout "${{ inputs.derive_timeout || '3600' }}" \
+              --mem 4096
 
       - name: keep the console
         if: always()

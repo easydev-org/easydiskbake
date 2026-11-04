@@ -159,18 +159,7 @@ def boot_installed(work: str, args, disk: str) -> bool:
         if not arrived:
             return False
 
-        # CLEAN WHILE THE GUEST IS UP AND CONNECTED, WHICH IS WHY THIS IS A STEP HERE.
-        #
-        # The disk has just been shown to boot and to answer ssh, so the cleaning operates on
-        # a running system - and it is the FIRST BOOT that created most of what should not
-        # ship: journal entries, the accounts' own caches, apt's lists after the first update.
-        # A clean run inside the installer cannot see any of that.
-        #
-        # A separate job would boot the disk a second time after an artifact round trip of the
-        # whole disk. This is the same machine, and the caller stops it in the `finally` below.
-        import clean_disk
-
-        return clean_disk.clean_running("linux", port=args.ssh_port, note=log)
+        return True
     finally:
         guest.stop()
 
