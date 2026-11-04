@@ -317,10 +317,14 @@ def answer_prompts(ser, seconds: int) -> None:
                 answer = value
                 break
 
-        if repeatable:
+        # THE SET SELECTOR LEAVES ON AN EMPTY LINE, NOT ON `*` REPEATED.
+        #
+        # `*` selects every set; the selector re-prints and waits, and only an empty
+        # answer leaves it. The count is per-session rather than per-prompt because the
+        # prompt text is identical on both passes.
+        if "set name" in prompt.lower():
             seen_sets += 1
             if seen_sets > 1:
-                # THE SELECTOR LEAVES ON AN EMPTY LINE, NOT ON `*` REPEATED.
                 answer = ""
 
         answered[prompt] = answered.get(prompt, 0) + 1
