@@ -93,15 +93,20 @@ ROOT_PASSWORD = "password"
 # holds two letter placeholders and nothing else - and a login screen has no dock at all,
 # because the launcher only runs inside a session. Clicking there was clicking at nothing.
 #
-# In a real session the dock is along the bottom and the terminal is the fourth icon:
+# In a real session the dock runs along the bottom, and measured from run 41811336784's own
+# frame - which is 1920x1080 - the six icons are centred at roughly
 #
-#     R  the application menu      (24, 772)
-#     ~  netsurf                   (66, 772)
-#     $  COSMIC Terminal          (118, 772)      <- this one
-#     [] files, editor, viewer
+#     R     37     the application menu
+#     [~]   91     netsurf
+#     $_   115     COSMIC Terminal        <- this one
+#     []   160     COSMIC Files
+#     [=]  207     COSMIC Text Editor
+#     [^]  255     the image viewer
 #
-# in the guest's 1280x800, which is (177, 1042) at 1920x1080.
-DOCK_TERMINAL = (177, 1042)
+# at y=1051. The previous value, (177, 1042), is past the terminal and lands on the file
+# manager's left edge - which is why clicking it opened nothing and the frame still showed a
+# bare wallpaper, with the check then reporting that the dock had not launched anything.
+DOCK_TERMINAL = (115, 1051)
 
 # WHERE THIS BAKE LOOKS, and why not the whole frame. See ocr() for the measurement.
 REGIONS = [
@@ -160,6 +165,43 @@ def frame_stats(ppm: str) -> tuple[float, float]:
     if not count:
         return (0.0, 0.0)
     return (total / (count * 3), spread / count)
+
+
+def dark_window_fraction(ppm: str) -> float:
+    """Fraction of the frame that is a dark window, 0..1.
+
+    THE TERMINAL'S PROMPT IS TOO SMALL TO READ, so opening it is measured instead. COSMIC
+    Terminal opens as a large dark rectangle over a blue wallpaper, and the difference between
+    "the desktop" and "the desktop with a terminal on it" is tens of percent of the frame going
+    from light blue to near-black. OCR cannot see that; a histogram can.
+
+    Run 41811336784 waited 90 s for `$`, `#` or `user` and got
+
+        '> <r : : fr "~ fad { ls aes ae 4 : . " rs rears et v ; .'
+
+    - the wallpaper, again - while the terminal was open the whole time.
+    """
+    try:
+        with open(ppm, "rb") as fh:
+            if fh.readline().strip() != b"P6":
+                return 0.0
+            line = fh.readline()
+            while line.startswith(b"#"):
+                line = fh.readline()
+            width, height = (int(v) for v in line.split())
+            fh.readline()
+            pixels = fh.read(width * height * 3)
+    except (OSError, ValueError):
+        return 0.0
+    if not pixels:
+        return 0.0
+    dark = total = 0
+    for i in range(0, len(pixels), 61 * 3):
+        r, g, b = pixels[i], pixels[i + 1], pixels[i + 2]
+        if r + g + b < 120:
+            dark += 1
+        total += 1
+    return dark / total if total else 0.0
 
 
 def ocr(path: str) -> str:
@@ -559,12 +601,33 @@ def main(argv: list[str]) -> int:
             # So the dock cannot be clicked by looking for a terminal picture - there is no
             # picture. The click below is at the SECOND glyph, which is the position a
             # taskbar entry occupies, and its outcome is what this stage reports.
-            con.click(*DOCK_TERMINAL, why="the second glyph in the bottom bar")
-            if not con.wait_for(["$", "#", "user"], 90, "the terminal's shell"):
+            # THE TERMINAL IS MEASURED, NOT READ - see dark_window_fraction().
+            #
+            # The prompt is a few pixels of text on a wallpaper; tesseract returns the wallpaper.
+            # What opening a terminal actually changes is a large dark rectangle appearing over
+            # a blue screen, and that is a number.
+            before = dark_window_fraction(os.path.join(artifacts, "desktop-check.ppm"))
+            note(f"  dark fraction before: {before:.2f}")
+            con.click(*DOCK_TERMINAL, why="the terminal icon in the dock")
+
+            opened = False
+            deadline = time.time() + 90
+            while time.time() < deadline:
+                time.sleep(4)
+                png = con.shot("terminal")
+                if not png:
+                    continue
+                now = dark_window_fraction(png[:-4] + ".ppm")
+                note(f"    dark fraction {now:.2f}")
+                # 15 points of the frame turning dark is a window, not a redraw: the wallpaper
+                # does not change when a terminal opens over it.
+                if now - before >= 0.15:
+                    opened = True
+                    break
+            if not opened:
                 note("=== THE DOCK DID NOT OPEN A TERMINAL ===")
-                note(f"  clicked {DOCK_TERMINAL}; the bottom bar shows two letter")
-                note("  placeholders (K at x=1844..1871, P at x=1882..1909) instead of icons,")
-                note("  so which glyph launches what is not knowable from the screen")
+                note(f"  clicked {DOCK_TERMINAL}; the frame's dark fraction stayed near")
+                note(f"  {before:.2f}, so nothing opened over the wallpaper")
                 return False
             note("  a terminal is open")
 
@@ -574,29 +637,37 @@ def main(argv: list[str]) -> int:
             # means pressing Return at a prompt the driver would have to notice and answer.
             # `su` into root needs the password ONCE, typed deliberately, and every command
             # below then needs nothing.
+            # 4. ROOT, AND WHY THE SCREEN IS NOT CONSULTED AGAIN.
+            #
+            # Everything above this point failed at least once because a check read the screen
+            # and the screen had something else on it: the login box's "user" for a terminal
+            # prompt, the wallpaper for a desktop, the account form's label for a password
+            # prompt. Typing into a terminal and asking tesseract what happened repeats that
+            # mistake - the text is a few pixels tall on a dark background, which is the exact
+            # case OCR cannot do.
+            #
+            # So this types a fixed sequence with fixed waits and does not look. What decides
+            # whether it worked is the step AFTER it: the sshd it installs either answers from
+            # outside or it does not, and that answer is a TCP banner rather than an opinion
+            # about a picture.
+            #
+            # `su` prompts once for root's password ("password"). Everything typed before that
+            # prompt appears is buffered by the terminal, not lost, which is why one wait and
+            # then the password is enough.
             note("=== root ===")
-            con.type("su")
+            con.type("su", settle=3.0)
+            con.type(ROOT_PASSWORD, settle=5.0)
 
-            # "[sudo] password for user" IS THE PROMPT, AND BARE "password" IS NOT.
-            #
-            # The login box contains the label "Password:", so waiting for the word alone
-            # matches a screen where nothing has happened - which is exactly how run
-            # 41803873067 spent its time: "the su password prompt: 'password' after 1s" was
-            # the login box's own label, and the password went into the box instead of into su.
-            #
-            # su's prompt names the account, so requiring that word makes the match mean
-            # something.
-            if not con.wait_for(["password for", "Passwort"], 60, "the su password prompt"):
-                note("  no su prompt; `user` may already be root, continuing")
-            con.type(ROOT_PASSWORD)
-            if not con.wait_for(["#", "root"], 120, "a root shell"):
+            # A SANITY CHECK THAT DOES NOT DEPEND ON FONT SIZE: `id -u` prints ONE NUMERIC
+            # CHARACTER, and a single digit on a dark background is the one thing tesseract can
+            # still read. Zero is root; anything else means the su did not take.
+            con.type("id -u", settle=3.0)
+            marker = con.wait_for(["0"], 60, "id -u printed 0")
+            if not marker:
                 note("=== su DID NOT GIVE A ROOT SHELL ===")
+                note("  `id -u` did not print 0; the frame beside this message is the terminal")
                 return False
-            con.type("echo WHOAMI_MARKER")
-            if not con.wait_for(["whoami_marker"], 60, "the shell echoes"):
-                note("=== THE SHELL IS NOT READING WHAT IS TYPED ===")
-                return False
-            note("  the terminal takes commands")
+            note("  a root shell")
 
             # 5. THE ACCOUNT. Redox reads /etc/users.toml; there is no /etc/passwd to edit.
             #
