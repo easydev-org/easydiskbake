@@ -1225,8 +1225,22 @@ def main(argv: list[str]) -> int:
             # and a missing binary are the same answer here - which is correct, because both
             # mean the account cannot log in.
             note("=== ssh from the guest to itself ===")
+            # THE ADDRESS HAS TO BE QUOTED, OR ion READS IT AS A VARIABLE.
+            #
+            # Run 41924785986 reached this with sshd running (SSHD_RC=0) and the frame shows
+            # what happened instead:
+            #
+            #     root:~# ssh ... docker@10.0.2.15 echo ok ; echo SSHTEST=$?
+            #     ion: expansion error: Variable "10" does not exist
+            #
+            # ion expands `@10` - the `@` starts a variable name in this shell - so the
+            # command never ran and the probe could not have succeeded. The redirection
+            # operators wrote a literal file for the same reason in an earlier run.
+            #
+            # Single quotes around the destination, which is how a shell keeps its hands off
+            # an argument.
             con.type(f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
-                     f"{args.user}@10.0.2.15 echo ok ; echo SSHTEST=$?")
+                     f"'{args.user}@10.0.2.15' echo ok ; echo SSHTEST=$?")
             if not con.wait_for(["sshtest=0"], 300, "ssh login"):
                 note("=== sshd IS UP BUT THE ACCOUNT CANNOT LOG IN ===")
                 note("  a password prompt that never accepts an empty line is the usual cause,")
