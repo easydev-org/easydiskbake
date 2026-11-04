@@ -124,6 +124,10 @@ def main(argv: list[str]) -> int:
     p.add_argument("--base", required=True, help="the installed base qcow2")
     p.add_argument("--desktop", required=True, choices=DESKTOPS)
     p.add_argument("--out", default=None)
+    p.add_argument("--copy", action="store_true",
+                   help="copy the input disk instead of moving it; the default is to "
+                        "move, because the disk normally came from ghcr and the "
+                        "registry protects it")
     p.add_argument("--work", default=None)
     p.add_argument("--mem", type=int, default=6144)
     p.add_argument("--cpus", type=int, default=4)
@@ -138,13 +142,11 @@ def main(argv: list[str]) -> int:
     if not os.path.isfile(args.base):
         raise SystemExit(f"no base disk at {args.base}")
 
-    disk = os.path.join(work, "work.qcow2")
-    log(f"copying {args.base} -> {disk}")
-    copied = subprocess.run(["cp", "--reflink=auto", args.base, disk],
-                            capture_output=True, text=True)
-    if copied.returncode != 0:
-        raise SystemExit(
-            f"could not copy the base: {(copied.stderr or copied.stdout).strip()[:300]}")
+    # MOVED, NOT COPIED - the base disk came from ghcr, so the registry still holds it.
+    import working_copy as wc
+
+    disk = wc.working_copy(args.base, os.path.join(work, "work.qcow2"),
+                           copy=args.copy, note=log)
     # A desktop closure is larger than the base, and 20G was sized for the base alone.
     #
     # THE ABSOLUTE BINARY, NOT THE BARE NAME, AND THE ERROR IS PRINTED.

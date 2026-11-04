@@ -73,6 +73,10 @@ def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--disk", required=True, help="the desktop-stage disk")
     p.add_argument("--out", default=None)
+    p.add_argument("--copy", action="store_true",
+                   help="copy the input disk instead of moving it; the default is to "
+                        "move, because the disk normally came from ghcr and the "
+                        "registry protects it")
     p.add_argument("--work", default=None)
     p.add_argument("--mem", type=int, default=8192)
     p.add_argument("--cpus", type=int, default=4)
@@ -89,13 +93,11 @@ def main(argv: list[str]) -> int:
     if not os.path.isfile(args.disk):
         raise SystemExit(f"no disk at {args.disk}")
 
-    disk = os.path.join(work, "ssh.qcow2")
-    log(f"copying {args.disk} -> {disk}")
-    copied = subprocess.run(["cp", "--reflink=auto", args.disk, disk],
-                            capture_output=True, text=True)
-    if copied.returncode != 0:
-        raise SystemExit(
-            f"could not copy the disk: {(copied.stderr or copied.stdout).strip()[:300]}")
+    # MOVED, NOT COPIED - the desktop disk came from ghcr, so the registry still holds it.
+    import working_copy as wc
+
+    disk = wc.working_copy(args.disk, os.path.join(work, "ssh.qcow2"),
+                           copy=args.copy, note=log)
 
     log("=== OpenCore, firmware, APFS driver ===")
     import opencore

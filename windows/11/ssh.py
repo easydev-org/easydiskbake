@@ -370,6 +370,10 @@ def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--gold", required=True, help="the disk the bake produced")
     p.add_argument("--out", default="out/windows11-ssh.qcow2")
+    p.add_argument("--copy", action="store_true",
+                   help="copy the input disk instead of moving it; the default is to "
+                        "move, because the disk normally came from ghcr and the "
+                        "registry protects it")
     p.add_argument("--work", default=None)
     p.add_argument("--mem", type=int, default=6144)
     p.add_argument("--cpus", type=int, default=4)
@@ -408,13 +412,11 @@ def main(argv: list[str]) -> int:
     # and falls back to a byte copy where it cannot. On a CI overlay filesystem that is the
     # latter, which is why the free-space check in the workflow asks for the disk twice.
     disk = os.path.join(work, "disk.qcow2")
-    log(f"copying {args.gold} -> {disk}")
-    copied = subprocess.run(["cp", "--reflink=auto", args.gold, disk],
-                            capture_output=True, text=True)
-    if copied.returncode != 0:
-        raise SystemExit(
-            f"could not copy the disk: {(copied.stderr or copied.stdout).strip()[:300]}"
-        )
+    # MOVED, NOT COPIED. The disk this stage starts from came from ghcr, so the
+    # registry still holds it - a copy protects nothing and costs minutes on ext4.
+    # --copy is here for the case where it IS the only copy.
+    import working_copy as wc
+    disk = wc.working_copy(args.gold, os.path.join(work, "disk.qcow2"), copy=args.copy, note=log)
 
     firmware_code = os.environ.get("OVMF_CODE", "/usr/share/OVMF/OVMF_CODE_4M.fd")
     firmware_vars = os.path.join(work, "OVMF_VARS.fd")
