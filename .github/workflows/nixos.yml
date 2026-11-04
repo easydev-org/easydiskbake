@@ -234,7 +234,11 @@ jobs:
           command: |
             set -euo pipefail
             python3 lib/ci.py kvm
-            python3 lib/ci.py free-disk --need 40
+            # 40 WAS HIGH BY MORE THAN TWICE, and this is the stage that holds the most at
+            # once: the base pulled from ghcr (913 MiB measured), the working copy it is
+            # derived into (10.05 GiB), and the compressed result (4303 MiB). That is about
+            # 15 GB, so 40 refused runners that could do the work.
+            python3 lib/ci.py free-disk --need 20
             if ! command -v sshpass >/dev/null 2>&1; then
               apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
                 apt-get install -y -qq sshpass
@@ -350,7 +354,19 @@ jobs:
           command: |
             set -euo pipefail
             python3 lib/ci.py kvm
-            python3 lib/ci.py free-disk --need 40
+            # 40 WAS TEN TIMES THE DISK THIS JOB USES, AND IT COST A DESKTOP.
+            #
+            # Run 41861431992 had twelve of its thirteen jobs pass, and launch (cosmic) failed
+            # before pulling anything:
+            #
+            #     after freeing: 11 GB
+            #     FAILED: at least 40 GB is required, 11 GB is free even after freeing
+            #
+            # The disk a launch job pulls is nixos-gnome at 3769 MiB - measured from that same
+            # run's own log - and the guest runs from it in place, no copy. Ten gigabytes is
+            # over twice the image, leaves room for the recording and the screenshots, and
+            # fits a runner that has eleven.
+            python3 lib/ci.py free-disk --need 10
             if ! command -v sshpass >/dev/null 2>&1; then
               apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
                 apt-get install -y -qq sshpass
