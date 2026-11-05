@@ -76,11 +76,28 @@ FROM qemux/qemu:7.50
 #                     client that was supposed to talk to it was not there. One source
 #                     for the fact is the fix, and the image is it.
 #                     `--no-install-recommends` as everywhere else in this RUN.
+#   openssh-client    sshpass IS ONLY A WRAPPER - it runs `ssh`, and with no ssh on PATH
+#                     every connection fails as
+#
+#                         SSHPASS: Failed to run command: No such file or directory
+#
+#                     which reads like a missing sshpass rather than a missing ssh. Runs
+#                     41992862680 and 41992878416 both died on it after their installers
+#                     had finished (735s and 825s of work), at the step that boots the
+#                     disk to prove it works.
+#
+#                     IT WAS INVISIBLE UNTIL sshpass MOVED HERE. The thirteen workflow
+#                     steps this replaced ran `apt-get install -y -qq sshpass` WITHOUT
+#                     --no-install-recommends, so apt pulled openssh-client in as a
+#                     Recommend and every stage had an ssh it never named. Putting the
+#                     package in the image kept the package and dropped the side effect.
+#
 # (Comments cannot sit inside a line-continued RUN, so they sit above it.)
 RUN set -eux; \
     apt-get update; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ffmpeg \
+        openssh-client \
         sshpass \
         # python3-pil is what lets lib/assistant.py crop a region of a screendump before
         # handing it to tesseract. The capacity in Disk Utility's detail pane is about ten
@@ -115,6 +132,10 @@ RUN set -eux; \
 
 # A build-time self-check. A base image that loses one of these is caught here rather
 # than twenty minutes into a bake, and every entry is a tool the drivers call directly.
+#
+# `ssh` IS CHECKED SEPARATELY FROM `sshpass` and prints its version. Checking the wrapper
+# and not the program it runs is how an image passed this self-check while every ssh in
+# it failed with "SSHPASS: Failed to run command: No such file or directory".
 RUN set -eux; \
     qemu-system-x86_64 --version | head -1; \
     qemu-img --version | head -1; \
@@ -135,7 +156,8 @@ RUN set -eux; \
     7z 2>/dev/null | head -2 | tail -1; \
     mformat --version 2>&1 | head -1; \
     ls -l /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_VARS_4M.fd; \
-    command -v debugfs genisoimage mkfifo timeout setsid jq curl sshpass
+    command -v debugfs genisoimage mkfifo timeout setsid jq curl sshpass; \
+    ssh -V
 
 # ---------------------------------------------------------------------------
 # The Android emulator and adb.
