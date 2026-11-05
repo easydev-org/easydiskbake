@@ -15,7 +15,7 @@ that does not match the pin - which nothing else would notice.
 
 WHY WINDOWS IS DIFFERENT FROM THE LINUX DISTRIBUTIONS
 
-Linux ISOs are redistributable, so iso-publish.yml can cache them indefinitely and
+Linux ISOs are redistributable, so artifacts-publish.yml can cache them indefinitely and
 lib/iso.py refuses to fall back to a mirror on principle. A Windows ISO cannot be
 redistributed at all: putting it in this repository's package is a private cache, not
 a publication, and Microsoft rotates the URL and the file with every release.
@@ -95,7 +95,7 @@ VIRTIO = {
 }
 
 # Linux installer images. Redistributable, so these are a real cache rather than a
-# private one: iso-publish.yml fetches each once and every bake pulls it back.
+# private one: artifacts-publish.yml fetches each once and every bake pulls it back.
 #
 # These have no sha256 because the distributions rotate their mirrors and their
 # filenames carry the version, which is the pin. The ISO9660 check in

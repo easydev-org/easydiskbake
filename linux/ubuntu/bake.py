@@ -202,7 +202,7 @@ def main(argv: list[str]) -> int:
         except iso.IsoError as exc:
             raise SystemExit(
                 f"{UBUNTU_TAG} is not published: {exc}\n\n"
-                f"Run iso-publish.yml for ubuntu first.") from exc
+                f"Run artifacts-publish.yml for ubuntu first.") from exc
     log(f"iso {os.path.getsize(iso_path) >> 20} MiB")
 
     tree = os.path.join(work, "iso")

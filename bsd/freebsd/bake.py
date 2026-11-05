@@ -310,7 +310,7 @@ def main(argv: list[str]) -> int:
         except isolib.IsoError as exc:
             raise SystemExit(
                 f"{FREESD_TAG} is not published: {exc}\n\n"
-                f"Run iso-publish.yml for freebsd first.") from exc
+                f"Run artifacts-publish.yml for freebsd first.") from exc
     log(f"iso {os.path.getsize(iso_path) >> 20} MiB")
 
     media = build_media(iso_path, work)

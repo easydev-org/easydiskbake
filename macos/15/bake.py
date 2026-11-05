@@ -5,7 +5,7 @@
 THE PIPELINE, AND WHICH PART IS HARD
 
     recovery image     from this repository's package (:macos-recovery-sequoia), which
-                       macos-recovery-publish.yml fills. Apple issues one per request
+                       artifacts-publish.yml fills. Apple issues one per request
                        and lib/macos_recovery.py drives that exchange; the bake does
                        not talk to Apple.
     OpenCore           lib/opencore.py: the four pinned assets from ghcr, the identity,
@@ -136,7 +136,7 @@ class Baker:
 
         NO FALLBACK TO APPLE. A bake that silently fetched its own recovery image would
         be a second path with its own failure modes, and the useful message when the
-        image is missing is "run macos-recovery-publish.yml" - not a 850 MiB download
+        image is missing is "run artifacts-publish.yml" - not a 850 MiB download
         that hides the real problem until it fails later, somewhere else.
 
         The file name carries the release because a work directory can hold more than
@@ -144,7 +144,7 @@ class Baker:
         """
         # ONE IMPLEMENTATION, SHARED WITH EVERY LATER STAGE. See
         # macos_recovery.fetch_published: the tag, the file name and the "run
-        # macos-recovery-publish.yml" advice all come from there, so bake, desktop, ssh
+        # artifacts-publish.yml" advice all come from there, so bake, desktop, ssh
         # and dev cannot drift into using different images for the same release.
         log("=== recovery image ===")
         return macos_recovery.fetch_published(self.args.release, self.work)

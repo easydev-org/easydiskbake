@@ -2,7 +2,7 @@
 
     from iso import fetch_iso, fetch_url
 
-    fetch_iso("mx", "mx.iso")            # an image iso-publish.yml pushed
+    fetch_iso("mx", "mx.iso")            # an image artifacts-publish.yml pushed
     fetch_url(url, dest, sha256=..., size=...)   # a vendor's own URL
 
 WHY THE REGISTRY AND NOT THE MIRROR
@@ -14,7 +14,7 @@ answers at 124 KB/s, which is forty minutes for three gigabytes. Those are the
 two that were measured; the other fourteen were never watched closely enough to
 know.
 
-iso-publish.yml fetches each image once, checks it three ways (exact byte count,
+artifacts-publish.yml fetches each image once, checks it three ways (exact byte count,
 ISO9660 signature, a stalled-transfer abort) and pushes it as an OCI layer to
 ghcr. This pulls it back.
 
@@ -49,7 +49,7 @@ REGISTRY = os.environ.get("ISO_REGISTRY", "ghcr.io")
 # the actual mistake.
 SCHEME = os.environ.get("ISO_SCHEME", "https")
 # Everything this repository publishes lives in its own package: the bake image
-# (image-build.yml), the ISOs (iso-publish.yml) and the baked disks (bake-*). The default
+# (image-build.yml), the ISOs (artifacts-publish.yml) and the baked disks (bake-*). The default
 # matches the repository, so a fork publishes to its own name without a change.
 OWNER = os.environ.get("ISO_OWNER", "easydev-org")
 REPO = os.environ.get("ISO_REPO", "easydiskbake")
@@ -181,7 +181,7 @@ def _manifest(repo: str, tag: str) -> dict:
         if exc.code in (401, 403, 404):
             raise IsoError(
                 f"no manifest for tag {tag!r} in {REGISTRY}/{repo}\n"
-                f"run iso-publish.yml for that name; "
+                f"run artifacts-publish.yml for that name; "
                 f"this bake will not fall back to a mirror"
             ) from exc
         raise

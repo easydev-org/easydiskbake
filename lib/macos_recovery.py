@@ -141,7 +141,7 @@ def fetch_published(release: str, work: str) -> str:
     silently names the wrong image for every other one.
 
     NO FALLBACK TO APPLE. If the tag is not in the package the error says to run
-    macos-recovery-publish.yml, rather than starting an 850 MiB download that hides the
+    artifacts-publish.yml, rather than starting an 850 MiB download that hides the
     misconfiguration until it fails somewhere else.
     """
     import os
@@ -168,8 +168,8 @@ def fetch_published(release: str, work: str) -> str:
             f"  {tag} is not in this repository's ghcr package: {exc}\n"
             f"  The APFS driver is extracted from this image and has no other source,\n"
             f"  so the disk this stage would produce could not boot.\n"
-            f"  Run macos-recovery-publish.yml for {release} first:\n"
-            f"      gh workflow run macos-recovery-publish.yml -f releases={release}"
+            f"  Run artifacts-publish.yml for {release} first:\n"
+            f"      gh workflow run artifacts-publish.yml -f which=macos-recovery-{name}"
         ) from exc
 
 

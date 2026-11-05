@@ -126,7 +126,7 @@ def main(argv: list[str]) -> int:
         else:
             # ONE SOURCE: this repository's package. No fallback to Google, for the
             # same reason as every other platform - a missing artifact here means
-            # android-15_aosp-publish.yml was not run, and that is worth seeing at second ten.
+            # artifacts-publish.yml was not run, and that is worth seeing at second ten.
             log(f"pulling {tag} from ghcr")
             try:
                 # fetch_tag, NOT fetch_iso: the tag is already exact.
@@ -140,8 +140,8 @@ def main(argv: list[str]) -> int:
             except iso.IsoError as exc:
                 raise SystemExit(
                     f"{tag} is not in this repository's ghcr package: {exc}\n\n"
-                    f"Run android-15_aosp-publish.yml first:\n"
-                    f"    gh workflow run android-15_aosp-publish.yml\n"
+                    f"Run artifacts-publish.yml first:\n"
+                    f"    gh workflow run artifacts-publish.yml -f group=android\n"
                     f"This bake does not fetch from Google: a system image built for\n"
                     f"the emulator is not something to re-derive on every run."
                 ) from exc

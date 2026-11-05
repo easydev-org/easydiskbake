@@ -22,8 +22,8 @@ name: android
 #
 # A compressed tar of an AVD directory - config.ini plus system.img, vendor.img, userdata.img
 # and the kernel/ramdisk. The bake pulls it from ghcr and never talks to Google; that is what
-# android-15_aosp-publish is for, and it stays a separate workflow because it is not a stage of
-# this chain - it is the shared cache every bake starts from.
+# artifacts-publish.yml's `android` group is for, and it is not a stage of this chain - it is
+# the shared cache every bake starts from.
 #
 # MANUAL ONLY.
 
