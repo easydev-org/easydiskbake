@@ -76,7 +76,7 @@ EXPECTED = {
     # NO SSH UNTIL macos/15/ssh.py HAS RUN, and it is the ssh JOB that calls it. setup and
     # desktop both finish with a machine that has never had Remote Login on.
     "macos15.yml":     {"setup": False, "desktop": False, "ssh": True, "dev": True},
-    "macos26.yml":     {"setup": False, "desktop": False},
+    "macos26.yml":     {"setup": False, "desktop": False, "ssh": True},
     # android.yml BAKE MAKES AN AVD, not a disk: a directory of raw images driven by the
     # emulator, which has no sshd and is not something fstrim or trim or ReTrim can reach.
     "android.yml":     {"bake": False},
