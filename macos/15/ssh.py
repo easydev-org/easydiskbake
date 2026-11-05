@@ -427,10 +427,11 @@ def unlock(guest: vm.Guest) -> bool:
     and nothing can be done on it - Spotlight, Terminal and `systemsetup` all need a
     session - so this types the password and presses Return.
 
-    NO COORDINATES. The login window focuses its password field on its own, so the keystrokes
-    go to whatever has focus and Return submits. A click would need a measured rectangle for
-    a pane that moves with the account picture, and a click into the wallpaper would do
-    nothing but dismiss the hint text.
+    ONE COORDINATE, AND IT IS NOT A DECISION. This docstring used to say the login window
+    focuses its password field by itself and that no click was needed. Run 42083224228
+    disproved it - the field was drawn empty and the typed password went nowhere - so the
+    field is now clicked before anything is typed, the same control on every boot of this
+    disk. The rectangle is fixed because the window is: an account picture, a name, a field.
 
     RETURNS FALSE WHEN THE PASSWORD IS NOT ACCEPTED, so the caller can say "still not a
     desktop" rather than waiting out another timeout on a machine showing an error shake.
@@ -455,6 +456,29 @@ def unlock(guest: vm.Guest) -> bool:
         # next keystroke, and this guest has never had input before.
         qmpmod.key(q, "esc")
         time.sleep(1)
+
+        # CLICK THE PASSWORD FIELD BEFORE TYPING INTO IT.
+        #
+        # THE KEYSTROKES GO TO WHATEVER HAS FOCUS, and "the login window focuses its own
+        # password field" - which this function has said since it was written - is not true
+        # on every boot. Run 42083224228's last frame is the proof: the docker account tile
+        # and an EMPTY "Enter Password" field, meaning not one character of the password
+        # arrived, and the stage then waited out 180 seconds for a desktop that never came.
+        # The run before it, 42079736995, typed at the same 120-second mark and reached the
+        # desktop seventeen seconds later.
+        #
+        # THE DIFFERENCE IS FOCUS, NOT TIMING, so a longer wait would not have helped. The
+        # Esc above is what takes it away: it dismisses the wake hint AND can move focus off
+        # the field, leaving the window drawn exactly as it looks when it is ready.
+        #
+        # (965, 981) is the field's centre, measured from that frame: the "Enter Password"
+        # pill spans x=880..1210 at y=960..1000 in the guest's own 1920x1080.
+        #
+        # A CLICK HERE IS THE ONE PLACE THIS STAGE USES ONE, and it is not a decision about
+        # what is on screen - it is the same control every time this window appears.
+        qmpmod.click(q, 965, 981)
+        time.sleep(1)
+
         log(f"  typing the password for {GUEST_USER}")
         keys.type_into(q, GUEST_PASSWORD)
         time.sleep(1)
