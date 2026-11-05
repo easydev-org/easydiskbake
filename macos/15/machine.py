@@ -57,6 +57,33 @@ OSK_PLAIN = "ourhardworkbythesewordsguardedpleasedontsteal(c)AppleComputerInc"
 # and is the only one of the two that a copy-on-write filesystem can do safely.
 TARGET_DRIVE = "file={disk},if=none,format=qcow2,discard=unmap,id=target"
 
+# AND THE SAME DRIVE WITHOUT discard, FOR THE INSTALLER.
+#
+# discard=unmap IS FOR THE CLEANING STAGES AND IS WRONG FOR THE ONE THAT WRITES.
+#
+# This is not a theory: the two macos26 setups that ran to completion differ in exactly this
+# argument, and nothing else about their disks.
+#
+#     41835253323   no discard=unmap, 128G   finished in 46 minutes
+#     42009463444   discard=unmap,    128G   wrote 36774 MiB, dropped to 19761, never moved
+#
+# THE 17 GiB THAT DISAPPEARED IS THE INSTALLER'S OWN DATA. macOS writes about 36 GiB, then
+# takes an APFS snapshot, discards its staging volume and switches the root. With
+# discard=unmap every TRIM it issues is honoured by qemu immediately, so the clusters the
+# snapshot still refers to are deallocated under it - the disk halves and the installer stops
+# with its progress bar frozen at "About 48 minutes remaining", which is what the recording
+# of run 42009463444 shows for its last twenty minutes.
+#
+# A REAL MAC DOES THE SAME TRIM. What a real Mac has that this does not is a device that
+# answers "discard is advisory": real SSD firmware defers the erase and the blocks remain
+# readable until they are reused. qemu's qcow2 `discard=unmap` is not advisory - it frees the
+# cluster - so the guarantee the guest is relying on does not exist here.
+#
+# So the installer gets the plain drive, and the cleaning stages - desktop, ssh, dev - get the
+# one that can hand blocks back. That is where it belongs anyway: discard exists to make a
+# FINISHED disk smaller, and a stage that is still writing has nothing to gain from it.
+TARGET_DRIVE_PLAIN = "file={disk},if=none,format=qcow2,id=target"
+
 
 def shape(assets: dict, *, cpus: int = 4, mem_mb: int = 8192) -> vm.Shape:
     """The machine itself, without any storage.
@@ -124,7 +151,10 @@ def drives(assets: dict, disk: str, recovery: str) -> list[str]:
     return [
         "-drive", f"file={assets['boot']},format=raw,if=none,id=oc",
         "-device", "virtio-blk-pci,drive=oc,bootindex=0",
-        "-drive", TARGET_DRIVE.format(disk=disk),
+        # THE INSTALLER'S DRIVE: no discard. See TARGET_DRIVE_PLAIN for the run that
+        # proved it matters - the macos26 setup that had discard here lost 17 GiB mid-install
+        # and froze with its progress bar at "About 48 minutes remaining".
+        "-drive", TARGET_DRIVE_PLAIN.format(disk=disk),
         "-device", "virtio-blk-pci,drive=target,bootindex=1",
         "-drive", f"file={recovery},media=disk,if=none,id=rec,readonly=on",
         "-device", "usb-storage,bus=xhci.0,drive=rec",
