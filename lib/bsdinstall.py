@@ -260,14 +260,40 @@ def check_disk_zfs(disk: str) -> bool:
     A FAILED INSTALL LEAVES A PARTITION TABLE AND NO POOL, which is the same distinction
     check_disk_ufs() draws for UFS - see its docstring.
     """
-    magic = b"\x00\x00\x00\x00\x0c\xb1\xba\x00"
+    # THE MAGIC, AND THE OFFSETS IT CAN BE AT.
+    #
+    # `ub_magic` is UBERBLOCK_MAGIC = 0x00bab10c (include/sys/uberblock_impl.h), a
+    # uint64_t, so it is stored little-endian: 0c b1 ba 00 00 00 00 00.
+    #
+    # THE BYTES IN THIS FILE USED TO BE 00 00 00 00 0c b1 ba 00, which is neither
+    # endianness - the four bytes were placed at the wrong end of the word. A scan for
+    # them finds nothing on any real pool, so the check only ever passed because a second
+    # fault cancelled it: the scan ran over the qcow2 FILE, where running into eight
+    # arbitrary bytes was a matter of luck. Fixing the file/image confusion alone would
+    # have turned a check that always passed into one that always failed.
+    magic = b"\x0c\xb1\xba\x00\x00\x00\x00\x00"
+
+    # WHERE A LABEL SITS. vdev_label_t is 256 KiB: 8 KiB pad, 8 KiB bootenv, 112 KiB
+    # vdev_phys (the nvlist naming the pool) and a 128 KiB uberblock ring. There are four
+    # labels per vdev - two at the start, two at the end - and the uberblock that says the
+    # pool is valid is in the ring, at byte 128 KiB of any label.
+    #
+    # 128 KiB, NOT 0. The magic is not at the label's first byte and not at the partition's
+    # first byte; the label begins with a zero-filled pad. That is why a scan of the
+    # partition's first bytes reports nothing on a pool that is entirely healthy - which
+    # is exactly what run 41992893945 printed:
+    #
+    #     the freebsd-zfs partition at 0x80100000 holds no label magic
+    #
+    # on a disk whose installer had just finished all 394 packages and reached `umount`.
+    UBERBLOCK_OFFSET = 128 * 1024
 
     # THE WHOLE-DISK CASE IS STILL CHECKED FIRST, because a pool on a bare vdev (no
     # partition table) is a layout ZFSBOOT_DISKS would produce if ZFSBOOT_PARTITION_SCHEME
     # were changed, and the check should not silently stop working if it is.
-    head = _read_virtual(disk, 0, 1024 * 1024)
-    if head.find(magic) >= 0:
-        log(f"  ZFS label magic at disk offset {head.find(magic)}")
+    head = _read_virtual(disk, UBERBLOCK_OFFSET, 4096)
+    if magic in head:
+        log(f"  ZFS uberblock magic at disk offset {UBERBLOCK_OFFSET}")
         return True
 
     # THE PARTITIONED CASE: ask the GPT where the pool starts.
@@ -311,13 +337,16 @@ def check_disk_zfs(disk: str) -> bool:
         if entry[:16] != smoke.ZFS_PARTITION_TYPE:
             continue
         start = int.from_bytes(entry[32:40], "little") * 512
-        block = _read_virtual(disk, start, 256 * 1024)
+        # The uberblock ring of label 0, which is 128 KiB into the vdev. Reading the
+        # label's first 4 KiB - what this did first - reads the pad.
+        block = _read_virtual(disk, start + UBERBLOCK_OFFSET, 4096)
         where = block.find(magic)
         if where >= 0:
-            log(f"  ZFS label magic in the freebsd-zfs partition at {start:#x} "
-                f"(+{where})")
+            log(f"  ZFS uberblock magic in the freebsd-zfs partition at {start:#x} "
+                f"(+{UBERBLOCK_OFFSET + where})")
             return True
-        log(f"  the freebsd-zfs partition at {start:#x} holds no label magic")
+        log(f"  the freebsd-zfs partition at {start:#x} holds no uberblock magic at "
+            f"+{UBERBLOCK_OFFSET}")
         return False
 
     log(f"  no freebsd-zfs partition; the GPT holds {len(found_types)} entries:")
