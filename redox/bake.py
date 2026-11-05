@@ -1145,11 +1145,35 @@ def main(argv: list[str]) -> int:
             # unset. ONE wait, at the END, and it cannot be satisfied by a queue that is behind
             # because there is nothing behind it.
             note("=== host key, init.d, /var/empty ===")
+            # AN init.d ENTRY IS A COMMAND LINE, NOT A SHELL SCRIPT - AND NOT `sshd -D &`.
+            #
+            # The image's own entries show the format, from config/x86_64/server-demo.toml:
+            #
+            #     [[files]]
+            #     path = "/usr/lib/init.d/98_keygen_sh"
+            #     data = """
+            #     requires_weak 10_net.target
+            #     bash /root/keygen.sh
+            #     """
+            #
+            # Two lines at most: an optional `requires_weak <target>`, then the command as it
+            # would be typed. No shebang, no `&`: whatever runs these runs the command and
+            # expects it to daemonise itself. The previous version wrote
+            #
+            #     #!/usr/bin/ion
+            #     /usr/bin/sshd -D &
+            #
+            # which put a comment line where the `requires_weak` parser looks, and asked ion to
+            # background a process in a context that is not ion. The bake started sshd by hand
+            # and published a disk whose sshd never came back after a reboot - which is exactly
+            # what the ssh stage found: 900 seconds, no login.
+            #
+            # `requires_weak 10_net.target` because sshd needs the network up to bind.
             con.type(
                 "ssh-keygen -A "
                 "&& mkdir -p /usr/lib/init.d "
-                "&& echo '#!/usr/bin/ion' > /usr/lib/init.d/90_sshd "
-                "&& echo '/usr/bin/sshd -D &' >> /usr/lib/init.d/90_sshd "
+                "&& printf 'requires_weak 10_net.target\\n/usr/bin/sshd\\n' "
+                "> /usr/lib/init.d/90_sshd "
                 "&& chmod +x /usr/lib/init.d/90_sshd "
                 "&& mkdir -p /var/empty "
                 "&& chmod 755 /var/empty "

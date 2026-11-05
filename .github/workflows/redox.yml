@@ -243,7 +243,20 @@ jobs:
   # LAUNCH - Orbital, and sshd at boot with nobody having started it.
   # ===========================================================================
   launch:
-    needs: ssh
+    # BOTH, BECAUSE THE TAG COMES FROM WHICHEVER RAN.
+    #
+    # This said `needs: ssh` and then read `needs.bake.outputs.tag` in its --tag expression -
+    # and GitHub only exposes the outputs of jobs listed in `needs`, so that expression
+    # evaluated to the empty string. Run 41942627972's launch tried to pull '' from ghcr:
+    #
+    #     [redox-launch 01:21:32] pulling  from ghcr
+    #     ===  IS NOT PUBLISHED: no manifest for tag '' in ghcr.io/easydev-org/easydiskbake
+    #
+    # with the bake having published redox-desktop successfully one job earlier.
+    #
+    # Declaring both also keeps the if-condition honest: it mentions needs.ssh.outputs.tag
+    # and needs.bake.outputs.tag, and until now only one of them existed.
+    needs: [bake, ssh]
     if: |
       always() && inputs.launch_run
       && (inputs.launch_from != '' || needs.ssh.outputs.tag != '' || needs.bake.outputs.tag != '')
