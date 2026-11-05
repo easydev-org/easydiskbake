@@ -660,7 +660,6 @@ REMOTE_LOGIN_STEPS = [
     "sudo dscl . -read /Users/docker AuthenticationAuthority",
     # THE EFFECTIVE CONFIG, NOT THE FILE. sshd -T resolves the includes and the defaults, so
     # this says what sshd will actually do rather than what one file happens to spell.
-    "sudo /usr/sbin/sshd -T | grep -iE 'usedns|passwordauth'",
     # 7. AND WHY IT SAID NO. Everything above says the refusal SHOULD NOT happen, and run
     # 42090649098's recording is the proof that it does:
     #
@@ -701,6 +700,30 @@ REMOTE_LOGIN_STEPS = [
     #    "&& echo AUTHOK || echo AUTHFAIL" turns the verdict into a word the recording shows
     #    without anyone having to know what dscl prints on failure.
     "sudo dscl . -authonly docker admin && echo AUTHOK || echo AUTHFAIL",
+    # 9. THE TWO QUESTIONS RUN 42105500358 LEFT UNANSWERED, LAST SO THEY STAY ON SCREEN.
+    #
+    # `dscl . -authonly docker admin` printed AUTHOK: THE PASSWORD IS RIGHT. So the account
+    # and the password are not in question, and neither is the config's intent - every value
+    # sshd -T has reported says yes. The only thing left is what sshd does with THIS client.
+    #
+    # 9a. DID UseDNS no ACTUALLY APPLY? It was set and the failure did not change, which is
+    #     either "the directive took and is not what this is" or "the directive never took".
+    #     macOS reads /etc/ssh/sshd_config.d/*.conf through an Include, and a later include
+    #     can put back what an earlier sed removed. sshd -T prints the resolved value, so it
+    #     settles which. Printed LAST because the six-word grep used to scroll away.
+    "sudo /usr/sbin/sshd -T | grep -i usedns",
+    # 9b. DOES A NON-LOOPBACK PEER BREAK IT FROM INSIDE THE GUEST?
+    #
+    #     The guest's `ssh docker@127.0.0.1` has always answered "Permission denied" - a real
+    #     decision - while the host's comes from 10.0.2.2 and gets a closed connection. If the
+    #     guest connecting to its OWN LAN address (10.0.2.15, what qemu's DHCP gives it) also
+    #     gets a closed connection, then it is not qemu and not the NAT: sshd fails for any
+    #     peer whose address it has to resolve, and 127.0.0.1 is exempt because it never
+    #     leaves the loopback.
+    #
+    #     That is a different fix from anything on the sshd side, and this one line says
+    #     which of the two it is.
+    "ssh -o BatchMode=yes -o StrictHostKeyChecking=no docker@10.0.2.15 true; echo PEER=$?",
 ]
 
 # THE VERDICT IS THE GUEST'S, AND IT IS TWO FACTS: the job is loaded, and something is
