@@ -125,6 +125,25 @@ MAX_MENU_BAR_MEAN = 120.0      # a dark strip; the lightest macOS menu bar is we
 # order of magnitude to spare on both sides.
 MIN_DESKTOP_BRIGHTNESS = 120.0
 
+# THE LOCK SCREEN, WHICH IS A BOOTED MAC WITH NOBODY LOGGED IN.
+#
+# desktop.py publishes a disk and never logs in, so the first boot of that disk stops here:
+# wallpaper, clock, an account tile and a password field. It is not a failure and it is not a
+# desktop - the wallpaper test says "not a desktop" correctly, because there is no menu bar,
+# and a stage that only asks that question waits out its whole timeout on a healthy machine.
+#
+# Measured on the two frames this repository has:
+#
+#     lock screen    menu_bar 63.7   body  43.3
+#     desktop        menu_bar 41.3   body 214.8
+#     black screen   menu_bar  0     body   0
+#
+# So a lock screen is "the top strip is not dark enough to be a menu bar, AND the screen is
+# not black". The second half matters: a booting guest with a dark logo reads menu_bar ~0 and
+# body ~1, and must not be mistaken for a login window that wants a password typed into it.
+LOCK_SCREEN_MIN_BODY = 15.0     # above the boot screen's ~1, below the lock screen's 43
+LOCK_SCREEN_MAX_MENU = 200.0    # a menu bar is under 120; the wizard's white pane is 227
+
 
 def log(msg: str) -> None:
     print(f"[desktop] {msg}", flush=True)
@@ -390,6 +409,38 @@ def is_macos_desktop(path: str, *, explain: bool = False) -> bool:
     if explain:
         log(f"{os.path.basename(path)}: menu={menu:.0f} body={body:.0f} "
             f"-> {'MACOS DESKTOP' if passed else 'not a macos desktop'}")
+    return passed
+
+
+def is_macos_lock_screen(path: str, *, explain: bool = False) -> bool:
+    """Is this frame the login window of a booted macOS?
+
+    A LOCK SCREEN IS NOT A FAILURE, AND WAITING FOR ONE TO BECOME A DESKTOP NEVER WORKS.
+    It is what desktop.py leaves behind - a finished system with nobody logged in - so the
+    useful answer is not "not a desktop, keep waiting" but "type the password".
+
+    See LOCK_SCREEN_MIN_BODY: the test is that the top strip is NOT dark enough to be a menu
+    bar (a lock screen draws wallpaper there, not a menu) while the screen is clearly not
+    black. A guest still booting reads body ~1 and is excluded, which is what keeps this from
+    typing a password into a kernel that is not listening.
+
+    Both of those are needed and neither is sufficient:
+        menu alone       a wizard pane also has a light top strip (227) - and a wizard is not
+                         a lock screen either, it is a Setup Assistant that never finished
+        body alone       a bright dialog on a dark desktop would match, and no dialog here
+                         has a light strip across its whole top 1.2%
+    """
+    stats = analyse(path)
+    if stats is None:
+        return False
+
+    menu = stats["menu_bar_mean"]
+    body = (sum(stats["top_mean"]) + sum(stats["bottom_mean"])) / 6.0
+    passed = body >= LOCK_SCREEN_MIN_BODY and menu > MAX_MENU_BAR_MEAN
+
+    if explain:
+        log(f"{os.path.basename(path)}: menu={menu:.0f} body={body:.0f} "
+            f"-> {'MACOS LOCK SCREEN' if passed else 'not a lock screen'}")
     return passed
 
 

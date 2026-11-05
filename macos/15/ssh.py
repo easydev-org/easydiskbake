@@ -192,26 +192,42 @@ def main(argv: list[str]) -> int:
 
     ok = False
     try:
-        log(f"waiting up to {args.boot_timeout}s for the desktop")
-        if not wait_for_desktop(guest, frames, args.boot_timeout):
-            # THE DISK MAY BE AT ITS LOCK SCREEN, WHICH IS A BOOTED MAC.
-            #
-            # desktop.py finishes by letting the guest settle and stopping it - it never
-            # logs in. So the first boot of that disk lands on the login window, with the
-            # wallpaper, the clock and an account picture, and waits for a password. The
-            # wallpaper test wants a DARK MENU BAR across the top, and a lock screen has no
-            # menu bar - its top strip is wallpaper - so the test correctly says "not a
-            # desktop" about a machine that is entirely healthy.
-            #
-            # Run 42020622755 is that frame: Sonoma's redwood wallpaper, the clock, the
-            # account tile and a password field.
-            log("  no desktop yet; trying the lock screen, which a booted macOS shows first")
-            if unlock(guest) and wait_for_desktop(guest, frames, 300):
-                log("  the desktop is up after logging in")
-            else:
-                log("=== THE DISK DID NOT REACH A DESKTOP ===")
-                log("  this stage needs the desktop-stage disk, not the setup-stage one")
-                return 1
+        # BOOT, WAIT A FIXED TIME, TYPE THE PASSWORD. NO DETECTION.
+        #
+        # THIS DISK ALWAYS BOOTS TO A LOCK SCREEN, so waiting for a desktop was waiting for
+        # something this stage can cause but never observe. desktop.py finishes by letting the
+        # guest settle and stopping it - it never logs in - so the published disk starts at
+        # the login window every time: wallpaper, clock, account tile, password field.
+        #
+        # THE WALLPAPER TEST CANNOT SEE THAT. It wants a dark menu bar across the top and a
+        # lock screen draws wallpaper there instead, so it correctly says "not a desktop"
+        # about a machine that is healthy and waiting. Measured on run 42028663003: the login
+        # window was on screen by 12:48, the test spent until 13:02 saying no, and the same
+        # machine showed a full desktop 25 seconds after the password was typed. Fifteen
+        # minutes of the timeout bought nothing.
+        #
+        # A FIXED WAIT IS HONEST HERE BECAUSE THE NUMBER IS MEASURED. A booted macOS shows its
+        # login window two to four minutes after qemu starts - this disk has no installer to
+        # run, only the system to bring up. 120 seconds is the settle the rest of this file
+        # uses for a boot, and typing the password early is not a mistake: the keystrokes go
+        # to a machine that is not listening yet and are simply lost, and unlock() is followed
+        # by the ssh check that is the real verdict.
+        delay = int(os.environ.get("MACOS_LOGIN_DELAY", "120"))
+        log(f"waiting {delay}s for the boot, then logging in - this disk always shows a "
+            f"lock screen")
+        time.sleep(delay)
+
+        log(f"=== logging in as {GUEST_USER} ===")
+        unlock(guest)
+
+        # AND NOW THE DESKTOP IS REACHABLE. The wallpaper test is kept, with a short budget,
+        # because it is the only thing that can confirm the password was accepted - and if it
+        # was not, the ssh check below would fail for a reason that reads like a broken sshd.
+        if not wait_for_desktop(guest, frames, 180):
+            log("=== THE DISK DID NOT REACH A DESKTOP AFTER LOGGING IN ===")
+            log("  the password was typed and the screen still is not a desktop; check the")
+            log("  recording - the login window shakes its field when the password is wrong")
+            return 1
 
         log("=== turning Remote Login on ===")
         enable_remote_login(guest)
@@ -385,11 +401,34 @@ def enable_remote_login(guest: vm.Guest) -> None:
         # Escape first: a notification or an update overlay swallows the next chord.
         qmpmod.key(q, "esc")
         time.sleep(1)
+
+        # SPOTLIGHT, AND THE FIRST RESULT IS NOT ALWAYS THE APPLICATION.
+        #
+        # Run 42028663003's last frame is SAFARI with a Google search for
+        #
+        #     terminalsudo systemsetup -setremotelogin onadmin
+        #
+        # `terminal` DID appear as a result - the word matched, the app was found - but
+        # Spotlight's own top row for that query is the web-search suggestion, and Return
+        # takes the highlighted row. So Return opened the browser, and the command and the
+        # password that followed were typed into the search field. sshd never started and the
+        # stage reported "something answered, but not sshd" for its whole budget.
+        #
+        # THE SEARCH TERM IS THEREFORE THE FULL PATH, which has no web suggestion, and the
+        # wait before Return is longer than Spotlight's index needs to answer. Both are
+        # cheap; guessing which row is highlighted is not.
         qmpmod.key_combo(q, "meta_l", "spc")   # Spotlight
         time.sleep(3)
-        keys.type_into(q, "terminal")
+        keys.type_into(q, "/Applications/Utilities/Terminal.app")
+        # LONGER THAN THE THREE SECONDS ABOVE. Spotlight resolves an application path by
+        # stat-ing it, and on a first launch that also reads the bundle's metadata. Two
+        # seconds was not measured and the run above shows what an unmeasured wait costs.
+        time.sleep(5)
         qmpmod.key(q, "ret")
-        time.sleep(8)
+        # LONG ENOUGH FOR A FIRST LAUNCH. Terminal opens a window and a shell, and on a fresh
+        # account that includes first-run work. The commands below are typed into whatever
+        # has focus, so an early Return here costs the whole stage.
+        time.sleep(12)
 
         keys.type_into(q, "sudo systemsetup -setremotelogin on")
         qmpmod.key(q, "ret")

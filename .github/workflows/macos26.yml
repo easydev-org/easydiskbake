@@ -108,8 +108,13 @@ on:
         description: "ssh: pull this tag instead of the desktop job's output"
         default: ""
       ssh_port:
+        # 2222, THE SAME PORT EVERY OTHER SYSTEM USES. It was 2223 for no reason that
+        # survives inspection: each job is its own container on its own network, so a
+        # macOS run and a Linux run forwarding 2222 are forwarding to two different
+        # loopback interfaces. The odd number only meant a reader had to remember which
+        # system was special.
         description: "ssh: host port forwarded to the guest's sshd"
-        default: "2223"
+        default: "2222"
       boot_timeout:
         description: "ssh: seconds to wait for the desktop, and for each boot after"
         default: "900"
@@ -389,7 +394,7 @@ jobs:
             python3 macos/15/ssh.py \
               --disk "$DISK" \
               --out out/macos26-ssh.qcow2 \
-              --ssh-port "${{ inputs.ssh_port || '2223' }}" \
+              --ssh-port "${{ inputs.ssh_port || '2222' }}" \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}"
 
       - name: clean the disk
