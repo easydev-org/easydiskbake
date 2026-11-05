@@ -118,11 +118,25 @@ def main() -> int:
     }
 
     log("=== screenshots over the second qmp socket ===")
+    # TWO SECONDS, THREE FRAMES - the question is whether a screendump can be taken at
+    # all, not how the recorder behaves over an hour. It used to be "15", "6" and a 25s
+    # sleep, which is one frame at best and zero if the first screendump lands while the
+    # guest is still painting; a test that can only pass when a timer happens to fall the
+    # right way is a test that fails for reasons unrelated to what it checks.
+    # BY ABSOLUTE PATH. main() does `os.chdir("out")` and the working directory is that,
+    # so a bare "snapshots.py" is a file that does not exist from there - the child would
+    # exit immediately with
+    #
+    #     python3: can't open file '/__w/.../out/snapshots.py': [Errno 2] No such file
+    #
+    # and the only symptom here is an empty shots/ directory, which reads exactly like a
+    # screendump that did not work.
     snap = subprocess.Popen(
-        [sys.executable, "snapshots.py", guest.paths.record, os.path.abspath("shots"), "15", "6"],
+        [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "snapshots.py"),
+         guest.paths.record, os.path.abspath("shots"), "2", "3"],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
     )
-    time.sleep(25)
+    time.sleep(20)
     snap.terminate()
     try:
         snap_out, _ = snap.communicate(timeout=5)
@@ -130,13 +144,37 @@ def main() -> int:
         snap.kill()
         snap_out = ""
 
+    # THE RECORDER'S OWN OUTPUT IS PRINTED, BECAUSE IT WAS CAPTURED AND THROWN AWAY.
+    #
+    # It already explained itself - "no QMP socket at ... - no frames" is the line that
+    # says which half failed - and none of it reached the log, so a run with zero frames
+    # reported only the number.
+    for line in (snap_out or "").splitlines():
+        log(f"  [snap] {line}")
+
     log("=== the guest's own words ===")
     matched = smoke.wait_for("console.log", r"alpine|login:|~ #|localhost", 180)
 
     guest.stop()
 
     log("=== what came out ===")
-    frames = [f for f in os.listdir("shots") if f.endswith(".ppm")] if os.path.isdir("shots") else []
+    # `.jpg` AS WELL AS `.ppm`, BECAUSE THE RECORDER NO LONGER LEAVES A PPM BEHIND.
+    #
+    # lib/snapshots.py converts each frame to JPEG and deletes the PPM as it goes - that
+    # is what stopped a macOS bake from filling the runner with 11 GiB of frames. lib/live.py
+    # and lib/smoke.py were both updated to accept either extension at the time; this line
+    # was not, so it counted zero frames on every run since and reported
+    #
+    #     frames: 0
+    #     vnc 5900: PASS
+    #     ...
+    #     SELFTEST FAILED
+    #
+    # while five channels had passed and the guest had printed 824 lines. selftest has been
+    # failing since run 41964591528 for this one reason, which is worse than not having it:
+    # a check that is always red is a check nobody reads.
+    frames = ([f for f in os.listdir("shots") if f.endswith((".ppm", ".jpg"))]
+              if os.path.isdir("shots") else [])
     log(f"  frames: {len(frames)}")
     for name, ok in results.items():
         log(f"  {name}: {'PASS' if ok else 'FAIL'}")
