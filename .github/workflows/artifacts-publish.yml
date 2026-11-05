@@ -54,7 +54,103 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # ===========================================================================
+  # ANDROID - a job of its own, on the runner, because it needs a DIFFERENT image.
+  # ===========================================================================
+  #
+  # avdmanager refuses to create an AVD unless the SDK's `emulator` package is present, and
+  # the bake image does not carry the SDK - by the time a bake runs, the AVD already exists
+  # and was published to ghcr. Shipping 1.5 GB of JDK, sdkmanager and system image into
+  # every Windows and Linux bake to use it once is the trade android/15/Containerfile.builder
+  # exists to avoid.
+  #
+  # So this cannot share the `publish` job below, which runs INSIDE the bake image (and a
+  # container job cannot start another container). It runs on the runner and starts the
+  # builder image with docker, which is what the workflow this replaced did. That is also
+  # why the failure was "emulator package must be installed": the group was routed through
+  # the bake image, where it never could have worked.
+  android:
+    # `all` and `android` both include it; a `which` includes it only when it names a
+    # sysimg- tag, because every other tag belongs to the job below.
+    if: |
+      inputs.group == 'all'
+      || inputs.group == 'android'
+      || startsWith(inputs.which, 'sysimg-')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare the runner
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          # The AVD is built and packed here; nothing is booted for that, but the emulator's
+          # first start is, so KVM is required.
+          kvm: true
+          disk-gb: '20'
+
+      - name: prepare
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: android-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            mkdir -p out
+            python3 lib/ci.py install-oras
+            python3 lib/ci.py login --registry ghcr.io
+            python3 lib/android_pin.py
+
+      - name: build the AVD and publish it
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: android-avd
+          interval: "20"
+          command: |
+            set -euo pipefail
+            # THE BUILDER IMAGE, NOT THE BAKE ONE. See the job's comment.
+            docker run --rm \
+              --device /dev/kvm \
+              --volume "$PWD:/repo:ro" \
+              --volume "$PWD/out:/out" \
+              --workdir /out \
+              --env GITHUB_TOKEN="${{ github.token }}" \
+              --env GITHUB_ACTOR="${{ github.actor }}" \
+              --env GITHUB_REPOSITORY="${{ github.repository }}" \
+              ghcr.io/${{ github.repository }}:android-builder \
+              python3 /repo/lib/publish_android.py \
+                --image sysimg:android-15-aosp \
+                --artifacts /out \
+                --repository "${{ github.repository }}"
+
+      - name: keep the recording
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-recording
+          path: |
+            out/install.mp4
+            out/last-frame.png
+            out/emulator.log
+          if-no-files-found: warn
+          retention-days: 14
+
   publish:
+    # THE `iso`, `macos` AND `recovery` GROUPS; android is the job above.
+    #
+    # A `which` THAT NAMES A sysimg- TAG BELONGS TO THE ANDROID JOB TOO - `which` overrides
+    # `group`, so `--which sysimg-android-15-aosp` with group=all would otherwise reach this
+    # job and fail on the emulator package the same way.
+    if: |
+      !startsWith(inputs.which, 'sysimg-')
+      && (inputs.which != '' || inputs.group != 'android')
     runs-on: ubuntu-latest
     # A full run fetches twenty installer images and three recovery images - a few hours of
     # downloads. A single group is well under this.
@@ -105,10 +201,14 @@ jobs:
             # THE SELECTION IS RESOLVED IN PYTHON, NOT IN SHELL. `which` wins over `group`,
             # and an unknown tag fails with the list of real ones - a shell branch would have
             # to reproduce that logic in a second place.
+            #
+            # `--all` HERE MEANS EVERY GROUP BUT ANDROID, which is a separate job. Passing
+            # `--all` would make this job try to build an AVD inside the bake image and fail
+            # on the emulator package - the failure this split exists to remove.
             if [ -n "${{ inputs.which }}" ]; then
               ARGS="${{ inputs.which }}"
             elif [ "${{ inputs.group }}" = "all" ]; then
-              ARGS="--all"
+              ARGS="--group iso --group macos --group recovery"
             else
               ARGS="--group ${{ inputs.group }}"
             fi
