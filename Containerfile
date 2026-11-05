@@ -105,6 +105,18 @@ RUN set -eux; \
         # "Pillow is not installed, so a crop cannot be taken" and then correctly refused to
         # erase any disk, because it could not tell the 64 GB target from a 268 MB one.
         python3-pil \
+        # python3-yaml, for lib/cleancheck.py. That check reads .github/workflows/*.yml to
+        # compare each job against the table of which systems have ssh, and every workflow in
+        # this repository is YAML - parsing it needs a parser. Without it the check fails at
+        # import, which is what selftest run 42026452129 reported:
+        #
+        #     File "/__w/.../lib/cleancheck.py", line 50, in <module>
+        #     import yaml
+        #     ModuleNotFoundError: No module named 'yaml'
+        #
+        # lib/entrypoints.py said "ok" for the same file, because it only runs `--help` and
+        # that returns from argparse before the import is reached.
+        python3-yaml \
         tesseract-ocr \
         tesseract-ocr-eng \
         e2fsprogs \
@@ -157,7 +169,8 @@ RUN set -eux; \
     mformat --version 2>&1 | head -1; \
     ls -l /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_VARS_4M.fd; \
     command -v debugfs genisoimage mkfifo timeout setsid jq curl sshpass; \
-    ssh -V
+    ssh -V; \
+    python3 -c "import yaml; print('yaml', yaml.__version__)"
 
 # ---------------------------------------------------------------------------
 # The Android emulator and adb.
