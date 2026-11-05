@@ -146,7 +146,10 @@ def main(argv: list[str]) -> int:
             "-device", "virtio-blk-pci,drive=oc,bootindex=0",
             "-drive", machine.TARGET_DRIVE.format(disk=disk),
             "-device", "virtio-blk-pci,drive=target,bootindex=1",
-            "-device", f"isa-applesmc,osk={machine.OSK_PLAIN}",
+            # THE KEYBOARD AND THE SMC, from machine.extras() - the same two devices the
+            # bake gets. Without usb-kbd macOS shows Keyboard Setup Assistant, whose
+            # dialog eats the next keystroke (run 42034256322).
+            *machine.extras(),
         ],
         shape=shape,
         stdout=os.path.join(work, "console.log"),
@@ -419,30 +422,52 @@ def enable_remote_login(guest: vm.Guest) -> None:
         # cheap; guessing which row is highlighted is not.
         qmpmod.key_combo(q, "meta_l", "spc")   # Spotlight
         time.sleep(3)
-        keys.type_into(q, "/Applications/Utilities/Terminal.app")
-        # LONGER THAN THE THREE SECONDS ABOVE. Spotlight resolves an application path by
-        # stat-ing it, and on a first launch that also reads the bundle's metadata. Two
-        # seconds was not measured and the run above shows what an unmeasured wait costs.
-        time.sleep(5)
+        keys.type_into(q, "terminal")
+        # TEN SECONDS BETWEEN EVERY STEP, BECAUSE EACH ONE IS A DIFFERENT WINDOW'S TURN.
+        #
+        #     1. type "terminal"     Spotlight has to search and draw its result list
+        #     2. Return              Spotlight has to launch the application
+        #     3. the next command    Terminal has to open a window and a login shell
+        #
+        # Every one of those is a separate process starting on a guest with four vCPUs and
+        # no cache to help it, and typing into an application that has not appeared puts the
+        # text wherever focus happens to be. The waits above were 3s, 5s and 12s, chosen at
+        # different times for different reasons; this is ten seconds for each, which is what
+        # the slowest of them needed.
+        #
+        # `/Applications/Utilities/Terminal.app` WAS TRIED AND IS NOT THE ANSWER. It was
+        # meant to avoid Spotlight's web-search row, but run 42034256322 showed the real
+        # cause was elsewhere: Keyboard Setup Assistant was on screen and took the Return.
+        # With usb-kbd in machine.extras() that dialog no longer appears, so the search word
+        # can be the plain one again - which is what a person would type.
+        time.sleep(10)
         qmpmod.key(q, "ret")
-        # LONG ENOUGH FOR A FIRST LAUNCH. Terminal opens a window and a shell, and on a fresh
-        # account that includes first-run work. The commands below are typed into whatever
-        # has focus, so an early Return here costs the whole stage.
-        time.sleep(12)
+        time.sleep(10)
 
         keys.type_into(q, "sudo systemsetup -setremotelogin on")
         qmpmod.key(q, "ret")
-        # sudo's prompt. Typed after the command, not as an argument to it.
-        time.sleep(4)
+        # TEN SECONDS FOR sudo's PASSWORD PROMPT, THEN TEN FOR THE COMMAND.
+        #
+        # sudo has to find the user in the admin group, write its timestamp and print
+        # `Password:`; systemsetup then talks to launchd to register sshd. Four seconds was
+        # enough on a warm machine and this is the first privileged command on a freshly
+        # booted guest.
+        #
+        # THE PASSWORD IS TYPED AFTER THE COMMAND, never as an argument to it: sudo reads
+        # from the terminal, and `echo password | sudo -S` would leave the password in the
+        # guest's shell history and in any frame taken while it scrolled past.
+        time.sleep(10)
         keys.type_into(q, GUEST_PASSWORD)
         qmpmod.key(q, "ret")
-        time.sleep(6)
+        time.sleep(10)
 
         # SETREMOTELOGIN PRINTS ONLY ON REFUSAL, so the preference is read back rather
-        # than trusted: -getremotelogin answers "Remote Login: On" when it took.
+        # than trusted: -getremotelogin answers "Remote Login: On" when it took. The read
+        # back is what the recording is checked against - if it says On and sshd still does
+        # not answer, the problem is sshd rather than the preference.
         keys.type_into(q, "sudo systemsetup -getremotelogin")
         qmpmod.key(q, "ret")
-        time.sleep(5)
+        time.sleep(10)
     finally:
         q.close()
 

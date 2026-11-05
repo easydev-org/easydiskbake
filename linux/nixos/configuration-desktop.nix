@@ -71,14 +71,38 @@ in
   # portal backend is loaded, which is what xdg-desktop-portal keys on: each
   # .portal file declares UseIn=<desktop> and a mismatched XDG_CURRENT_DESKTOP
   # leaves the portal exposing only FileChooser and Settings.
-  services.xserver.enable = lib.mkIf (desktop == "gnome" || desktop == "kde") true;
+  # NO services.xserver.enable AT ALL, AND THAT IS THE CORRECT SETTING FOR ALL SIX.
+  #
+  # This said `lib.mkIf (desktop == "gnome" || desktop == "kde") true` and it was wrong for
+  # both of them. Read from nixpkgs master rather than remembered:
+  #
+  #     nixos/modules/services/desktop-managers/gnome.nix
+  #         the ONLY xserver reference is `services.xserver.updateDbusEnvironment = true`,
+  #         in the X11-*helpers* path; nothing reads xserver.enable
+  #     nixos/modules/services/desktop-managers/plasma6.nix
+  #         the ONLY reference is `config.services.xserver.xkb.dir`, a path into the
+  #         keyboard-configuration tree, not a requirement that X run
+  #
+  # Both modules live under services/desktop-managers now, not under services/x11/ - they
+  # were moved when they stopped being X11 desktop managers. A Wayland session does not need
+  # an X server; it needs a display manager and a session, which the lines below provide.
+  #
+  # ENABLING IT ALSO ENABLES A LOGIN SCREEN THIS IMAGE DOES NOT WANT: X starts, GDM or SDDM
+  # draws an X11 greeter, and the guest boots into something that is not the session the
+  # launch stage looks for. Every one of these six desktops is Wayland.
+  #
+  # WHAT WOULD ACTUALLY NEED IT: an X11-only application run from inside the session, through
+  # XWayland. XWayland is a session feature and does not require xserver.enable either.
 
   services.desktopManager.gnome.enable = lib.mkIf (desktop == "gnome") true;
   services.displayManager.gdm.enable = lib.mkIf (desktop == "gnome") true;
-  # autoLogin lives under services.xserver.displayManager: the
-  # services.displayManager alias forwards enable/package but the session
-  # options stay where gdm.nix declares them.
-  services.xserver.displayManager.gdm.autoLogin = lib.mkIf (desktop == "gnome") {
+  # THE OPTION'S REAL NAME, NOT ITS ALIAS.
+  #
+  # `services.xserver.displayManager.gdm.autoLogin` is registered in gdm.nix as a RENAME to
+  # `services.displayManager.gdm.autoLogin` - it works, it emits a warning, and after
+  # xserver goes away it is a path into a tree nothing else in this file uses. Same option,
+  # named where it is declared.
+  services.displayManager.gdm.autoLogin = lib.mkIf (desktop == "gnome") {
     enable = true;
     user = "docker";
   };
@@ -204,14 +228,26 @@ in
   # defaultSession. Their modules register a .desktop in sessionPackages, so a DM
   # that reads that list is what actually starts them. SDDM does, and it is not
   # tied to a desktop the way gdm is to GNOME or cosmic-greeter to COSMIC.
-  # SDDM needs to know which display server to run. KDE gets xserver.enable
-  # from plasma6.nix, but hyprland and miracle-wm are pure Wayland and
-  # set neither xserver nor an SDDM backend, so the assertion fires:
-  #   SDDM requires either services.xserver.enable or
-  #   services.displayManager.sddm.wayland.enable to be true
-  # Wayland backend for those two, which is what they are anyway.
+  # SDDM MUST BE TOLD WHICH DISPLAY SERVER TO RUN, AND NOW THAT IS EVERY DESKTOP IT SERVES.
+  #
+  # sddm.nix asserts, at line 350:
+  #
+  #     assertion = xcfg.enable || cfg.wayland.enable;
+  #     "SDDM requires either services.xserver.enable or
+  #      services.displayManager.sddm.wayland.enable to be true"
+  #
+  # This used to apply it to hyprland and miracle-wm only, on the reasoning stated in the
+  # comment that was here: "KDE gets xserver.enable from plasma6.nix". THAT WAS NEVER TRUE.
+  # plasma6.nix's only xserver reference is `config.services.xserver.xkb.dir`, a path into
+  # the keyboard tree. Nothing in it sets xserver.enable - so KDE would have tripped this
+  # assertion the moment xserver.enable stopped being set for it, which is exactly what this
+  # commit does.
+  #
+  # All three are Wayland, so all three get the Wayland backend. KDE's SDDM then starts the
+  # wayland greeter with kwin as its compositor, which is what Plasma 6 does by default on a
+  # distribution that does not force X.
   services.displayManager.sddm.wayland.enable =
-    lib.mkIf (builtins.elem desktop [ "hyprland" "miracle" ]) true;
+    lib.mkIf (builtins.elem desktop [ "kde" "hyprland" "miracle" ]) true;
 
   # One definition again: a third spelling of this attribute would conflict.
   services.displayManager.defaultSession =

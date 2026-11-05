@@ -197,7 +197,10 @@ def main(argv: list[str]) -> int:
             "-device", "virtio-blk-pci,drive=oc,bootindex=0",
             "-drive", machine.TARGET_DRIVE.format(disk=disk),
             "-device", "virtio-blk-pci,drive=target,bootindex=1",
-            "-device", f"isa-applesmc,osk={machine.OSK_PLAIN}",
+            # THE KEYBOARD AND THE SMC, from machine.extras() - the same two devices the
+            # bake gets. Without usb-kbd macOS shows Keyboard Setup Assistant, whose
+            # dialog eats the next keystroke (run 42034256322).
+            *machine.extras(),
         ],
         shape=shape,
         stdout=os.path.join(work, "console.log"),

@@ -67,12 +67,16 @@
   # mkDefault ON EVERY ONE, so configuration-minimal.nix and configuration-desktop.nix win
   # when they have an opinion. What these are for is the case where they do not: a derived
   # image from an older run, or a desktop whose own module sets a ten-minute blank.
-  services.xserver = {
-    # GDM's blank screen. 0 is "never", and it is the one that matters for labwc, hyprland,
-    # miracle and cosmic too - the session inherits the X setting where there is one and
-    # this is the only knob that reaches them all.
-    displayManager.gdm.autoSuspend = lib.mkDefault false;
-  };
+  # NO `services.xserver.displayManager.gdm.autoSuspend` HERE. It was written from memory and
+  # the option name is not one GDM declares - `autoLogin` is, and configuration-desktop.nix
+  # already uses that path correctly. An option that does not exist fails nixos-rebuild the
+  # same way services.logind.settings did, and the cost is six matrix legs.
+  #
+  # THE BLANK IS HANDLED WHERE THE DESKTOPS ACTUALLY READ IT:
+  #
+  #   GNOME        dconf, below - org/gnome/desktop/session idle-delay 0
+  #   the rest     they are Wayland compositors that do not idle-lock by default, and the
+  #                console blanking below covers the vt they leave behind
 
   # CONSOLE BLANKING. `2` is "never" for the Linux console; on a guest whose only display is
   # the emulated VGA this is the equivalent of the power plan on Windows.
@@ -88,18 +92,40 @@
   powerManagement.enable = lib.mkDefault false;
 
   # A LID SWITCH AND A SLEEP KEY EXIST ON SOME EMULATED MACHINES and both are wrong here.
-  services.logind.settings.Login = {
-    HandleLidSwitch = lib.mkDefault "ignore";
-    HandleLidSwitchExternalPower = lib.mkDefault "ignore";
-    HandleSuspendKey = lib.mkDefault "ignore";
-    HandleHibernateKey = lib.mkDefault "ignore";
-  };
+  #
+  # `extraConfig`, NOT `settings.Login`, AND IT IS A STRING. NixOS has no
+  # services.logind.settings - the module exposes `extraConfig`, which is appended to the
+  # generated logind.conf verbatim. The attrset version is from systemd's own documentation
+  # and from other modules that do have a `settings` option, and it fails the way a wrong
+  # option name always does here:
+  #
+  #     error: The option `services.logind.settings' does not exist.
+  #     Did you mean `boot', `ec2' or `fonts'?
+  #
+  # which is run 42034715730 - all six dev matrix legs, at nixos-rebuild, after their disks
+  # had been pulled.
+  #
+  # `lib.mkDefault` DOES NOT APPLY TO A STRING, so this is a plain assignment. That is
+  # correct here: a configuration that already set extraConfig would win by defining the
+  # same option, and merging two strings is not what this needs.
+  services.logind.extraConfig = ''
+    HandleLidSwitch=ignore
+    HandleLidSwitchExternalPower=ignore
+    HandleSuspendKey=ignore
+    HandleHibernateKey=ignore
+  '';
 
   # THE LOCK SCREEN. `gnome`'s settings daemon locks after five minutes of idle by default,
   # and a locked GNOME has no active user session - which is exactly what
   # lib/session.check_wayland_session refuses: Class=greeter and no compositor serving
   # wayland-0. The same shape as Windows' lock page and the same fix.
-  dconf.settings = lib.mkIf (config.services.xserver.enable or false) {
+  #
+  # THE CONDITION IS `gnome`, NOT `services.xserver.enable`. dconf is only read by GNOME;
+  # keying it on xserver meant these settings switched themselves off the moment xserver
+  # stopped being enabled for GNOME - and configuration-desktop.nix does not enable it any
+  # more, because a Wayland session does not need one. A guard that silently stops guarding
+  # is worse than no guard.
+  dconf.settings = lib.mkIf (config.services.desktopManager.gnome.enable or false) {
     "org/gnome/desktop/screensaver" = { lock-enabled = false; idle-activation-enabled = false; };
     "org/gnome/desktop/session" = { idle-delay = lib.mkDefault 0; };
   };
