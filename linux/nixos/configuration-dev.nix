@@ -120,15 +120,35 @@
   # lib/session.check_wayland_session refuses: Class=greeter and no compositor serving
   # wayland-0. The same shape as Windows' lock page and the same fix.
   #
+  # `programs.dconf.profiles`, AND `dconf.settings` IS NOT AN OPTION AT ALL.
+  #
+  # dconf is a MODULE in NixOS, not a top-level namespace: nixos/modules/programs/dconf.nix
+  # declares `programs.dconf.profiles.<name>.databases`, and each database is either a path,
+  # a package, or an attrset with a `settings` key. So the whole thing is
+  #
+  #     programs.dconf.profiles.user.databases = [ { settings = { ... }; } ]
+  #
+  # A bare `dconf.settings` is what a reader would write from memory - GNOME's own
+  # documentation calls the file `dconf`, and the option is `programs.dconf` - and it fails
+  # the way run 42044019487 failed, on all six matrix legs:
+  #
+  #     error: The option `dconf' does not exist. ... Did you mean `boot', `ec2' or `fonts'?
+  #
   # THE CONDITION IS `gnome`, NOT `services.xserver.enable`. dconf is only read by GNOME;
   # keying it on xserver meant these settings switched themselves off the moment xserver
-  # stopped being enabled for GNOME - and configuration-desktop.nix does not enable it any
-  # more, because a Wayland session does not need one. A guard that silently stops guarding
-  # is worse than no guard.
-  dconf.settings = lib.mkIf (config.services.desktopManager.gnome.enable or false) {
-    "org/gnome/desktop/screensaver" = { lock-enabled = false; idle-activation-enabled = false; };
-    "org/gnome/desktop/session" = { idle-delay = lib.mkDefault 0; };
-  };
+  # stopped being enabled for GNOME - which configuration-desktop.nix now does not do,
+  # because a Wayland session does not need one.
+  programs.dconf.profiles.user.databases = lib.mkIf
+    (config.services.desktopManager.gnome.enable or false)
+    [{
+      settings = {
+        "org/gnome/desktop/screensaver" = {
+          lock-enabled = false;
+          idle-activation-enabled = false;
+        };
+        "org/gnome/desktop/session" = { idle-delay = 0; };
+      };
+    }];
 
   # --- and what a dev user expects to exist -----------------------------------
   #
