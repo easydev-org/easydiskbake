@@ -91,6 +91,13 @@ APFS_MAGIC_OFFSET = 32
 # its desktop and the recording proves it; only this comparison said otherwise.
 APFS_PARTITION_TYPE = bytes.fromhex("ef57347c0000aa11aa1100306543ecac")
 
+# freebsd-zfs, in the same byte order and for the same reason: the printed GUID is
+# 516e7cba-6ecf-11d6-8ff8-00022d09712b, the first three fields are little-endian in the
+# on-disk entry, and comparing the printed order matches nothing. This is the type
+# zfsboot stamps on the partition it puts the pool in, and lib/bsdinstall.py uses it to
+# find that partition: the pool label sits at the partition's start, not the disk's.
+ZFS_PARTITION_TYPE = bytes.fromhex("ba7c6e51cf6ed6118ff800022d09712b")
+
 # The GPT partition entry array. LBA 1 is the header, which states where the array is
 # (normally LBA 2); each entry is 128 bytes and its first 16 are the partition type GUID.
 GPT_HEADER_LBA = 1

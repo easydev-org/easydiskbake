@@ -144,6 +144,16 @@ ERASE_BUTTON_X = 1290
 SIDEBAR_ROWS_Y = (351, 379, 407, 435, 463)
 SIDEBAR_CLICK_X = 540
 
+# The detail pane's table, for the OCR that reads the selected disk's capacity.
+#
+# x: the pane's own left edge (690) to past its right one (1500). y: the disk's heading
+# and capacity badge (480) through the last row (700). It is deliberately the whole table
+# rather than a row range: the table starts at a different y depending on what is above
+# it, and a crop tuned to one layout cut the Capacity row off the other - see the long
+# note in selected_disk_gb, and run 41991176099, where a correctly selected 137.44 GB
+# disk read as "nothing usable" eight times because of exactly that.
+PANE_CROP = (690, 480, 1500, 700)
+
 # The erase sheet's buttons, measured on a frame of the sheet with tesseract --psm 11:
 #   Cancel x=1027..1101  y=626..666   centre (1064, 646)
 #   Erase  x=1123..1187  y=626..666   centre (1155, 646)
@@ -500,14 +510,33 @@ class Recovery:
         # Read whole, the screendump gives "Apple Inc. VirtIO Block Media" and loses the
         # capacity line entirely - the numbers are about ten pixels tall at 1920x1080.
         #
-        # MEASURED ON A 1920x1080 SCREENDump, NOT GUESSED. The crop was found by locating
-        # the table's own separator lines in the pixels - the bright rows between y=545 and
-        # y=670 - and read back to confirm:
-        #
-        #     (690, 540, 1490, 680) at 4x
-        #     -> 'location: internal capacity: 268.4 mb connection: unknown child ...'
-        #
         # 4x, NOT 3x: at 3x the decimal point is lost and "268.4 MB" reads as "2684 MB".
+        #
+        # THE CROP USED TO START AT y=540 AND IT CUT OFF THE ONLY LINE THAT MATTERS.
+        #
+        # It was measured on a disk whose table began at y=545, so (690, 540, 1490, 680)
+        # framed the rows below the header. On a 128 GiB VirtIO disk the table starts
+        # HIGHER - the disk's own heading and capacity badge take the space above it, and
+        # the rows sit at y=515..617 instead of 545..670. The crop then held
+        #
+        #     Connection: Unknown      Child count: 0
+        #     Partition Map: Not Supported   Type: Solid state
+        #     S.M.A.R.T. status: Not Supported   Device: disk0
+        #
+        # and not one number in it. That is run 41991176099: the disk was selected
+        # CORRECTLY - the screenshot it died on reads
+        #
+        #     Apple Inc. VirtIO Block Media   Uninitialized   137.44 GB
+        #     Location: Internal    Capacity: 137.44 GB
+        #
+        # and the OCR still said "nothing usable" eight times in a row, so the sequence
+        # stopped rather than erase the wrong volume.
+        #
+        # THE WINDOW IS NOW THE TABLE, NOT A ROW RANGE. y=480..700 covers the heading, the
+        # capacity badge on the right and every row, for a table that starts anywhere in
+        # that band; x=690..1500 is the detail pane's own left edge through its right one.
+        # Reading a taller crop costs nothing and removes the assumption that fixed the
+        # rows at one y.
         #
         # THREE TRIES, BECAUSE THE PANE IS STILL PAINTING. The first read after a selection
         # change frequently lands on a frame where the detail pane is blank or half drawn -
@@ -521,7 +550,7 @@ class Recovery:
                 time.sleep(2)
                 continue
             candidate = assistant.ocr_text_cropped(
-                path, (690, 540, 1490, 680), scale=4)
+                path, PANE_CROP, scale=4)
             if candidate and re.search(r"\d+(?:\.\d+)?\s*(?:gb|mb)\b", candidate):
                 text = candidate
                 break

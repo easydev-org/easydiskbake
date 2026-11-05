@@ -339,7 +339,17 @@ jobs:
       - name: pull the desktop disk
         uses: easydev-org/easyactions/oci-pull@main
         with:
-          tag: ${{ inputs.dev_from != '' && format('{0}-{1}', inputs.dev_from, matrix.desktop) || format('nixos-{0}-dev', matrix.desktop) }}
+          # THE DERIVE JOB'S OUTPUT, NOT THIS JOB'S OWN. This pulled
+          # "nixos-<desktop>-dev" - the name THIS job publishes - so a full run always
+          # asked ghcr for an artifact that did not exist yet and every dev matrix leg
+          # failed in 0.3 s with
+          #
+          #     [oci-pull] FAILED: no manifest for tag 'nixos-gnome-dev'
+          #
+          # which is run 41985209488. The three Linux workflows say
+          # `inputs.dev_from || needs.bake.outputs.tag`; this is the same shape, with
+          # derive in place of bake because NixOS derives a desktop from its base.
+          tag: ${{ inputs.dev_from != '' && format('{0}-{1}', inputs.dev_from, matrix.desktop) || needs.derive.outputs.tag }}
           dest: out
           token: ${{ github.token }}
 

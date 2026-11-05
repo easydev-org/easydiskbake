@@ -153,6 +153,52 @@ def remaster_iso(src: str, dst: str, files: dict[str, str],
     return dst
 
 
+def _read_virtual(disk: str, offset: int, length: int) -> bytes:
+    """The guest's bytes at `offset`, not the qcow2 file's.
+
+    A qcow2 IS NOT THE DISK. Its bytes are a sparse store - a header, L1/L2 tables, and
+    clusters written in the order the guest touched them - so `open(disk, "rb")` and
+    scanning the result asks a question about the container, not about the filesystem
+    inside it.
+
+    THIS WAS THE BUG, AND IT LOOKED LIKE LUCK FOR A LONG TIME. Both checks in this file
+    used to read the file directly. UFS passed anyway, because a fresh bsdinstall writes
+    a large contiguous run early in the guest's life and some of that text - including
+    the superblock's magic - lands in the qcow2 file's first 8 MiB nearly verbatim. That
+    is a coincidence of the allocation pattern, not a property of the format.
+
+    ZFS broke the coincidence. Run 41991139008 installed all 394 packages in 135
+    seconds, `bsdinstall` reached its `umount` step, the disk held 3705 MiB of files -
+    and this check reported
+
+        === THE DISK HOLDS NO FILESYSTEM ===
+        neither a ZFS label nor a UFS superblock is on it
+
+    a disk that was completely fine. The ZFS labels sit at the start of the POOL, which
+    zfsboot places on a partition - so even in a raw image they are not at file offset
+    0; in a qcow2 file they are wherever the cluster allocator put them.
+
+    lib/smoke.qemu_io_read already had the right answer for the Linux and Windows
+    checks: `qemu-io -f qcow2 -c "read -v <offset> <length>"` reads what the guest would
+    see. This is the same call, for the same reason, and it takes the file format as a
+    parameter rather than assuming it - the argument is quoted as qcow2 because every
+    disk this repository publishes is one.
+    """
+    try:
+        import smoke
+    except ImportError:  # called outside the lib/ path layout
+        import os
+        import sys
+
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import smoke
+    try:
+        return smoke.qemu_io_read(disk, offset, length)
+    except smoke.DiskReadError as exc:
+        log(f"  could not read {offset}+{length} from {disk}: {exc}")
+        return b""
+
+
 def check_disk_ufs(disk: str) -> bool:
     """Does this qcow2 hold a UFS/FFS filesystem?
 
@@ -166,12 +212,10 @@ def check_disk_ufs(disk: str) -> bool:
     """
     import struct
 
-    # Read the first 8 MiB: the boot blocks, the partition table and the superblock of a
-    # partition that starts at sector 0 or just after it.
-    with open(disk, "rb") as fh:
-        head = fh.read(8 * 1024 * 1024)
-
-    if len(head) < 1024 * 1024:
+    # READ THE GUEST'S BYTES, NOT THE qcow2 FILE'S. See the note on _read_virtual: a
+    # qcow2 store is not the disk, and scanning it only ever worked by luck.
+    head = _read_virtual(disk, 0, 8 * 1024 * 1024)
+    if not head:
         return False
 
     # UFS2's magic, big or little endian, anywhere in the first 8 MiB. A byte scan is
@@ -188,41 +232,98 @@ def check_disk_ufs(disk: str) -> bool:
 def check_disk_zfs(disk: str) -> bool:
     """Does this qcow2 hold a ZFS pool?
 
-    WHAT IT LOOKS FOR. Every vdev label begins with the eight bytes `\x00\x00\x00\x00\
-    \x0c\xb1\xba\x00` - UBERBLOCK_MAGIC - and the four labels sit at the start and the end
-    of each device (offset 0, 256 KiB, and the last 512 KiB, twice). A pool created by
-    `bsdinstall zfsboot` writes all four.
+    WHAT IT LOOKS FOR. Every vdev label begins with the eight bytes
+    `\\x00\\x00\\x00\\x00\\x0c\\xb1\\xba\\x00` - UBERBLOCK_MAGIC - and there are four
+    labels per vdev: two at the start (offset 0 and 256 KiB) and two at the end (the last
+    512 KiB, twice).
 
     WHY A MAGIC SCAN AND NOT `zpool import`. The bake has no zpool on the host, and
     importing a pool to ask whether it exists would mount it, take the device exclusively,
-    and make the next stage's qemu start fail with "pool is in use". Four magic values in
-    the first megabyte answer the same question without touching the pool.
+    and make the next stage's qemu start fail with "pool is in use". A magic value at a
+    known place answers the same question without touching the pool.
+
+    THE POOL IS ON A PARTITION, NOT ON THE DISK - and that is the part that was wrong.
+    `zfsboot` creates a GPT with an EFI system partition at 260 MiB and the pool after
+    it, so L0 is not at disk offset 0. Scanning a megabyte from the start of the disk
+    finds nothing on a perfectly good ZFS volume.
+
+    THAT IS WHY THIS READS THE GPT FIRST, exactly as lib/smoke.check_apfs does: the
+    entry states the start LBA, and reading there makes the question "is there a label
+    in the pool partition" instead of "does the magic happen to be near the front".
+
+    WHAT IT COST TO LEARN. Run 41991139008 installed every one of its 394 packages in
+    135 seconds and the disk held 3705 MiB - and this returned False, so the bake threw
+    the disk away as "no filesystem". Two separate faults lined up: this read the qcow2
+    FILE rather than the guest's disk (see _read_virtual) and it looked at the wrong
+    place even when reading correctly.
 
     A FAILED INSTALL LEAVES A PARTITION TABLE AND NO POOL, which is the same distinction
     check_disk_ufs() draws for UFS - see its docstring.
     """
-    import struct
-
     magic = b"\x00\x00\x00\x00\x0c\xb1\xba\x00"
 
-    # The first label is at offset 0 of the device; zfsboot puts the pool on the whole
-    # vtbd0 with a partition table, so the label is at the start of the block device and
-    # not at a partition offset. 1 MiB is enough to cover L0 and L1's first copy.
+    # THE WHOLE-DISK CASE IS STILL CHECKED FIRST, because a pool on a bare vdev (no
+    # partition table) is a layout ZFSBOOT_DISKS would produce if ZFSBOOT_PARTITION_SCHEME
+    # were changed, and the check should not silently stop working if it is.
+    head = _read_virtual(disk, 0, 1024 * 1024)
+    if head.find(magic) >= 0:
+        log(f"  ZFS label magic at disk offset {head.find(magic)}")
+        return True
+
+    # THE PARTITIONED CASE: ask the GPT where the pool starts.
     try:
-        with open(disk, "rb") as fh:
-            head = fh.read(1024 * 1024)
-    except OSError:
-        return False
-    if len(head) < 1024:
+        import os
+        import sys
+
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import smoke
+    except ImportError:
         return False
 
-    index = head.find(magic)
-    if index >= 0:
-        # The pool name is in the label's nvlist, and finding it is not worth a parser
-        # here - the next stage names the pool itself. What this reports is the offset,
-        # so a "found nothing" and a "found it in the wrong place" look different.
-        log(f"  ZFS label magic at offset {index}")
-        return True
+    header_lba = smoke.GPT_HEADER_LBA * 512
+    header = _read_virtual(disk, header_lba, 512)
+    if header[:8] != b"EFI PART":
+        log(f"  no GPT header at {header_lba:#x} (found {header[:8]!r})")
+        return False
+
+    entry_lba = int.from_bytes(header[72:80], "little")
+    count = int.from_bytes(header[80:84], "little")
+    size = int.from_bytes(header[84:88], "little")
+    if not (entry_lba and count and size) or size < 16 or count > smoke.GPT_MAX_ENTRIES:
+        log(f"  implausible GPT entry array ({entry_lba}, {count}, {size})")
+        return False
+
+    entries = _read_virtual(disk, entry_lba * 512, count * size)
+    if not entries:
+        return False
+
+    # EVERY ENTRY IS NAMED ON THE WAY PAST, so "no ZFS partition" and "the entries were
+    # read from the wrong place" look different in the log - the same reason check_apfs
+    # lists its types.
+    found_types: list[str] = []
+    for index in range(count):
+        entry = entries[index * size:(index + 1) * size]
+        if entry[:16] == b"\x00" * 16:
+            break
+        found_types.append(entry[:16].hex())
+        # A ZFS partition is freebsd-zfs (516e7cba-6ecf-11d6-8ff8-00022d09712b). The pool
+        # label is at the partition's first byte, not 64 KiB into it.
+        if entry[:16] != smoke.ZFS_PARTITION_TYPE:
+            continue
+        start = int.from_bytes(entry[32:40], "little") * 512
+        block = _read_virtual(disk, start, 256 * 1024)
+        where = block.find(magic)
+        if where >= 0:
+            log(f"  ZFS label magic in the freebsd-zfs partition at {start:#x} "
+                f"(+{where})")
+            return True
+        log(f"  the freebsd-zfs partition at {start:#x} holds no label magic")
+        return False
+
+    log(f"  no freebsd-zfs partition; the GPT holds {len(found_types)} entries:")
+    for index, kind in enumerate(found_types, 1):
+        mark = " <- this is freebsd-zfs" if kind == smoke.ZFS_PARTITION_TYPE.hex() else ""
+        log(f"    {index}: {kind}{mark}")
     return False
 
 
