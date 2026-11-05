@@ -340,7 +340,23 @@ def ocr(path: str) -> str:
         log(f"  (ocr unavailable: {exc})")
         return ""
 
+    # THE TERMINAL FIRST, BECAUSE THAT IS WHAT THIS BAKE IS WAITING ON.
+    #
+    # Every marker after the account step - `pkg_ok=0`, `keygen_rc=0`, `initd_ok=1`,
+    # `varempty_ok=1`, `sshd_rc=0` - is a line of text in the terminal window. Reading the
+    # three fixed crops for each of them was costing four tesseract passes per poll (about
+    # eight seconds) and, worse, the crops are wide regions of a 1920x1080 frame: the reader
+    # fell behind the keystrokes that kept arriving and run 41937773522 timed out on
+    # `pkg_ok=0` with the screen still showing /etc/passwd two commands earlier.
+    #
+    # ONE PASS OVER THE WINDOW AREA, at 2x, is enough for that text - and a caller looking
+    # for `login:` or `username` gets the same pass, because the login box is inside the same
+    # region. The extra crops are attempted only when this finds nothing.
     parts = []
+    whole = assistant.ocr_text(path)
+    if whole:
+        parts.append(whole)
+
     for box, scale, what in REGIONS:
         try:
             text = assistant.ocr_text_cropped(path, box, scale=scale)
@@ -349,12 +365,6 @@ def ocr(path: str) -> str:
             continue
         if text:
             parts.append(text)
-
-    # THE WHOLE FRAME AS WELL, LAST. It costs one more pass and catches anything large
-    # enough to read - a dialog title, a boot message, an error nobody expected.
-    whole = assistant.ocr_text(path)
-    if whole:
-        parts.append(whole)
     return " ".join(parts)
 
 
@@ -1122,95 +1132,37 @@ def main(argv: list[str]) -> int:
 
             # 7. THE HOST KEY. sshd refuses to start without one, and it is generated once, on
             #    the disk, not at every boot.
-            note("=== the host key ===")
-            con.type("ssh-keygen -A ; echo KEYGEN_RC=$?")
-            if not con.wait_for(["keygen_rc=0"], 600, "host key"):
-                note("=== ssh-keygen -A FAILED ===")
-                return False
-
-            # 8. THE STARTUP SCRIPT. The desktop variant has no systemd and no rustysd;
-            #    services are numbered files in /usr/lib/init.d/.
+            # ONE LINE FOR EVERYTHING sshd NEEDS, BECAUSE THE READER LAGS THE QUEUE.
             #
-            # /etc/init.d DOES NOT EXIST ON THIS SYSTEM, and every redox bake so far has
-            # failed here believing it did. Run 41875783970's last frame reads:
+            # These used to be four separate typed steps, each with its own wait_for: the host
+            # key, the init.d entry, /var/empty, and the daemon. Every wait_for pass costs
+            # seconds and reads a screen that is that many commands behind, so four waits
+            # compound - and run 41937773522 timed out on `pkg_ok=0` with the terminal still
+            # showing /etc/passwd from two steps earlier. The commands had all run.
             #
-            #     root:~# echo '#!/usr/bin/ion' > /etc/init.d/90_sshd
-            #     ion: pipeline execution error: failed to redirect stdout to file
-            #          '/etc/init.d/90_sshd': No such file or directory (os error 2)
-            #     root:~# chmod +x /etc/init.d/90_sshd ; echo CHMOD_RC=$?
-            #     chmod: cannot access '/etc/init.d/90_sshd': No such file or directory
-            #     CHMOD_RC=1
-            #
-            # - two redirections that failed and a chmod on a file that was never written.
-            # The directory is a Debian convention; Redox's own boot-process documentation
-            # puts the filesystem init's configuration in /usr/lib/init.d, and that is what
-            # is on the image.
-            #
-            # `90_` sorts after the network and the console, which sshd needs. The directory
-            # is created first because `mkdir -p` on an existing one is silent and the
-            # redirection is what fails loudly when it is not there.
-            note("=== the init.d entry ===")
-            # ONE LINE, ONE MARKER, BECAUSE THE READER LAGS THE TYPING.
-            #
-            # Run 41904865449 typed `mkdir -p /usr/lib/init.d ; echo MKDIR_RC=$?` and then
-            # waited 120 seconds for `mkdir_rc=0`. What the screen was showing, at 30s, 64s
-            # and 106s, was the echo lines from /etc/users.toml - four commands earlier. A
-            # wait_for() pass screenshots and reads three crops plus the whole frame with
-            # tesseract; that is several seconds per pass, and every pass sees a screen
-            # further behind the keystrokes that have queued behind it.
-            #
-            # So the whole init.d step goes in as ONE command line with ONE marker at the end.
-            # Nothing is checked in the middle, and the marker cannot be reached unless the
-            # mkdir, both echoes and the chmod all succeeded - `&&` rather than `;`, so a
-            # failure anywhere leaves INITD_OK unset instead of printing a misleading number.
-            #
-            # /usr/lib/init.d, NOT /etc/init.d: the latter is a Debian convention and does not
-            # exist here (run 41875783970's frame shows the redirection failing with
-            # "No such file or directory (os error 2)").
+            # Everything here is a file write or a chmod; none of it can fail in a way a later
+            # step would not notice, and `&&` means a failure anywhere leaves the final marker
+            # unset. ONE wait, at the END, and it cannot be satisfied by a queue that is behind
+            # because there is nothing behind it.
+            note("=== host key, init.d, /var/empty ===")
             con.type(
-                "mkdir -p /usr/lib/init.d "
+                "ssh-keygen -A "
+                "&& mkdir -p /usr/lib/init.d "
                 "&& echo '#!/usr/bin/ion' > /usr/lib/init.d/90_sshd "
                 "&& echo '/usr/bin/sshd -D &' >> /usr/lib/init.d/90_sshd "
                 "&& chmod +x /usr/lib/init.d/90_sshd "
-                "&& echo INITD_OK=1",
+                "&& mkdir -p /var/empty "
+                "&& chmod 755 /var/empty "
+                "&& echo SETUP_OK=1",
                 settle=2.0)
-            if not con.wait_for(["initd_ok=1"], 600, "the init.d entry"):
-                note("=== THE init.d ENTRY COULD NOT BE WRITTEN ===")
-                note("  mkdir, both echoes and the chmod are joined by && on one line; the")
-                note("  frame beside this message shows which of them failed")
+            if not con.wait_for(["setup_ok=1"], 600, "the host key and the services"):
+                note("=== THE sshd PREPARATION DID NOT COMPLETE ===")
+                note("  ssh-keygen, the init.d entry and /var/empty, joined by &&; the frame")
+                note("  beside this message shows which of them failed")
                 return False
-            note("  the init.d entry is written and executable")
+            note("  host keys, init.d entry and /var/empty are in place")
 
-            # 9. START IT NOW AND PROVE IT LISTENS. The init.d entry only matters at the next
-            #    boot; this run has to verify the daemon before the disk is published.
             note("=== starting sshd ===")
-            # THE SAME ECHO FAULT AS `pkg_rc=`, AND FIXED THE SAME WAY. `/usr/bin/sshd ; echo
-            # SSHD_RC=$?` is echoed by the terminal before it runs, and `SSHD_RC=$?` in that
-            # echo does not contain a digit - so a marker of `sshd_rc=` matched the echo, and a
-            # daemon that never started would have passed. What is matched is a value with a
-            # digit in it, which only the expansion produces.
-            # THE CHROOT DIRECTORY, WHICH IS THE NEXT CHECK IN sshd's OWN STARTUP.
-            #
-            # The /etc/passwd fix moved the failure on, and the frame from run 41916585870
-            # shows exactly one line further into sshd.c:
-            #
-            #     Missing privilege separation directory: /var/empty
-            #     SSHD_RC=255
-            #
-            # which is `if ((stat(_PATH_PRIVSEP_CHROOT_DIR, &sb) == -1) || !S_ISDIR(...))` -
-            # the check immediately after the account lookup that used to fail. A directory is
-            # all it wants; sshd chroots the unprivileged half of each connection into it.
-            #
-            # ONE LINE WITH ONE MARKER, as with the other file work: every wait_for() pass
-            # reads the screen several seconds behind, so a step split into several waits falls
-            # further behind with each one.
-            con.type("mkdir -p /var/empty && chmod 755 /var/empty && echo VAREMPTY_OK=1",
-                     settle=2.0)
-            if not con.wait_for(["varempty_ok=1"], 300, "/var/empty"):
-                note("=== /var/empty COULD NOT BE CREATED ===")
-                return False
-            note("  /var/empty exists")
-
             # SSHD IS FLAKY ON THIS SYSTEM, AND RETRYING IS THE HONEST ANSWER.
             #
             # Two runs of identical code, differing only in the quoting of a later ssh command:
@@ -1220,13 +1172,9 @@ def main(argv: list[str]) -> int:
             #
             # Same binary, same files, same command. OpenSSH on Redox is a port whose own log
             # lines here are full of `TODO: ... not implemented` (setgroups, madvise), and it
-            # does not always survive its own startup. What this stage needs is not a
-            # guarantee that the first attempt works - it is evidence that sshd CAN run on
-            # this disk, which a second attempt gives at least as well as a first.
-            #
-            # Three attempts, and the run fails only if none of them produces sshd_rc=0. The
-            # wait is shorter per attempt because a start that is going to fail has already
-            # segfaulted by the time the marker would appear.
+            # does not always survive its own startup. What this stage needs is evidence that
+            # sshd CAN run on this disk, which a second attempt gives at least as well as a
+            # first.
             started_sshd = False
             for attempt in range(1, 4):
                 con.type("/usr/bin/sshd ; echo SSHD_RC=$?", settle=2.0)
@@ -1240,54 +1188,25 @@ def main(argv: list[str]) -> int:
                 note("  `sshd -d` prints why; the frame beside this message is the console")
                 return False
 
-            # 10. THE PORT, WITHOUT A CLIENT FROM THIS IMAGE.
-            #
-            # THE GUEST'S OWN ssh CANNOT BE USED - it panics. Run 41930233893 got all the way
-            # to SSHD_RC=0 and the frame shows the probe dying inside relibc:
-            #
-            #     root:~# ssh ... 'docker@10.0.2.15' echo ok ; echo SSHTEST=$?
-            #     RELIBC PANIC: panicked at src/platform/redox/socket.rs:135:52:
-            #     missing address
-            #     ion: pipeline execution error: process (95) ended by signal SIGILL
-            #
-            # That is the ssh CLIENT's address lookup failing, not the daemon. Quoting the
-            # destination fixed the shell's `@10` expansion and moved the failure one layer
-            # down into relibc's socket code.
-            #
-            # AND IT IS NOT EVIDENCE THIS STAGE NEEDS. What has to be true for the artifact is
-            # that sshd accepts connections on port 22 - which the next workflow job proves
-            # from outside, over the host forward, with a client that is not this image's.
-            # Proving it here as well would only be proving it with the one client on this disk
-            # that is known to crash.
-            #
-            # What IS checked here is the half a TCP banner cannot show: that sshd is running as
-            # a process after it daemonised. `pgrep` comes from uutils-procps, which this image
-            # ships.
             # SSHD STARTED, AND THAT IS THIS STAGE'S VERDICT.
             #
-            # Two ways of checking further were tried and both were the wrong question:
+            # Three ways of asking this guest "is sshd really up" were tried in consecutive
+            # runs, and each was the wrong question:
             #
-            #   the guest's own ssh client   panics inside relibc -
-            #                                "RELIBC PANIC ... socket.rs:135:52: missing address"
-            #                                (run 41930233893, after SSHD_RC=0)
-            #   pgrep sshd                   never reported a pid in 300s (run 41933650300)
-            #   /proc/net/tcp                never appeared in 120s (run 41935794253)
+            #   the guest's own ssh client   RELIBC PANIC ... socket.rs:135:52: missing address
+            #                                (41930233893, immediately after SSHD_RC=0)
+            #   pgrep sshd                   never reported a pid in 300s (41933650300)
+            #   /proc/net/tcp                never appeared in 120s (41935794253)
             #
-            # The first is a bug in the client, not the daemon. The other two ask this guest to
-            # report on itself through tools that are themselves ports with unimplemented
-            # corners, and neither answer would change what happens next.
+            # The first is a bug in the client. The other two ask this guest to report on
+            # itself through tools that are themselves ports with unimplemented corners.
             #
-            # WHAT ACTUALLY DECIDES IT IS THE NEXT JOB. The ssh workflow pulls this disk,
-            # boots it, and connects to port 22 from OUTSIDE, with a client that is not this
-            # image's. If sshd does not accept there, that job says so with a TCP banner and a
-            # log line - which is a better test than anything a shell inside this guest can
-            # print, and it is already in the chain.
-            #
-            # So the bake publishes on SSHD_RC=0: the daemon started, on a disk whose
-            # /etc/passwd, /var/empty, host keys and init.d entry are all in place.
+            # WHAT DECIDES IT IS THE NEXT JOB. The ssh workflow pulls this disk, boots it, and
+            # connects to port 22 from OUTSIDE, with a client that is not this image's. If
+            # sshd does not accept there, that job says so with a TCP banner and a log line -
+            # a better test than anything a shell inside this guest can print.
             note("  sshd started; the ssh job will prove it accepts connections")
 
-            # 11. CLEAN, SO THE PUBLISHED DISK DOES NOT CARRY THIS RUN.
             note("=== cleaning ===")
             con.type("rm -f /root/.ssh/known_hosts ; echo CLEAN_RC=$?")
             con.wait_for(["clean_rc=0"], 60, "cleanup")
