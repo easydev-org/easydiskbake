@@ -149,8 +149,10 @@ def main() -> int:
     # It already explained itself - "no QMP socket at ... - no frames" is the line that
     # says which half failed - and none of it reached the log, so a run with zero frames
     # reported only the number.
+    # THE RECORDER PREFIXES ITS OWN LINES, so this adds only the indent. Writing
+    # "  [snap] [snap] connected" reads like a bug in the logging rather than a message.
     for line in (snap_out or "").splitlines():
-        log(f"  [snap] {line}")
+        log(f"  {line}")
 
     log("=== the guest's own words ===")
     matched = smoke.wait_for("console.log", r"alpine|login:|~ #|localhost", 180)
