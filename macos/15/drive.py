@@ -574,7 +574,29 @@ def account(d: Driver, user: str, password: str, release: str = "15") -> None:
     d.click(CONTINUE, "account Continue", settle=3.0)
 
 
-def apple_account(d: Driver) -> None:
+# HOW TO LEAVE THE APPLE ACCOUNT PANE, PER RELEASE. THE CONTROL IS A DIFFERENT KIND.
+#
+# 15 offers "Set Up Later" as a TEXT LINK in the bottom-left corner, which is what NOT_NOW
+# was measured for and what the docstring below describes.
+#
+# 26 has no such link. Run 42105918605's last frame is that pane, and where the link sits it
+# has a BUTTON:
+#
+#     ( Other Sign-In Options v )        guest x 581..760, y 784..820, centre (670, 802)
+#
+# which opens a popup menu; every way out of the pane is inside that menu. So 26 needs a
+# click to open it and then a choice, and the choice is made with the keyboard: a macOS popup
+# highlights its first item when it opens, and Return takes it. "Sign In Later" is that item
+# on this pane - and if the order differs, the pane simply does not move and the recording
+# says so, which is a fact this stage can read where a guessed click coordinate would just be
+# wrong silently.
+APPLE_SKIP = {
+    "15": {"kind": "link", "at": NOT_NOW},
+    "26": {"kind": "menu", "at": (670, 802)},
+}
+
+
+def apple_account(d: Driver, release: str = "15") -> None:
     """Leave the Apple Account pane without signing in.
 
     "Set Up Later" is a text link in the bottom-left corner, not a button, and clicking it has
@@ -610,8 +632,21 @@ def apple_account(d: Driver) -> None:
     # creation writes a home directory, generates keys and talks to the keychain. Waiting too
     # long costs idle seconds and is recoverable; clicking too early throws away the run.
     d.wait(180, "apple account pane: the account is being created")
-    d.click(NOT_NOW, "Set Up Later", settle=2.0)
-    d.key("ret", settle=3.0)
+
+    skip = APPLE_SKIP.get(release)
+    if skip is None:
+        raise SystemExit(
+            f"=== NO APPLE-SKIP TABLE FOR macOS {release} ===\n"
+            f"  known: {', '.join(sorted(APPLE_SKIP))}\n"
+            f"  the control is a link on 15 and a menu button on 26; a guessed one is a click "
+            f"into empty pane")
+    if skip["kind"] == "menu":
+        # Open it, then take the first item with the keyboard.
+        d.click(skip["at"], "Other Sign-In Options", settle=3.0)
+        d.key("ret", settle=3.0)
+    else:
+        d.click(skip["at"], "Set Up Later", settle=2.0)
+        d.key("ret", settle=3.0)
 
     # THE SHEET ONLY EXISTS IF THE CLICK WORKED. When the pane has already gone, this
     # coordinate is empty space on the next pane - harmless - and when the sheet is up it is
@@ -681,7 +716,7 @@ def run_sequence(qmp_path: str, frames_dir: str | None, user: str, password: str
         accessibility(d)
         privacy_then_not_now(d)
         account(d, user, password, release)
-        apple_account(d)
+        apple_account(d, release)
         tail(d)
         log(f"sequence complete after {d.n} actions")
     finally:
