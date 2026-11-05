@@ -93,27 +93,34 @@
 
   # A LID SWITCH AND A SLEEP KEY EXIST ON SOME EMULATED MACHINES and both are wrong here.
   #
-  # `extraConfig`, NOT `settings.Login`, AND IT IS A STRING. NixOS has no
-  # services.logind.settings - the module exposes `extraConfig`, which is appended to the
-  # generated logind.conf verbatim. The attrset version is from systemd's own documentation
-  # and from other modules that do have a `settings` option, and it fails the way a wrong
-  # option name always does here:
+  # `settings.Login`, IN THE nixpkgs THIS REPOSITORY PINS. Read from that commit's
+  # nixos/modules/system/boot/systemd/logind.nix rather than from what a build happened to
+  # say:
   #
-  #     error: The option `services.logind.settings' does not exist.
-  #     Did you mean `boot', `ec2' or `fonts'?
+  #     options.services.logind = {
+  #       settings.Login = lib.mkOption { ... };        <- the real option
+  #       ...
+  #     };
+  #     imports = [ (lib.mkRemovedOptionModule [ "services" "logind" "extraConfig" ]
+  #                   "Use services.logind.settings.Login instead.") ];
   #
-  # which is run 42034715730 - all six dev matrix legs, at nixos-rebuild, after their disks
-  # had been pulled.
+  # TWO RUNS, TWO OPPOSITE ERRORS, ONE HOUR APART - and the cause was not this line at all.
+  # derive.py built against `nixos-unstable.tar.gz`, a branch:
   #
-  # `lib.mkDefault` DOES NOT APPLY TO A STRING, so this is a plain assignment. That is
-  # correct here: a configuration that already set extraConfig would win by defining the
-  # same option, and merging two strings is not what this needs.
-  services.logind.extraConfig = ''
-    HandleLidSwitch=ignore
-    HandleLidSwitchExternalPower=ignore
-    HandleSuspendKey=ignore
-    HandleHibernateKey=ignore
-  '';
+  #     14:00  error: The option `services.logind.settings' does not exist
+  #     15:01  error: `services.logind.extraConfig' no longer has any effect;
+  #            Use services.logind.settings.Login instead
+  #
+  # The first error was accurate for the branch at 14:00 and the second for the branch at
+  # 15:01, because the branch changed in between. NIXPKGS_COMMIT in derive.py now pins one
+  # tree, so this name stays correct until somebody deliberately bumps the pin - and the
+  # comment above says which name to check when they do.
+  services.logind.settings.Login = {
+    HandleLidSwitch = lib.mkDefault "ignore";
+    HandleLidSwitchExternalPower = lib.mkDefault "ignore";
+    HandleSuspendKey = lib.mkDefault "ignore";
+    HandleHibernateKey = lib.mkDefault "ignore";
+  };
 
   # THE LOCK SCREEN. `gnome`'s settings daemon locks after five minutes of idle by default,
   # and a locked GNOME has no active user session - which is exactly what

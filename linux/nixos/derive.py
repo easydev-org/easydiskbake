@@ -55,6 +55,30 @@ DESKTOPS = ("labwc", "gnome", "kde", "cosmic", "hyprland", "miracle")
 
 CONFIG_PORT = 8000
 
+# THE nixpkgs COMMIT THIS REPOSITORY BUILDS AGAINST, PINNED BY HASH.
+#
+# `nixos-unstable.tar.gz` is a BRANCH - it moves, and every build got a different NixOS. That
+# is not a supply-chain worry, it is a correctness one, and it cost three whole runs in one
+# afternoon:
+#
+#     14:00  error: The option `services.logind.settings' does not exist
+#            -> the fix was `services.logind.extraConfig'
+#     15:01  error: The option definition `services.logind.extraConfig' no longer has any
+#            effect; please remove it. Use services.logind.settings.Login instead.
+#            -> the branch had moved, and the fix for the first error was now the error
+#
+# Two opposite errors one hour apart, for the same line of nix. There is no way to converge
+# on a name while the thing that defines the names keeps changing underneath it.
+#
+# A COMMIT, NOT A TAG. `nixos-26.05` would also move; a 40-hex sha is the archive of one tree
+# and nothing else. To bump it, take the current head of the branch:
+#
+#     git ls-remote https://github.com/NixOS/nixpkgs refs/heads/nixos-unstable
+#
+# and then rebuild BOTH the base and every derived desktop, because the C toolchain version
+# is part of what this decides.
+NIXPKGS_COMMIT = "1d060086d60cb76a40cf37109f979d88a5bd6396"
+
 # THE SMALLEST DISK THIS STAGE WILL RUN IN, IN GiB. Every disk in this repository is 128G,
 # so this is a floor rather than a target: the resize below only happens if a base somehow
 # arrives smaller than this, and a desktop closure needs the room when it does.
@@ -137,7 +161,7 @@ curl -fsS -o /etc/nixos/configuration-minimal.nix http://10.0.2.2:{CONFIG_PORT}/
 # a path error a long way from the cause.
 curl -fsS -o /etc/nixos/configuration-desktop.nix http://10.0.2.2:{CONFIG_PORT}/configuration-desktop.nix 2>/dev/null || rm -f /etc/nixos/configuration-desktop.nix
 echo GOT_CONFIG
-export NIX_PATH="nixpkgs=https://github.com/NixOS/nixpkgs/archive/nixos-unstable.tar.gz:nixos-config=/etc/nixos/configuration.nix"
+export NIX_PATH="nixpkgs=https://github.com/NixOS/nixpkgs/archive/{NIXPKGS_COMMIT}.tar.gz:nixos-config=/etc/nixos/configuration.nix"
 nixos-rebuild boot
 rc=$?
 echo REBUILD_RC=$rc
