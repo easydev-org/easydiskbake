@@ -1,0 +1,75 @@
+name: signal-probe
+
+# Which signal, if any, does GitHub send when a run is cancelled?
+#
+#     gh workflow run signal-probe.yml
+#     gh run cancel <id>
+#
+# THE QUESTION THIS ANSWERS
+#
+# cancel-check showed that a cancelled step ends about 76 seconds after the request, with
+# `context canceled` in the log and no sign that log_stream.py's handlers ran. Two
+# explanations fit that: GitHub sends SIGKILL (uncatchable, so no handler can run), or it
+# sends a signal the handler does not install.
+#
+# The difference decides what the fix should be. If it is SIGKILL, no in-process handler can
+# ever work and the only options are polling or accepting the 76 seconds. If it is something
+# catchable, installing the handler is a three-line change.
+#
+# SO EVERY CATCHABLE SIGNAL IS TRAPPED AND NAMED. A trap that fires prints the signal number
+# and the wall clock; a trap that does not fire leaves the log ending at the last heartbeat.
+# 76 seconds of nothing, then the container disappears, means SIGKILL.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    permissions:
+      contents: read
+      checks: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare the runner
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: false
+          disk-gb: '0'
+
+      - name: trap every catchable signal
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: signal-probe
+          interval: "3"
+          command: |
+            set -euo pipefail
+            cat > /tmp/probe.sh <<'SCRIPT'
+            #!/bin/bash
+            for s in HUP INT QUIT ILL TRAP ABRT BUS FPE USR1 SEGV USR2 PIPE ALRM TERM \
+                     STKFLT CHLD CONT TSTP TTIN TTOU URG XCPU XFSZ VTALRM PROF WINCH IO PWR SYS
+            do
+              # shellcheck disable=SC2064
+              trap "echo \"CAUGHT $s at \$(date -u +%H:%M:%S)\"" "$s" 2>/dev/null || true
+            done
+            echo "traps installed; pid=$$ ppid=$PPID"
+            echo "my pgid=$(ps -o pgid= -p $$ | tr -d ' ')"
+            n=0
+            while :; do
+              n=$((n+1))
+              echo "alive $n at $(date -u +%H:%M:%S)"
+              sleep 3
+            done
+            SCRIPT
+            chmod +x /tmp/probe.sh
+            echo "=== started; cancel this run now ==="
+            exec /tmp/probe.sh
