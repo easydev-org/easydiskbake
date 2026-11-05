@@ -51,10 +51,17 @@ SYSTEMS = {
     # does not take it is a TypeError at the moment the clean starts - run 41811218132, after a
     # completely successful FreeBSD install.
     "freebsd": ("bsdclean", {}),
-    # macOS IS DELIBERATELY ABSENT. Its filesystem is copy-on-write, so writing zeros over the
-    # free space allocates new blocks before the old ones are released, and APFS snapshots hold
-    # blocks a write cannot reach. "Adding it here" is not the work; measuring whether it saves
-    # anything is, and that has not been done.
+    # macOS. The note that used to sit here said it was deliberately absent: "its filesystem is
+    # copy-on-write, so writing zeros over the free space allocates new blocks before the old
+    # ones are released". THAT IS AN ARGUMENT AGAINST ZEROING, and it is correct - it is why
+    # none of the four systems write zeros. It says nothing about DISCARD, which writes
+    # nothing and is exactly what a copy-on-write filesystem can do safely.
+    #
+    # The four macOS stages each wrote their own `-drive ... format=qcow2,id=target` line,
+    # none with discard=unmap, so every byte the guest ever wrote stayed allocated in the
+    # qcow2 and the image grew from setup to dev with nothing ever shrinking it. The line is
+    # now macos/15/machine.TARGET_DRIVE, in one place, and this cleaner is what uses it.
+    "macos": ("macclean", {}),
 }
 
 

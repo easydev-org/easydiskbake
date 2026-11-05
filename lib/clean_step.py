@@ -53,6 +53,19 @@ SYSTEMS = {
     "windows": {"ssh_port": 2222, "clean": "windows", "bootstate": True},
     "linux": {"ssh_port": 2222, "clean": "linux", "bootstate": False},
     "freebsd": {"ssh_port": 2222, "clean": "freebsd", "bootstate": False},
+    # macOS IS NOT HERE, AND THAT IS NOT THE OLD "deliberately absent" NOTE. Its cleaner
+    # exists (lib/macclean.py) and is registered in lib/clean_disk.SYSTEMS; what this table
+    # does not have is a macOS ENTRY, because this module cannot build the machine.
+    #
+    # Everything below `spec = SYSTEMS[args.kind]` is a plain virtio disk on q35 with OVMF
+    # chosen by kind. A macOS guest needs OpenCore on its own boot image, an Apple SMC device
+    # with the OSK key, a Skylake CPU model, its own firmware vars template, and the recovery
+    # image attached. macos/15/machine.py assembles all of that and this file would be a
+    # second, worse copy of it.
+    #
+    # So macOS cleans INSIDE its own stage - macos/15/ssh.py calls clean_disk.clean_running
+    # once Remote Login is proven to answer - which is the same "clean where the guest is
+    # already up" rule the other three follow, just without this launcher.
 }
 
 

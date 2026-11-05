@@ -37,6 +37,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, REPO)
 
+# lib/ ON THE PATH AS WELL, for the same reason linux/dev.py does it: clean_disk is a module
+# in lib/ that itself imports `session`, and `session` is reached by bare name (`from session
+# import ssh`) rather than as `lib.session`. Without this the clean at the end of this stage
+# fails with ModuleNotFoundError for a module that is sitting right there.
+sys.path.insert(0, os.path.join(REPO, "lib"))
+
 # TWO SOURCES, AS IN macos/15/desktop.py. `machine` is this file's neighbour, not a lib/
 # module, so `from lib import machine` cannot see it:
 #
@@ -138,7 +144,7 @@ def main(argv: list[str]) -> int:
         extra=[
             "-drive", f"file={assets['boot']},format=raw,if=none,id=oc",
             "-device", "virtio-blk-pci,drive=oc,bootindex=0",
-            "-drive", f"file={disk},if=none,format=qcow2,id=target",
+            "-drive", machine.TARGET_DRIVE.format(disk=disk),
             "-device", "virtio-blk-pci,drive=target,bootindex=1",
             "-device", f"isa-applesmc,osk={machine.OSK_PLAIN}",
         ],
@@ -176,6 +182,32 @@ def main(argv: list[str]) -> int:
 
         ok = True
         log("Remote Login is answering")
+
+        # THE CLEAN IS A STEP IN THIS STAGE, NOT A JOB OF ITS OWN.
+        #
+        # That is the same rule the other three systems follow: lib/clean_disk.py's docstring
+        # is explicit that a separate job would have to upload 12-16 GiB, download it again,
+        # boot it and clean it - work that is already done here, because this stage has the
+        # guest RUNNING, ssh CONNECTED and the disk on local storage.
+        #
+        # IT RUNS LAST, AFTER sshd IS PROVEN TO ANSWER, which is the only point at which
+        # every step of the cleaner can be reached. lib/macclean.py, and the reason it exists
+        # at all: the four macOS stages up to here each only ADD to the disk, so this is the
+        # first and only place it can shrink before being published.
+        log("=== cleaning the disk before it is exported ===")
+        import clean_disk
+        if not clean_disk.clean_running("macos", port=args.ssh_port, note=log,
+                                        disk=disk):
+            # A CLEAN THAT DID NOT RUN IS A FAILURE, NOT A WARNING.
+            #
+            # The other three systems' stages treat it this way, and the reason is the same
+            # here: publishing a disk whose free blocks were never handed back means every
+            # later pull of that tag carries the bloat, and the tag is what people use. A
+            # run that says "success" over an unclean disk makes the size look like the
+            # best this system can do.
+            log("=== THE CLEAN DID NOT FINISH ===")
+            log("  nothing is published: the disk is not what this stage claims to produce")
+            return 1
         return 0
     finally:
         guest.stop(acpi_first=ok)

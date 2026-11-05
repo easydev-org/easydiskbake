@@ -159,7 +159,7 @@ def main(argv: list[str]) -> int:
         extra=[
             "-drive", f"file={assets['boot']},format=raw,if=none,id=oc",
             "-device", "virtio-blk-pci,drive=oc,bootindex=0",
-            "-drive", f"file={disk},if=none,format=qcow2,id=target",
+            "-drive", machine.TARGET_DRIVE.format(disk=disk),
             "-device", "virtio-blk-pci,drive=target,bootindex=1",
             "-device", f"isa-applesmc,osk={machine.OSK_PLAIN}",
         ],

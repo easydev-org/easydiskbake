@@ -29,6 +29,34 @@ import vm  # noqa: E402
 # value macOS reads from the SMC device to decide whether the firmware is Apple's.
 OSK_PLAIN = "ourhardworkbythesewordsguardedpleasedontsteal(c)AppleComputerInc"
 
+# THE TARGET DISK'S `-drive` ARGUMENT, IN ONE PLACE.
+#
+# Four stages start this machine - bake, desktop, ssh, dev - and each wrote its own copy of
+#
+#     "-drive", f"file={disk},if=none,format=qcow2,id=target",
+#
+# so the copies could differ and one of them always did. Adding discard=unmap to three of
+# them and forgetting the fourth would have produced a disk that grew during setup and then
+# stopped being trimmed at whichever stage kept the old line, with no sign of it in any log.
+#
+# discard=unmap IS THE macOS EQUIVALENT OF THE fstrim THE OTHER SYSTEMS RUN.
+#
+# Without it every block the guest has ever written stays allocated in the qcow2 forever:
+# macOS deletes a file, APFS marks the extents free, and the information stops there because
+# the virtio device was never told it may discard. APFS is copy-on-write, but that affects
+# what happens INSIDE the guest - it does not carry a single byte of that knowledge across
+# the virtio boundary.
+#
+# WHY lib/clean_disk.py SAID macOS WAS ABSENT, AND WHY THAT WAS ABOUT A DIFFERENT THING.
+#
+#     "its filesystem is copy-on-write, so writing zeros over the free space allocates new
+#      blocks before the old ones are released"
+#
+# That is an argument against ZEROING, and it is right - it is why none of the four systems
+# here write zeros. It says nothing about DISCARD, which allocates nothing, writes nothing,
+# and is the only one of the two that a copy-on-write filesystem can do safely.
+TARGET_DRIVE = "file={disk},if=none,format=qcow2,discard=unmap,id=target"
+
 
 def shape(assets: dict, *, cpus: int = 4, mem_mb: int = 8192) -> vm.Shape:
     """The machine itself, without any storage.
@@ -96,7 +124,7 @@ def drives(assets: dict, disk: str, recovery: str) -> list[str]:
     return [
         "-drive", f"file={assets['boot']},format=raw,if=none,id=oc",
         "-device", "virtio-blk-pci,drive=oc,bootindex=0",
-        "-drive", f"file={disk},if=none,format=qcow2,id=target",
+        "-drive", TARGET_DRIVE.format(disk=disk),
         "-device", "virtio-blk-pci,drive=target,bootindex=1",
         "-drive", f"file={recovery},media=disk,if=none,id=rec,readonly=on",
         "-device", "usb-storage,bus=xhci.0,drive=rec",
