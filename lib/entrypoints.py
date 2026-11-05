@@ -5,24 +5,24 @@
 
 WHY THIS EXISTS
 
-`redox/bake.py` was committed without its
+A bake was once committed without its
 
     if __name__ == "__main__":
         raise SystemExit(main(sys.argv[1:]))
 
-line. `python3 redox/bake.py --help` still exited 0 - because - and this is the part that
-made the check useless - it was run from the repository root, where importing the file
-defines `main` and stops. Nothing executes, nothing fails, exit code 0.
+line, and `python3 <that file> --help` still exited 0 - because it was run from the repository
+root, where importing the file defines `main` and stops. Nothing executed, nothing failed,
+exit code 0.
 
 In CI it was worse, not better: the step finished in 559 ms having pushed nothing, and the
 only symptom was a step that reported success and produced no disk:
 
     log-stream: finished success (0 pushes, 0 failures)
     ...
-    FAILED: no disk at out/redox.qcow2
+    FAILED: no disk at out/....
 
-A file that defines a `main()` and never calls it is a file that does nothing, and nothing
-in this repository noticed. This does.
+A file that defines a `main()` and never calls it is a file that does nothing, and nothing in
+this repository noticed. This does.
 
 WHAT IS CHECKED, AND WHY EACH ONE
 
@@ -48,16 +48,11 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # THE ENTRY POINTS A WORKFLOW RUNS BY PATH. Kept as a list because a module that is only
 # ever imported (lib/*.py) is a different thing and does not need the guard.
-ENTRYPOINTS = [
-    "redox/bake.py",
-    "redox/launch.py",
-    "redox/ssh.py",
-    "redox/probe.py",
-]
+ENTRYPOINTS = []
 
 # Directories that hold an entry point per system, discovered rather than listed so a new
 # system cannot be added and forgotten.
-SEARCH = ["android", "bsd", "linux", "macos", "redox", "windows", "lib"]
+SEARCH = ["android", "bsd", "linux", "macos", "windows", "lib"]
 
 # THIS FILE RUNS ITSELF OTHERWISE, and "did not return within 120s" is what that looks
 # like: a check that invokes every entry point discovered a check that invokes every entry

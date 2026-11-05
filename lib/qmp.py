@@ -60,7 +60,7 @@ class QMP:
     There is no version of this that avoids the wait - the socket is single-client by design
     - so the wait is explicit and long enough for a frame write, rather than a 30-second
     timeout that reads as "qemu is dead". A caller that has one connection and keeps it (see
-    redox/bake.py's Console.live()) never pays this.
+    a caller that opens one connection and keeps it) never pays this.
     """
 
     def __init__(self, path, *, greeting_timeout: int = 120):

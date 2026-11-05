@@ -41,9 +41,9 @@ jobs:
           command: |
             set -euo pipefail
             # THE ENTRY POINTS RUN BEFORE ANYTHING BOOTS. A file that defines main() and
-            # never calls it reports success having done nothing - redox/bake.py was
-            # committed that way, finished in 559 ms and produced no disk - and no boot
-            # test would catch it because the step's exit code was 0.
+            # never calls it reports success having done nothing - a bake was committed
+            # that way once, finished in 559 ms and produced no disk - and no boot test
+            # would catch it because the step's exit code was 0.
             python3 lib/entrypoints.py
             python3 lib/ci.py kvm
             mkdir -p out

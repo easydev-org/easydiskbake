@@ -76,8 +76,8 @@ def newest_frame(directory: str) -> str | None:
         [lastframe] ffmpeg failed: Error opening input: No such file or directory
         Error opening input file .../frames/frame-0177.ppm.
 
-    Every redox bake logs that line, and a caller that had nothing else to fall back on
-    would have lost the frame rather than the duplicate.
+    A bake that left both behind would log that line, and a caller with nothing else to
+    fall back on would have lost the frame rather than the duplicate.
     """
     try:
         names = os.listdir(directory)
