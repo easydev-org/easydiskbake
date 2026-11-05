@@ -172,6 +172,24 @@ VERIFY = (1086, 531)
 # The "Are you sure you want to skip sign in?" sheet - Skip is the right-hand of its pair.
 SHEET_SKIP = (1026, 634)
 
+# THE PAIRING PANE'S FAILURE ALERT. macOS 26 SHOWS THIS EVEN AFTER "Set up as new".
+#
+# Run 42076349059's frames, one minute apart:
+#
+#     s003   Transfer Your Data - (o) From a Mac, Time Machine, or startup disk
+#     s004   Data & Privacy
+#     s005   Transfer information to this Mac / [ Unable to Pair Computers ]   <- here
+#
+# So the radio selection worked and Data & Privacy advanced - and macOS 26 started the
+# pairing handshake anyway. The alert then covers the pane and DISABLES BOTH FOOTER
+# BUTTONS: in s005 Not Now and Continue are grey, so privacy_then_not_now's click at
+# NOT_NOW_LEFT lands on a disabled control and does nothing, ten times in a row, while the
+# wizard sits still.
+#
+# The alert's own button is the only way out, and it is measured from that frame: the blue
+# pill spans x=843..1076, y=610..643 at 1920x1080, so its centre is (959, 626).
+PAIR_ALERT_OK = (959, 626)
+
 # Not Now on a two-button pane: the pairing pane after Data & Privacy. Continue is
 # disabled there, so Not Now is the only control that moves the wizard.
 NOT_NOW_LEFT = (1132, 796)
@@ -393,18 +411,35 @@ def set_up_as_new(d: Driver) -> None:
     """
     d.wait(8, "transfer pane settles")
 
-    # CLICK THE CIRCLE OF THE LAST ROW. Not the label, and not three Downs.
+    # CLICK THE FIRST ROW FOR FOCUS, THEN THREE DOWNS. NOT A CLICK ON THE LAST ROW.
     #
-    # Three Downs were tried twice and moved nothing, because no control had keyboard focus
-    # when the pane appeared - the focus was still on the Continue button the previous pane's
-    # click had left it on. Clicking the circle focuses the group and selects the row in one
-    # action, which is what a person does with this pane.
+    # This is what the docstring above has always described, and the code had stopped doing
+    # it: the last line clicked TRANSFER_ROWS["Set up as new"] directly. That is a POSITION,
+    # and a position is a fact about one release's layout.
     #
-    # The coordinate is the circle itself, confirmed by eye against a 1920x1080 grid built
-    # from this run's own frame: see TRANSFER_ROWS. The label starts at x~845 and is not part
-    # of the control - a click on the words selects nothing, which is how an earlier attempt
-    # looked like it had worked while the first row stayed filled in.
-    d.click(TRANSFER_ROWS["Set up as new"], "Set up as new (the radio circle)", settle=2.5)
+    # IT IS WRONG ON 26 BY 37 PIXELS. Measured from run 42076349059's own frame, the four
+    # radio circles sit at these guest y values:
+    #
+    #                      15 (this table)   26 (measured)
+    #     From a Mac            597              640
+    #     From a Windows PC     621              662
+    #     Set up with iPhone    645              683
+    #     Set up as new         669              706
+    #
+    # so the click at 669 landed in the GAP between "iPhone" and "as new". Nothing was
+    # selected, the first row stayed selected, and the wizard opened the pairing handshake -
+    # which is the alert whose frames are quoted at PAIR_ALERT_OK above. The same click had
+    # been correct on 15 for as long as anyone measured it, which is exactly why a table of
+    # coordinates cannot be shared between releases.
+    #
+    # THE FIRST ROW DOES NOT MOVE: it is anchored to the top of the list, 597 and 640 differ
+    # by 6 pixels in a row 24 high, so (825, 600) is inside it on both. Clicking it selects
+    # what is already selected - its only job is to give the list keyboard focus, because
+    # Down on an unfocused button moves nothing (runs 41784951651 and 41787686321).
+    #
+    # Then three Downs, which walk the list the widget drew. No coordinate, no release.
+    d.click((825, 600), "first transfer row, for keyboard focus", settle=2.5)
+    d.key("down", times=3, settle=1.5)
 
     # FIVE SECONDS FOR THE PANE TO ACCEPT IT, THEN CONTINUE. No check on what is on screen:
     # the sequence is fixed, and a reading step in the middle of it is the thing this file
@@ -425,15 +460,30 @@ def accessibility(d: Driver) -> None:
 
 
 def privacy_then_not_now(d: Driver) -> None:
-    """Data & Privacy, then the pane it opens: Not Now, never Continue.
+    """Data & Privacy, then the pane it opens: dismiss the alert, then Not Now.
 
-    Continue there leads to a pairing handshake with a Mac that does not exist - thirteen
-    seconds and a failure alert that covers the way out. Not Now is pressed straight after
-    Continue so it lands while the pane is up.
+    Continue on Data & Privacy leads to a pairing handshake with a Mac that does not exist.
+    On macOS 15 the handshake takes thirteen seconds and then fails; on 26 it fails fast
+    enough that the alert is already up when the next click arrives.
+
+    THE ALERT DISABLES THE FOOTER. Run 42076349059's last frame has
+
+        Unable to Pair Computers ... [ OK ]
+
+    over the pane with BOTH Not Now and Continue grey, so a click at NOT_NOW_LEFT does
+    nothing at all - and the fixed ten-pane tail then clicked Continue ten more times into a
+    disabled button, which is why the recording shows one unchanging screen for twenty
+    minutes after the sequence reported complete.
+
+    So: OK first, THEN Not Now. The OK click is a no-op when the alert did not appear,
+    because that point is empty pane background, which is the same argument LICENCE_AGREE
+    uses for being clicked on every pane.
     """
     d.wait(8)
     d.click(CONTINUE, "privacy Continue", settle=2.0)
+    d.click(PAIR_ALERT_OK, "OK on the pairing alert, if it is up", settle=2.0)
     d.click(NOT_NOW_LEFT, "Not Now on the pairing pane", settle=3.0)
+    d.click(PAIR_ALERT_OK, "OK again, in case the alert came back", settle=2.0)
     d.click(NOT_NOW_LEFT, "Not Now again, in case the first was early", settle=3.0)
 
 
