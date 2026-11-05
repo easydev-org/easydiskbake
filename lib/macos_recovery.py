@@ -107,6 +107,72 @@ UA = "InternetRecovery/1.0"
 MIN_PLAUSIBLE = 100 * 1024 * 1024   # a recovery image is hundreds of MB
 
 
+def fetch_published(release: str, work: str) -> str:
+    """Put this repository's published recovery image for `release` in `work`.
+
+        import macos_recovery
+        recovery = macos_recovery.fetch_published("15", work)
+
+    WHY THIS IS ONE FUNCTION INSTEAD OF THREE COPIES
+
+    Every macOS stage after the bake needs this file, and none of them inherits it: a
+    job pulls one disk from ghcr and nothing else, so `work` starts with the disk and no
+    recovery image. opencore.build() then fails on the APFS driver, because that driver
+    is extracted from BaseSystem inside the recovery image and there is no other source
+    for it.
+
+    That was learned three times, in three stages, each fixed separately:
+
+        bake.py       fetches it at the top of the bake                    -> fine
+        desktop.py    had assumed it would be there, and run 41773825483
+                      died at the first build step                        -> its own copy
+        ssh.py        had assumed it too, and run 41979713660 died after
+                      setup and desktop had both succeeded                -> this function
+
+    The copies also disagreed about the file name: bake.py writes
+    recovery-sequoia.dmg because a work directory can hold more than one release, while
+    desktop.py wrote whatever opencore.recovery_image() returned, which is
+    recovery.dmg. Both are accepted by opencore.recovery_image() and neither is wrong,
+    but a fourth stage writing a third spelling is how a work directory ends up with two
+    images and the wrong one being picked.
+
+    THE TAG COMES FROM THE BOARD TABLE above, which is where the release-name mapping
+    already lives. A stage that hard-codes "sequoia" works for exactly one release and
+    silently names the wrong image for every other one.
+
+    NO FALLBACK TO APPLE. If the tag is not in the package the error says to run
+    macos-recovery-publish.yml, rather than starting an 850 MiB download that hides the
+    misconfiguration until it fails somewhere else.
+    """
+    import os
+
+    # NOQA: iso is imported by sys.path, the way every other module in lib/ does it -
+    # see lib/opencore.py, lib/pull_disk.py, lib/publish_iso.py.
+    import iso  # noqa: E402
+
+    name = resolve(release)[0]
+    tag = f"macos-recovery-{name}"
+
+    # ONE NAME, so the stages agree by construction about which file they used.
+    dest = os.path.join(work, f"recovery-{name}.dmg")
+    if os.path.isfile(dest) and os.path.getsize(dest) > 0:
+        log(f"  {dest} already present ({os.path.getsize(dest) >> 20} MiB)")
+        return dest
+
+    log(f"  pulling {tag}")
+    try:
+        return iso.fetch_tag(tag, dest)
+    except iso.IsoError as exc:
+        raise SystemExit(
+            f"=== NO RECOVERY IMAGE AND IT COULD NOT BE PULLED ===\n"
+            f"  {tag} is not in this repository's ghcr package: {exc}\n"
+            f"  The APFS driver is extracted from this image and has no other source,\n"
+            f"  so the disk this stage would produce could not boot.\n"
+            f"  Run macos-recovery-publish.yml for {release} first:\n"
+            f"      gh workflow run macos-recovery-publish.yml -f releases={release}"
+        ) from exc
+
+
 def resolve(release: str) -> tuple[str, str, str]:
     """release -> (name, release number, board id)."""
     key = ALIASES.get(release.lower(), release)

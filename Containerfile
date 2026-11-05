@@ -58,12 +58,30 @@ FROM qemux/qemu:7.50
 #                     Both failed before any of this repository's code ran. The image
 #                     was written for the bake, which needs neither - GitHub's runner VM
 #                     supplies them, and a container job does not get that for free.
+#   sshpass           the password on the command line, for every stage that reads a
+#                     guest over ssh. IT IS HERE BECAUSE IT WAS IN THIRTEEN WORKFLOW
+#                     STEPS AND MISSING FROM FOUR. Each stage that needed it ran
 #
+#                         if ! command -v sshpass; then apt-get install -y -qq sshpass; fi
+#
+#                     which is a copy of one fact in thirteen places, and the copies
+#                     disagreed: ubuntu, kubuntu, freebsd and nixos installed it in bake
+#                     and launch but not in dev, so run 41985172898's dev job moved a
+#                     12 GiB disk into place, started qemu, and then reported
+#
+#                         === sshpass IS NOT INSTALLED IN THIS CONTAINER ===
+#                         === THE GUEST NEVER ANSWERED ===
+#
+#                     two seconds after the machine booted. The guest was fine; the
+#                     client that was supposed to talk to it was not there. One source
+#                     for the fact is the fix, and the image is it.
+#                     `--no-install-recommends` as everywhere else in this RUN.
 # (Comments cannot sit inside a line-continued RUN, so they sit above it.)
 RUN set -eux; \
     apt-get update; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ffmpeg \
+        sshpass \
         # python3-pil is what lets lib/assistant.py crop a region of a screendump before
         # handing it to tesseract. The capacity in Disk Utility's detail pane is about ten
         # pixels tall at 1920x1080 and unreadable full-frame; run 41691829177 lost a bake to
@@ -117,7 +135,7 @@ RUN set -eux; \
     7z 2>/dev/null | head -2 | tail -1; \
     mformat --version 2>&1 | head -1; \
     ls -l /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_VARS_4M.fd; \
-    command -v debugfs genisoimage mkfifo timeout setsid jq curl
+    command -v debugfs genisoimage mkfifo timeout setsid jq curl sshpass
 
 # ---------------------------------------------------------------------------
 # The Android emulator and adb.

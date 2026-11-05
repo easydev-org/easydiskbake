@@ -99,6 +99,29 @@ def main(argv: list[str]) -> int:
     disk = wc.working_copy(args.disk, os.path.join(work, "ssh.qcow2"),
                            copy=args.copy, note=log)
 
+    # THE RECOVERY IMAGE IS AN INPUT EVEN THOUGH THIS STAGE DOES NOT BOOT FROM IT.
+    #
+    # opencore.build() takes Apple's APFS driver out of the recovery image and puts it in
+    # boot.img. Without it the guest cannot mount what desktop.py wrote, so the image is
+    # required here even though no cdrom is attached.
+    #
+    # THIS STAGE ASSUMED THE IMAGE WOULD BE PRESENT, and run 41979713660 is what that
+    # costs: setup succeeded, desktop succeeded, and this died in 2.4 seconds with
+    #
+    #     opencore.OpenCoreError: no recovery image at out/recovery.dmg, and the APFS
+    #     driver can only come from one
+    #
+    # after the two previous stages had already done an hour of work. A job pulls one
+    # disk from ghcr and nothing else - it inherits no other stage's inputs - so the
+    # fetch has to be here. macos_recovery.fetch_published is the single place that
+    # knows the tag and the file name; desktop.py and bake.py reach the same file
+    # through it now.
+    log("=== recovery image ===")
+    import macos_recovery
+
+    recovery = macos_recovery.fetch_published("15", work)
+    log(f"  {recovery} ({os.path.getsize(recovery) >> 20} MiB)")
+
     log("=== OpenCore, firmware, APFS driver ===")
     import opencore
 

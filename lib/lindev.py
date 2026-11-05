@@ -143,7 +143,19 @@ def main(argv: list[str]) -> int:
     log(f"waiting for ssh on {args.port}")
     started = time.time()
     if not session.wait_for_ssh(args.port, args.boot_timeout, log):
-        log("=== THE GUEST NEVER ANSWERED ===")
+        # THE MESSAGE NAMES THE FAILURE IT ACTUALLY HAD, and this used to lie.
+        #
+        # It said "THE GUEST NEVER ANSWERED" for both of the two ways wait_for_ssh
+        # returns False, and the one that happened in run 41985172898 was not that: the
+        # client was missing, so no question was ever asked. The log read
+        #
+        #     [tools 07:26:02] waiting for ssh on 2222
+        #     [tools 07:26:02] === sshpass IS NOT INSTALLED IN THIS CONTAINER ===
+        #     [tools 07:26:02] === THE GUEST NEVER ANSWERED ===
+        #
+        # in the same second, which points a reader at a machine two lines above the
+        # line that says the machine was never contacted. wait_for_ssh has already said
+        # which one it was; repeating the guess over the top is what made the log wrong.
         return 1
     log(f"ssh after {time.time() - started:.0f}s")
 

@@ -56,7 +56,7 @@ import assistant  # noqa: E402
 import live as livelib  # noqa: E402
 import machine  # noqa: E402
 import images  # noqa: E402
-import iso  # noqa: E402
+import macos_recovery  # noqa: E402
 import opencore  # noqa: E402
 import smoke  # noqa: E402
 import vm  # noqa: E402
@@ -142,27 +142,12 @@ class Baker:
         The file name carries the release because a work directory can hold more than
         one and opencore.recovery_image() picks the first .dmg it finds.
         """
-        name = RELEASES[self.args.release]
-        dest = os.path.join(self.work, f"recovery-{name}.dmg")
-        tag = f"macos-recovery-{name}"
-
-        if os.path.exists(dest) and os.path.getsize(dest) > 0:
-            log(f"{dest} already present ({os.path.getsize(dest) >> 20} MiB)")
-            return dest
-
-        log(f"pulling {tag} from ghcr")
-        try:
-            return iso.fetch_tag(tag, dest)
-        except iso.IsoError as exc:
-            raise SystemExit(
-                f"{tag} is not in this repository's ghcr package: {exc}\n\n"
-                f"Run macos-recovery-publish.yml for {self.args.release} first:\n"
-                f"    gh workflow run macos-recovery-publish.yml "
-                f"-f releases={self.args.release}\n"
-                f"This bake does not request a recovery image from Apple itself. A "
-                f"second source would be a second thing to verify, and the failure it "
-                f"hides is exactly the one worth seeing."
-            ) from exc
+        # ONE IMPLEMENTATION, SHARED WITH EVERY LATER STAGE. See
+        # macos_recovery.fetch_published: the tag, the file name and the "run
+        # macos-recovery-publish.yml" advice all come from there, so bake, desktop, ssh
+        # and dev cannot drift into using different images for the same release.
+        log("=== recovery image ===")
+        return macos_recovery.fetch_published(self.args.release, self.work)
 
     def build_boot_assets(self) -> dict:
         """OpenCore, the firmware pair, the identity and boot.img.

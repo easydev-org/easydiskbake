@@ -334,11 +334,6 @@ jobs:
           interval: "10"
           command: |
             set -euo pipefail
-            if ! command -v sshpass >/dev/null 2>&1; then
-              apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
-                apt-get install -y -qq sshpass
-            fi
-            sshpass -V | head -1
             python3 lib/ci.py tags --prefix macos-
 
       - name: pull the desktop disk
@@ -429,11 +424,6 @@ jobs:
           interval: "10"
           command: |
             set -euo pipefail
-            if ! command -v sshpass >/dev/null 2>&1; then
-              apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
-                apt-get install -y -qq sshpass
-            fi
-            sshpass -V | head -1
             python3 lib/ci.py tags --prefix macos-
 
       - name: pull the ssh disk

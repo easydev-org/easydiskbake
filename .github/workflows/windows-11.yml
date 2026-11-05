@@ -261,19 +261,6 @@ jobs:
           kvm: true
           disk-gb: '60'
 
-      - name: prepare
-        uses: easydev-org/easyactions/log-stream@main
-        with:
-          token: ${{ github.token }}
-          name: ssh-prepare
-          interval: "10"
-          command: |
-            set -euo pipefail
-            if ! command -v sshpass >/dev/null 2>&1; then
-              apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
-                apt-get install -y -qq sshpass
-            fi
-
       - name: pull the gold disk
         uses: easydev-org/easyactions/log-stream@main
         with:
@@ -356,19 +343,6 @@ jobs:
         with:
           kvm: true
           disk-gb: '60'
-
-      - name: prepare
-        uses: easydev-org/easyactions/log-stream@main
-        with:
-          token: ${{ github.token }}
-          name: dev-prepare
-          interval: "10"
-          command: |
-            set -euo pipefail
-            if ! command -v sshpass >/dev/null 2>&1; then
-              apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
-                apt-get install -y -qq sshpass
-            fi
 
       - name: pull the ssh disk
         uses: easydev-org/easyactions/log-stream@main

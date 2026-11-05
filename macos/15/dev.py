@@ -165,7 +165,16 @@ def main(argv: list[str]) -> int:
                            copy=args.copy, note=log)
 
     import opencore
+    import macos_recovery
     from lib import machine, vm
+
+    # THE RECOVERY IMAGE IS AN INPUT EVEN THOUGH THIS STAGE DOES NOT BOOT FROM IT. See
+    # the longer note in ssh.py: opencore.build() extracts Apple's APFS driver out of it,
+    # and a job inherits no other job's inputs. This is the last stage in the chain, so
+    # without this it would fail after setup, desktop and ssh had all succeeded.
+    log("=== recovery image ===")
+    recovery = macos_recovery.fetch_published("15", work)
+    log(f"  {recovery} ({os.path.getsize(recovery) >> 20} MiB)")
 
     log("=== OpenCore, firmware, APFS driver ===")
     assets = opencore.build("15", work)

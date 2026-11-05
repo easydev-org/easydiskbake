@@ -133,23 +133,16 @@ def main(argv: list[str]) -> int:
     # stages must agree on which image was used: a driver out of a different release is a
     # different boot path.
     log("=== recovery image ===")
-    import iso as isolib
+    import macos_recovery
     import opencore
 
-    recovery = opencore.recovery_image(work)
-    if not (os.path.isfile(recovery) and os.path.getsize(recovery) > 0):
-        name = "sequoia"
-        tag = f"macos-recovery-{name}"
-        log(f"  not present; pulling {tag}")
-        try:
-            isolib.fetch_tag(tag, recovery)
-        except isolib.IsoError as exc:
-            raise SystemExit(
-                f"=== NO RECOVERY IMAGE AND IT COULD NOT BE PULLED ===\n"
-                f"  {exc}\n"
-                f"  The APFS driver comes out of it; without one the disk this stage"
-                f" produces cannot boot. Run macos-recovery-publish.yml for 15 first."
-            ) from exc
+    # THE FETCH IS ONE FUNCTION NOW. This stage used to carry its own copy, with
+    # "sequoia" spelled out and the file name coming from opencore.recovery_image() -
+    # while bake.py wrote recovery-sequoia.dmg. Both names are accepted, but a third
+    # stage arriving with a third spelling is how a work directory ends up holding two
+    # images of different releases. macos_recovery.fetch_published knows the tag, the
+    # name and the error message, for every stage and every release.
+    recovery = macos_recovery.fetch_published("15", work)
     log(f"  {recovery} ({os.path.getsize(recovery) >> 20} MiB)")
 
     # THE BOOT ASSETS. opencore.build() needs the recovery image only to take Apple's

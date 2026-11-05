@@ -115,12 +115,6 @@ jobs:
           interval: "10"
           command: |
             set -euo pipefail
-            # THE CLEAN AND THE LAUNCH READ THE GUEST OVER SSH.
-            if ! command -v sshpass >/dev/null 2>&1; then
-              apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
-                apt-get install -y -qq sshpass
-            fi
-            sshpass -V | head -1
             python3 lib/ci.py tags --prefix iso-freebsd
 
       - name: install
@@ -305,12 +299,6 @@ jobs:
           interval: "10"
           command: |
             set -euo pipefail
-            # THE VERDICT IS READ OVER SSH, so the client that supplies the password has to exist.
-            if ! command -v sshpass >/dev/null 2>&1; then
-              apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
-                apt-get install -y -qq sshpass
-            fi
-            sshpass -V | head -1
             python3 lib/ci.py tags --prefix bsd-
 
       - name: launch it
