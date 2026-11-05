@@ -96,16 +96,26 @@ in
 
   services.desktopManager.gnome.enable = lib.mkIf (desktop == "gnome") true;
   services.displayManager.gdm.enable = lib.mkIf (desktop == "gnome") true;
-  # THE OPTION'S REAL NAME, NOT ITS ALIAS.
+  # THE GENERIC autoLogin, NOT ONE UNDER gdm.
   #
-  # `services.xserver.displayManager.gdm.autoLogin` is registered in gdm.nix as a RENAME to
-  # `services.displayManager.gdm.autoLogin` - it works, it emits a warning, and after
-  # xserver goes away it is a path into a tree nothing else in this file uses. Same option,
-  # named where it is declared.
-  services.displayManager.gdm.autoLogin = lib.mkIf (desktop == "gnome") {
-    enable = true;
-    user = "docker";
-  };
+  # `services.displayManager.gdm.autoLogin` HAS ONLY `delay`. The other two options live at
+  # `services.displayManager.autoLogin`, and gdm.nix registers
+  #
+  #     mkRenamedOptionModule
+  #       [ "services" "xserver" "displayManager" "gdm" "autoLogin" "enable" ]
+  #       [ "services" "displayManager" "autoLogin" "enable" ]
+  #
+  # so the old xserver path IS the alias for the generic one - it works and it is what this
+  # file had. Renaming it to `services.displayManager.gdm.autoLogin` was a misreading of that
+  # mkRenamedOptionModule: the first list is the OLD name, the second is the target. Run
+  # 42048431906 failed on it:
+  #
+  #     The option `services.displayManager.gdm.autoLogin.enable' does not exist.
+  #     Did you mean `services.displayManager.gdm.autoLogin.delay'?
+  #
+  # AND THE GENERIC ONE IS ALREADY SET, below - for cosmic, kde, hyprland and miracle. GNOME
+  # belongs in that list rather than in a second definition: two definitions of the same
+  # option is a conflict, which is the note the SDDM block further down already carries.
 
   services.desktopManager.plasma6.enable = lib.mkIf (desktop == "kde") true;
   # SDDM for KDE and for the three compositors that register a session but ship
@@ -115,11 +125,12 @@ in
 
   services.desktopManager.cosmic.enable = lib.mkIf (desktop == "cosmic") true;
   services.displayManager.cosmic-greeter.enable = lib.mkIf (desktop == "cosmic") true;
-  # GENERIC autologin, shared by every greeter that reads it: SDDM and the
-  # COSMIC greeter both do.
+  # GENERIC autologin, shared by every greeter that reads it: GDM, SDDM and the COSMIC
+  # greeter all do.
   #
-  # Only gdm is different - it declares autoLogin under
-  # services.xserver.displayManager.gdm, above.
+  # GNOME IS IN THIS LIST rather than in a gdm-specific setting. gdm.nix's
+  # `mkRenamedOptionModule` sends the old xserver path here, so this is the one definition
+  # for all five; see the note above about gdm.autoLogin having only `delay`.
   #
   # This is the option that matters for KDE. Its mdm-specific spelling
   # [services.displayManager.sddm.autoLogin] is registered in sddm.nix as a
@@ -127,7 +138,7 @@ in
   # the screenshot was SDDM's own login screen - time, docker avatar, Password
   # box - which is what every earlier "wallpaper but no panel" reading really was.
   services.displayManager.autoLogin =
-    lib.mkIf (builtins.elem desktop [ "cosmic" "kde" "hyprland" "miracle" ]) {
+    lib.mkIf (builtins.elem desktop [ "cosmic" "gnome" "kde" "hyprland" "miracle" ]) {
       enable = true;
       user = "docker";
     };
