@@ -198,7 +198,20 @@ VERIFY = (1086, 531)
 # its own last frame shows Full name "admin" and Password empty, which is this table.
 ACCOUNT_FIELDS = {
     "15": {"full": (945, 447), "password": (850, 531), "verify": (1086, 531)},
-    "26": {"full": (960, 497), "password": (960, 600), "verify": (1050, 600)},
+    # THE x VALUES ARE MEASURED FROM THE BOX EDGES, NOT FROM THE LABELS.
+    #
+    # 26 splits the password row into two boxes side by side, and they do not start where a
+    # single centred click would assume. From that frame, at video y=445:
+    #
+    #     Password box    x = 486..636   centre 561  -> guest 842
+    #     Verify box      x = 648..785   centre 717  -> guest 1075
+    #
+    # The first version of this row said (960, 600) for the password, which is video x=640 -
+    # THE GAP BETWEEN THE TWO BOXES. A click there focuses nothing, so the focus stayed on
+    # whichever field the tab order had left it on and the three values went into the wrong
+    # places. That is what the validation alert on run 42097437492 is: Full Name "admin",
+    # Account Name "admin", both password boxes empty.
+    "26": {"full": (1050, 497), "password": (842, 601), "verify": (1075, 601)},
 }
 
 # The "Are you sure you want to skip sign in?" sheet - Skip is the right-hand of its pair.
