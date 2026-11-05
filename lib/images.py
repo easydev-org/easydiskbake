@@ -101,48 +101,30 @@ VIRTIO = {
 # filenames carry the version, which is the pin. The ISO9660 check in
 # publish_iso.py is what catches a mirror serving an error page.
 LINUX = {
-    "mx": {
-        # The file is MX-25.3_Xfce_x64.iso, not MX-25.3_x64.iso: the edition is part
-        # of the name. The earlier value returned 404 and would have failed the first
-        # --all run.
-        #
-        # No sha256 and no size: SourceForge redirects to a per-request CDN URL with
-        # an expiring token, so the bytes are the same but nothing about the response
-        # is stable. The ISO9660 check in publish_iso.py is what catches a bad one.
-        "url": "https://sourceforge.net/projects/mx-linux/files/Final/Xfce/"
-               "MX-25.3_Xfce_x64.iso/download",
-        "sha256": None,
-        "size": None,
-    },
-    "alpine": {
-        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/x86_64/"
-               "alpine-virt-3.24.3-x86_64.iso",
-        # The vendor publishes a .sha256 beside the image.
-        "sha256": "cdc1bc0efc64d8d611bf3733f54868172a545888dfd726f518bf279bcb0ff1af",
-        "size": 70254592,
-    },
 
     # ---------------------------------------------------------------------------
-    # THE MAINSTREAM DISTRIBUTIONS, added as the four a sandbox is most often asked
-    # for. The versions are the ones easysandbox-vm/bake already drives, so a bake
-    # here and a bake there install the same release.
+    # TWO DISTRIBUTIONS, AND THAT IS THE WHOLE LIST.
     #
-    # EVERY ONE IS PINNED BY SHA256, taken from the vendor's own checksum file:
+    # There were seventeen here - alma, alpine, arch, cachyos, debian, endeavouros,
+    # fedora, kubuntu, manjaro, mint, mx, opensuse, popos, rocky, zorin, plus these
+    # two. Sixteen of them were published by artifacts-publish.yml on every run and
+    # pulled by nothing: this repository bakes Ubuntu, Kubuntu (from Ubuntu's ISO),
+    # NixOS, FreeBSD, Windows and macOS. A pin nobody uses is a download, a checksum
+    # and a recurring 404 to maintain - and it showed: the last full publish failed on
+    # openSUSE, whose dated snapshot had been rotated out upstream, while the nineteen
+    # images that worked included fifteen that no workflow would ever ask for.
     #
-    #     Ubuntu   releases.ubuntu.com/26.04/SHA256SUMS
-    #     Debian   cdimage.debian.org/debian-cd/current/amd64/iso-cd/SHA256SUMS
-    #     Fedora   .../Everything/x86_64/iso/Fedora-Everything-44-1.7-x86_64-CHECKSUM
-    #     Arch     geo.mirror.pkgbuild.com/iso/2026.10.01/sha256sums.txt
+    # Kubuntu is not missing: linux/kubuntu/bake.py reads `iso-ubuntu`, because Kubuntu
+    # is Ubuntu's installer with a different desktop selection.
     #
-    # mx and alpine above carry None because their sources give no stable answer -
-    # SourceForge redirects with an expiring token, and alpine's filename is the pin.
-    # These four do give one, and a hash is strictly better than a size: it catches a
-    # truncated transfer AND a substituted file.
-    #
-    # WHY THE SERVER/CLOUD VARIANTS. ubuntu-*-live-server and debian-*-netinst are the
-    # images whose installers a file can drive - subiquity and debian-installer both
-    # read an answer file from the network. A desktop ISO would install a desktop
+    # WHY THE SERVER VARIANT FOR UBUNTU. ubuntu-*-live-server is the image whose
+    # installer a file can drive - subiquity reads an answer file - and it carries no
+    # desktop, so the bake adds the one it wants. A desktop ISO would install a desktop
     # nobody asked for and take twice the bytes.
+    #
+    # The hash comes from the vendor's own checksum file,
+    # releases.ubuntu.com/26.04/SHA256SUMS, and a hash is strictly better than a size:
+    # it catches a truncated transfer AND a substituted file.
     "ubuntu": {
         "url": "https://releases.ubuntu.com/26.04/"
                "ubuntu-26.04.1-live-server-amd64.iso",
@@ -153,34 +135,6 @@ LINUX = {
     # autoinstall cannot produce KDE, and a desktop ISO is what carries it. Its casper/
     # layout is the same, so linux/kubuntu/bake.py is linux/ubuntu/bake.py with a
     # different user-data and a different tag.
-    "kubuntu": {
-        "url": "https://cdimage.ubuntu.com/kubuntu/releases/26.04/release/"
-               "kubuntu-26.04.1-desktop-amd64.iso",
-        # The vendor publishes SHA256SUMS beside the images; this has to be refreshed
-        # with the URL when the point release moves.
-        "sha256": None,
-        "size": None,
-    },
-    "debian": {
-        "url": "https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/"
-               "debian-13.7.0-amd64-netinst.iso",
-        "sha256": "a7ef94ac2fb9a7fec454552abd629b7cc9d5155c886165a45649f5ce6167e355",
-        "size": None,
-    },
-    "fedora": {
-        "url": "https://dl.fedoraproject.org/pub/fedora/linux/releases/44/"
-               "Everything/x86_64/iso/Fedora-Everything-netinst-x86_64-44-1.7.iso",
-        "sha256": "bd285201494dd0ba09b54d05ac707de1401668b8512a573edb5922dcf9d7067e",
-        # The vendor's CHECKSUM file states this, which is why it is here and the
-        # other three have None: a size improves the resume logic in iso._download.
-        "size": 1217329152,
-    },
-    "arch": {
-        "url": "https://geo.mirror.pkgbuild.com/iso/2026.11.01/"
-               "archlinux-2026.11.01-x86_64.iso",
-        "sha256": "01bcdcf01af2f7d58f2794899c834770d25c9bfc945bd092b32bb66672a4a216",
-        "size": 1317568512,
-    },
 
     # ---------------------------------------------------------------------------
     # THE POPULARITY LIST. These are the entries in DistroWatch's Page Hit Ranking
@@ -191,32 +145,6 @@ LINUX = {
     # kernels and their own installer flows, and a bake that treats them as Arch
     # would install Arch.
     # ---------------------------------------------------------------------------
-    "popos": {
-        # 24.04 nvidia: the image with the driver branch already in it, which is the
-        # one Pop!_OS is known for. intel exists as a second entry if it is wanted.
-        "url": "https://iso.pop-os.org/24.04/amd64/nvidia/28/"
-               "pop-os_24.04_amd64_nvidia_28.iso",
-        # From the vendor's SHA256SUMS beside the image.
-        "sha256": "bd867a6b93810769b2189471cfc2d7b6b9c642213c7bf827de511be5f42ce666",
-        "size": 3934945280,
-    },
-    "cachyos": {
-        "url": "https://mirror.cachyos.org/ISO/desktop/260809/"
-               "cachyos-desktop-linux-260809.iso",
-        # From the .sha256 published beside the image.
-        "sha256": "959f6577f45e25ee9fd8c220fd221b08e4ea79412c7315c0f922dd6d86d5e33c",
-        "size": 3188850688,
-    },
-    "endeavouros": {
-        "url": "https://mirrors.gigenet.com/endeavouros/iso/"
-               "EndeavourOS_Titan-Nova-2026.08.15.iso",
-        # NO SHA256: the vendor publishes only a .sha512sum for this image, and a
-        # truncated sha512 is not a sha256. The size is pinned and the ISO9660 check
-        # in publish_iso.py catches a corrupt download; the difference is that this
-        # one cannot catch a substituted file.
-        "sha256": None,
-        "size": 3898638336,
-    },
     "nixos": {
         # The minimal image: NixOS has no answer-file installer, so a bake drives it
         # over a serial console, and the smaller image is the one with the console
@@ -228,60 +156,6 @@ LINUX = {
         # this pair has to be refreshed together - which the failure message says.
         "sha256": "83445162c4a18fb372657d38c942147b770d3bfdaf6bb1c37905333b80f9a79f",
         "size": 1746124800,
-    },
-    "mint": {
-        "url": "https://mirrors.kernel.org/linuxmint/stable/22.3/"
-               "linuxmint-22.3-cinnamon-64bit.iso",
-        # From sha256sum.txt under the same mirror path.
-        "sha256": "a081ab202cfda17f6924128dbd2de8b63518ac0531bcfe3f1a1b88097c459bd4",
-        "size": 3091660800,
-    },
-    "alma": {
-        "url": "https://repo.almalinux.org/almalinux/10/isos/x86_64/"
-               "AlmaLinux-10.2-x86_64-minimal.iso",
-        # From the CHECKSUM file beside the images.
-        "sha256": "1b532f534231da0d1cd0ccae622bea6cd588d8a0d7b259f1f131501a6eed41a4",
-        "size": 1651376128,
-    },
-    "rocky": {
-        "url": "https://dl.rockylinux.org/pub/rocky/10/isos/x86_64/"
-               "Rocky-10.2-x86_64-minimal.iso",
-        # From the CHECKSUM file beside the images.
-        "sha256": "aac6ac3ce781b91a91ce78463405f66c611a5dca4b3840c79e5e01d97302f6c8",
-        "size": 2072444928,
-    },
-    "manjaro": {
-        # 26.1.2 Bian-May, XFCE full. Found through the release announcement on
-        # forum.manjaro.org, because download.manjaro.org answers / and /xfce/ with a
-        # redirect to the download page and no directory listing - the version
-        # directory is only reachable if its exact name is already known.
-        "url": "https://download.manjaro.org/xfce/26.1.3/"
-               "manjaro-xfce-26.1.3-261028-linux618.iso",
-        # From the .sha256 published beside the image.
-        "sha256": "a100c3ca17668fd10daa453709ff29e22f43f1cd83f44369f70b02e21bda3af9",
-        "size": 5210302464,
-    },
-    "zorin": {
-        # 18.1 Core. zorin.com/os/download/18/core/ is a page, not a file, but the
-        # mirror URLs are in its source - which is how this one was found, without
-        # answering the mailing-list form the page also offers.
-        "url": "https://distro.ibiblio.org/zorinos/18/"
-               "Zorin-OS-18.1-Core-64-bit.iso",
-        # From SHA256SUMS.txt in the same directory.
-        "sha256": "44649b97bd307fc4c8529205d098ebbf98575a1e1ba2ee7d7005b697af1721d5",
-        "size": 3909091328,
-    },
-    "opensuse": {
-        # Tumbleweed rather than Leap: Leap's DVD path under
-        # download.opensuse.org/distribution/leap/ did not resolve when this was
-        # written, and Tumbleweed is the edition the project points people at.
-        "url": "https://download.opensuse.org/tumbleweed/iso/"
-               "openSUSE-Tumbleweed-DVD-x86_64-Snapshot20261031-Media.iso",
-        # A dated snapshot rather than -Current: Current is a symlink that moves, and
-        # a hash of one snapshot cannot be applied to the next. Refreshing means
-        # taking both the filename and the .sha256 together.
-        "sha256": "993f6a07ac3f35b113de698975bd43ec6e8da5ad6dac3ddcdaddbc71a928f440",
-        "size": 4611637248,
     },
 }
 
