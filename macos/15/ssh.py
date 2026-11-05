@@ -585,35 +585,6 @@ REMOTE_LOGIN_STEPS = [
     "sudo sed -i '' -E 's|^#?[[:space:]]*UseDNS[[:space:]].*|UseDNS no|' /etc/ssh/sshd_config",
     "sudo sh -c \"grep -q '^UseDNS no' /etc/ssh/sshd_config || echo 'UseDNS no'"
     " >> /etc/ssh/sshd_config\"",
-    # 2c. AND USE PAM OFF, BECAUSE PAM IS WHERE THE CRASH IS.
-    #
-    # Run 42110424017 settled three things the earlier runs could not:
-    #
-    #     dscl . -authonly docker admin   ->  AUTHOK          the password is right
-    #     sshd -T | grep -i usedns        ->  usedns no       the directive took
-    #     ssh docker@10.0.2.15 true       ->  Permission denied, a real decision
-    #
-    # That last one is the important one. 10.0.2.15 is a NON-LOOPBACK address - it is what
-    # qemu's DHCP gives the guest - so sshd handling a LAN peer works. What does not work is
-    # the connection qemu forwards from the host, whose peer address is 10.0.2.2.
-    #
-    # AND THE UNIFIED LOG NAMES THE CALL INSIDE THAT PATH:
-    #
-    #     sshd: (libsystem_info.dylib) Retrieve User by Name
-    #     sshd: (libsystem_info.dylib) [com.apple.network:libinfo:si_destination_compare]
-    #           send failed: Invalid argument
-    #
-    # "Retrieve User by Name" through libsystem_info is the OpenDirectory lookup, and
-    # OpenDirectory is what pam_opendirectory drives when sshd authenticates THROUGH PAM.
-    # `dscl . -authonly` succeeds because it talks to the directory directly; sshd fails
-    # because the PAM module takes a path through libinfo that the NAT peer address breaks.
-    #
-    # UsePAM no removes that path: sshd checks the password itself against the local account
-    # database instead of handing it to PAM. Every other system here authenticates without
-    # PAM - Linux's sshd uses it, but Linux's PAM has no OpenDirectory in it.
-    "sudo sed -i '' -E 's|^#?[[:space:]]*UsePAM[[:space:]].*|UsePAM no|' /etc/ssh/sshd_config",
-    "sudo sh -c \"grep -q '^UsePAM no' /etc/ssh/sshd_config || echo 'UsePAM no'"
-    " >> /etc/ssh/sshd_config\"",
     # 3. THE ACCESS GROUP, IN FULL. EVERY ATTRIBUTE BELOW IS LOAD-BEARING.
     #
     # macOS consults com.apple.access_ssh SEPARATELY from sshd_config, and a HALF-BUILT group
@@ -753,6 +724,21 @@ REMOTE_LOGIN_STEPS = [
     #     That is a different fix from anything on the sshd side, and this one line says
     #     which of the two it is.
     "ssh -o BatchMode=yes -o StrictHostKeyChecking=no docker@10.0.2.15 true; echo PEER=$?",
+    # 10. AND THE ONE ADDRESS THE HOST'S CONNECTION ACTUALLY LOOKS LIKE FROM INSIDE.
+    #
+    # 10.0.2.15 (the guest's own LAN address) works. 10.0.2.2 is the qemu gateway - it is
+    # what the guest sees when the HOST is the peer, and it is the only address on this
+    # machine that has no reverse record and is not local. Run 42114962189 set UseDNS no AND
+    # UsePAM no, and the connection still closed, so neither of those is the whole story.
+    #
+    # This line asks sshd the same question with the same peer as the host's connection,
+    # from a shell that does not go through qemu's forwarding:
+    #
+    #   closed / no answer   the peer ADDRESS is what breaks sshd, not the forwarding path
+    #   Permission denied    the address is fine and the difference is the forwarding itself
+    #
+    # Two different repairs, one line.
+    "ssh -o BatchMode=yes -o ConnectTimeout=10 docker@10.0.2.2 true; echo GW=$?",
 ]
 
 # THE VERDICT IS THE GUEST'S, AND IT IS TWO FACTS: the job is loaded, and something is
