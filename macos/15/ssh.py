@@ -162,6 +162,34 @@ def main(argv: list[str]) -> int:
         stderr=subprocess.STDOUT,
     )
 
+    # THE RECORDING IS KEPT CURRENT, so a run that FAILS still has a video.
+    #
+    # THIS STAGE HAD NO MP4 AT ALL. macos/15/bake.py and macos/15/desktop.py both call
+    # livelib.start(), and ssh.py only started snapshots.py - so `out/install.mp4` was never
+    # written, and the workflow's "keep the recording" step reported
+    #
+    #     No files were found with the provided path: out/install.mp4
+    #
+    # on every ssh run, including the one that failed at 10:09:38 with
+    #
+    #     === THE DISK DID NOT REACH A DESKTOP ===
+    #
+    # which is exactly the failure a video is needed for: the frames were captured, and
+    # nothing turned them into something a person can watch.
+    #
+    # live.start() is the same call the other two stages make: it encodes what is there every
+    # LIVE_ARTIFACT_SECONDS, so a run killed at any point leaves a playable file rather than
+    # an empty one.
+    # None FIRST, so the finally below cannot hit a NameError if start() itself raises -
+    # the object is created outside the try, but a reader should not have to check that.
+    live = None
+    live = livelib.start(
+        [os.path.join(frames, "shots"), frames],
+        os.path.join(work, "install.mp4"),
+        os.path.join(work, "last-frame.png"),
+        every=float(os.environ.get("LIVE_ARTIFACT_SECONDS", "20")),
+    )
+
     ok = False
     try:
         log(f"waiting up to {args.boot_timeout}s for the desktop")
@@ -207,6 +235,14 @@ def main(argv: list[str]) -> int:
             snap.wait(timeout=5)
         except subprocess.TimeoutExpired:
             snap.kill()
+        # THE FINAL ENCODE HAPPENS WHATEVER THE OUTCOME. live.stop(final=True) is the same
+        # call desktop.py makes; without it the last LIVE_ARTIFACT_SECONDS of frames would
+        # not be in the file, which on a failure is the part that shows why.
+        if live is not None:
+            try:
+                live.stop(final=True)
+            except Exception as exc:              # noqa: BLE001 - the video is not the verdict
+                log(f"could not finalise the recording: {exc}")
         if ok:
             if not smoke.check_disk(disk, root_fs="apfs"):
                 log("=== THE DISK FAILED ITS CHECKS ===")
