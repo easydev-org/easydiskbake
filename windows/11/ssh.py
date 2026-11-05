@@ -412,9 +412,30 @@ def apply_guest_settings(port: int) -> None:
     """
     import session
 
+    # EVERY STATEMENT IS WRAPPED IN `powershell -Command`, AND IT WAS NOT BEFORE.
+    #
+    # configure_guest() returns POWERSHELL - `New-Item -Path 'HKLM:\...'`,
+    # `Set-ItemProperty ...`, `Disable-ComputerRestore ...` - and session.ssh hands its
+    # string to sshd, whose default shell on Windows is cmd.exe. So every one of the 55
+    # statements was executed as a cmd command and every one of them failed the same way:
+    #
+    #     'New-Item' is not recognized as an internal or external command,
+    #     operable program or batch file.
+    #
+    # The docstring above has said "sshd on Windows starts cmd.exe, which runs
+    # `powershell -Command` in turn" since it was written; the code never did that part.
+    #
+    # IT WENT UNNOTICED BECAUSE `install ssh` FAILED FIRST. Until the winget typing bug was
+    # fixed (60ms per key, dropped characters, `winget` arrived as `get`), this stage never
+    # got far enough to run a single one of these statements - run 41997580476 and every
+    # run before it stopped at OpenSSH. Run 42020047027 is the first to reach it, and it
+    # reported 55 skipped statements in as many seconds.
+    #
+    # The DISM line further down is NOT wrapped, deliberately: it is a cmd command.
     log(f"  {len(configure_guest())} statements")
     for statement in configure_guest():
-        status, out = session.ssh(port, statement, timeout=120)
+        status, out = session.ssh(
+            port, f'powershell -Command "{statement}"', timeout=120)
         if status != 0:
             # Worth a line: this is the only place a wrong policy path shows up, and a
             # silent skip turns "the screen still blanks" into a mystery later.
