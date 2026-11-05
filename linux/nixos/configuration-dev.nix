@@ -167,7 +167,25 @@
           lock-enabled = false;
           idle-activation-enabled = false;
         };
-        "org/gnome/desktop/session" = { idle-delay = 0; };
+        # `idle-delay` IS A uint32 AND A BARE 0 DOES NOT SAY SO. GNOME stores dconf values
+        # as GVariant and the NixOS module converts Nix values into it by looking at the
+        # schema's type; for the numeric types there is no single obvious one, so it refuses
+        # to guess and evaluation stops:
+        #
+        #     error: The GVariant type for number "0" is unclear.
+        #     Please wrap the value with one of the following, depending on the value type
+        #     in GSettings schema:
+        #     - `lib.gvariant.mkInt32` for `i`
+        #     - `lib.gvariant.mkUint32` for `u`
+        #     ...
+        #
+        # which is run 42061471565's `dev (gnome)`, and only that leg - the block is behind
+        # `config.services.desktopManager.gnome.enable`, so the other five never evaluate it.
+        #
+        # org.gnome.desktop.session's `idle-delay` is declared `u` in GNOME's
+        # org.gnome.desktop.session.gschema.xml, so mkUint32 is the one that matches the
+        # schema rather than merely one that evaluates.
+        "org/gnome/desktop/session" = { idle-delay = lib.gvariant.mkUint32 0; };
       };
     }];
 
