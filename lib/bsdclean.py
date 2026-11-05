@@ -224,22 +224,68 @@ def clean(*, port: int, note=print, ssh_seconds: int = 900,
     # and its exit status is 0 on success or 4 when a mounted file system was modified. Both
     # mean the free blocks were erased; only 4 says the check also wrote metadata, which is
     # normal on a live root and is why the guest is shut down properly afterwards.
-    note("  releasing the free blocks (fsck_ffs -E)")
+    note("  releasing the free blocks (zpool trim, or fsck_ffs -E on UFS)")
     status, out = ssh(port, TRIM, timeout=600)
     released = ""
     summary = ""
+    # WHICH BRANCH RAN DECIDES WHAT SUCCESS LOOKS LIKE, and the check used to assume UFS.
+    #
+    # The command prints `zfs pool: <name>` or `ufs: <dev>` as its first line, and the two
+    # branches report success in completely different ways:
+    #
+    #     zpool trim -w    silent. It exits 0 when the trim is complete and prints nothing
+    #                      on success, so there is no line to look for.
+    #     fsck_ffs -y -E   prints "root filesystem: ..." and a block summary.
+    #
+    # The test below used to be `status not in (0, 4) or not released`, where `released`
+    # was only ever set from `fsck_ffs`'s "root filesystem:" line - so on a ZFS disk it was
+    # always empty and a trim that had worked perfectly was reported as
+    #
+    #     === fsck_ffs -E DID NOT RUN (exit 0) ===
+    #     the image was NOT shrunk: out/freebsd.qcow2
+    #
+    # which is run 41997518125: the pool was found (`zfs pool: zroot`), the trim ran, and
+    # the cleaner threw the result away because it was looking for the other filesystem's
+    # words.
+    zfs = False
     for line in (out or "").splitlines():
         text = line.strip()
         if not text or text.startswith("Warning: Permanently added"):
             continue
         note(f"    {text[:170]}")
-        if text.startswith("root filesystem:"):
+        if text.startswith("zfs pool:"):
+            zfs = True
+            released = text
+        elif text.startswith("ufs:"):
+            released = ""          # a device name is not evidence of a trim
+        elif text.startswith("root filesystem:"):
             released = text
         elif "free" in text and "used" in text:
             summary = text
 
     # 4 IS SUCCESS WITH A WRITE. See the note above: it is what fsck_ffs returns when the
-    # file system was mounted read-write and the check changed something.
+    # file system was mounted read-write and the check changed something. zpool trim has no
+    # such status and exits 0.
+    #
+    # THE TWO BRANCHES ARE TESTED SEPARATELY, NOT BY ONE CONDITION THAT FITS ONE OF THEM.
+    # A ZFS trim proves itself by having found the pool and exited 0 - there is no output to
+    # match, because `zpool trim -w` prints nothing on success.
+    if zfs:
+        if status != 0:
+            note(f"=== zpool trim FAILED (exit {status}) ===")
+            note(f"  the pool was {released or 'not named'}; the command above says why")
+            if disk:
+                note(f"  the image was NOT shrunk: {disk}")
+            return False
+        # THE SAME SUMMARY THE UFS BRANCH PRINTS, so a reader comparing two runs sees the
+        # same three numbers rather than one branch that reports and one that does not.
+        note(f"  freed by deleting: {start - previous} MB")
+        note(f"  trimmed:           {released}")
+        end = _used(port)
+        if end is not None:
+            note(f"  used after:        {end} MB")
+        return True
+
     if status not in (0, 4) or not released:
         note(f"=== fsck_ffs -E DID NOT RUN (exit {status}) ===")
         note("  if it could not find the device or said 'NOT A DISK DEVICE', the root")
