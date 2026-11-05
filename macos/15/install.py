@@ -937,16 +937,39 @@ def disk_utility_text(path: str) -> str:
     are ALREADY on the recovery menu screen, because the menu's own window is drawn at
     that height - measured: the wider crop returns "first aid erase restore apple inc.
     virtio block media" on a frame that is Disk Utility too, so it cannot tell the two
-    apart. At y=480..700 the reading is the table itself:
+    apart. At y=480..700 the reading is the table itself, and the Apple boot screen reads
+    nothing at all.
 
-        location: internal | capacity: 137.44 gb connection: unknown | child count: 0
+    TWO TABLES, BECAUSE DISK UTILITY DRAWS ONE PER KIND OF SELECTION. Measured on the two
+    real frames this repository has:
 
-    and the Apple boot screen reads nothing at all.
+        a bare DISK selected          a VOLUME selected (the recovery volume, "disk2s1")
+        location: internal            mount point (read-only):
+        capacity: 137.44 gb           capacity: 2.88 gb
+        connection: unknown           available: 450.9 mb
+        child count: 0                used: 2.43 gb
+        partition map: not supported  owners: enabled
+        type: solid state             type: usb external physical volume
+        device: disk0                 device: disk2s1
+
+    The first version demanded "capacity" AND "partition map" - the disk's fields - and
+    so said "not Disk Utility" for a window that was Disk Utility, on run 41999064025.
+    The evidence: that run's last frame shows Disk Utility's own window with disk2s1
+    selected, and the OCR of this crop reads "mount point (read-only): capacity: 2.88 gb
+    ... connection: usb ... device: disk2s1".
+
+    WHAT BOTH TABLES HAVE is the capacity and one of the two row labels below it, so that
+    is the test. It cannot match the recovery menu: that window's text has no digits-format
+    capacity in this crop at all.
     """
     text = assistant.ocr_text_cropped(path, PANE_CROP, scale=2).lower()
     if not text:
         return ""
-    return text if ("capacity" in text and "partition map" in text) else ""
+    if "capacity" not in text:
+        return ""
+    # one of the row labels that only this table carries, in either layout
+    return text if any(k in text for k in
+                       ("partition map", "child count", "mount point", "available")) else ""
 
 
 def disk_utility(d: Recovery) -> bool:
