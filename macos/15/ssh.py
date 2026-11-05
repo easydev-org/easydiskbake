@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import socket
 import subprocess
 import sys
 import time
@@ -670,25 +669,52 @@ def enable_remote_login(guest: vm.Guest) -> None:
 
 
 def wait_for_ssh(port: int, timeout: int = 180) -> bool:
-    """Poll the host port until the SSH banner arrives.
+    """Wait until sshd on `port` lets the account run a command.
 
-    THE BANNER, NOT A CONNECT. A TCP connect succeeds against anything listening; the
-    first bytes say whether it is sshd.
+    THE BANNER IS NOT ENOUGH, AND THIS FUNCTION SAID IT WAS. It used to stop here:
+
+        banner = sock.recv(256)
+        if banner.startswith("SSH-2.0"):
+            return True
+
+    which proves one thing - something speaking the SSH protocol is listening. It does not
+    prove the account can authenticate, and on this guest those are different facts:
+
+        launchd's socket activation accepts the connection
+        the banner is written by sshd before any credential is offered
+        com.apple.access_ssh is consulted AFTER the banner
+
+    So a guest whose access table does not admit the account answers this function with a
+    perfect SSH-2.0-OpenSSH_9.9 and then refuses every real connection. That is exactly what
+    run 42079736995 recorded:
+
+        18:14:50  banner: SSH-2.0-OpenSSH_9.9
+        18:14:50  Remote Login is answering
+        18:14:50  === cleaning the guest, over ssh ===
+        18:14:50  `df -m / | awk 'NR==2 {print $3}'` returned 255: (no output)
+
+    255 is ssh's own exit status for "the connection failed", and it arrived in the same
+    SECOND the banner was accepted.
+
+    lib/session.wait_for_ssh already documents this rule and runs a probe for it
+    ("A BANNER IS NOT ENOUGH - this runs a command, because a socket that accepts a connection
+    and then refuses authentication is a different failure and has been one here before").
+    This module had its own copy that did not, which is why the check passed and the clean
+    that followed it could not connect.
+
+    THE PROBE IS `true`, the POSIX builtin - the smallest command that proves a shell ran.
+    For macOS that is all that is needed: it is not cmd.exe, so the Windows note in
+    session.wait_for_ssh does not apply.
     """
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
-                sock.settimeout(10)
-                banner = sock.recv(256).decode("utf-8", "replace").strip()
-            if banner.startswith("SSH-2.0"):
-                log(f"  banner: {banner}")
-                return True
-            log(f"  something answered, but not sshd: {banner[:60]}")
-        except OSError:
-            pass
-        time.sleep(10)
-    return False
+    import session
+
+    if not session.wait_for_ssh(port, timeout, log, probe="true"):
+        return False
+
+    # AND THE SOCKET IS REPORTED, because the probe passing and the banner passing look the
+    # same in a log and only one of them means the account was admitted.
+    log(f"  sshd admitted {session.SSH_USER} on port {port}")
+    return True
 
 
 if __name__ == "__main__":
