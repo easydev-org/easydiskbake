@@ -214,6 +214,20 @@ jobs:
       contents: read
       checks: write
       packages: write
+    # THE TAG THIS LEG PUBLISHED, WHICH dev AND launch PULL.
+    #
+    # A matrix job's outputs are PER JOB, and a consumer cannot address one leg's output by
+    # name - but every leg publishes `<prefix>-<desktop>` and the consumer already knows the
+    # desktop, so the useful value here is the same for all six. Run 42052186379 is what its
+    # absence costs:
+    #
+    #     [oci-pull] FAILED: tag is required
+    #
+    # on all six dev legs, because `needs.derive.outputs.tag` resolved to the empty string.
+    # `inputs.derive_from` is what makes it work for a run that starts at dev instead, so a
+    # caller that skips derive still has a way in.
+    outputs:
+      tag: ${{ inputs.derive_from != '' && format('{0}-{1}', inputs.derive_from, matrix.desktop) || format('nixos-{0}', matrix.desktop) }}
     strategy:
       # ONE DESKTOP FAILING SAYS NOTHING ABOUT THE OTHER FIVE. Seeing all six outcomes is worth
       # more than stopping at the first.
