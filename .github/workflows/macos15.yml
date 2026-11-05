@@ -103,9 +103,29 @@ on:
       publish_tag:
         description: "the tag to publish under; empty for macos15-<stage>"
         default: ""
+      isolate:
+        description: >-
+          Run beside other macos15 runs instead of queueing behind them. Any short string;
+          it becomes part of the concurrency group. Empty keeps the default single-run queue.
+          Each job is its own container on its own network, so the forwarded ports do not
+          collide - the queue is the only thing that made runs exclusive.
+        default: ""
 
+# ONE RUN OF THIS WORKFLOW AT A TIME, UNLESS THE RUN SAYS OTHERWISE.
+#
+# `group: macos15-<ref>` puts every run in the same queue, so a second dispatch waits for the
+# first to finish rather than starting beside it. That is right for a full chain - two setups
+# writing to the same tag is two bakes of the same thing - and wrong for a single stage being
+# re-checked while a full chain is in flight, which is the case this exists for: run the ssh
+# stage alone against the already-published macos15-desktop, and let it work while the setup
+# job of another run is still installing.
+#
+# `isolate` NAMES THE COMPETING RUN. The default is empty and every ordinary dispatch keeps
+# the shared group, so nothing changes for a normal run. A dispatch that sets it gets a group
+# of its own and runs beside whatever else is going on - and the caller is saying, in the
+# input, that it knows what it is doing.
 concurrency:
-  group: macos15-${{ github.ref }}
+  group: macos15-${{ github.ref }}${{ inputs.isolate != '' && format('-{0}', inputs.isolate) || '' }}
   cancel-in-progress: false
 
 jobs:
