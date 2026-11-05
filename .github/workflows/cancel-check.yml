@@ -1,0 +1,95 @@
+name: cancel-check
+
+# Prove that `gh run cancel` actually stops a streamed step, on a real runner.
+#
+#     gh workflow run cancel-check.yml
+#     # wait for the "long command" step to appear, then:
+#     gh run cancel <id>
+#
+# WHY THIS EXISTS
+#
+# macos15 run 42000179043 was cancelled twice and kept running for another nine minutes,
+# until its own 900-second timeout. Three faults were found and fixed (see easyactions log-
+# stream's commit "a cancel did not reach the streamer"): the runner signals the step's outer
+# bash rather than python, the path used when a check run cannot be created had no handler at
+# all, and killpg was sent to a group the work had already left.
+#
+# Two of those three are structural and can be read off the code. The third - whether the
+# process tree below a streamed step is really killed - can only be seen on a runner. That is
+# what this workflow is: a command that prints a heartbeat every five seconds and does not
+# end on its own, so a cancel either stops it or does not.
+#
+# THE LOG IS THE EVIDENCE. A working cancel prints
+#
+#     log-stream: signal 15, stopping the command's process group
+#
+# and the step ends within a second or two. A broken one prints nothing and the step runs to
+# its 20-minute timeout - which is exactly the failure this repository spent a morning on.
+
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "How long the fake work should run if nobody cancels it"
+        default: "20"
+
+concurrency:
+  group: cancel-check-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      checks: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare the runner
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: false
+          disk-gb: '0'
+
+      - name: a command that must be killable
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: cancel-check
+          interval: "5"
+          command: |
+            set -euo pipefail
+            # A CHILD THAT IGNORES SIGTERM, so a cancel has to escalate.
+            #
+            # qemu is exactly this: it handles a polite request when it is between writes and
+            # not while one is in flight, which is why the streamer sends SIGKILL two seconds
+            # after SIGTERM. A command that exits on the first signal would pass this test
+            # while the real one still failed.
+            cat > /tmp/stubborn.sh <<'SCRIPT'
+            #!/bin/sh
+            trap '' TERM
+            n=0
+            while :; do
+              n=$((n+1))
+              echo "heartbeat $n at $(date -u +%H:%M:%S)"
+              sleep 5
+            done
+            SCRIPT
+            chmod +x /tmp/stubborn.sh
+
+            echo "=== starting; cancel this run now ==="
+            # AND IT LEAVES A GRANDCHILD, because that is what a streamed step starts: bash -c
+            # is the immediate child and the work is one level further down.
+            /tmp/stubborn.sh &
+            BG=$!
+            echo "the stubborn child is $BG"
+            wait $BG
