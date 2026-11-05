@@ -92,6 +92,29 @@ def parse(argv: list[str]) -> argparse.Namespace:
                    help="seconds the Setup Assistant may run")
     p.add_argument("--desktop-timeout", type=int, default=30 * 60,
                    help="seconds to wait for a desktop after the wizard")
+    # THE WIZARD ARRIVING IS THE INSTALLER FINISHING, AND THAT IS NOT 30 MINUTES.
+    #
+    # This wait used --desktop-timeout, whose own help text says "after the wizard". Run
+    # 41970760010's last frame is the reason that was wrong:
+    #
+    #     macOS Sequoia
+    #     macOS Sequoia will be installed on the disk "main".
+    #     About 45 minutes remaining
+    #
+    # - the install was a third of the way through when the 1800-second budget ran out, and
+    # the bake reported
+    #
+    #     === THE WIZARD NEVER APPEARED ===
+    #     the installation reported success but the machine did not boot
+    #
+    # which sent the next hour into looking at firmware. The install had not finished.
+    #
+    # Two hours, because the progress bar's own estimate is 45 minutes and a runner under
+    # load is slower than the estimate - and because a wait that is too long costs idle
+    # minutes while a wait that is too short throws away the install.
+    p.add_argument("--wizard-timeout", type=int, default=2 * 60 * 60,
+                   help="seconds to wait for the installer to finish and the wizard to "
+                        "appear; this is the copy and the first boot, not the wizard")
     p.add_argument("--user", default=os.environ.get("MACOS_USER", "docker"))
     p.add_argument("--password", default=os.environ.get("MACOS_PASSWORD", "admin"))
     p.add_argument("--keep-work", action="store_true")
@@ -452,7 +475,7 @@ class Baker:
             log("the Setup Assistant is on screen (already confirmed before the disk settle)")
             return True
 
-        deadline = time.time() + self.args.desktop_timeout
+        deadline = time.time() + self.args.wizard_timeout
         started = time.time()
         last_report = started
 
@@ -482,7 +505,7 @@ class Baker:
 
             time.sleep(10)
 
-        log(f"timed out after {self.args.desktop_timeout}s waiting for the wizard")
+        log(f"timed out after {self.args.wizard_timeout}s waiting for the wizard")
         return False
 
     def tail(self, path: str, lines: int = 30) -> None:

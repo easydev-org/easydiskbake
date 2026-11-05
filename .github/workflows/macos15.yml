@@ -78,6 +78,11 @@ on:
       assistant_timeout:
         description: "setup: seconds the Setup Assistant driver may run"
         default: "2700"
+      wizard_timeout:
+        description: >-
+          setup: seconds to wait for the installer to finish and the wizard to appear. This
+          is the copy and the first boot, not the wizard - the pane itself says ~45 minutes.
+        default: "7200"
       desktop_timeout:
         description: "desktop: seconds to wait for a desktop after the wizard"
         default: "1800"
@@ -162,6 +167,7 @@ jobs:
               --disk-size "${{ inputs.disk_size || '128G' }}" \
               --timeout "${{ inputs.install_timeout || '7200' }}" \
               --assistant-timeout "${{ inputs.assistant_timeout || '2700' }}" \
+              --wizard-timeout "${{ inputs.wizard_timeout || '7200' }}" \
               --desktop-timeout "${{ inputs.desktop_timeout || '1800' }}"
 
       - name: keep the recording
