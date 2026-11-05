@@ -84,27 +84,6 @@ TARGET_DRIVE = "file={disk},if=none,format=qcow2,discard=unmap,id=target"
 # FINISHED disk smaller, and a stage that is still writing has nothing to gain from it.
 TARGET_DRIVE_PLAIN = "file={disk},if=none,format=qcow2,id=target"
 
-# THE TWO DEVICES EVERY macOS STAGE NEEDS AND NONE OF THEM REMEMBERS.
-#
-# Four stages start this machine - bake, desktop, ssh, dev - and three of them assembled
-# their own `-device` list instead of calling drives(), because drives() wants a recovery
-# image that only the bake has. So the list was written four times, and the keyboard was in
-# none of them.
-#
-#     usb-kbd          see the long note in drives(): without a keyboard macOS puts up
-#                      Keyboard Setup Assistant and that dialog eats the next keystroke,
-#                      which is run 42034256322 - Spotlight never resolved and the command
-#                      went into Safari's search box.
-#     isa-applesmc     the SMC key. macOS reads it to decide whether the firmware is
-#                      Apple's; the OSK value is in OSK_PLAIN.
-def extras() -> list[str]:
-    """The devices a macOS guest needs regardless of which stage is starting it."""
-    return [
-        "-device", "usb-kbd,bus=xhci.0",
-        "-device", f"isa-applesmc,osk={OSK_PLAIN}",
-    ]
-
-
 def shape(assets: dict, *, cpus: int = 4, mem_mb: int = 8192) -> vm.Shape:
     """The machine itself, without any storage.
 
@@ -178,9 +157,7 @@ def drives(assets: dict, disk: str, recovery: str) -> list[str]:
         "-device", "virtio-blk-pci,drive=target,bootindex=1",
         "-drive", f"file={recovery},media=disk,if=none,id=rec,readonly=on",
         "-device", "usb-storage,bus=xhci.0,drive=rec",
-        # THE KEYBOARD AND THE SMC, FROM ONE PLACE. See extras() above for the run that
-        # proved the keyboard is not optional.
-        *extras(),
+        "-device", f"isa-applesmc,osk={OSK_PLAIN}",
     ]
 
 

@@ -146,10 +146,7 @@ def main(argv: list[str]) -> int:
             "-device", "virtio-blk-pci,drive=oc,bootindex=0",
             "-drive", machine.TARGET_DRIVE.format(disk=disk),
             "-device", "virtio-blk-pci,drive=target,bootindex=1",
-            # THE KEYBOARD AND THE SMC, from machine.extras() - the same two devices the
-            # bake gets. Without usb-kbd macOS shows Keyboard Setup Assistant, whose
-            # dialog eats the next keystroke (run 42034256322).
-            *machine.extras(),
+            "-device", f"isa-applesmc,osk={machine.OSK_PLAIN}",
         ],
         shape=shape,
         stdout=os.path.join(work, "console.log"),
@@ -222,6 +219,10 @@ def main(argv: list[str]) -> int:
 
         log(f"=== logging in as {GUEST_USER} ===")
         unlock(guest)
+
+        # THE KEYBOARD DIALOG COMES UP WITH THE FIRST DESKTOP SESSION, so it is dismissed
+        # here - before anything is typed at Spotlight, because it swallows the next key.
+        dismiss_keyboard_assistant(guest)
 
         # AND NOW THE DESKTOP IS REACHABLE. The wallpaper test is kept, with a short budget,
         # because it is the only thing that can confirm the password was accepted - and if it
@@ -323,6 +324,72 @@ def wait_for_desktop(guest: vm.Guest, frames: str, timeout: int) -> bool:
             return True
         time.sleep(5)
     return False
+
+
+# THE KEYBOARD SETUP ASSISTANT'S Quit BUTTON, IN 1920x1080 PIXELS.
+#
+# Measured on run 42034256322's recording, which is 1280x800, and scaled to the guest's own
+# framebuffer:
+#
+#     the dialog           centred, about 390..905 by 165..630 on the 1280x800 frame
+#     [Quit]               centre (819, 612) at 1280x800  ->  (1228, 826) at 1920x1080
+#     [Continue]           centre (871, 612) at 1280x800  ->  (1306, 826) at 1920x1080
+#
+# QUIT, NOT CONTINUE. Continue asks the guest to identify a keyboard by pressing keys it can
+# then map, which is a wizard in its own right and needs an Apple keyboard plugged in.
+# Quit dismisses it and leaves the machine usable with the emulated devices qemu provides.
+KEYBOARD_ASSISTANT_QUIT = (1228, 826)
+
+
+def dismiss_keyboard_assistant(guest: vm.Guest) -> bool:
+    """Click Quit on the "Keyboard Setup Assistant" dialog, if it is up.
+
+    THIS DIALOG EATS THE NEXT KEYSTROKE, WHICH IS WHY sshd WAS NEVER ENABLED.
+    Run 42034256322's recording, at t=135s:
+
+        Spotlight open, `/Applications/Utilities/Terminal.app` typed into it
+        Keyboard Setup Assistant across the middle of the screen:
+            "Your Apple device cannot be identified and will not be usable until it is
+             identified."                               [Quit]  [Continue]
+
+    and at t=170s, Safari showing a Google search for
+    `/Applications/Utilities/Terminal.appsudo systemsetup -setremotelogin on`.
+
+    The Return went to the dialog. Spotlight never resolved, so the command and the password
+    that followed went into whatever had focus afterwards, and the stage reported "something
+    answered, but not sshd" for its whole budget.
+
+    WHY macOS PUTS IT UP: qemu's command line has a usb-tablet and no keyboard. QMP send-key
+    does not need one - it injects into the input subsystem, which is why Windows and Linux
+    have never had this problem - but macOS enumerates HID devices at login and, finding none
+    it recognises, asks the user to identify one.
+
+    IT APPEARS AFTER LOGGING IN, NOT BEFORE. The dialog is part of the first desktop session,
+    so this runs after unlock() and before anything is typed at Spotlight.
+
+    Returns True when a click was sent. That is not the same as "it was there": a click at
+    (1228, 826) on a desktop with no dialog lands on the wallpaper and does nothing, which is
+    the correct outcome for a machine that never showed one.
+    """
+    import qmp as qmpmod
+
+    kb_work = guest.paths.drive
+    deadline = time.time() + 120
+    while not os.path.exists(kb_work):
+        if time.time() > deadline:
+            log(f"  no QMP socket at {kb_work}; cannot dismiss anything")
+            return False
+        time.sleep(1)
+
+    q = qmpmod.QMP(kb_work)
+    try:
+        log(f"  clicking Quit on the Keyboard Setup Assistant at "
+            f"{KEYBOARD_ASSISTANT_QUIT}, if it is up")
+        qmpmod.click(q, *KEYBOARD_ASSISTANT_QUIT)
+        time.sleep(3)
+    finally:
+        q.close()
+    return True
 
 
 def unlock(guest: vm.Guest) -> bool:
@@ -438,8 +505,7 @@ def enable_remote_login(guest: vm.Guest) -> None:
         # `/Applications/Utilities/Terminal.app` WAS TRIED AND IS NOT THE ANSWER. It was
         # meant to avoid Spotlight's web-search row, but run 42034256322 showed the real
         # cause was elsewhere: Keyboard Setup Assistant was on screen and took the Return.
-        # With usb-kbd in machine.extras() that dialog no longer appears, so the search word
-        # can be the plain one again - which is what a person would type.
+        # The dialog is dismissed before this is reached - see dismiss_keyboard_assistant().
         time.sleep(10)
         qmpmod.key(q, "ret")
         time.sleep(10)
