@@ -156,9 +156,20 @@ def build(zip_path: str, pin: dict, workdir: str) -> str:
     finally:
         emulator_run.stop()
 
-    archive = os.path.join(workdir, "avd.tar.zst")
-    avd.pack(home, archive)
-    return archive
+    # THE PATH pack() RETURNS IS THE ARCHIVE; THE ONE PASSED IN IS ONLY A REQUEST.
+    #
+    # android/15/Containerfile.builder has no zstd, so `avd.pack` cannot make the
+    # avd.tar.zst it is asked for: 7z's container has no zstd method, and the archive comes
+    # out as avd.7z instead. pack() returns that name.
+    #
+    # This dropped the return value and handed back the name it had asked for, so the push
+    # looked for a file the packer had deliberately not written:
+    #
+    #     [android] FAILED: no disk at /out/android-3b0b6b2y/avd.tar.zst
+    #
+    # after a successful boot and a real 2 GiB archive at avd.7z beside it. Run 42018274948.
+    requested = os.path.join(workdir, "avd.tar.zst")
+    return avd.pack(home, requested)
 
 
 def main(argv: list[str]) -> int:
