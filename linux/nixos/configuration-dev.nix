@@ -52,10 +52,24 @@
   # gcc IS NOT IN A NIXOS PROFILE BY DEFAULT, unlike Ubuntu's build-essential. Without it a
   # dev disk here cannot compile the thing the other three systems' dev disks exist to
   # compile.
+  #
+  # `nodejs` AND NOT `nodejs npm`, because THERE IS NO npm PACKAGE HERE. nixpkgs builds npm
+  # inside the nodejs derivation and puts `npm` and `npx` on PATH with it, so listing it
+  # separately fails evaluation outright:
+  #
+  #     error: undefined variable 'npm'
+  #     at /etc/nixos/configuration.nix:58:12
+  #         57|     git
+  #         58|     nodejs npm
+  #             |            ^^^
+  #
+  # which is run 42060185931 - six dev legs, each after pulling and booting its disk. On
+  # Ubuntu the same tools are two apt packages (nodejs, npm) and that is where the list came
+  # from; NixOS is not apt.
   environment.systemPackages = with pkgs; [
     gcc gnumake pkg-config
     git
-    nodejs npm
+    nodejs
     python3 python3Packages.pip
     jq
     unzip zip xz
