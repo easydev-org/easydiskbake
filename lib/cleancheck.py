@@ -72,7 +72,7 @@ EXPECTED = {
     "nixos.yml":       {"base": True,  "derive": True, "dev": True},
     # NO SSH UNTIL windows/11/ssh.py HAS RUN. `base` is a full Windows install with no sshd,
     # which is what makes the next job's `install ssh` necessary in the first place.
-    "windows-11.yml":  {"base": False, "ssh": True, "dev": True},
+    "windows-11.yml":  {"base": None,  "ssh": True, "dev": True},
     # NO SSH UNTIL macos/15/ssh.py HAS RUN, and it is the ssh JOB that calls it. setup and
     # desktop both finish with a machine that has never had Remote Login on.
     #
@@ -89,11 +89,11 @@ EXPECTED = {
     # lib/clean_disk.clean_running's own docstring says the caller must do ("this does not
     # start or stop anything"). The same file drives both macOS workflows, so macos26's ssh
     # job is the same shape and this entry says so for both.
-    "macos15.yml":     {"setup": False, "desktop": False, "ssh": False, "dev": True},
-    "macos26.yml":     {"setup": False, "desktop": False, "ssh": False},
+    "macos15.yml":     {"setup": None,  "desktop": None,  "ssh": False, "dev": True},
+    "macos26.yml":     {"setup": None,  "desktop": None,  "ssh": False},
     # android.yml BAKE MAKES AN AVD, not a disk: a directory of raw images driven by the
     # emulator, which has no sshd and is not something fstrim or trim or ReTrim can reach.
-    "android.yml":     {"bake": False},
+    "android.yml":     {"bake": None},
 }
 
 
@@ -143,13 +143,31 @@ def main(argv: list[str]) -> int:
             at = clean_index(steps)
             push = push_index(steps)
 
-            if want and at is None:
+            # THREE STATES, NOT TWO. `True` and `None` were both spelled False in the first
+            # version of this table, which merged two situations that need opposite handling:
+            #
+            #     None   this job has no sshd at all, so a clean step CANNOT work
+            #     False  this job HAS sshd, and its stage cleans the disk itself, INSIDE the
+            #            stage that owns the running guest - so a step must NOT be added
+            #
+            # Without the distinction, macOS's ssh job had to be written False and the table
+            # stopped saying why, which is exactly how 6d57bc3 came to move that clean out and
+            # break it (run 42062472207 waited 900s for sshd on a disk whose clean could only
+            # run while the machine was up).
+            if want is True and at is None:
                 log(f"  NO CLEAN     {wf}: {job_name} modifies a disk and has ssh, "
                     f"but no '{CLEAN_STEP}' step")
                 problems += 1
                 continue
 
-            if not want and at is not None:
+            if want is False and at is not None:
+                log(f"  CLEAN MOVED  {wf}: {job_name} cleans inside its own stage, while it "
+                    f"holds the running guest - a '{CLEAN_STEP}' step boots the disk from "
+                    f"cold and has to reach sshd again, which is a different question")
+                problems += 1
+                continue
+
+            if want is None and at is not None:
                 log(f"  CANNOT CLEAN {wf}: {job_name} has a '{CLEAN_STEP}' step but no sshd "
                     f"at the end of this job - the clean would boot the disk, fail to "
                     f"connect, and read as a broken clean")
@@ -163,7 +181,12 @@ def main(argv: list[str]) -> int:
                 continue
 
             if verbose:
-                where = "no clean (no ssh yet)" if not want else "clean before push"
+                if at is not None:
+                    where = "clean before push"
+                elif want is False:
+                    where = "clean inside the stage"
+                else:
+                    where = "no clean (no ssh yet)"
                 log(f"  ok           {wf}: {job_name} - {where}")
 
     if problems:
