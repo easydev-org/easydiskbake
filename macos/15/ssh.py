@@ -246,24 +246,51 @@ def main(argv: list[str]) -> int:
         ok = True
         log("Remote Login is answering")
 
-        # THE CLEAN IS A STEP IN THIS STAGE, NOT A JOB OF ITS OWN.
+        # THE CLEAN RUNS HERE, IN THIS SESSION, AND NOT IN A STEP OF ITS OWN.
         #
-        # That is the same rule the other three systems follow: lib/clean_disk.py's docstring
-        # is explicit that a separate job would have to upload 12-16 GiB, download it again,
-        # boot it and clean it - work that is already done here, because this stage has the
-        # guest RUNNING, ssh CONNECTED and the disk on local storage.
+        # 6d57bc3 moved it out, into `clean the disk` steps, for a good reason: macOS was the
+        # only system whose clean was invisible in the run's step list. But a separate step
+        # CANNOT INHERIT THIS MACHINE. lib/clean_disk.clean_running's docstring is explicit -
+        # "the caller owns the machine: this does not start or stop anything" - so a step
+        # must boot the disk from cold and reach sshd AGAIN. That is a different question
+        # from "is Remote Login on", and on macOS the answer is no:
         #
-        # IT RUNS LAST, AFTER sshd IS PROVEN TO ANSWER, which is the only point at which
-        # every step of the cleaner can be reached. lib/macclean.py, and the reason it exists
-        # at all: the four macOS stages up to here each only ADD to the disk, so this is the
-        # first and only place it can shrink before being published.
-        # CLEANING IS THE NEXT WORKFLOW STEP, NOT THIS STAGE'S WORK.
+        #     [clean-step] waiting for ssh
+        #     [clean-step] === SSH DID NOT ANSWER IN 900s ===
+        #     [clean-step]   last output: kex_exchange_identification: read: Connection
+        #                    reset by peer
         #
-        # It was here, as an inline call, which made macOS the only system whose clean was
-        # invisible in the run's step list. Every stage that modifies a disk now runs
-        # lib/clean_step.py as `clean the disk`, and macos15.yml does that after this job.
+        # CONNECTION RESET BY PEER IS NOT THE ACCESS GROUP. The recording of run 42062472207's
+        # enable-stage shows the group already complete while the machine was up -
+        #
+        #     GroupMembers: 0 501
+        #     NestedGroups: 80 20 401
+        #     tcp4  0  0  *.22   *.*   LISTEN
+        #
+        # - and that stage's wait_for_ssh passed with SSH-2.0-OpenSSH_9.9. The ten dscl lines
+        # were added on the theory that a half-built group caused it; the evidence now says
+        # the group was never the problem, and they are kept because a complete group is
+        # still the correct state.
+        #
+        # The check that a LATER stage can reach this disk is macos15-dev's, which pulls the
+        # published tag and connects to it. This stage's job is to turn Remote Login on and
+        # hand back its free space while it has the machine - which is what it had before
+        # 6d57bc3, and what every other system still does inside its own stage.
+        log("=== cleaning the disk before it is exported ===")
+        import clean_disk
+
+        if not clean_disk.clean_running("macos", port=args.ssh_port, note=log, disk=disk):
+            # A CLEAN THAT DID NOT RUN IS A FAILURE, NOT A WARNING - the same rule the other
+            # three systems follow, for the same reason: publishing a disk whose free blocks
+            # were never handed back means every later pull of that tag carries the bloat.
+            log("=== THE CLEAN DID NOT FINISH ===")
+            log("  nothing is published: the disk is not what this stage claims to produce")
+            return 1
+
         return 0
     finally:
+        # ACPI FIRST, SO THE DISK IS CLOSED RATHER THAN KILLED. The clean has just written to
+        # it over ssh and the publish step compresses and pushes what this leaves behind.
         guest.stop(acpi_first=ok)
         snap.terminate()
         try:

@@ -75,8 +75,22 @@ EXPECTED = {
     "windows-11.yml":  {"base": False, "ssh": True, "dev": True},
     # NO SSH UNTIL macos/15/ssh.py HAS RUN, and it is the ssh JOB that calls it. setup and
     # desktop both finish with a machine that has never had Remote Login on.
-    "macos15.yml":     {"setup": False, "desktop": False, "ssh": True, "dev": True},
-    "macos26.yml":     {"setup": False, "desktop": False, "ssh": True},
+    #
+    # THE SSH JOB HAS NO CLEAN STEP OF ITS OWN, BECAUSE IT CANNOT HAVE ONE. A separate step
+    # gets a fresh machine: it would boot the disk from cold and wait for sshd to answer
+    # again, and on macOS that is a different question from "is Remote Login on" - run
+    # 42062472207's clean waited its whole 900 seconds and got
+    #
+    #     kex_exchange_identification: read: Connection reset by peer
+    #
+    # on a disk whose ssh stage had just passed wait_for_ssh with SSH-2.0-OpenSSH_9.9. So the
+    # clean runs INSIDE macos/15/ssh.py, while that stage still holds the running guest and
+    # the open connection - which is what it did before 6d57bc3 moved it out, and what
+    # lib/clean_disk.clean_running's own docstring says the caller must do ("this does not
+    # start or stop anything"). The same file drives both macOS workflows, so macos26's ssh
+    # job is the same shape and this entry says so for both.
+    "macos15.yml":     {"setup": False, "desktop": False, "ssh": False, "dev": True},
+    "macos26.yml":     {"setup": False, "desktop": False, "ssh": False},
     # android.yml BAKE MAKES AN AVD, not a disk: a directory of raw images driven by the
     # emulator, which has no sshd and is not something fstrim or trim or ReTrim can reach.
     "android.yml":     {"bake": False},

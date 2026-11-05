@@ -396,24 +396,6 @@ jobs:
               --ssh-port "${{ inputs.ssh_port || '2222' }}" \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}"
 
-      - name: clean the disk
-        # NOW THAT sshd ANSWERS. This is the only place a macOS 26 disk can be cleaned: setup
-        # and desktop both finish with a machine that has never had Remote Login on.
-        uses: easydev-org/easyactions/log-stream@main
-        with:
-          token: ${{ github.token }}
-          name: macos26-ssh-clean
-          interval: "20"
-          command: |
-            set -euo pipefail
-            python3 lib/clean_step.py \
-              --disk out/macos26-ssh.qcow2 \
-              --kind macos \
-              --work out/macos26-ssh-clean-work \
-              --artifacts out \
-              --boot-timeout "${{ inputs.boot_timeout || '1800' }}" \
-              --mem 8192
-
       - name: keep the recording
         if: always()
         uses: actions/upload-artifact@v4
