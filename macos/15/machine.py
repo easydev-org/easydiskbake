@@ -114,11 +114,6 @@ def shape(assets: dict, *, cpus: int = 4, mem_mb: int = 8192) -> vm.Shape:
              "+xsave,+xsaveopt,+xgetbv1,+movbe,+rdrand,check"),
         # dockur's configureSmp(): a topology macOS understands, not a bare count.
         smp_topology=f"{cpus},sockets=1,dies=1,cores={cpus},threads=1",
-        # THE GUEST NETWORK, MOVED OFF 10.0.2.0/24. See Shape.network_args for the four
-        # measurements that isolated this and the log line that named si_destination_compare.
-        # Every other system keeps qemu's default; only this guest cannot authenticate from
-        # it.
-        network_args=",net=192.168.240.0/24,host=192.168.240.2",
         extra_args=[
             # ICH9's sleep states hang this guest at a black screen; the PCIe hotplug
             # bridge is mishandled by macOS on ICH9.

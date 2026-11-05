@@ -694,6 +694,27 @@ REMOTE_LOGIN_STEPS = [
     # on the 80-column terminal.
     "sudo log show --last 2m --style compact 2>/dev/null "
     "| grep -i sshd | grep -vi destination_compare | tail -5",
+    # 6c. IS THE JOB PETRIFIED? The filtered log above finally showed why sshd stops answering
+    #     after the first few connections, and it is launchd, not sshd:
+    #
+    #         2026-11-05 15:32:25.913  launchd[1:26e1] [system:] removing service:
+    #                                  com.openssh.sshd.5F33B3B5-D4F5-48BD-9AD7-C8FE1C260A53
+    #         2026-11-05 15:32:25.913  launchd[...] internal event: PETRIFIED, code = 0
+    #         2026-11-05 15:32:25.913  launchd[...] service state: not running
+    #
+    #     PETRIFIED is launchd's word for "this job failed enough times that I will not start
+    #     it again". It is why a guest whose sshd answered earlier stops answering: not a
+    #     config error, not a network error, the supervisor gave up.
+    #
+    #     `launchctl print` reports that state directly, so the run says whether the thing it
+    #     is fighting is a service that will not be started at all:
+    #
+    #         state = running / not running / spawn scheduled
+    #
+    #     and the two settings that decide how soon launchd gives up, which are what the fix
+    #     will have to raise if this is confirmed.
+    "sudo launchctl print system/com.openssh.sshd 2>&1 | head -8",
+    "sudo launchctl print system/com.openssh.sshd 2>&1 | grep -iE 'state|failed' | head -4",
     # 8. DOES THE PASSWORD WORK AT ALL? This is the one question that splits the two
     #    remaining hypotheses, and it never touches ssh.
     #
