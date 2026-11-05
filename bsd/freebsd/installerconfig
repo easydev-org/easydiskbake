@@ -114,9 +114,55 @@ ROOTPASS_PLAIN=admin
 # NO SWAP PARTITION. PARTITIONS=DEFAULT would add one; a VM with 2 GiB of RAM and no
 # hibernation does not need it, and it is disk that has to be compressed and shipped.
 
-# NOT nonInteractive=YES. That variable belongs to the ZFS path; setting it here is
-# ignored, and setting it in the belief that it silences prompts hides the fact that
-# script mode has no prompts to silence.
+# nonInteractive=YES IS REQUIRED BY THE ZFS PATH, AND THE COMMENT THAT USED TO BE HERE
+# SAID THE OPPOSITE. It argued that the variable belonged to the ZFS path, that setting
+# it here was ignored, and that script mode had no prompts to silence. The first clause
+# was right and that is exactly why it has to be set: bsdinstall's script target runs
+# `bsdinstall zfsboot` as a child, and zfsboot decides whether to draw its menu with
+#
+#     while :; do
+#         if ! f_interactive; then
+#             retval=$DIALOG_OK
+#             mtag=">>> $msg_install"      <- non-interactive: take the default and go
+#         else
+#             dialog_menu_main             <- interactive: draw a menu, wait for a key
+#             retval=$?
+#         fi
+#
+# and f_interactive (usr.sbin/bsdconfig/share/variable.subr) is
+#
+#     f_interactive() { ! f_getvar $VAR_NONINTERACTIVE value || [ ! "$value" ]; }
+#
+# with VAR_NONINTERACTIVE = "nonInteractive". So the ONLY thing that makes zfsboot take
+# the first branch is this variable having a value. ZFSBOOT_DISKS does not: it makes the
+# layout step non-interactive once the main menu has been passed (zfsboot's own note
+# says "dialog_menu_layout supports running non-interactively"), but the main menu runs
+# before that.
+#
+# WHAT THAT COST. Run 41985197417 set ZFSBOOT_DISKS and not this variable, so zfsboot
+# drew the menu. bsddialog takes its geometry from the terminal, resizewin could not
+# measure a raw serial pipe, every dimension came back 0, and the computed row count
+# came back -6:
+#
+#     resizewin: timeout reading from terminal
+#     f_dialog_max_size: bsddialog --print-maxsize = [MaxSize: 0, 0]
+#     f_getvar: var=[rows] value=[-6]
+#     bsddialog: invalid option -- 6
+#     retval=254 mtag=[bsddialog: invalid option -- 6]
+#
+# zfsboot then f_die'd on retval 254, startbsdinstall tried to show the error in another
+# bsddialog with the same 0x0 geometry, and its own copy of the menu loop is what the
+# console sat in for twenty-five minutes with the disk at 0 MiB. The installer was not
+# slow; it was waiting for a key on a screen that had no size.
+#
+# THE UFS PATH NEVER HIT THIS because `bsdinstall scriptedpart` reads PARTITIONS and
+# does not draw anything, which is why every earlier run got as far as pkgbase.
+#
+# It is exported because zfsboot is a child process, and lowercase because that is the
+# name the variable table uses - `f_getvar $VAR_NONINTERACTIVE` reads "nonInteractive",
+# not "NONINTERACTIVE".
+nonInteractive=YES
+export nonInteractive
 
 #!/bin/sh
 # The post-install script is fetched rather than inlined, so the same file can be read and
