@@ -548,6 +548,43 @@ REMOTE_LOGIN_STEPS = [
     #    the backup suffix, and GNU sed would treat it as the script.
     "sudo sed -i '' -E 's|^#?[[:space:]]*PasswordAuthentication[[:space:]].*|"
     "PasswordAuthentication yes|' /etc/ssh/sshd_config",
+    # 2b. AND NO REVERSE LOOKUP, WHICH IS WHAT ACTUALLY KILLS THE CONNECTION HERE.
+    #
+    # The host's verbose log of run 42095016629 says the credentials were never rejected -
+    # the connection was CLOSED while waiting for the answer:
+    #
+    #     debug1: Next authentication method: password
+    #     debug3: send packet: type 50
+    #     debug2: we sent a password packet, wait for reply
+    #     Connection closed by 127.0.0.1 port 2222
+    #
+    # "Permission denied" is what sshd says when it decides; this says nothing, which is what
+    # sshd does when it dies on the way to deciding. The guest's own unified log, printed by
+    # step 19 of this list, names the call:
+    #
+    #     sshd: (libsystem_info.dylib) Retrieve User by Name
+    #     sshd: (libsystem_info.dylib) [com.apple.network:libinfo:si_destination_compare]
+    #           send failed: Invalid argument
+    #
+    # si_destination_compare compares SOCKET ADDRESSES - it is the name/address resolution
+    # path, and the address it is looking at is the one qemu's user-mode network gives the
+    # host (10.0.2.2). sshd resolves the client before it finishes the login, that call fails
+    # with EINVAL, and the process ends.
+    #
+    # A guest logging in to itself never takes that path - its peer is 127.0.0.1 - which is
+    # exactly why the guest's own `ssh docker@127.0.0.1` answered "Permission denied" while
+    # the host got a closed connection. THAT ASYMMETRY IS THE WHOLE DIAGNOSIS.
+    #
+    # UseDNS no is the sshd setting for not doing the lookup at all. macOS ships it commented
+    # out (the default is `yes`, with a historical caveat), so it costs one line.
+    #
+    # THE sed ALONE IS NOT ENOUGH AND THE SECOND COMMAND IS NOT A CHECK. sed -i rewrites a
+    # line that MATCHES; if the file has no UseDNS line at all, it rewrites nothing and exits
+    # 0, and this would look done. `grep -q ... || echo >>` appends only when the pattern is
+    # missing, which is the case the sed cannot cover.
+    "sudo sed -i '' -E 's|^#?[[:space:]]*UseDNS[[:space:]].*|UseDNS no|' /etc/ssh/sshd_config",
+    "sudo sh -c \"grep -q '^UseDNS no' /etc/ssh/sshd_config || echo 'UseDNS no'"
+    " >> /etc/ssh/sshd_config\"",
     # 3. THE ACCESS GROUP, IN FULL. EVERY ATTRIBUTE BELOW IS LOAD-BEARING.
     #
     # macOS consults com.apple.access_ssh SEPARATELY from sshd_config, and a HALF-BUILT group
@@ -623,7 +660,7 @@ REMOTE_LOGIN_STEPS = [
     "sudo dscl . -read /Users/docker AuthenticationAuthority",
     # THE EFFECTIVE CONFIG, NOT THE FILE. sshd -T resolves the includes and the defaults, so
     # this says what sshd will actually do rather than what one file happens to spell.
-    "sudo /usr/sbin/sshd -T | grep -iE 'password|allow|deny|usepam'",
+    "sudo /usr/sbin/sshd -T | grep -iE 'password|allow|deny|usepam|usedns'",
     # 7. AND WHY IT SAID NO. Everything above says the refusal SHOULD NOT happen, and run
     # 42090649098's recording is the proof that it does:
     #
