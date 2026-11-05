@@ -90,15 +90,18 @@ autoinstall:
   # THE TOOLCHAIN, AND WHY EACH ENTRY IS HERE
   # ---------------------------------------------------------------------------
   packages:
-    - openssh-server        # what the ssh stage talks to
-    - git                   # the runner's most basic need
-    - build-essential       # gcc/make, without which nothing compiles
-    - python3
-    - python3-pip
-    - curl
-    - ca-certificates
-    - jq
-    - unzip
+    # WHAT THE SYSTEM NEEDS, NOT WHAT THE PIPELINE NEEDS.
+    #
+    # git, build-essential, python3, pip, curl, jq and unzip were here, and they made the
+    # bake do two jobs at once: install a distribution, and put a toolchain on it. A bake
+    # failure and a broken toolchain then look the same from outside, and adding a package
+    # meant a forty-minute re-install.
+    #
+    # They are installed by linux/tools.py against the disk this bake publishes - a ten
+    # minute stage that can be re-run without re-installing the system.
+    #
+    # WHAT STAYS IS WHAT THE SYSTEM IS:
+    - openssh-server        # the ssh stage has to have something to talk to
     # THE DESKTOP ITSELF. Wayland by default in 26.04, with SDDM as the display manager.
     - kubuntu-desktop
     # The emulated display has no GPU; these are the userspace drivers a KDE session

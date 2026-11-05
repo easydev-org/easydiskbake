@@ -38,10 +38,20 @@ on:
         description: "Start the disk and prove it boots"
         type: boolean
         default: true
+      tools_run:
+        description: "Install the toolchain on the baked disk - ~15 minutes"
+        type: boolean
+        default: true
 
       # --- where each job starts ---------------------------------------------------
       bake_from:
         description: "bake: pull this tag instead of installing"
+        default: ""
+      tools_from:
+        description: "tools: pull this tag instead of the bake job's output"
+        default: ""
+      tools_publish_tag:
+        description: "tools: tag to publish under; empty for linux-<os>-tools"
         default: ""
       launch_from:
         description: "launch: the tag to start; empty for the bake job's output"
@@ -222,8 +232,89 @@ jobs:
           kind: linux-kubuntu
           tag: ${{ inputs.publish_tag || 'linux-kubuntu' }}
           token: ${{ github.token }}
-  launch:
+  # ===========================================================================
+  # TOOLS - boot the baked disk, upgrade it, install the toolchain, clean, export.
+  # ===========================================================================
+  tools:
     needs: bake
+    if: |
+      always() && inputs.tools_run
+      && (inputs.tools_from != '' || needs.bake.outputs.tag != '')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+    outputs:
+      tag: ${{ inputs.tools_from || steps.publish.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '30'
+
+      - name: pull the bake disk
+        uses: easydev-org/easyactions/oci-pull@main
+        with:
+          tag: ${{ inputs.tools_from || needs.bake.outputs.tag }}
+          dest: out
+          token: ${{ github.token }}
+
+      # THIS STAGE IS WHY THE BAKE DOES NOT INSTALL A TOOLCHAIN.
+      #
+      # apt update, apt upgrade, then gcc/g++/make/git/node/npm/python3/pip/jq/unzip/
+      # rsync - against a disk that already exists, in about ten minutes, with its own
+      # log. Adding a package here does not re-install the system.
+      - name: install the toolchain
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: kubuntu_tools
+          interval: "20"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            DISK=$(ls out/*.qcow2 | head -1)
+            echo "bake disk: $DISK"
+            python3 linux/tools.py \
+              --disk "$DISK" \
+              --out out/kubuntu_tools.qcow2 \
+              --kind kubuntu \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}"
+
+      - name: keep the console
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kubuntu_tools-console
+          path: out/kubuntu-tools-work/console.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: push the disk
+        if: success()
+        id: publish
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/kubuntu_tools.qcow2
+          kind: linux-kubuntu_tools
+          tag: ${{ inputs.tools_publish_tag || 'linux-kubuntu_tools' }}
+          token: ${{ github.token }}
+
+  launch:
+    # TOOLS, BECAUSE THAT IS THE DISK THIS SHOULD START. The bake disk is a
+    # distribution; the tools disk is the one this pipeline hands out.
+    needs: [bake, tools]
     # ALWAYS, BECAUSE `needs` ALONE WOULD SKIP THIS WHEN bake IS SKIPPED - and starting from a
     # tag is exactly that case. The real precondition is that there is a tag to pull.
     if: |
@@ -286,7 +377,7 @@ jobs:
             set -euo pipefail
             export GITHUB_TOKEN="${{ github.token }}"
             python3 lib/launch_linux.py \
-              --tag "${{ inputs.launch_from || needs.bake.outputs.tag }}" \
+              --tag "${{ inputs.launch_from || needs.tools.outputs.tag }}" \
               --kind kubuntu \
               --artifacts "out/kkubuntu-launch" \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}" \

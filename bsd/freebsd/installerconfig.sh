@@ -226,14 +226,23 @@ fi
 echo "=== easydiskbake: pkg install starting ==="
 echo "=== easydiskbake: repository is $(cat /etc/pkg/FreeBSD.conf 2>/dev/null | grep -o 'url: *"[^"]*"' | head -1) ==="
 
+# THE SYSTEM, NOT THE TOOLCHAIN.
+#
+# git, curl, python3, node22, jq and unzip were on this list, and they made the bake do two
+# jobs: install FreeBSD, and put a toolchain on it. A bake failure and a broken toolchain
+# then look the same from outside, and adding a package means a re-install of the system.
+#
+# They are installed by lib/linstools.py against the disk this bake publishes, over ssh,
+# where `pkg install` is one command and the disk already exists.
+#
+# WHAT STAYS IS WHAT THE SYSTEM IS OR WHAT THE NEXT STAGE NEEDS TO REACH IT:
+#
+#     sudo            the cleaner and the ssh stage both run as docker, not root
+#     bash            the account's shell, and the scripts here are sh
+#     ca_root_nss     TLS roots; without them pkg cannot verify its own repository
+#     xorg/xfce/...   the desktop is the system, not a tool added to it
 pkg install -y \
-    git \
-    curl \
     ca_root_nss \
-    python3 \
-    node22 \
-    jq \
-    unzip \
     bash \
     sudo \
     xorg \
