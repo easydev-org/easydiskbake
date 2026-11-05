@@ -7,8 +7,8 @@ Writes outdir/frame-0000.ppm, frame-0001.ppm ... one every `interval` seconds
 
 THE `limit` ARGUMENT IS OPTIONAL AND IS NORMALLY OMITTED. The socket going away is when qemu
 exited, which is the only end of a recording that means anything; a frame count on top of it
-can only cut a run short. Two callers still pass one and both mean it: lib/capture.py takes
-40 frames on purpose, and lib/selftest.py takes 6.
+can cut a run short. One caller still passes one and means it: lib/selftest.py takes 6, because
+it is checking that the recorder runs rather than recording anything.
 
 WHY THIS EXISTS
 
