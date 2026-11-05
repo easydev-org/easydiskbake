@@ -114,6 +114,7 @@ jobs:
         with:
           kvm: true
           disk-gb: '30'
+          token: ${{ github.token }}
 
       - name: prepare
         uses: easydev-org/easyactions/log-stream@main
@@ -252,6 +253,7 @@ jobs:
         with:
           kvm: true
           disk-gb: '30'
+          token: ${{ github.token }}
 
       - name: pull the bake disk
         uses: easydev-org/easyactions/oci-pull@main
@@ -352,6 +354,7 @@ jobs:
         with:
           kvm: true
           disk-gb: '30'
+          token: ${{ github.token }}
 
       - name: prepare
         uses: easydev-org/easyactions/log-stream@main

@@ -37,6 +37,7 @@ jobs:
         with:
           kvm: true
           disk-gb: '0'
+          token: ${{ github.token }}
 
       - name: the four channels
         uses: easydev-org/easyactions/log-stream@main

@@ -180,6 +180,7 @@ jobs:
         with:
           kvm: true
           disk-gb: '80'
+          token: ${{ github.token }}
 
       - name: prepare
         uses: easydev-org/easyactions/log-stream@main
@@ -260,6 +261,7 @@ jobs:
         with:
           kvm: true
           disk-gb: '60'
+          token: ${{ github.token }}
 
       - name: pull the gold disk
         uses: easydev-org/easyactions/log-stream@main
@@ -343,6 +345,7 @@ jobs:
         with:
           kvm: true
           disk-gb: '60'
+          token: ${{ github.token }}
 
       - name: pull the ssh disk
         uses: easydev-org/easyactions/log-stream@main
@@ -424,6 +427,7 @@ jobs:
         with:
           kvm: true
           disk-gb: '60'
+          token: ${{ github.token }}
 
       - name: launch it and photograph the screen
         uses: easydev-org/easyactions/log-stream@main
@@ -491,6 +495,7 @@ jobs:
         with:
           kvm: true
           disk-gb: '60'
+          token: ${{ github.token }}
 
       - name: launch it and photograph the screen
         uses: easydev-org/easyactions/log-stream@main

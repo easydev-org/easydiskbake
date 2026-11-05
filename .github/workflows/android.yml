@@ -97,6 +97,7 @@ jobs:
         with:
           kvm: true
           disk-gb: '20'
+          token: ${{ github.token }}
 
       - name: prepare
         uses: easydev-org/easyactions/log-stream@main
@@ -234,6 +235,7 @@ jobs:
         with:
           kvm: true
           disk-gb: '20'
+          token: ${{ github.token }}
 
       - name: prepare
         uses: easydev-org/easyactions/log-stream@main

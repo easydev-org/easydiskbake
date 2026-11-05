@@ -93,6 +93,7 @@ jobs:
           # first start is, so KVM is required.
           kvm: true
           disk-gb: '20'
+          token: ${{ github.token }}
 
       - name: prepare
         uses: easydev-org/easyactions/log-stream@main
@@ -170,6 +171,7 @@ jobs:
           # THE RECOVERY IMAGES ARE THE LARGE ONES: Apple serves ~900 MiB per release and the
           # publisher verifies before pushing, so the file and its copy both exist.
           disk-gb: '40'
+          token: ${{ github.token }}
 
       - name: prepare
         uses: easydev-org/easyactions/log-stream@main

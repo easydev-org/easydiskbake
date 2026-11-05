@@ -125,6 +125,7 @@ jobs:
         with:
           kvm: true
           disk-gb: '40'
+          token: ${{ github.token }}
 
       - name: prepare
         uses: easydev-org/easyactions/log-stream@main
@@ -227,6 +228,7 @@ jobs:
         with:
           kvm: true
           disk-gb: '20'
+          token: ${{ github.token }}
 
       - name: prepare
         uses: easydev-org/easyactions/log-stream@main
@@ -335,6 +337,7 @@ jobs:
         with:
           kvm: true
           disk-gb: '20'
+          token: ${{ github.token }}
 
       - name: pull the desktop disk
         uses: easydev-org/easyactions/oci-pull@main
@@ -442,6 +445,7 @@ jobs:
         with:
           kvm: true
           disk-gb: '10'
+          token: ${{ github.token }}
 
       - name: prepare
         uses: easydev-org/easyactions/log-stream@main

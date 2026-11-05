@@ -59,6 +59,7 @@ jobs:
         with:
           kvm: false
           disk-gb: '0'
+          token: ${{ github.token }}
 
       - name: a command that must be killable
         uses: easydev-org/easyactions/log-stream@main
