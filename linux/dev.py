@@ -13,14 +13,20 @@ WHAT IT DOES, IN ORDER
 
     boot          the published bake disk, no install media
     install       apt update, upgrade, then the toolchain (lib/lindev.py)
-    clean         the same cleaner the bake used - an upgrade and a package install leave
-                  the deb cache full, and this stage put it there
-    shutdown      ACPI, with a long timeout: the cleaner trimmed the filesystem and the
-                  guest is writing back its own metadata
+    shutdown      ACPI, with a long timeout: the guest is writing back its own metadata
     compress      because the disk is larger than the one it started from and the published
                   artifact should not be
 
-THE OUTPUT IS A SEPARATE TAG, NOT AN OVERWRITE. `linux-ubuntu-tools` beside `linux-ubuntu`,
+CLEANING IS THE WORKFLOW'S NEXT STEP, NOT THIS SCRIPT'S. It used to happen here, which meant
+the only evidence that a dev disk had been cleaned was a line inside a step called "install
+the toolchain" - while bake, derive and Windows' ssh all show `clean the disk` as a step of
+its own. The workflows now run lib/clean_step.py after this, so every stage that modifies a
+disk is followed by a visible, separately-reported clean.
+
+`--clean` still does it here, for a caller that has the guest up and nothing else to do with
+it; nothing in .github/workflows passes it.
+
+THE OUTPUT IS A SEPARATE TAG, NOT AN OVERWRITE. `linux-ubuntu-dev` beside `linux-ubuntu`,
 so a toolchain change can be compared with the bake it came from and a broken install does
 not take the working disk with it.
 """
@@ -54,8 +60,18 @@ def main(argv: list[str]) -> int:
     p.add_argument("--cpus", type=int, default=4)
     p.add_argument("--boot-timeout", type=int, default=900)
     p.add_argument("--skip-upgrade", action="store_true")
-    p.add_argument("--skip-clean", action="store_true",
-                   help="leave the debris; the workflow runs lib/clean_step.py next")
+    # CLEANING IS A WORKFLOW STEP, NOT SOMETHING THIS SCRIPT DOES BY DEFAULT.
+    #
+    # It used to run clean_disk.clean_running() itself unless --skip-clean was passed, which
+    # meant the only way to see that a dev disk was cleaned was to read the log of a step
+    # called "install the toolchain". Every other stage - bake, derive, Windows' ssh and dev -
+    # shows `clean the disk` as its own step, and this one did not.
+    #
+    # So the default is inverted: this leaves the debris, and the workflow runs
+    # lib/clean_step.py next, where the step is named, timed and reported like the others.
+    # `--clean` is kept for a caller that has the guest up and nothing else to do with it.
+    p.add_argument("--clean", action="store_true",
+                   help="clean inside this script; the workflows leave it to clean_step.py")
     args = p.parse_args(argv)
 
     if not os.path.isfile(args.disk):
@@ -103,7 +119,7 @@ def main(argv: list[str]) -> int:
             log("  the disk is not exported: it is not what this stage claims to produce")
             return status
 
-        if not args.skip_clean:
+        if args.clean:
             # THE CLEANER, BECAUSE THIS STAGE MADE THE MESS. An apt upgrade fills
             # /var/cache/apt/archives and /var/lib/apt/lists the same way the bake did, and
             # the disk that goes out should have neither.

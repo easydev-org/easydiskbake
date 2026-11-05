@@ -43,6 +43,52 @@ sys.path.insert(0, HERE)
 import vm  # noqa: E402
 
 
+def _macos_guest(args, work: str, spec: dict, note):
+    """The machine macos/15/machine.py describes, or None if its inputs are not here.
+
+    WHY THIS IS A FUNCTION AND NOT A SECOND DESCRIPTION OF THE MACHINE. `machine.drives()`
+    is the one place that says which three devices a macOS guest has and in what order, and
+    the one place that carries discard=unmap for the target disk. Restating it here is how
+    the four macOS stages ended up with four copies of one `-drive` line.
+
+    THE RECOVERY IMAGE IS AN INPUT EVEN THOUGH THIS STAGE DOES NOT BOOT FROM IT: opencore
+    extracts Apple's APFS driver out of it, and boot.img is built from that. macos_recovery
+    .fetch_published pulls it if this job does not have it - the same call every other macOS
+    stage makes, so a clean job that inherits nothing still works.
+    """
+    import importlib.util
+
+    macos15 = os.path.join(REPO, "macos", "15")
+    if macos15 not in sys.path:
+        sys.path.insert(0, macos15)
+
+    note("=== the macOS machine (OpenCore, firmware, APFS driver) ===")
+    try:
+        import macos_recovery
+        import machine
+        import opencore
+    except ImportError as exc:
+        note(f"=== CANNOT LOAD THE macOS MACHINE: {exc} ===")
+        return None
+
+    try:
+        recovery = macos_recovery.fetch_published("15", work)
+    except SystemExit as exc:
+        note(f"=== NO RECOVERY IMAGE: {exc} ===")
+        return None
+    note(f"  recovery {recovery} ({os.path.getsize(recovery) >> 20} MiB)")
+
+    try:
+        assets = opencore.build("15", work)
+    except opencore.OpenCoreError as exc:
+        note(f"=== COULD NOT BUILD THE BOOT ASSETS: {exc} ===")
+        return None
+    note(f"  identity {assets['identity']['serial']} / {assets['identity']['mac']}")
+
+    return machine.make_guest(work, assets, args.disk, recovery,
+                              cpus=args.cpus, mem_mb=args.mem)
+
+
 def log(message: str) -> None:
     print(f"[clean-step {time.strftime('%H:%M:%S')}] {message}", flush=True)
 
@@ -53,19 +99,17 @@ SYSTEMS = {
     "windows": {"ssh_port": 2222, "clean": "windows", "bootstate": True},
     "linux": {"ssh_port": 2222, "clean": "linux", "bootstate": False},
     "freebsd": {"ssh_port": 2222, "clean": "freebsd", "bootstate": False},
-    # macOS IS NOT HERE, AND THAT IS NOT THE OLD "deliberately absent" NOTE. Its cleaner
-    # exists (lib/macclean.py) and is registered in lib/clean_disk.SYSTEMS; what this table
-    # does not have is a macOS ENTRY, because this module cannot build the machine.
+    # macOS FORWARDS 2223, not 2222, because the number is per stage and a macOS run and a
+    # Linux run can be in flight on the same host.
     #
-    # Everything below `spec = SYSTEMS[args.kind]` is a plain virtio disk on q35 with OVMF
-    # chosen by kind. A macOS guest needs OpenCore on its own boot image, an Apple SMC device
-    # with the OSK key, a Skylake CPU model, its own firmware vars template, and the recovery
-    # image attached. macos/15/machine.py assembles all of that and this file would be a
-    # second, worse copy of it.
-    #
-    # So macOS cleans INSIDE its own stage - macos/15/ssh.py calls clean_disk.clean_running
-    # once Remote Login is proven to answer - which is the same "clean where the guest is
-    # already up" rule the other three follow, just without this launcher.
+    # ITS MACHINE IS BUILT BY macos/15/machine.py, NOT BY THE CODE BELOW. A macOS guest needs
+    # OpenCore on its own boot image, the Apple SMC device with the OSK key, a Skylake CPU
+    # model, its own firmware vars and the recovery image attached; `generic` below builds a
+    # plain q35 virtio disk and cannot produce any of that. The `builder` key names the
+    # function that does it, so there is exactly one description of this machine in the
+    # repository and this file calls it rather than restating it.
+    "macos": {"ssh_port": 2223, "clean": "macos", "bootstate": False,
+              "builder": "macos15"},
 }
 
 
@@ -177,14 +221,25 @@ def main(argv: list[str]) -> int:
         # ALWAYS A FRESH COPY, never a leftover: the point is a machine with no boot entries.
         shutil.copyfile(template, firmware_vars)
 
-    shape = vm.Shape(cpus=args.cpus, mem_mb=args.mem, machine="q35", vga="std",
-                     firmware_code=firmware_code, firmware_vars=firmware_vars,
-                     resolution=(1920, 1080), ssh_port=spec["ssh_port"])
-    # discard=unmap so a guest's fstrim reaches the qcow2 and drops the clusters, rather than
-    # qemu storing zeros that convert has to read again.
-    guest = vm.Guest(work, extra=[
-        "-drive", f"file={args.disk},if=virtio,format=qcow2,discard=unmap",
-    ], shape=shape, stdout=os.devnull)
+    # A SYSTEM THAT BRINGS ITS OWN MACHINE DESCRIPTION GETS IT, AND NOTHING BELOW RUNS.
+    #
+    # macOS is the case this exists for: macos/15/machine.py assembles OpenCore, the SMC
+    # device, the CPU model, the firmware vars and the recovery image, and a second copy here
+    # would be a worse copy that drifts. The builder returns (guest, teardown) - teardown is
+    # None for macOS, whose guest owns nothing this file did not already have.
+    if spec.get("builder") == "macos15":
+        guest = _macos_guest(args, work, spec, note)
+        if guest is None:
+            return 2
+    else:
+        shape = vm.Shape(cpus=args.cpus, mem_mb=args.mem, machine="q35", vga="std",
+                         firmware_code=firmware_code, firmware_vars=firmware_vars,
+                         resolution=(1920, 1080), ssh_port=spec["ssh_port"])
+        # discard=unmap so a guest's fstrim reaches the qcow2 and drops the clusters, rather
+        # than qemu storing zeros that convert has to read again.
+        guest = vm.Guest(work, extra=[
+            "-drive", f"file={args.disk},if=virtio,format=qcow2,discard=unmap",
+        ], shape=shape, stdout=os.devnull)
 
     ok = False
     try:

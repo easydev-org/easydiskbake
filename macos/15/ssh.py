@@ -194,20 +194,11 @@ def main(argv: list[str]) -> int:
         # every step of the cleaner can be reached. lib/macclean.py, and the reason it exists
         # at all: the four macOS stages up to here each only ADD to the disk, so this is the
         # first and only place it can shrink before being published.
-        log("=== cleaning the disk before it is exported ===")
-        import clean_disk
-        if not clean_disk.clean_running("macos", port=args.ssh_port, note=log,
-                                        disk=disk):
-            # A CLEAN THAT DID NOT RUN IS A FAILURE, NOT A WARNING.
-            #
-            # The other three systems' stages treat it this way, and the reason is the same
-            # here: publishing a disk whose free blocks were never handed back means every
-            # later pull of that tag carries the bloat, and the tag is what people use. A
-            # run that says "success" over an unclean disk makes the size look like the
-            # best this system can do.
-            log("=== THE CLEAN DID NOT FINISH ===")
-            log("  nothing is published: the disk is not what this stage claims to produce")
-            return 1
+        # CLEANING IS THE NEXT WORKFLOW STEP, NOT THIS STAGE'S WORK.
+        #
+        # It was here, as an inline call, which made macOS the only system whose clean was
+        # invisible in the run's step list. Every stage that modifies a disk now runs
+        # lib/clean_step.py as `clean the disk`, and macos15.yml does that after this job.
         return 0
     finally:
         guest.stop(acpi_first=ok)

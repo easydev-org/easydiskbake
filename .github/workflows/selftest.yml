@@ -59,6 +59,12 @@ jobs:
             # drive.Driver while `d` is a Recovery.
             python3 lib/attrcheck.py
 
+            # AND EVERY DISK-MODIFYING JOB IS FOLLOWED BY A CLEAN - WHERE ONE CAN RUN.
+            # Cleaning is over ssh, so a job whose guest has no sshd yet cannot have one;
+            # lib/cleancheck.py knows which is which per system and says so when a workflow
+            # disagrees with it.
+            python3 lib/cleancheck.py
+
             mkdir -p out
             GITHUB_TOKEN="${{ github.token }}" python3 lib/selftest.py
 

@@ -373,6 +373,25 @@ jobs:
               --out "out/nixos-${{ matrix.desktop }}-dev.qcow2" \
               --timeout "${{ inputs.derive_timeout || '3600' }}"
 
+      - name: clean the disk
+        # THE SAME STEP EVERY OTHER STAGE THAT MODIFIES A DISK HAS. This job installs a
+        # toolchain through nixos-rebuild, which leaves store paths, /var/log and the usual
+        # debris; the disk that ships should carry the toolchain and not the building of it.
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: nixos-${{ matrix.desktop }}-dev-clean
+          interval: "20"
+          command: |
+            set -euo pipefail
+            python3 lib/clean_step.py \
+              --disk out/nixos-${{ matrix.desktop }}-dev.qcow2 \
+              --kind linux \
+              --work out/nixos-${{ matrix.desktop }}-dev-clean-work \
+              --artifacts out \
+              --boot-timeout "${{ inputs.derive_timeout || '3600' }}" \
+              --mem 4096
+
       - name: keep the console
         if: always()
         uses: actions/upload-artifact@v4

@@ -246,6 +246,28 @@ jobs:
               --kind freebsd \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}"
 
+      - name: clean the disk
+        # EVERY STAGE THAT MODIFIES A DISK IS FOLLOWED BY ONE OF THESE. This job installs a
+        # toolchain onto the baked disk; an apt/pkg install and its upgrade fill the package
+        # cache, and the disk that ships should not carry it. Until now the cleaning happened
+        # INSIDE linux/dev.py, so the only evidence of it was a line in the log of a step
+        # called "install the toolchain", while bake and derive both show `clean the disk` as
+        # a step of its own.
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: freebsd-dev-clean
+          interval: "20"
+          command: |
+            set -euo pipefail
+            python3 lib/clean_step.py \
+              --disk out/freebsd-dev.qcow2 \
+              --kind freebsd \
+              --work out/freebsd-dev-clean-work \
+              --artifacts out \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --mem 2048
+
       - name: keep the console
         if: always()
         uses: actions/upload-artifact@v4

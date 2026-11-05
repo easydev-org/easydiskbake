@@ -381,6 +381,33 @@ jobs:
               --ssh-port "${{ inputs.ssh_port || '2223' }}" \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}"
 
+      - name: clean the disk
+        # EVERY STAGE THAT MODIFIES A DISK IS FOLLOWED BY ONE OF THESE.
+        #
+        # macOS used to have no clean step anywhere: setup, desktop, ssh and dev each only
+        # added to the disk, so the image was published at whatever size four stages of
+        # writing reached. The cleaning existed only inside macos/15/ssh.py, where it was
+        # invisible in the run's step list and never ran for desktop or dev.
+        #
+        # lib/macclean.py is the cleaner - `diskutil apfs trim`, which is DISCARD and writes
+        # nothing. The zero-writing versions (secureErase, zeroDisk, and the dd that used to
+        # be in macos/15/dev.py) are the mechanism this repository abandoned: on a
+        # copy-on-write filesystem they allocate new blocks before releasing the old ones.
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: macos15-ssh-clean
+          interval: "20"
+          command: |
+            set -euo pipefail
+            python3 lib/clean_step.py \
+              --disk out/macos15-ssh.qcow2 \
+              --kind macos \
+              --work out/macos15-ssh-clean-work \
+              --artifacts out \
+              --boot-timeout "${{ inputs.boot_timeout || '1800' }}" \
+              --mem 8192
+
       - name: keep the recording
         if: always()
         uses: actions/upload-artifact@v4
@@ -462,11 +489,41 @@ jobs:
             set -euo pipefail
             export GITHUB_TOKEN="${{ github.token }}"
             DISK=$(ls out/*.qcow2 | head -1)
+            # NO --clean: the step below is the clean, and macos/15/dev.py no longer takes
+            # the flag. The one it used to take wrote zeros with dd, which is the mechanism
+            # this repository abandoned - on APFS it allocates new blocks before releasing
+            # the old ones. lib/macclean.py uses `diskutil apfs trim`, which is discard.
             python3 macos/15/dev.py \
               --disk "$DISK" \
               --out out/macos15-dev.qcow2 \
-              --ssh-port "${{ inputs.ssh_port || '2223' }}" \
-              --clean
+              --ssh-port "${{ inputs.ssh_port || '2223' }}"
+
+      - name: clean the disk
+        # EVERY STAGE THAT MODIFIES A DISK IS FOLLOWED BY ONE OF THESE.
+        #
+        # macOS used to have no clean step anywhere: setup, desktop, ssh and dev each only
+        # added to the disk, so the image was published at whatever size four stages of
+        # writing reached. The cleaning existed only inside macos/15/ssh.py, where it was
+        # invisible in the run's step list and never ran for desktop or dev.
+        #
+        # lib/macclean.py is the cleaner - `diskutil apfs trim`, which is DISCARD and writes
+        # nothing. The zero-writing versions (secureErase, zeroDisk, and the dd that used to
+        # be in macos/15/dev.py) are the mechanism this repository abandoned: on a
+        # copy-on-write filesystem they allocate new blocks before releasing the old ones.
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: macos15-dev-clean
+          interval: "20"
+          command: |
+            set -euo pipefail
+            python3 lib/clean_step.py \
+              --disk out/macos15-dev.qcow2 \
+              --kind macos \
+              --work out/macos15-dev-clean-work \
+              --artifacts out \
+              --boot-timeout "${{ inputs.boot_timeout || '1800' }}" \
+              --mem 8192
 
       - name: keep the last frame
         if: always()

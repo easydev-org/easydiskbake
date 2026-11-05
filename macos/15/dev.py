@@ -141,9 +141,17 @@ def main(argv: list[str]) -> int:
     p.add_argument("--cpus", type=int, default=4)
     p.add_argument("--ssh-port", type=int, default=2223)
     p.add_argument("--boot-timeout", type=int, default=900)
-    p.add_argument("--clean", action="store_true",
-                   help="remove this run's traces and zero the free space before "
-                        "exporting; without it the disk ships with its build history")
+    # NO --clean HERE ANY MORE, AND THE ONE THAT EXISTED WAS THE WRONG KIND ANYWAY.
+    #
+    # It ran `dd if=/dev/zero of=/tmp/zero bs=1m` - writing zeros to fill the free space, the
+    # mechanism this repository abandoned everywhere else. lib/linclean.py measured what it
+    # costs: one second of fstrim released 116 GiB on the same disk, and the zeroing that
+    # followed allocated clusters back. On APFS it is worse than useless, because a
+    # copy-on-write filesystem allocates new blocks before the old ones are released.
+    #
+    # Cleaning is lib/clean_step.py's job now, as the step after this one, the same way it is
+    # for bake, derive and both Windows stages. It calls lib/macclean.py, which uses
+    # `diskutil apfs trim` - discard, which writes nothing.
     args = p.parse_args(argv)
 
     out = args.out or args.disk.replace(".qcow2", "-dev.qcow2")
@@ -247,13 +255,6 @@ def main(argv: list[str]) -> int:
                 log("=== THE TOOLCHAIN IS INCOMPLETE ===")
                 return 1
             log(f"  {command}: {(got.stdout or '').strip().splitlines()[0][:80]}")
-
-        if args.clean:
-            log("=== cleaning ===")
-            run(args.ssh_port, "sudo rm -rf ~/Library/Caches/Homebrew ~/.ssh/known_hosts",
-                timeout=300)
-            run(args.ssh_port, "sudo dd if=/dev/zero of=/tmp/zero bs=1m 2>/dev/null; "
-                               "sudo rm -f /tmp/zero", timeout=1800)
 
         ok = True
         return 0
