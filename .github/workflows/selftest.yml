@@ -66,6 +66,14 @@ jobs:
             # disagrees with it.
             python3 lib/cleancheck.py
 
+            # AND EVERY FLAG A WORKFLOW PASSES IS ONE THE SCRIPT DECLARES. Run 42064532959
+            # failed in two seconds with `desktop.py: error: unrecognized arguments:
+            # --wizard-timeout 7200` - an argument bake.py has and desktop.py never did,
+            # copied into macos26's desktop step from the setup step above it. argparse
+            # rejects the whole invocation, so twenty minutes of pulling a 30 GiB disk was
+            # followed by a usage message.
+            python3 lib/flagcheck.py
+
             mkdir -p out
             GITHUB_TOKEN="${{ github.token }}" python3 lib/selftest.py
 

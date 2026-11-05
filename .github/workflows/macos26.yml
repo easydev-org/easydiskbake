@@ -287,7 +287,6 @@ jobs:
               --disk "$DISK" \
               --out out/macos26-desktop.qcow2 \
               --assistant-timeout "${{ inputs.assistant_timeout || '2700' }}" \
-              --wizard-timeout "${{ inputs.wizard_timeout || '7200' }}" \
               --desktop-timeout "${{ inputs.desktop_timeout || '1800' }}" \
               ${{ inputs.inspect_after != '' && format('--inspect-after {0}', inputs.inspect_after) || '' }}
 
