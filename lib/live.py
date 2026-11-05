@@ -155,7 +155,27 @@ class LiveArtifacts:
             self._encoded = total
 
     def _write_last_frame(self) -> None:
-        """The newest frame as a PNG, replaced atomically."""
+        """The newest frame as a PNG, replaced atomically.
+
+        A PPM WITH A JPEG BESIDE IT IS NOT A CANDIDATE, and that rule is the whole of this
+        change. lib/snapshots.py writes frame-N.ppm, converts it to frame-N.jpg and deletes
+        the PPM, once a second, for the whole run. The PPM is the NEWEST file at the moment
+        this looks - it was just written - so picking by mtime chooses it, and by the time
+        ffmpeg opens it the conversion has deleted it:
+
+            [lastframe] ffmpeg failed: Error opening input: No such file or directory
+            Error opening input file .../frames/shots/frame-1103.ppm
+
+        which run 42009463444 printed every few minutes for an hour. The reflection was
+        already fixed in lib/lastframe.newest_frame (skip a PPM that has a JPEG beside it)
+        and lib/lastframe.newest_frame_stable (re-check that the file is still there), but
+        THIS function does its own selection and never called either - so the fix covered the
+        stage's final frame and not the live one updated every twenty seconds.
+
+        The extension comparison is done after the listing, not during, because the two
+        names have to be seen together: `present` is a set from one listdir, so a JPEG that
+        appears between two listdir calls cannot make this choose a PPM that has no JPEG.
+        """
         newest = None
         newest_mtime = -1.0
         for directory in self.frames_dirs:
@@ -164,8 +184,13 @@ class LiveArtifacts:
                          if n.startswith("frame-") and n.endswith((".ppm", ".jpg"))]
             except OSError:
                 continue
+            present = set(names)
             for name in names:
                 path = os.path.join(directory, name)
+                if name.endswith(".ppm") and (name[:-4] + ".jpg") in present:
+                    # The conversion finished and the unlink has not happened yet. The JPEG
+                    # is the same picture and is not about to disappear.
+                    continue
                 try:
                     mtime = os.path.getmtime(path)
                 except OSError:
@@ -194,8 +219,17 @@ class LiveArtifacts:
             sys.path.insert(0, lib_dir)
         import lastframe
 
+        # THE FILE IS CHECKED AGAIN, AND THE WHOLE CHOICE IS RETRIED ONCE.
+        #
+        # Skipping a PPM that has a JPEG beside it closes the common window, not every one:
+        # the listdir can see a lone PPM, the conversion can run, and the mtime lookup or
+        # ffmpeg's open can then find nothing. Both are cheap to survive - the next poll is
+        # twenty seconds away and there is always a newer frame - so a miss must not print an
+        # ffmpeg error that reads like a broken recording.
         tmp = part_path(self.last_frame)
         try:
+            if not os.path.isfile(newest):
+                return          # converted away between the listing and now; next poll
             if not lastframe.convert(newest, tmp):
                 if os.path.exists(tmp):
                     os.unlink(tmp)
