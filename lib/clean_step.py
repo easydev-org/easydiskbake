@@ -108,7 +108,15 @@ SYSTEMS = {
     # plain q35 virtio disk and cannot produce any of that. The `builder` key names the
     # function that does it, so there is exactly one description of this machine in the
     # repository and this file calls it rather than restating it.
-    "macos": {"ssh_port": 2223, "clean": "macos", "bootstate": False,
+    # 2222, THE PORT EVERY SYSTEM USES. It was 2223 here after the workflows were unified:
+    # this table kept the old number, so the clean booted the disk and then connected to a
+    # port nothing was forwarded to -
+    #
+    #     ssh: connect to host 127.0.0.1 port 2223: Connection refused
+    #
+    # for the whole 900-second budget, on a disk that had sshd running (run 42048455475's
+    # enable Remote Login step had just proved it with SSH-2.0-OpenSSH_9.9 on 2222).
+    "macos": {"ssh_port": 2222, "clean": "macos", "bootstate": False,
               "builder": "macos15"},
 }
 
@@ -268,14 +276,23 @@ def main(argv: list[str]) -> int:
                 import qmp as qmpmod
                 import lastframe
 
-                ppm = os.path.join(artifacts, "clean-stopped.ppm")
+                # `args.artifacts`, NOT A BARE `artifacts`. That name was never bound in
+                # this function, so the one line that exists to explain a failed boot died
+                # with
+                #
+                #     NameError: name 'artifacts' is not defined
+                #
+                # and took the clean with it - the frame it was about to take is the only
+                # evidence of why the guest did not answer.
+                os.makedirs(args.artifacts, exist_ok=True)
+                ppm = os.path.join(args.artifacts, "clean-stopped.ppm")
                 client = qmpmod.QMP(guest.paths.drive)
                 try:
                     client.execute("screendump", filename=ppm)
                 finally:
                     client.close()
-                lastframe.convert(ppm, os.path.join(artifacts, "clean-stopped.png"))
-                note(f"  the screen at that moment: {artifacts}/clean-stopped.png")
+                lastframe.convert(ppm, os.path.join(args.artifacts, "clean-stopped.png"))
+                note(f"  the screen at that moment: {args.artifacts}/clean-stopped.png")
             except (OSError, RuntimeError) as exc:
                 note(f"  and the screenshot failed too: {exc}")
             return 1
