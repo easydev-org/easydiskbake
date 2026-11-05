@@ -66,6 +66,19 @@ def _used(port: int) -> int | None:
 
     status, out = ssh(port, USED, timeout=120)
     if status != 0:
+        # THE OUTPUT IS PRINTED BECAUSE THIS LINE HAS FAILED WITHOUT ONE BEFORE. Run
+        # 42074798774 reached this with the guest up and sshd answering - the stage's own
+        # wait_for_ssh had just passed - and the whole clean ended with
+        #
+        #     === THE GUEST DID NOT ANSWER `df` ===
+        #     nothing was measured, so nothing will be reported
+        #
+        # which is true and says nothing about why. `wait_for_ssh`'s probe is `true`, a shell
+        # BUILTIN that returns without forking; this is a PIPELINE, and a login shell that
+        # cannot run one fails here and not there. The status and the text distinguish "df is
+        # not the BSD df", "awk is not on PATH", and "the session died" - three different
+        # repairs - and only the print can tell them apart.
+        log(f"  `{USED}` returned {status}: {(out or '(no output)')[:300]}")
         return None
     lines = [x.strip() for x in (out or "").splitlines() if x.strip().isdigit()]
     return int(lines[-1]) if lines else None
