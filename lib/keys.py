@@ -74,6 +74,57 @@ def for_text(text: str) -> list[tuple[str, object]]:
     return out
 
 
+def type_text(q, text: str, per_char: float = 0.15) -> list[str]:
+    """Type what CAN be typed and return the characters that could not.
+
+    THE OTHER TWO FUNCTIONS IN THIS MODULE REFUSE; THIS ONE REPORTS. `for_text()` raises on
+    the first character it cannot map, which is right for a caller that knows its string is
+    ASCII - the Windows stage validates before it sends for exactly that reason. A caller
+    driving an installer wizard does not know: the text comes from a configuration file, and
+    stopping the whole sequence because one character has no QMP name is worse than typing
+    the rest and saying which ones were skipped.
+
+    THAT IS THE CONTRACT linux/mx/drive-mx.py ALREADY EXPECTED. It imports `type_text` from
+    this module and does
+
+        unsupported = type_text(self.screen.q, text)
+        if unsupported: log("COULD NOT TYPE %r - no qcode for those characters")
+
+    and this module never had the function:
+
+        ImportError: cannot import name 'type_text' from 'keys'
+
+    The MX driver is not run by any workflow, which is why nothing ever reported it; it is
+    the only module lib/attrcheck.py could not check, and it is fixed here rather than
+    deleted because the MX support is kept deliberately (see linux/README.md).
+
+    150 ms BETWEEN KEYS, matching windows/11/ssh.py: a wizard that validates as it is typed
+    drops characters at 30, and the caller's own 0.4 s is for forms that repaint on every
+    keystroke. This default is for a shell prompt.
+    """
+    import time as _time
+
+    import qmp as qmpmod
+
+    unsupported: list[str] = []
+    for ch in text:
+        if ch in "\r\n\t":
+            unsupported.append(ch)
+            continue
+        try:
+            if ch.isupper() and ch.isalpha():
+                qmpmod.key_combo(q, "shift", ch.lower())
+            elif ch in SHIFTED:
+                qmpmod.key_combo(q, "shift", SHIFTED[ch])
+            else:
+                qmpmod.key(q, qcode_for(ch))
+        except (KeyError, ValueError):
+            unsupported.append(ch)
+            continue
+        _time.sleep(per_char)
+    return unsupported
+
+
 def type_into(q, text: str, per_char: float = 0.03, sleep=None) -> None:
     """Send `text` to a QMP connection one keystroke at a time.
 

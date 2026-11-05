@@ -154,13 +154,18 @@ class Keyboard:
         qmpmod.key_combo(self.q, *keys)
         time.sleep(settle)
 
-    def type(self, text: str, settle: float = 0.06) -> None:
+    def type(self, text: str, settle: float = 0.15) -> None:
         """Type ASCII, one key at a time.
 
         A newline is refused rather than dropped: sendkey cannot produce one, and a caller
         that passes one has a command that needs splitting, which is a decision, not a
         retry. The easysandbox version learned this as "cannot map newline" after typing
         nothing at all.
+
+        THE DEFAULT IS 150 ms FOR THE REASON type_text() GIVES: PSReadLine redraws on every
+        keystroke, and 60 ms let it drop characters - run 41997580476 typed `winget install`
+        and the guest received `get install`. A default that loses input is a trap for the
+        next caller, so the slow value is the default and a caller that wants speed asks.
         """
         for ch in text:
             if ch in "\r\n\t":
@@ -236,6 +241,25 @@ def type_text(kb: Keyboard, text: str) -> None:
             f"and join with ';'"
         )
 
+    # 150 MILLISECONDS PER KEY, AND 60 WAS DROPPING THEM.
+    #
+    # Run 41997580476 typed
+    #
+    #     winget install --id Microsoft.OpenSSH.Preview --exact --source winget ...
+    #
+    # and the guest's own console, quoted in the failure, shows what arrived:
+    #
+    #     get install --id Microsoft.OpenSSH.Preview --exact --sou
+    #
+    # `w`, `in` and the tail are missing - dropped, not mistyped. PowerShell's PSReadLine
+    # redraws the line it is editing on every keystroke, and at 60 ms between keys it
+    # coalesces them: the character is not queued and never appears. The prompt came back,
+    # the command ran as `get`, and the machine reported - correctly - that OpenSSH was not
+    # installed.
+    #
+    # The same class of failure the comment above records for upper case: the command is
+    # only as good as the slowest character that survives. 150 ms is under PSReadLine's
+    # redraw time on this guest with margin, and it costs 1.6 s on a 105-character command.
     for ch in text:
         if ch.isupper() and ch.isalpha():
             qmpmod.key_combo(kb.q, "shift", ch.lower())
@@ -243,7 +267,7 @@ def type_text(kb: Keyboard, text: str) -> None:
             qmpmod.key_combo(kb.q, "shift", SHIFTED[ch])
         else:
             qmpmod.key(kb.q, qcode_for(ch))
-        time.sleep(0.06)
+        time.sleep(0.15)
 
 
 # THE INSTALL. One line, because it is typed.
