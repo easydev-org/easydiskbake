@@ -177,6 +177,8 @@ jobs:
             export RECORD_FPS=1
             export MACOS_USER=docker
             export MACOS_PASSWORD=admin
+
+            export MACOS_RELEASE=26
             python3 macos/26/bake.py \
               --out "out/macos26.qcow2" \
               --release "26" \
@@ -281,11 +283,14 @@ jobs:
             export SNAPSHOT_INTERVAL=1
             export MACOS_USER=docker
             export MACOS_PASSWORD=admin
+
+            export MACOS_RELEASE=26
             DISK=$(ls out/*.qcow2 | head -1)
             echo "setup disk: $DISK"
             python3 macos/15/desktop.py \
               --disk "$DISK" \
               --out out/macos26-desktop.qcow2 \
+              --release 26 \
               --assistant-timeout "${{ inputs.assistant_timeout || '2700' }}" \
               --desktop-timeout "${{ inputs.desktop_timeout || '1800' }}" \
               ${{ inputs.inspect_after != '' && format('--inspect-after {0}', inputs.inspect_after) || '' }}
@@ -389,6 +394,8 @@ jobs:
             export SNAPSHOT_INTERVAL=1
             export MACOS_USER=docker
             export MACOS_PASSWORD=admin
+
+            export MACOS_RELEASE=26
             DISK=$(ls out/*.qcow2 | head -1)
             python3 macos/15/ssh.py \
               --disk "$DISK" \

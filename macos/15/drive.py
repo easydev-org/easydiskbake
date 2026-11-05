@@ -169,6 +169,38 @@ FULL_NAME = (945, 447)
 PASSWORD = (850, 531)
 VERIFY = (1086, 531)
 
+# THE ACCOUNT FORM MOVES BETWEEN RELEASES, AND 26 MOVED IT DOWN FIFTY PIXELS.
+#
+# Measured from run 42085569136's own frame (the one taken while the pane was clean, before
+# the validation alert dimmed it), converted with x*1.5 and y*1.35 like every other number
+# in this file:
+#
+#     field                 15 (above)      26 (measured)
+#     Full name             (945, 447)      (960, 497)
+#     Account name          -               (960, 531)
+#     Password              (850, 531)      (960, 600)
+#     Verify password       (1086, 531)     (1050, 600)
+#     Hint                  -               (960, 637)
+#
+# WHY. 26 puts a six-icon picture picker above the form; 15 has none. Everything below it is
+# pushed down by about 50 pixels, and the fields also end up at different x because the pane
+# is wider.
+#
+# WHAT THAT COST. PASSWORD's y was 531, which on 26 is exactly ACCOUNT NAME's row - so the
+# click meant for the password field focused the hairline-short name field instead. The
+# three typed values then went
+#
+#     "docker" -> Full name      (the click at 447 landed above the field but inside the pane)
+#     "admin"  -> Account name   (PASSWORD's click)
+#     "admin"  -> Account name   (VERIFY's click, same row)
+#
+# and the wizard refused with "You haven't provided all of the requested information." -
+# its own last frame shows Full name "admin" and Password empty, which is this table.
+ACCOUNT_FIELDS = {
+    "15": {"full": (945, 447), "password": (850, 531), "verify": (1086, 531)},
+    "26": {"full": (960, 497), "password": (960, 600), "verify": (1050, 600)},
+}
+
 # The "Are you sure you want to skip sign in?" sheet - Skip is the right-hand of its pair.
 SHEET_SKIP = (1026, 634)
 
@@ -487,7 +519,7 @@ def privacy_then_not_now(d: Driver) -> None:
     d.click(NOT_NOW_LEFT, "Not Now again, in case the first was early", settle=3.0)
 
 
-def account(d: Driver, user: str, password: str) -> None:
+def account(d: Driver, user: str, password: str, release: str = "15") -> None:
     """The account form, then Continue.
 
     ONLY THE SHORT NAME IS LEFT ALONE. macOS fills Account Name from Full Name as you
@@ -506,10 +538,18 @@ def account(d: Driver, user: str, password: str) -> None:
     # this typed one. Filling it costs a click, a clear, six keystrokes and a two-second
     # settle on a form that validates every keystroke, which is eight seconds of the slowest
     # part of the wizard for a field nobody reads.
+    # THE THREE POSITIONS COME FROM THE RELEASE'S OWN ROW. See ACCOUNT_FIELDS for what 26
+    # moved and what assuming otherwise did to run 42085569136.
+    fields = ACCOUNT_FIELDS.get(release)
+    if fields is None:
+        raise SystemExit(
+            f"=== NO ACCOUNT-FIELD TABLE FOR macOS {release} ===\n"
+            f"  known: {', '.join(sorted(ACCOUNT_FIELDS))}\n"
+            f"  a guessed table types the password into whatever row the guess lands on")
     for xy, value, label in (
-        (FULL_NAME, user, "full name"),
-        (PASSWORD, password, "password"),
-        (VERIFY, password, "verify"),
+        (fields["full"], user, "full name"),
+        (fields["password"], password, "password"),
+        (fields["verify"], password, "verify"),
     ):
         # 2.5s after the click into a field, and 2s after typing into it: this form
         # validates on every keystroke, and the next field's click arriving while the
@@ -616,7 +656,8 @@ def tail(d: Driver) -> None:
     d.wait(20, "the wizard finishes and the desktop appears")
 
 
-def run_sequence(qmp_path: str, frames_dir: str | None, user: str, password: str) -> None:
+def run_sequence(qmp_path: str, frames_dir: str | None, user: str, password: str,
+                 release: str = "15") -> None:
     d = Driver(qmp_path, frames_dir)
     log("connected; fixed sequence, no reads")
     try:
@@ -626,7 +667,7 @@ def run_sequence(qmp_path: str, frames_dir: str | None, user: str, password: str
         languages(d)
         accessibility(d)
         privacy_then_not_now(d)
-        account(d, user, password)
+        account(d, user, password, release)
         apple_account(d)
         tail(d)
         log(f"sequence complete after {d.n} actions")
@@ -640,9 +681,11 @@ def main(argv: list[str]) -> int:
     p.add_argument("--frames", default=None, help="where to save a frame after each action")
     p.add_argument("--user", default=os.environ.get("MACOS_USER", "docker"))
     p.add_argument("--password", default=os.environ.get("MACOS_PASSWORD", "admin"))
+    p.add_argument("--release", default=os.environ.get("MACOS_RELEASE", "15"),
+                   help="which release's coordinates to use; see ACCOUNT_FIELDS")
     args = p.parse_args(argv)
 
-    run_sequence(args.qmp, args.frames, args.user, args.password)
+    run_sequence(args.qmp, args.frames, args.user, args.password, args.release)
     return 0
 
 

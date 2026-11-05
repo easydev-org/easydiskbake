@@ -32,6 +32,14 @@ import subprocess
 import sys
 import time
 
+# WHICH RELEASE THIS DISK IS. The stages in this directory are shared between
+# macOS 15 and 26 - macos/26 keeps only the measurements that differ - so the
+# recovery image and the OpenCore build have to be told which one they are
+# working on. A constant here made macos26's desktop stage pull
+# macos-recovery-sequoia, which is 15's image, and install Apple's APFS driver
+# from it into a 26 boot.
+RELEASE = os.environ.get("MACOS_RELEASE", "15")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, REPO)
@@ -124,13 +132,13 @@ def main(argv: list[str]) -> int:
     log("=== recovery image ===")
     import macos_recovery
 
-    recovery = macos_recovery.fetch_published("15", work)
+    recovery = macos_recovery.fetch_published(RELEASE, work)
     log(f"  {recovery} ({os.path.getsize(recovery) >> 20} MiB)")
 
     log("=== OpenCore, firmware, APFS driver ===")
     import opencore
 
-    assets = opencore.build("15", work)
+    assets = opencore.build(RELEASE, work)
     log(f"identity {assets['identity']['serial']} / {assets['identity']['mac']}")
 
     shape = machine.shape(assets, cpus=args.cpus, mem_mb=args.mem)

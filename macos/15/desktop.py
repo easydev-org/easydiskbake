@@ -91,6 +91,9 @@ def main(argv: list[str]) -> int:
     p.add_argument("--cpus", type=int, default=4)
     p.add_argument("--user", default=os.environ.get("MACOS_USER", "docker"))
     p.add_argument("--password", default=os.environ.get("MACOS_PASSWORD", "admin"))
+    p.add_argument("--release", default=os.environ.get("MACOS_RELEASE", "15"),
+                   help="which release the setup disk is; drive.py has a coordinate table "
+                        "per release and a guessed one types into the wrong field")
     p.add_argument("--assistant-timeout", type=int, default=45 * 60)
     p.add_argument("--desktop-timeout", type=int, default=30 * 60)
     p.add_argument("--inspect-after", type=int, default=None,
@@ -149,7 +152,15 @@ def main(argv: list[str]) -> int:
     # APFS driver out of it - the driver is installed into boot.img, which travels with
     # the machine, not with the disk.
     log("=== OpenCore, firmware, APFS driver ===")
-    assets = opencore.build("15", work)
+    # THE RELEASE, NOT A CONSTANT. This said "15", so a macOS 26 desktop run built its boot
+    # assets from SEQUOIA's recovery image - the stage's own log line, run 42085569136:
+    #
+    #     [recovery]   pulling macos-recovery-sequoia
+    #
+    # opencore.build() takes Apple's APFS driver out of that image and installs it into
+    # boot.img. A 26 disk booted through a driver taken from 15 is a boot that can fail for a
+    # reason no other line in the run would name.
+    assets = opencore.build(args.release, work)
     log(f"identity {assets['identity']['serial']} / {assets['identity']['mac']}")
 
     # NO RECOVERY DISK. machine.drives() wants one, so this does not call it: a desktop
@@ -193,7 +204,8 @@ def main(argv: list[str]) -> int:
             subprocess.run(
                 [sys.executable, os.path.join(HERE, "drive.py"),
                  "--qmp", guest.paths.drive, "--frames", frames,
-                 "--user", args.user, "--password", args.password],
+                 "--user", args.user, "--password", args.password,
+                 "--release", args.release],
                 check=True, timeout=args.assistant_timeout,
             )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
