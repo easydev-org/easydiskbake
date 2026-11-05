@@ -440,6 +440,72 @@ def unlock(guest: vm.Guest) -> bool:
     return True
 
 
+# ENABLING REMOTE LOGIN WITHOUT systemsetup, WHICH WANTS A PRIVILEGE sudo DOES NOT GIVE.
+#
+# Run 42041505699 is what systemsetup prints now, and it is not a permissions mistake on our
+# side - it is macOS 13+ refusing on principle:
+#
+#     docker@dockers-iMac ~ % sudo systemsetup -setremotelogin on
+#     Password:
+#     setremotelogin: Turning Remote Login on or off requires Full Disk Access privileges.
+#
+#     docker@dockers-iMac ~ % sudo systemsetup -getremotelogin
+#     Remote Login: Off
+#
+# sudo AND TCC ARE ORTHOGONAL. sudo says the process runs as root; TCC says whether this
+# APPLICATION may touch this KIND OF DATA. systemsetup reads and writes the network service
+# configuration, which is TCC-protected, so it is refused no matter whose uid it runs under.
+# That is deliberate on Apple's part - if sudo bypassed TCC, any script a user ran with a
+# password could read every protected store on the machine.
+#
+# THE SAME JOB WITHOUT THE PRIVILEGE is three launchctl calls, and this is exactly what
+# easydev-org/dockur-macos does in src/install/firstboot/launch.sh:
+#
+#     "launchd owns sshd; enabling the job is what /usr/sbin/systemsetup does, minus the
+#      parts of that tool which want to talk to a logged-in session."
+#
+# `enable` marks the job for loading at boot, `load -w` loads it now, and `kickstart` restarts
+# it so the settings take effect rather than waiting for a reboot. None of that touches
+# TCC-protected data: launchd is already root and does the work.
+#
+# THE CONFIGURATION AND THE ACCESS GROUP COME WITH IT. PasswordAuthentication is what makes
+# sshpass usable - `yes` is macOS's own default in sshd_config but it ships commented out -
+# and com.apple.access_ssh is an allow-list macOS consults SEPARATELY from sshd_config: if
+# that group exists and the account is not in it, sshd answers and then refuses the login.
+# SEVERAL SHORT COMMANDS, NOT ONE LONG ONE.
+#
+# The whole sequence as a single line is 471 characters, typed one keystroke at a time - and
+# this repository has already paid for that once: run 41997580476 typed a 105-character
+# winget command into Windows and the guest received `get install`, because a shell that
+# redraws its input line coalesces keystrokes. A macOS Terminal under qemu is no faster.
+#
+# Each entry is typed, Return is pressed, and the next waits. sudo caches its credential
+# after the first one, so the later commands do not prompt again.
+REMOTE_LOGIN_STEPS = [
+    # 1. THE JOB. `enable` marks it for boot, `load -w` loads it now.
+    "sudo launchctl enable system/com.openssh.sshd",
+    "sudo launchctl load -w /System/Library/LaunchDaemons/ssh.plist",
+    # 2. PASSWORD AUTHENTICATION, which is what makes sshpass usable. macOS ships the line
+    #    commented out, and `sed -i ''` is BSD sed's in-place form - the empty argument is
+    #    the backup suffix, and GNU sed would treat it as the script.
+    "sudo sed -i '' -E 's|^#?[[:space:]]*PasswordAuthentication[[:space:]].*|"
+    "PasswordAuthentication yes|' /etc/ssh/sshd_config",
+    # 3. THE ACCESS GROUP. macOS consults com.apple.access_ssh SEPARATELY from sshd_config:
+    #    if the group exists and the account is not in it, sshd accepts the connection and
+    #    then refuses the login. 501 is docker's uid - configuration-minimal.nix creates it
+    #    as the first normal user.
+    "sudo dscl . -create /Groups/com.apple.access_ssh",
+    "sudo dscl . -create /Groups/com.apple.access_ssh PrimaryGroupID 399",
+    "sudo dscl . -append /Groups/com.apple.access_ssh GroupMembers 501",
+    # 4. AND RESTART IT, so all of the above takes effect now rather than at the next boot.
+    "sudo launchctl kickstart -k system/com.openssh.sshd",
+]
+
+# THE VERDICT IS THE GUEST'S, AND IT IS TWO FACTS: the job is loaded, and something is
+# listening. `launchctl list` alone says the job exists; only the socket says sshd is up.
+REMOTE_LOGIN_CHECK = "netstat -an | grep -c '*.22 '"
+
+
 def enable_remote_login(guest: vm.Guest) -> None:
     """Open Terminal and set Remote Login on, as root.
 
@@ -510,28 +576,33 @@ def enable_remote_login(guest: vm.Guest) -> None:
         qmpmod.key(q, "ret")
         time.sleep(10)
 
-        keys.type_into(q, "sudo systemsetup -setremotelogin on")
+        # FIRST COMMAND, THEN THE PASSWORD - sudo reads it from the terminal.
+        #
+        # THE PASSWORD IS TYPED AFTER THE COMMAND, never passed as an argument:
+        # `echo password | sudo -S` would leave it in the guest's shell history and in every
+        # frame taken while it scrolled past.
+        first, *rest = REMOTE_LOGIN_STEPS
+        log(f"  {first}")
+        keys.type_into(q, first)
         qmpmod.key(q, "ret")
-        # TEN SECONDS FOR sudo's PASSWORD PROMPT, THEN TEN FOR THE COMMAND.
-        #
-        # sudo has to find the user in the admin group, write its timestamp and print
-        # `Password:`; systemsetup then talks to launchd to register sshd. Four seconds was
-        # enough on a warm machine and this is the first privileged command on a freshly
-        # booted guest.
-        #
-        # THE PASSWORD IS TYPED AFTER THE COMMAND, never as an argument to it: sudo reads
-        # from the terminal, and `echo password | sudo -S` would leave the password in the
-        # guest's shell history and in any frame taken while it scrolled past.
         time.sleep(10)
         keys.type_into(q, GUEST_PASSWORD)
         qmpmod.key(q, "ret")
-        time.sleep(10)
+        # sudo CACHES THE CREDENTIAL AFTER THE FIRST SUCCESS, so the rest do not prompt.
+        # Ten seconds each: launchctl talks to launchd, sed rewrites a file in /etc, and
+        # dscl writes the directory store - each is a separate privileged operation.
+        for step in rest:
+            log(f"  {step[:80]}")
+            time.sleep(6)
+            keys.type_into(q, step)
+            qmpmod.key(q, "ret")
+            time.sleep(6)
 
         # SETREMOTELOGIN PRINTS ONLY ON REFUSAL, so the preference is read back rather
         # than trusted: -getremotelogin answers "Remote Login: On" when it took. The read
         # back is what the recording is checked against - if it says On and sshd still does
         # not answer, the problem is sshd rather than the preference.
-        keys.type_into(q, "sudo systemsetup -getremotelogin")
+        keys.type_into(q, REMOTE_LOGIN_CHECK)
         qmpmod.key(q, "ret")
         time.sleep(10)
     finally:
