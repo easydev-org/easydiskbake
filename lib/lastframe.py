@@ -114,6 +114,41 @@ def newest_frame(directory: str) -> str | None:
     return os.path.join(directory, max(candidates)[1])
 
 
+def newest_frame_stable(directory: str, *, tries: int = 5) -> str | None:
+    """newest_frame(), retried when the file it named disappeared before it was opened.
+
+    THE RACE IS REAL AND IT IS ON A ONE-SECOND TIMER. lib/snapshots.py writes frame-N.ppm,
+    converts it to frame-N.jpg and deletes the PPM, once a second, for the whole run. A
+    caller that lists the directory can see the PPM, choose it, and lose it before ffmpeg
+    opens it:
+
+        [lastframe] ffmpeg failed: Error opening input: No such file or directory
+        Error opening input file .../frames/shots/frame-1103.ppm
+
+    which is what run 42000179043 logged every few minutes. Nothing was wrong with the
+    recording - the frame had simply been converted, correctly, between the two calls.
+
+    newest_frame() already skips a PPM that has a JPEG beside it, which covers the common
+    case. It cannot cover this one: the JPEG does not exist yet at the moment of the listing.
+    So the answer is to look again, and the second look finds the JPEG.
+
+    Five tries with a short wait, because the conversion takes a fraction of a second; a
+    disk that answers "gone" six times in a row has a different problem and saying so is
+    more useful than looping.
+    """
+    import time as _time
+
+    for attempt in range(tries):
+        found = newest_frame(directory)
+        if found and os.path.isfile(found):
+            return found
+        # A NAME IS NOT A FILE. The check above is what turns "listed a moment ago" into
+        # "still there now"; without it the caller's ffmpeg is the thing that finds out.
+        if attempt < tries - 1:
+            _time.sleep(0.4)
+    return None
+
+
 def convert(source: str, dest: str) -> bool:
     """Turn one PPM into a PNG. True when it was written.
 
@@ -154,9 +189,12 @@ def main(argv: list[str]) -> int:
 
     source_arg, dest = argv[0], argv[1]
     if os.path.isdir(source_arg):
-        source = newest_frame(source_arg)
+        # newest_frame_stable, NOT newest_frame: the recorder converts each PPM to JPEG and
+        # deletes it once a second, so the frame named here can be gone by the time ffmpeg
+        # opens it. See that function's docstring for the log line that produced this.
+        source = newest_frame_stable(source_arg)
         if source is None:
-            print(f"[lastframe] no frame-*.ppm in {source_arg}", flush=True)
+            print(f"[lastframe] no frame-*.ppm or *.jpg in {source_arg}", flush=True)
             return 1
     elif os.path.isfile(source_arg):
         source = source_arg
@@ -164,7 +202,14 @@ def main(argv: list[str]) -> int:
         print(f"[lastframe] nothing at {source_arg}", flush=True)
         return 1
 
-    return 0 if convert(source, dest) else 1
+    # THE RESULT IS CHECKED AND DESCRIBED, WHICH USED TO BE UNREACHABLE.
+    #
+    # This block sat AFTER `return 0 if convert(...) else 1`, so it had never run: a
+    # conversion that wrote a zero-byte file, or wrote nothing and returned True, reported
+    # success with no message either way. Nothing depended on the message, which is why it
+    # went unnoticed - a caller reading the log could not tell a picture from a failure.
+    if not convert(source, dest):
+        return 1
 
     if not os.path.exists(dest) or os.path.getsize(dest) == 0:
         print(f"[lastframe] {dest} was not written", flush=True)
