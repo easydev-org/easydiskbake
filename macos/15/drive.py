@@ -235,6 +235,60 @@ class Driver:
         log(f"wait {seconds:g}s" + (f" - {why}" if why else ""))
         time.sleep(seconds)
 
+    def wait_for(self, ready, what: str, *, timeout: float, interval: float = 5.0,
+                 note=None) -> str | None:
+        """Poll the screen until `ready(path)` returns something truthy, and return it.
+
+        A FIXED SLEEP IS A GUESS ABOUT SOMEBODY ELSE'S MACHINE, and this sequence already
+        paid for two of them. The recovery menu was given 60 seconds (run 41480111851),
+        then 120 (run 41498618924), then 240 - and the third number was chosen the same way
+        as the first two, by adding margin to the slowest boot that had been measured. Run
+        41992924955 was still on the Apple logo with its progress bar at 8% when the 240
+        expired on a slower runner, so the sequence clicked into a boot screen, the click
+        landed on whatever row was there, and everything after it described the wrong
+        window.
+
+        WHAT THIS DOES INSTEAD. It takes a predicate that reads a frame and answers a
+        question about it, and it polls until that answer is true or the timeout expires.
+        The timeout becomes a backstop for "this will never happen" rather than the
+        mechanism for "wait until this happens", so a slow machine costs a slow run and not
+        a wrong one. `ready` gets the path to a freshly saved frame; it returns whatever it
+        found, which is returned to the caller - for OCR that is the text, for a pixel test
+        it can be True.
+
+        THE FRAMES ARE ALSO KEPT. Every poll calls shot(), so the recording shows what the
+        wait saw. That is what turned 41992924955's Apple-logo frame into a diagnosis
+        instead of another guess about a number.
+
+        `note` is called with each miss, so a log reader can tell "still booting" from
+        "the picker never came up" without waiting for the deadline.
+        """
+        started = time.time()
+        deadline = started + timeout
+        attempt = 0
+        last = None
+        while time.time() < deadline:
+            attempt += 1
+            path = self.shot(f"wait-{attempt:02d}-{what}")
+            if path:
+                try:
+                    last = ready(path)
+                except Exception as exc:            # noqa: BLE001 - a read, not a verdict
+                    log(f"  {what}: the check raised {exc}")
+                    last = None
+                if last:
+                    # ELAPSED SINCE THE POLLING STARTED, not `timeout - remaining`: those
+                    # are equal only when the deadline has been reached, so the first
+                    # version logged "seen after 0s" for every success it ever had.
+                    log(f"  {what}: seen after {time.time() - started:.0f}s "
+                        f"(attempt {attempt})")
+                    return last
+                if note:
+                    note(path)
+            time.sleep(interval)
+        log(f"  {what}: NOT seen within {timeout:.0f}s ({attempt} attempts)")
+        return None
+
     def shot(self, label: str) -> str | None:
         """Save a frame. Returns its path, or None when the screenshot failed.
 

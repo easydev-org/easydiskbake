@@ -154,6 +154,16 @@ SIDEBAR_CLICK_X = 540
 # disk read as "nothing usable" eight times because of exactly that.
 PANE_CROP = (690, 480, 1500, 700)
 
+# How long the recovery menu, and then Disk Utility, are given to appear.
+#
+# BACKSTOPS, NOT SCHEDULES. Reaching the menu was measured at 143s and took more than
+# 240s on a slower runner (run 41992924955, still on the Apple logo); these numbers only
+# decide when to stop waiting and say so. The wait itself ends as soon as the screen
+# reads as the right window, so raising them costs nothing on a fast machine and is what
+# makes a slow one possible.
+RECOVERY_MENU_TIMEOUT = 900.0
+DISK_UTILITY_TIMEOUT = 180.0
+
 # The erase sheet's buttons, measured on a frame of the sheet with tesseract --psm 11:
 #   Cancel x=1027..1101  y=626..666   centre (1064, 646)
 #   Erase  x=1123..1187  y=626..666   centre (1155, 646)
@@ -834,6 +844,57 @@ class Recovery:
 # --- the sequence -------------------------------------------------------------------
 
 
+def recovery_menu_text(path: str) -> str:
+    """The recovery menu's rows, as OCR found them, or "" if this is not that menu.
+
+    READ FROM THE ROWS THEMSELVES. The menu is a list of four labelled entries, and their
+    labels are text that appears nowhere else in this sequence: the Apple boot screen has
+    a logo and a progress bar, and Disk Utility has a sidebar and a detail pane. Two of
+    the four is enough - one row can be cut off by a redraw, and requiring all four would
+    wait through a menu that is already on screen.
+
+    THE WINDOW IS WIDE ON PURPOSE. The rows are left-aligned at x=837 and the widest
+    label ends past x=1200, so the crop runs from the window's left edge to its right one
+    rather than to a measured text width. `ROW_Y` covers the same band with margin.
+
+    TWO ROWS, NOT ONE. A single row can be unreadable while the menu is fully drawn - the
+    recovery window animates in and a poll can land mid-paint - and requiring all four
+    would wait past a menu that is already there. Measured on the two frames this
+    sequence has: this returns text on neither the Apple boot screen (whose crop reads
+    "ua ag") nor on Disk Utility.
+    """
+    text = assistant.ocr_text_cropped(path, (760, 200, 1400, 560), scale=2).lower()
+    if not text:
+        return ""
+    wanted = ("time machine", "install macos", "reinstall macos", "disk utility",
+              "safari", "get help online")
+    hits = [w for w in wanted if w in text]
+    return text if len(hits) >= 2 else ""
+
+
+def disk_utility_text(path: str) -> str:
+    """Disk Utility's own furniture, as OCR found it, or "" if the window is not up.
+
+    THE DETAIL PANE'S LABELS, which is the same pane select_and_erase reads the capacity
+    out of - so if this matches, the OCR that follows is pointed at a pane that exists.
+
+    THE CROP IS THE DETAIL PANE ALONE, y=480..700. Read higher, the crop also catches the
+    toolbar ("first aid erase restore", "apple inc. virtio block media") and those words
+    are ALREADY on the recovery menu screen, because the menu's own window is drawn at
+    that height - measured: the wider crop returns "first aid erase restore apple inc.
+    virtio block media" on a frame that is Disk Utility too, so it cannot tell the two
+    apart. At y=480..700 the reading is the table itself:
+
+        location: internal | capacity: 137.44 gb connection: unknown | child count: 0
+
+    and the Apple boot screen reads nothing at all.
+    """
+    text = assistant.ocr_text_cropped(path, PANE_CROP, scale=2).lower()
+    if not text:
+        return ""
+    return text if ("capacity" in text and "partition map" in text) else ""
+
+
 def disk_utility(d: Recovery) -> bool:
     """Open Disk Utility from the recovery menu, once the menu is really on screen.
 
@@ -858,19 +919,53 @@ def disk_utility(d: Recovery) -> bool:
     Erase, the name field and Done all mean nothing. Disk Utility was never opened, the
     disk was never erased, and the failure surfaced much later.
 
-    240 SECONDS, and the number is the measurement plus room.
+    AND THEN 240 ALSO FAILED, WHICH IS WHY THIS NO LONGER WAITS AT ALL.
 
-    The boot from QMP connect to a usable menu took 143 seconds on run 41498618924
-    (18:15:43 first frame, 18:18:06 the menu at t=27). Sixty was too short, 120 was too
-    short, and both failures looked identical: a click into the boot screen, landing on
-    whichever menu row appears at that point, which is always the first one.
+    Run 41992924955 was given 240 seconds and was still on the Apple logo with its
+    progress bar at eight percent when they ran out - a slower runner than the one that
+    took 143s, and there is no number that survives "somebody else's machine".
 
-    240 is that 143 with the same margin the other waits in this file carry.
+    SO THE CLICK NOW WAITS FOR THE MENU. `d.wait_for` polls the screen and reads it until
+    the recovery menu's own rows are legible, with the timeout as a backstop for "this is
+    never going to appear" rather than as the way of knowing when it has. A slow boot
+    costs a slow run; it can no longer cost a click into the boot screen.
+
+    THE ROWS ARE THE SIGNAL, NOT THE BRIGHTNESS. An earlier idea was to watch mean grey,
+    and the measurements above show why that is not enough: the white flash at t=23 reads
+    77 and lasts one second, and a bright panel of some other window would read the same.
+    Four legible row labels - "Restore from Time Machine", "Install macOS", "Disk Utility",
+    "Get Help Online" - appear only on the menu this sequence wants.
     """
-    d.wait(240, "the recovery menu draws")
+    menu = d.wait_for(
+        lambda path: recovery_menu_text(path),
+        "the recovery menu draws",
+        timeout=RECOVERY_MENU_TIMEOUT,
+        interval=5.0,
+    )
+    if not menu:
+        raise SystemExit(
+            "=== THE RECOVERY MENU NEVER APPEARED ===\n"
+            f"  {RECOVERY_MENU_TIMEOUT:.0f}s of polling found none of the menu's rows.\n"
+            "  The frames are in the recording; the last one shows what the screen was\n"
+            "  doing instead."
+        )
 
     d.click((ROW_X, ROW_Y[3]), "Disk Utility row", settle=5)
-    d.wait(10, "Disk Utility has to replace the recovery menu")
+
+    # AND DISK UTILITY HAS TO ACTUALLY REPLACE IT, for the same reason: a click that
+    # lands on the menu is fine, but everything after this line assumes a sidebar with
+    # disks in it. The window is recognised by its own detail pane's labels.
+    opened = d.wait_for(
+        lambda path: disk_utility_text(path),
+        "Disk Utility replaces the menu",
+        timeout=DISK_UTILITY_TIMEOUT,
+        interval=3.0,
+    )
+    if not opened:
+        raise SystemExit(
+            "=== DISK UTILITY DID NOT OPEN ===\n"
+            "  the row was clicked but its window never drew a disk list"
+        )
     d.click(CONTINUE_MENU, "recovery Continue", settle=20)
 
     # THE SIDEBAR HAS TO BE FINISHED BEFORE IT IS TOUCHED, because the next thing the
