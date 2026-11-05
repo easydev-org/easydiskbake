@@ -455,6 +455,23 @@ class Console:
             return self.last_text
         return ""
 
+    # THE GAP BETWEEN KEYSTROKES, AND WHY IT IS NOT 0.03.
+    #
+    # Run 41950183243 typed `su` and the terminal received `tsu`:
+    #
+    #     user:~$ tsu
+    #     ion: command not found: tsu
+    #     user:~$ password
+    #     ion: command not found: password
+    #     user:~$ id -u
+    #     1000
+    #
+    # The first character was dropped and everything after it landed as commands instead of
+    # as that command's password. Redox's input path reads /scheme/event and its window
+    # toolkit polls; 30ms between keystrokes - fine for macOS and Windows, where the HID
+    # stack queues them - is faster than this guest drains.
+    KEY_GAP = float(os.environ.get("REDOX_KEY_GAP", "0.12"))
+
     def type(self, text: str, *, settle: float = 0.5) -> None:
         """Type `text` and press Return. Newlines are refused by lib/keys.
 
@@ -470,7 +487,7 @@ class Console:
                     qmpmod.key(c, code)
                 else:
                     qmpmod.key_combo(c, *code)
-                time.sleep(0.03)
+                time.sleep(KEY_GAP)
             qmpmod.key(c, "ret")
         finally:
             c.close()
@@ -910,47 +927,33 @@ def main(argv: list[str]) -> int:
             # prompt appears is buffered by the terminal, not lost, which is why one wait and
             # then the password is enough.
             note("=== root ===")
-            con.type("su", settle=3.0)
-            con.type(ROOT_PASSWORD, settle=5.0)
-
-            # A SANITY CHECK THAT READS THE PROMPT, NOT THE NUMBER.
+            # THREE ATTEMPTS, BECAUSE A DROPPED CHARACTER IS RANDOM.
             #
-            # This used to wait for the string "0" on screen, on the reasoning that `id -u`
-            # prints one digit and one digit is the only thing OCR can still manage on a dark
-            # terminal. It cannot: run 41819642279's last frame shows, plainly enough to read
-            # by eye,
+            # Run 41950183243's frame shows what one lost keystroke does here:
             #
-            #     user:~$ su
-            #     password:
-            #     root:~# id -u
-            #     0
-            #     root:~#
+            #     user:~$ tsu                 <- `su` with the s missing
+            #     ion: command not found: tsu
+            #     user:~$ password            <- the password, run as a command
+            #     ion: command not found: password
             #
-            # - a root shell that had already worked - and the check failed anyway with
-            #
-            #     === id -u printed 0: NONE OF ['0'] IN 60s ===
-            #
-            # because the single glyph is a few pixels and tesseract returned the surrounding
-            # noise instead. `root:` IS read out of the same frame; the prompt is rendered at
-            # the same size as the rest of the text and there is a whole word of it.
-            #
-            # So the marker is the prompt. `id -u` still runs, because the prompt appearing
-            # after it is what proves the command finished in a root shell rather than that
-            # the word "root" was already somewhere on the screen - it is in the title bar,
-            # which is why the marker is `root:~#` and not `root`.
-            con.type("id -u", settle=3.0)
-            # 300 SECONDS, NOT 60. This is the same reader lag the other waits were widened
-            # for, and it has now cost a run: 41922820567 had a terminal open on screen with
-            # `su` typed into it, and the 60-second window closed while the OCR was still
-            # reading the wallpaper behind the window.
-            marker = con.wait_for(["root:~#", "root:~$", "root:/root#"],
-                                  300, "a root prompt")
-            if not marker:
-                note("=== su DID NOT GIVE A ROOT SHELL ===")
-                note("  no `root:~#` prompt appeared after `id -u`; the frame beside this")
-                note("  message is the terminal")
+            # Nothing is recoverable after that: the prompt never changed, so the password went
+            # to a shell that was never asking for it. Retrying from a known prompt costs six
+            # seconds and the alternative is losing the run.
+            got_root = False
+            for attempt in range(1, 4):
+                con.type("su", settle=6.0)
+                con.type(ROOT_PASSWORD, settle=6.0)
+                con.key("ret", settle=2.0)
+                sentinel = f"ROOTED{attempt}=1"
+                con.type(f"id -u ; echo {sentinel}", settle=3.0)
+                if con.wait_for([sentinel.lower()], 300, f"root (attempt {attempt} of 3)"):
+                    got_root = True
+                    break
+                note(f"  attempt {attempt} did not reach root")
+            if not got_root:
+                note("=== su DID NOT GIVE A ROOT SHELL IN THREE ATTEMPTS ===")
                 return False
-            note(f"  a root shell ({marker!r})")
+            note("  a root shell")
 
             # 5. THE ACCOUNT. TWO FILES, AND THEY ANSWER DIFFERENT QUESTIONS.
             #
