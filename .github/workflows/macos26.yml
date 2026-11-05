@@ -68,8 +68,16 @@ on:
         description: "setup: macOS release"
         default: "26"
       disk_size:
+        # 100G, NOT 128G. macOS 26's installer writes about 39 GiB and the compressed artifact
+        # came out at 33483 MiB on run 41835253323 - the one setup that has ever succeeded. A
+        # 128 GiB disk leaves the APFS container far larger than the system will ever use, and
+        # the install spent its time on a volume it then had to shrink.
+        #
+        # The guest disk is sparse (`qemu-img create -f qcow2`), so this does not change what
+        # the runner uses - only what the guest thinks it has. 100 GiB is still far more than
+        # the 39 GiB installed, which is what the disk is for.
         description: "setup: guest disk size"
-        default: "128G"
+        default: "100G"
       install_timeout:
         description: "setup: seconds the installer may run"
         default: "7200"
@@ -175,7 +183,7 @@ jobs:
             python3 macos/26/bake.py \
               --out "out/macos26.qcow2" \
               --release "26" \
-              --disk-size "${{ inputs.disk_size || '128G' }}" \
+              --disk-size "${{ inputs.disk_size || '100G' }}" \
               --timeout "${{ inputs.install_timeout || '7200' }}" \
               --assistant-timeout "${{ inputs.assistant_timeout || '2700' }}" \
               --wizard-timeout "${{ inputs.wizard_timeout || '7200' }}" \
