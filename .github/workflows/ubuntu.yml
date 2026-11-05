@@ -100,7 +100,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: prepare
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: ubuntu-prepare
@@ -124,7 +124,7 @@ jobs:
 
       - name: install
         if: inputs.bake_from == ''
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: ubuntu-install
@@ -174,7 +174,7 @@ jobs:
       #     compressed result        3110 MiB
       - name: clean the disk
         if: inputs.bake_from == ''
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: ubuntu-clean
@@ -213,18 +213,12 @@ jobs:
       - name: push the disk
         if: success() && inputs.bake_from == ''
         id: publish
-        run: |
-          set -euo pipefail
-          python3 lib/ci.py install-oras
-          python3 lib/ci.py login --registry ghcr.io
-          python3 lib/publish_disk.py out/ubuntu.qcow2 --kind linux-ubuntu \
-            --tag "${{ inputs.publish_tag || 'linux-ubuntu' }}"
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-
-  # ===========================================================================
-  # LAUNCH - does the tag actually start.
-  # ===========================================================================
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/ubuntu.qcow2
+          kind: linux-ubuntu
+          tag: ${{ inputs.publish_tag || 'linux-ubuntu' }}
+          token: ${{ github.token }}
   launch:
     needs: bake
     # ALWAYS, BECAUSE `needs` ALONE WOULD SKIP THIS WHEN bake IS SKIPPED - and starting from a
@@ -248,7 +242,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: prepare
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: launch-ubuntu-prepare
@@ -276,7 +270,7 @@ jobs:
       # perfectly and then does nothing, and the only way to see it is to start the artifact
       # with no installer attached.
       - name: launch it
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: launch-ubuntu
@@ -308,7 +302,7 @@ jobs:
 
       - name: the verdict
         if: always()
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: launch-ubuntu-verdict

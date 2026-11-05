@@ -114,7 +114,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: prepare
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: nixos-base-prepare
@@ -136,7 +136,7 @@ jobs:
 
       - name: install the base
         if: inputs.base_from == ''
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: nixos-base
@@ -169,7 +169,7 @@ jobs:
       # run graph shows "clean the disk: failed" rather than a line in an install log.
       - name: clean the disk
         if: inputs.base_from == ''
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: nixos-base-clean
@@ -188,17 +188,12 @@ jobs:
       - name: push the base
         if: success() && inputs.base_from == ''
         id: publish
-        run: |
-          set -euo pipefail
-          python3 lib/ci.py install-oras
-          python3 lib/ci.py login --registry ghcr.io
-          python3 lib/publish_disk.py out/nixos-base.qcow2 --kind nixos-base --tag nixos-base
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-
-  # ===========================================================================
-  # DERIVE - one disk per desktop, in parallel, each cleaned.
-  # ===========================================================================
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/nixos-base.qcow2
+          kind: nixos-base
+          tag: nixos-base
+          token: ${{ github.token }}
   derive:
     needs: base
     if: |
@@ -226,7 +221,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: prepare
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: nixos-derive-prepare-${{ matrix.desktop }}
@@ -246,18 +241,13 @@ jobs:
             python3 lib/ci.py tags --prefix nixos-
 
       - name: pull the base
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/oci-pull@main
         with:
+          tag: ${{ needs.base.outputs.tag }}
+          dest: out/base
           token: ${{ github.token }}
-          name: nixos-pull-${{ matrix.desktop }}
-          interval: "15"
-          command: |
-            set -euo pipefail
-            export GITHUB_TOKEN="${{ github.token }}"
-            python3 lib/pull_disk.py "${{ needs.base.outputs.tag }}" --dest out/base
-
       - name: derive
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: derive-${{ matrix.desktop }}
@@ -280,7 +270,7 @@ jobs:
       # published and booted, so they are the ones whose size matters - cleaning only the base
       # would leave six published artifacts carrying a desktop's first-boot caches.
       - name: clean the disk
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: clean-${{ matrix.desktop }}
@@ -309,18 +299,12 @@ jobs:
       - name: push the disk
         if: success()
         id: publish
-        run: |
-          set -euo pipefail
-          python3 lib/ci.py install-oras
-          python3 lib/ci.py login --registry ghcr.io
-          python3 lib/publish_disk.py "out/nixos-${{ matrix.desktop }}.qcow2" \
-            --kind "nixos-${{ matrix.desktop }}" --tag "nixos-${{ matrix.desktop }}"
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-
-  # ===========================================================================
-  # LAUNCH - every desktop, in parallel, against the disk derive published.
-  # ===========================================================================
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/nixos-${{ matrix.desktop }}.qcow2
+          kind: nixos-${{ matrix.desktop }}
+          tag: nixos-${{ matrix.desktop }}
+          token: ${{ github.token }}
   launch:
     needs: derive
     if: |
@@ -346,7 +330,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: prepare
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: launch-prepare-${{ matrix.desktop }}
@@ -374,7 +358,7 @@ jobs:
             python3 lib/ci.py tags --prefix nixos-
 
       - name: launch it and photograph the screen
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: launch-${{ matrix.desktop }}
@@ -403,7 +387,7 @@ jobs:
 
       - name: the verdict
         if: always()
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: launch-${{ matrix.desktop }}-verdict

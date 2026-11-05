@@ -66,16 +66,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: prepare the runner
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '40'
+
       - name: prepare
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: trim-prepare
           interval: "10"
           command: |
             set -euo pipefail
-            python3 lib/ci.py kvm
-            python3 lib/ci.py free-disk --need 40
             if ! command -v sshpass >/dev/null 2>&1; then
               apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
                 apt-get install -y -qq sshpass
@@ -83,7 +87,7 @@ jobs:
             sshpass -V | head -1
 
       - name: the experiment
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: trim-check
@@ -111,7 +115,7 @@ jobs:
 
       - name: the verdict
         if: always()
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: trim-verdict

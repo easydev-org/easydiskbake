@@ -175,21 +175,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: prepare the runner
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '80'
+
       - name: prepare
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: base-prepare
           interval: "10"
           command: |
             set -euo pipefail
-            python3 lib/ci.py kvm
-            python3 lib/ci.py free-disk --need 80
             python3 lib/ci.py tags --prefix windows-
 
       - name: bake
         if: inputs.base_from == ''
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: base-bake
@@ -220,22 +224,12 @@ jobs:
       - name: publish
         if: success() && inputs.base_from == ''
         id: publish
-        run: |
-          set -euo pipefail
-          python3 lib/ci.py install-oras
-          python3 lib/ci.py login --registry ghcr.io
-          TAG="${{ inputs.base_publish_tag }}"
-          if [ -z "$TAG" ]; then
-            python3 lib/publish_disk.py out/windows11.qcow2 --kind windows-base
-          else
-            python3 lib/publish_disk.py out/windows11.qcow2 --kind windows-base --tag "$TAG"
-          fi
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-
-  # ===========================================================================
-  # SSH - OpenSSH on the base disk, then clean.
-  # ===========================================================================
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/windows11.qcow2
+          kind: windows-base
+          tag: ${{ inputs.base_publish_tag }}
+          token: ${{ github.token }}
   ssh:
     needs: base
     # ALWAYS, BECAUSE `needs` ALONE WOULD SKIP THIS WHEN base IS SKIPPED - and starting from a
@@ -261,23 +255,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: prepare the runner
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '60'
+
       - name: prepare
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: ssh-prepare
           interval: "10"
           command: |
             set -euo pipefail
-            python3 lib/ci.py kvm
-            python3 lib/ci.py free-disk --need 60
             if ! command -v sshpass >/dev/null 2>&1; then
               apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
                 apt-get install -y -qq sshpass
             fi
 
       - name: pull the gold disk
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: ssh-pull
@@ -291,7 +289,7 @@ jobs:
               out/windows11-gold.qcow2
 
       - name: install ssh
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: ssh-install
@@ -307,7 +305,7 @@ jobs:
       # CLEANING IS ITS OWN STEP, AND IT IS TYPED AT THE RUN GRAPH. The install above passes
       # --no-clean, so this is the only place it happens.
       - name: clean the disk
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: ssh-clean
@@ -325,22 +323,12 @@ jobs:
       - name: publish
         if: success()
         id: publish
-        run: |
-          set -euo pipefail
-          python3 lib/ci.py install-oras
-          python3 lib/ci.py login --registry ghcr.io
-          TAG="${{ inputs.ssh_publish_tag }}"
-          if [ -z "$TAG" ]; then
-            python3 lib/publish_disk.py out/windows11-ssh.qcow2 --kind windows-ssh
-          else
-            python3 lib/publish_disk.py out/windows11-ssh.qcow2 --kind windows-ssh --tag "$TAG"
-          fi
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-
-  # ===========================================================================
-  # DEV - the toolchain on top of ssh, then clean.
-  # ===========================================================================
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/windows11-ssh.qcow2
+          kind: windows-ssh
+          tag: ${{ inputs.ssh_publish_tag }}
+          token: ${{ github.token }}
   dev:
     needs: ssh
     if: |
@@ -363,23 +351,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: prepare the runner
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '60'
+
       - name: prepare
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: dev-prepare
           interval: "10"
           command: |
             set -euo pipefail
-            python3 lib/ci.py kvm
-            python3 lib/ci.py free-disk --need 60
             if ! command -v sshpass >/dev/null 2>&1; then
               apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
                 apt-get install -y -qq sshpass
             fi
 
       - name: pull the ssh disk
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: dev-pull
@@ -393,7 +385,7 @@ jobs:
               out/windows11-ssh.qcow2
 
       - name: install the toolchain
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: dev-install
@@ -409,7 +401,7 @@ jobs:
               --no-clean
 
       - name: clean the disk
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: dev-clean
@@ -427,22 +419,12 @@ jobs:
       - name: publish
         if: success()
         id: publish
-        run: |
-          set -euo pipefail
-          python3 lib/ci.py install-oras
-          python3 lib/ci.py login --registry ghcr.io
-          TAG="${{ inputs.dev_publish_tag }}"
-          if [ -z "$TAG" ]; then
-            python3 lib/publish_disk.py out/windows11-dev.qcow2 --kind windows-dev
-          else
-            python3 lib/publish_disk.py out/windows11-dev.qcow2 --kind windows-dev --tag "$TAG"
-          fi
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-
-  # ===========================================================================
-  # LAUNCH THE SSH DISK - one half of the fork, does not wait for dev.
-  # ===========================================================================
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/windows11-dev.qcow2
+          kind: windows-dev
+          tag: ${{ inputs.dev_publish_tag }}
+          token: ${{ github.token }}
   launch_ssh:
     needs: ssh
     if: |
@@ -463,19 +445,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: prepare
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+      - name: prepare the runner
+        uses: easydev-org/easyactions/runner-check@main
         with:
-          token: ${{ github.token }}
-          name: launch-ssh-prepare
-          interval: "10"
-          command: |
-            set -euo pipefail
-            python3 lib/ci.py kvm
-            python3 lib/ci.py free-disk --need 60
+          kvm: true
+          disk-gb: '60'
 
       - name: launch it and photograph the screen
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: launch-ssh
@@ -535,19 +512,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: prepare
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+      - name: prepare the runner
+        uses: easydev-org/easyactions/runner-check@main
         with:
-          token: ${{ github.token }}
-          name: launch-dev-prepare
-          interval: "10"
-          command: |
-            set -euo pipefail
-            python3 lib/ci.py kvm
-            python3 lib/ci.py free-disk --need 60
+          kvm: true
+          disk-gb: '60'
 
       - name: launch it and photograph the screen
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: launch-dev

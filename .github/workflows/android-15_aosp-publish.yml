@@ -60,15 +60,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: prepare the runner
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: false
+          disk-gb: '20'
+
       - name: prepare
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: android-prepare
           interval: "10"
           command: |
             set -euo pipefail
-            python3 lib/ci.py free-disk --need 20
             python3 lib/ci.py install-oras
             python3 lib/ci.py login --registry ghcr.io
             # The pin this job will verify against, before the work starts.
@@ -78,7 +83,7 @@ jobs:
       # cmdline-tools, and shipping the SDK into the runtime image to use it once
       # would be 1.5 GB of JDK and sdkmanager for a single call.
       - name: build the AVD and publish it
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: android-avd
@@ -126,7 +131,7 @@ jobs:
 
       - name: what is in the package
         if: always()
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: android-tags

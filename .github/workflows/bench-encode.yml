@@ -30,20 +30,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: prepare the runner
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '0'
+
       - name: capture real frames
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: bench-frames
           interval: "10"
           command: |
             set -euo pipefail
-            python3 lib/ci.py kvm
             mkdir -p out && cd out
             GITHUB_TOKEN="${{ github.token }}" python3 ../lib/capture.py frames
 
       - name: encode matrix
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: bench-encode

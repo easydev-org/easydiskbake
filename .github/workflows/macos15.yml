@@ -127,7 +127,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: prepare
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: macos15-setup-prepare
@@ -152,7 +152,7 @@ jobs:
 
       - name: bake
         if: inputs.setup_from == ''
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: macos15-setup
@@ -200,18 +200,12 @@ jobs:
       - name: push the disk
         if: success() && inputs.setup_from == ''
         id: publish
-        run: |
-          set -euo pipefail
-          python3 lib/ci.py install-oras
-          python3 lib/ci.py login --registry ghcr.io
-          python3 lib/publish_disk.py out/macos15.qcow2 --kind macos15-setup \
-            --tag "${{ inputs.publish_tag || 'macos15-setup' }}"
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-
-  # ===========================================================================
-  # DESKTOP - drive the Setup Assistant.
-  # ===========================================================================
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/macos15.qcow2
+          kind: macos15-setup
+          tag: ${{ inputs.publish_tag || 'macos15-setup' }}
+          token: ${{ github.token }}
   desktop:
     needs: setup
     if: |
@@ -235,7 +229,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: prepare
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: macos15-desktop-prepare
@@ -259,22 +253,13 @@ jobs:
             python3 lib/ci.py tags --prefix macos-
 
       - name: pull the setup disk
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/oci-pull@main
         with:
+          tag: ${{ inputs.desktop_from || needs.setup.outputs.tag }}
+          dest: out
           token: ${{ github.token }}
-          name: desktop-pull
-          interval: "15"
-          command: |
-            set -euo pipefail
-            export GITHUB_TOKEN="${{ github.token }}"
-            python3 lib/pull_disk.py \
-              "${{ inputs.desktop_from || needs.setup.outputs.tag }}" --dest out
-
-      # THE WIZARD IS DRIVEN BY COORDINATES AND KEYS, and whether it worked is answered by the
-      # recording. Every failure in this stage has been a wrong position or a pane that did not
-      # move, and a video is the only thing that shows which.
       - name: drive the Setup Assistant
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: desktop-drive
@@ -317,18 +302,12 @@ jobs:
       - name: push the disk
         if: success()
         id: publish
-        run: |
-          set -euo pipefail
-          python3 lib/ci.py install-oras
-          python3 lib/ci.py login --registry ghcr.io
-          python3 lib/publish_disk.py out/macos15-desktop.qcow2 --kind macos15-desktop \
-            --tag "${{ inputs.publish_tag || 'macos15-desktop' }}"
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-
-  # ===========================================================================
-  # SSH - Remote Login.
-  # ===========================================================================
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/macos15-desktop.qcow2
+          kind: macos15-desktop
+          tag: ${{ inputs.publish_tag || 'macos15-desktop' }}
+          token: ${{ github.token }}
   ssh:
     needs: desktop
     if: |
@@ -352,7 +331,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: prepare
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: macos15-ssh-prepare
@@ -381,21 +360,13 @@ jobs:
             python3 lib/ci.py tags --prefix macos-
 
       - name: pull the desktop disk
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/oci-pull@main
         with:
+          tag: ${{ inputs.ssh_from || needs.desktop.outputs.tag }}
+          dest: out
           token: ${{ github.token }}
-          name: ssh-pull
-          interval: "15"
-          command: |
-            set -euo pipefail
-            export GITHUB_TOKEN="${{ github.token }}"
-            python3 lib/pull_disk.py \
-              "${{ inputs.ssh_from || needs.desktop.outputs.tag }}" --dest out
-
-      # REMOTE LOGIN IS TURNED ON FROM THE GUEST'S OWN TERMINAL, opened with a keyboard
-      # shortcut and typed into - there is no ssh yet, which is the thing being enabled.
       - name: enable Remote Login
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: ssh-enable
@@ -436,18 +407,12 @@ jobs:
       - name: push the disk
         if: success()
         id: publish
-        run: |
-          set -euo pipefail
-          python3 lib/ci.py install-oras
-          python3 lib/ci.py login --registry ghcr.io
-          python3 lib/publish_disk.py out/macos15-ssh.qcow2 --kind macos15-ssh \
-            --tag "${{ inputs.publish_tag || 'macos15-ssh' }}"
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-
-  # ===========================================================================
-  # DEV - the toolchain, over the ssh the stage above turned on.
-  # ===========================================================================
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/macos15-ssh.qcow2
+          kind: macos15-ssh
+          tag: ${{ inputs.publish_tag || 'macos15-ssh' }}
+          token: ${{ github.token }}
   dev:
     needs: ssh
     if: |
@@ -469,7 +434,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: prepare
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: macos15-dev-prepare
@@ -498,21 +463,13 @@ jobs:
             python3 lib/ci.py tags --prefix macos-
 
       - name: pull the ssh disk
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/oci-pull@main
         with:
+          tag: ${{ inputs.dev_from || needs.ssh.outputs.tag }}
+          dest: out
           token: ${{ github.token }}
-          name: dev-pull
-          interval: "15"
-          command: |
-            set -euo pipefail
-            export GITHUB_TOKEN="${{ github.token }}"
-            python3 lib/pull_disk.py \
-              "${{ inputs.dev_from || needs.ssh.outputs.tag }}" --dest out
-
-      # EVERYTHING BELOW IS ORDINARY REMOTE WORK: an ssh server is running, so no keyboard and
-      # no screen - the toolchain is installed over a forwarded port.
       - name: install the toolchain
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: dev-install
@@ -539,11 +496,9 @@ jobs:
       - name: push the disk
         if: success()
         id: publish
-        run: |
-          set -euo pipefail
-          python3 lib/ci.py install-oras
-          python3 lib/ci.py login --registry ghcr.io
-          python3 lib/publish_disk.py out/macos15-dev.qcow2 --kind macos15-dev \
-            --tag "${{ inputs.publish_tag || 'macos15-dev' }}"
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/macos15-dev.qcow2
+          kind: macos15-dev
+          tag: ${{ inputs.publish_tag || 'macos15-dev' }}
+          token: ${{ github.token }}

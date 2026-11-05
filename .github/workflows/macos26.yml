@@ -118,7 +118,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: prepare
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: macos26-setup-prepare
@@ -143,7 +143,7 @@ jobs:
 
       - name: bake
         if: inputs.setup_from == ''
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: macos26-setup
@@ -191,18 +191,12 @@ jobs:
       - name: push the disk
         if: success() && inputs.setup_from == ''
         id: publish
-        run: |
-          set -euo pipefail
-          python3 lib/ci.py install-oras
-          python3 lib/ci.py login --registry ghcr.io
-          python3 lib/publish_disk.py out/macos26.qcow2 --kind macos26-setup \
-            --tag "${{ inputs.publish_tag || 'macos26-setup' }}"
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-
-  # ===========================================================================
-  # DESKTOP - drive the Setup Assistant, then wait for the wallpaper.
-  # ===========================================================================
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/macos26.qcow2
+          kind: macos26-setup
+          tag: ${{ inputs.publish_tag || 'macos26-setup' }}
+          token: ${{ github.token }}
   desktop:
     needs: setup
     if: |
@@ -224,7 +218,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: prepare
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: macos26-desktop-prepare
@@ -239,43 +233,13 @@ jobs:
             python3 lib/ci.py tags --prefix macos-
 
       - name: pull the setup disk
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/oci-pull@main
         with:
+          tag: ${{ inputs.desktop_from || needs.setup.outputs.tag }}
+          dest: out
           token: ${{ github.token }}
-          name: desktop-pull
-          interval: "15"
-          command: |
-            set -euo pipefail
-            export GITHUB_TOKEN="${{ github.token }}"
-            python3 lib/pull_disk.py \
-              "${{ inputs.desktop_from || needs.setup.outputs.tag }}" --dest out
-
-      # THE SAME DRIVER AS 15, AND THAT IS THE POINT.
-      #
-      # macos/15/drive.py holds a FIXED SEQUENCE of coordinates - country, transfer, account,
-      # Apple ID, then ten panes of Continue - and reads no screen while it does it. That is
-      # exactly what macos/26/README.md says 26 needs and what an OCR-based driver cannot do:
-      #
-      #     the privacy pane's Continue leads into a pairing handshake a container cannot
-      #     complete, and the only escape is a `Not Now` that is replaced by the failure
-      #     alert in about two seconds - shorter than a screencap plus a tesseract pass
-      #     the country list does not take clicks; it needs keyboard navigation
-      #
-      # Both are properties of a driver that DECIDES by reading. drive.py does not decide:
-      # the country list is reached by typing and Page Down - the keyboard path 26 needs -
-      # and the pairing `Not Now` is clicked at a fixed coordinate within a fraction of a
-      # second of the pane appearing, faster than the alert that replaces it.
-      #
-      # The Setup Assistant is the same program in both releases, and macos26's own setup
-      # disk stops on the same "Select Your Country or Region" pane drive.py starts from -
-      # that is the frame run 41835253323 uploaded.
-      #
-      # `/private/var/db/.AppleSetupDone` IS NOT USED, AND MUST NOT BE. It stopped being
-      # honoured after macOS 14: a marker that is ignored produces a disk that boots to the
-      # wizard forever and a stage that reports success - worse than a wizard that has to be
-      # clicked, because nothing fails.
       - name: drive the Setup Assistant
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: desktop-drive
@@ -318,12 +282,9 @@ jobs:
       - name: push the disk
         if: success()
         id: publish
-        run: |
-          set -euo pipefail
-          python3 lib/ci.py install-oras
-          python3 lib/ci.py login --registry ghcr.io
-          python3 lib/publish_disk.py out/macos26-desktop.qcow2 --kind macos26-desktop \
-            --tag "${{ inputs.publish_tag || 'macos26-desktop' }}"
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/macos26-desktop.qcow2
+          kind: macos26-desktop
+          tag: ${{ inputs.publish_tag || 'macos26-desktop' }}
+          token: ${{ github.token }}

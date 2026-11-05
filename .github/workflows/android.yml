@@ -93,7 +93,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: prepare
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: android-prepare
@@ -106,7 +106,7 @@ jobs:
 
       - name: bake
         if: inputs.bake_from == ''
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: android-bake
@@ -134,7 +134,7 @@ jobs:
       # rather than naming it keeps this step from breaking the next time the format moves.
       - name: validate the gold disk
         if: inputs.bake_from == ''
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: android-validate
@@ -183,29 +183,16 @@ jobs:
       - name: push the AVD
         if: success() && inputs.bake_from == ''
         id: publish
-        run: |
-          set -euo pipefail
-          python3 lib/ci.py install-oras
-          python3 lib/ci.py login --registry ghcr.io
-          AVD=$(ls out/android15.* | head -1)
-          # A FIXED TAG, SO THE LAUNCH JOB CAN NAME WHAT IT IS TESTING.
-          #
-          # Without --tag this pushes android-15-aosp-<timestamp>, which is right for an AVD
-          # that is a dated release and wrong for a disk another job has to find. The original
-          # two workflows got away with it because the launch took the tag as a manual input;
-          # merged into one chain, `needs.bake.outputs.tag` is the fixed name and a timestamped
-          # push never matches it:
-          #
-          #     FAILED: could not pull android-15-aosp: no manifest for tag 'android-15-aosp'
-          #
-          # This is the same choice ubuntu, kubuntu, freebsd and nixos already make.
-          python3 lib/publish_disk.py "$AVD" --kind android-15-aosp --tag android-15-aosp
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          # THE BAKE NAMES ITS OUTPUT, so this names the same file rather than globbing
+          # for it. `AVD=$(ls out/android15.* | head -1)` was a shell wildcard, and a glob
+          # that matches two files would push whichever sorted first.
+          path: out/android15.tar.zst
+          kind: android-15-aosp
+          tag: android-15-aosp
+          token: ${{ github.token }}
 
-  # ===========================================================================
-  # LAUNCH
-  # ===========================================================================
   launch:
     needs: bake
     if: |
@@ -227,7 +214,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: prepare
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: launch-android-prepare
@@ -239,7 +226,7 @@ jobs:
             python3 lib/ci.py tags --prefix android-
 
       - name: launch it and photograph the screen
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: launch-android
@@ -271,7 +258,7 @@ jobs:
 
       - name: the verdict
         if: always()
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: launch-android-verdict

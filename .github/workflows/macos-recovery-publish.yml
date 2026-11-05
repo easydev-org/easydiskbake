@@ -101,17 +101,21 @@ jobs:
             --name "${{ matrix.name }}" \
             --output-key run
 
+      - name: prepare the runner
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: false
+          disk-gb: '12'
+
       - name: fetch and publish
         if: steps.want.outputs.run == 'true'
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: macos-recovery-${{ matrix.name }}
           interval: "20"
           command: |
             set -euo pipefail
-            # 850 MiB per release, three in parallel. A check, not a cleanup.
-            python3 lib/ci.py free-disk --need 12
 
             ARGS="--release ${{ matrix.release }} --out recovery-${{ matrix.name }}.dmg"
             if [ "${{ inputs.publish }}" = "true" ]; then

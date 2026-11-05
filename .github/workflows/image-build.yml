@@ -40,7 +40,7 @@ jobs:
       - uses: docker/setup-buildx-action@v3
 
       - name: build and push
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: image

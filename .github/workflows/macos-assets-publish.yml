@@ -92,21 +92,25 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: prepare the runner
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: false
+          disk-gb: '2'
+
+      - name: prepare the runner
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: publish-macos-assets-prepare
           interval: "10"
           command: |
             set -euo pipefail
-            # 27 MiB of assets plus oras; the check is a guard, not a cleanup.
-            python3 lib/ci.py free-disk --need 2
             python3 lib/ci.py install-oras
             python3 lib/ci.py login --registry ghcr.io
             python3 lib/publish_macos_assets.py --list
 
       - name: publish
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: publish-macos-assets
@@ -118,7 +122,7 @@ jobs:
 
       - name: what is in the package
         if: always()
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: publish-macos-assets-tags

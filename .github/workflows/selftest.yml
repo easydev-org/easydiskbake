@@ -32,8 +32,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: prepare the runner
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '0'
+
       - name: the four channels
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: selftest
@@ -45,7 +51,6 @@ jobs:
             # that way once, finished in 559 ms and produced no disk - and no boot test
             # would catch it because the step's exit code was 0.
             python3 lib/entrypoints.py
-            python3 lib/ci.py kvm
             mkdir -p out
             GITHUB_TOKEN="${{ github.token }}" python3 lib/selftest.py
 

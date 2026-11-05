@@ -92,7 +92,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: prepare
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: freebsd-prepare
@@ -111,7 +111,7 @@ jobs:
 
       - name: install
         if: inputs.bake_from == ''
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: freebsd-install
@@ -145,7 +145,7 @@ jobs:
       # stops it; the install above does not clean at all.
       - name: clean the disk
         if: inputs.bake_from == ''
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: freebsd-clean
@@ -175,15 +175,12 @@ jobs:
       - name: push the disk
         if: success() && inputs.bake_from == ''
         id: publish
-        run: |
-          set -euo pipefail
-          python3 lib/ci.py install-oras
-          python3 lib/ci.py login --registry ghcr.io
-          python3 lib/publish_disk.py out/freebsd.qcow2 --kind bsd-freebsd \
-            --tag "${{ inputs.publish_tag || 'bsd-freebsd' }}"
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/freebsd.qcow2
+          kind: bsd-freebsd
+          tag: ${{ inputs.publish_tag || 'bsd-freebsd' }}
+          token: ${{ github.token }}
   launch:
     needs: bake
     if: |
@@ -205,7 +202,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: prepare
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: launch-freebsd-prepare
@@ -223,7 +220,7 @@ jobs:
             python3 lib/ci.py tags --prefix bsd-
 
       - name: launch it
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: launch-freebsd
@@ -253,7 +250,7 @@ jobs:
 
       - name: the verdict
         if: always()
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: launch-freebsd-verdict

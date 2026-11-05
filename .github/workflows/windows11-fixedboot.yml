@@ -84,7 +84,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: prepare
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: fixed-prepare
@@ -105,7 +105,7 @@ jobs:
             echo "mtools and qemu-img present"
 
       - name: pull the base disk
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: fixed-pull
@@ -117,7 +117,7 @@ jobs:
             python3 windows/11/pull.py "${{ inputs.base_tag }}" out/windows11-fixed.qcow2
 
       - name: write the fallback loader
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: fixed-apply
@@ -129,18 +129,12 @@ jobs:
       - name: publish
         if: success()
         id: publish
-        run: |
-          set -euo pipefail
-          python3 lib/ci.py install-oras
-          python3 lib/ci.py login --registry ghcr.io
-          python3 lib/publish_disk.py out/windows11-fixed.qcow2 --kind windows-base-fixed \
-            --tag "${{ inputs.publish_tag || 'windows-base-fixed' }}"
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-
-  # ===========================================================================
-  # BOOT IT WITH A FRESH VARIABLE STORE - the actual question.
-  # ===========================================================================
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/windows11-fixed.qcow2
+          kind: windows-base-fixed
+          tag: ${{ inputs.publish_tag || 'windows-base-fixed' }}
+          token: ${{ github.token }}
   boot_blank:
     needs: apply
     runs-on: ubuntu-24.04
@@ -159,7 +153,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: prepare
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: blank-prepare
@@ -176,7 +170,7 @@ jobs:
       # empty work directory, so qemu starts with the OVMF template's variables, which contain
       # no "Windows Boot Manager" entry.
       - name: launch with a fresh variable store
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: blank-boot
@@ -209,7 +203,7 @@ jobs:
 
       - name: the verdict
         if: always()
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: blank-verdict

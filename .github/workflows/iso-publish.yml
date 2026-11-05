@@ -100,21 +100,25 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: prepare the runner
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: false
+          disk-gb: '30'
+
+      - name: prepare the runner
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: publish-iso-prepare
           interval: "10"
           command: |
             set -euo pipefail
-            # A check, not a cleanup: the runner reported 121 GB free. See ci.py.
-            python3 lib/ci.py free-disk --need 30
             python3 lib/ci.py install-oras
             python3 lib/ci.py login --registry ghcr.io
             python3 lib/publish_iso.py --list
 
       - name: publish
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: publish-iso
@@ -137,7 +141,7 @@ jobs:
 
       - name: what is in the package
         if: always()
-        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: publish-iso-tags
