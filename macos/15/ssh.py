@@ -582,6 +582,40 @@ REMOTE_LOGIN_STEPS = [
     #    carries the answer even when this stage fails later.
     "sudo dscl . -read /Groups/com.apple.access_ssh GroupMembers NestedGroups",
     "netstat -an | grep '\\*.22 ' | head -2",
+    # 6. AND THE ONLY TEST THAT MATTERS: THE GUEST LOGGING IN TO ITSELF.
+    #
+    # The three commands above were added so a failure would carry its own state, and run
+    # 42087483424's recording shows they all passed - GroupMembers: 0 501, NestedGroups:
+    # 80 20 401, `*.22 LISTEN` - while the host's authenticated probe got an empty answer and
+    # the stage failed. So none of them is the missing fact.
+    #
+    # THIS IS. `ssh docker@127.0.0.1 true` asks exactly what the host-side check asks, from
+    # inside, and prints what ssh itself says when it says no. The two failures worth telling
+    # apart are both invisible from the group and the socket:
+    #
+    #     docker is not in the password database the way sshd reads it   -> denied
+    #     the account has no password, or its AuthenticationAuthority is
+    #     missing/disabled                                               -> denied
+    #     AllowUsers / DenyUsers / an sshd_config directive              -> denied
+    #
+    # `dscl . -read /Users/docker AuthenticationAuthority` is the field that says whether a
+    # password is set at all. macOS keeps it in a separate attribute from the account record,
+    # and an account created by the Setup Assistant always has it - but nothing so far has
+    # ever printed it, so "the account cannot authenticate" has been an assumption for every
+    # run of this stage.
+    #
+    # EVERY ONE OF THESE IS SHORT. The whole sequence typed as one line was 471 characters
+    # and a shell that redraws its input line coalesces keystrokes - run 41997580476 typed a
+    # 105-character winget command into Windows and the guest received `get install`. The
+    # longest here is under 80.
+    #
+    # BatchMode=yes so ssh FAILS instead of waiting at a password prompt this list cannot
+    # answer, and the failure is the useful part: ssh names the methods the server offered.
+    "ssh -o BatchMode=yes -o StrictHostKeyChecking=no docker@127.0.0.1 true",
+    "sudo dscl . -read /Users/docker AuthenticationAuthority",
+    # THE EFFECTIVE CONFIG, NOT THE FILE. sshd -T resolves the includes and the defaults, so
+    # this says what sshd will actually do rather than what one file happens to spell.
+    "sudo /usr/sbin/sshd -T | grep -iE 'password|allow|deny|usepam'",
 ]
 
 # THE VERDICT IS THE GUEST'S, AND IT IS TWO FACTS: the job is loaded, and something is
