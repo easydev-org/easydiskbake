@@ -189,10 +189,22 @@ jobs:
         id: publish
         uses: easydev-org/easyactions/oci-push@main
         with:
-          # THE BAKE NAMES ITS OUTPUT, so this names the same file rather than globbing
-          # for it. `AVD=$(ls out/android15.* | head -1)` was a shell wildcard, and a glob
-          # that matches two files would push whichever sorted first.
-          path: out/android15.tar.zst
+          # A GLOB, BECAUSE THE BAKE RENAMES ITS OWN OUTPUT.
+          #
+          # android/15/bake.py is told `--out out/android15.tar.zst` and its packer returns
+          # `out/android15.7z`, because 7z cannot write a .tar.zst - the code says so:
+          #
+          #     # pack() MAY RENAME: the archive cannot be a .tar.zst made by 7z, so it
+          #     # returns whatever path it actually wrote.
+          #
+          # Naming the .tar.zst pushed nothing:
+          #
+          #     [oci-push] FAILED: no file at out/android15.tar.zst
+          #
+          # The glob resolves to the file that exists, and REFUSES if two match - which is
+          # what `AVD=$(ls out/android15.* | head -1)` did silently, and for a disk that is
+          # the difference between this build and a stale one beside it.
+          path: out/android15.*
           kind: android-15-aosp
           tag: android-15-aosp
           token: ${{ github.token }}
