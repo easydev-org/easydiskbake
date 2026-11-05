@@ -660,7 +660,7 @@ REMOTE_LOGIN_STEPS = [
     "sudo dscl . -read /Users/docker AuthenticationAuthority",
     # THE EFFECTIVE CONFIG, NOT THE FILE. sshd -T resolves the includes and the defaults, so
     # this says what sshd will actually do rather than what one file happens to spell.
-    "sudo /usr/sbin/sshd -T | grep -iE 'password|allow|deny|usepam|usedns'",
+    "sudo /usr/sbin/sshd -T | grep -iE 'usedns|passwordauth'",
     # 7. AND WHY IT SAID NO. Everything above says the refusal SHOULD NOT happen, and run
     # 42090649098's recording is the proof that it does:
     #
@@ -681,6 +681,26 @@ REMOTE_LOGIN_STEPS = [
     # purpose: `log show` for a whole hour is thousands of lines and the last five of them are
     # the wrong five.
     "sudo log show --last 2m --predicate 'process == \"sshd\"' 2>/dev/null | tail -6",
+    # 8. DOES THE PASSWORD WORK AT ALL? This is the one question that splits the two
+    #    remaining hypotheses, and it never touches ssh.
+    #
+    #    `dscl . -authonly` asks the directory service to authenticate the account with the
+    #    password, exactly as a login would, and prints nothing on success. So:
+    #
+    #        exits 0        the password is right, and the fault is in how sshd takes it
+    #                       from this client - qemu's NAT address, the auth plugin, PAM
+    #        exits non-0    the password is wrong, and NOTHING about sshd matters
+    #
+    #    Every run so far has assumed the first without testing it. The account is created by
+    #    the desktop stage through the Setup Assistant, whose form validates as it is typed
+    #    and drops characters that arrive too fast - run 42085569136's account form even
+    #    ended up with "admin" in Full name and an empty Password after a coordinate bug.
+    #    A disk whose account password never got set would fail exactly like this, and the
+    #    ssh-side diagnostics cannot see it.
+    #
+    #    "&& echo AUTHOK || echo AUTHFAIL" turns the verdict into a word the recording shows
+    #    without anyone having to know what dscl prints on failure.
+    "sudo dscl . -authonly docker admin && echo AUTHOK || echo AUTHFAIL",
 ]
 
 # THE VERDICT IS THE GUEST'S, AND IT IS TWO FACTS: the job is loaded, and something is
