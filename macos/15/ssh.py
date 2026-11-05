@@ -194,9 +194,24 @@ def main(argv: list[str]) -> int:
     try:
         log(f"waiting up to {args.boot_timeout}s for the desktop")
         if not wait_for_desktop(guest, frames, args.boot_timeout):
-            log("=== THE DISK DID NOT REACH A DESKTOP ===")
-            log("  this stage needs the desktop-stage disk, not the setup-stage one")
-            return 1
+            # THE DISK MAY BE AT ITS LOCK SCREEN, WHICH IS A BOOTED MAC.
+            #
+            # desktop.py finishes by letting the guest settle and stopping it - it never
+            # logs in. So the first boot of that disk lands on the login window, with the
+            # wallpaper, the clock and an account picture, and waits for a password. The
+            # wallpaper test wants a DARK MENU BAR across the top, and a lock screen has no
+            # menu bar - its top strip is wallpaper - so the test correctly says "not a
+            # desktop" about a machine that is entirely healthy.
+            #
+            # Run 42020622755 is that frame: Sonoma's redwood wallpaper, the clock, the
+            # account tile and a password field.
+            log("  no desktop yet; trying the lock screen, which a booted macOS shows first")
+            if unlock(guest) and wait_for_desktop(guest, frames, 300):
+                log("  the desktop is up after logging in")
+            else:
+                log("=== THE DISK DID NOT REACH A DESKTOP ===")
+                log("  this stage needs the desktop-stage disk, not the setup-stage one")
+                return 1
 
         log("=== turning Remote Login on ===")
         enable_remote_login(guest)
@@ -253,10 +268,31 @@ def main(argv: list[str]) -> int:
 
 
 def wait_for_desktop(guest: vm.Guest, frames: str, timeout: int) -> bool:
-    """The wallpaper test again - see macos/15/desktop.py for why it is this one."""
+    """The wallpaper test again - see macos/15/desktop.py for why it is this one.
+
+    THE RECORDING'S FRAMES, NOT drive.py's SCREENSHOTS. macos/15/desktop.py already had
+    this right and this copy had it wrong:
+
+        desktop.py    shots = frames               <- one per second for the whole run
+        ssh.py        shots = os.path.join(frames, "shots")   <- a few dozen wizard panes
+
+    `frames/shots` is where drive.py puts the handful of pictures it takes around its own
+    clicks. This stage does not run drive.py at all - it boots the desktop disk and waits -
+    so that directory holds whatever the previous stage left at the same paths, none of
+    them this boot's desktop. `reached_desktop` looks at the newest five frames in whatever
+    it is given, so it was examining the wrong pictures for the whole 900 seconds.
+
+    Run 42020622755 is what that costs: the guest had ALREADY reached its desktop - the run's
+    own last-frame.png shows the Sonoma wallpaper, the clock, the account picture and a
+    password field - and the stage reported
+
+        === THE DISK DID NOT REACH A DESKTOP ===
+
+    after waiting out the full timeout on a machine that was sitting there.
+    """
     from lib import desktop
 
-    shots = os.path.join(frames, "shots")
+    shots = frames
     deadline = time.time() + timeout
     started = time.time()
     while time.time() < deadline:
@@ -268,6 +304,54 @@ def wait_for_desktop(guest: vm.Guest, frames: str, timeout: int) -> bool:
             return True
         time.sleep(5)
     return False
+
+
+def unlock(guest: vm.Guest) -> bool:
+    """Type the account's password into the login window, if that is what is on screen.
+
+    THE LOCK SCREEN IS THE FIRST THING A FRESHLY INSTALLED macOS SHOWS. desktop.py stops the
+    guest after the Setup Assistant and does not log in, so the disk it publishes boots to a
+    login window: wallpaper, clock, account tile, password field. Nothing is wrong with it
+    and nothing can be done on it - Spotlight, Terminal and `systemsetup` all need a
+    session - so this types the password and presses Return.
+
+    NO COORDINATES. The login window focuses its password field on its own, so the keystrokes
+    go to whatever has focus and Return submits. A click would need a measured rectangle for
+    a pane that moves with the account picture, and a click into the wallpaper would do
+    nothing but dismiss the hint text.
+
+    RETURNS FALSE WHEN THE PASSWORD IS NOT ACCEPTED, so the caller can say "still not a
+    desktop" rather than waiting out another timeout on a machine showing an error shake.
+    The shake is not detectable in a screenshot without OCR of a message that is not printed,
+    so the verdict is read back the same way everything else here is: by asking whether a
+    desktop appeared afterwards.
+    """
+    import qmp as qmpmod
+    from lib import keys
+
+    kb_work = guest.paths.drive
+    deadline = time.time() + 120
+    while not os.path.exists(kb_work):
+        if time.time() > deadline:
+            log(f"  no QMP socket at {kb_work}; cannot type at the login window")
+            return False
+        time.sleep(1)
+
+    q = qmpmod.QMP(kb_work)
+    try:
+        # Escape first: a notification banner or a "there is no keyboard" hint swallows the
+        # next keystroke, and this guest has never had input before.
+        qmpmod.key(q, "esc")
+        time.sleep(1)
+        log(f"  typing the password for {GUEST_USER}")
+        keys.type_into(q, GUEST_PASSWORD)
+        time.sleep(1)
+        qmpmod.key(q, "ret")
+        time.sleep(15)
+    finally:
+        q.close()
+    # The caller decides whether it worked - it already has a loop that does nothing else.
+    return True
 
 
 def enable_remote_login(guest: vm.Guest) -> None:
