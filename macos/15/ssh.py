@@ -680,6 +680,20 @@ REMOTE_LOGIN_STEPS = [
     # purpose: `log show` for a whole hour is thousands of lines and the last five of them are
     # the wrong five.
     "sudo log show --last 2m --predicate 'process == \"sshd\"' 2>/dev/null | tail -6",
+    # 6b. THE SAME LOG WITHOUT THE NOISE THAT HAS BEEN FILLING IT.
+    #
+    # Every frame so far has shown the same three lines repeated - si_destination_compare
+    # errors around "Retrieve User by Name" - because that is what tail -6 takes from a log
+    # where those dominate. If that error is HARMLESS (and the guest's own successful logins
+    # suggest it might be, since they resolve users too) then the line that matters is
+    # somewhere in the other output, and tail -6 is hiding it.
+    #
+    # Dropping the process-match predicate keeps ordinary sshd session lines - accepted,
+    # refused, preauth - and `grep -v` removes the one message that has been drowning them.
+    # LowVolume shortens the output; --style compact drops the field headers so more lines fit
+    # on the 80-column terminal.
+    "sudo log show --last 2m --style compact 2>/dev/null "
+    "| grep -i sshd | grep -vi destination_compare | tail -5",
     # 8. DOES THE PASSWORD WORK AT ALL? This is the one question that splits the two
     #    remaining hypotheses, and it never touches ssh.
     #
