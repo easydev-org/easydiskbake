@@ -51,6 +51,14 @@ jobs:
             # that way once, finished in 559 ms and produced no disk - and no boot test
             # would catch it because the step's exit code was 0.
             python3 lib/entrypoints.py
+
+            # AND THE METHODS THE ANNOTATIONS PROMISE. A call to a method that does not
+            # exist on the class the annotation names is valid syntax, exits 0 under
+            # `--help`, and fails only when a run reaches that line. Run 41996560809 spent
+            # an hour of installer to find out that `d.wait_for` had been written on
+            # drive.Driver while `d` is a Recovery.
+            python3 lib/attrcheck.py
+
             mkdir -p out
             GITHUB_TOKEN="${{ github.token }}" python3 lib/selftest.py
 
