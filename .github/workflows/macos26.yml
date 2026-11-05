@@ -50,8 +50,17 @@ on:
         default: true
 
       # --- where each job starts -----------------------------------------------------
+      desktop_run:
+        description: "Drive the Setup Assistant to a desktop - ~45 minutes"
+        type: boolean
+        default: true
+
+      # --- where each job starts -----------------------------------------------------
       setup_from:
         description: "setup: pull this tag instead of installing"
+        default: ""
+      desktop_from:
+        description: "desktop: pull this tag instead of the setup job's output"
         default: ""
 
       # --- setup ----------------------------------------------------------------------
@@ -67,6 +76,14 @@ on:
       assistant_timeout:
         description: "setup: seconds the Setup Assistant driver may run"
         default: "2700"
+
+      # --- desktop ---------------------------------------------------------------------
+      desktop_timeout:
+        description: "desktop: seconds to wait for the desktop after the wizard"
+        default: "1800"
+      inspect_after:
+        description: "desktop: stop this many seconds after the wizard and publish nothing"
+        default: ""
 
       # --- ssh / dev -------------------------------------------------------------------
       publish_tag:
@@ -180,6 +197,133 @@ jobs:
           python3 lib/ci.py login --registry ghcr.io
           python3 lib/publish_disk.py out/macos26.qcow2 --kind macos26-setup \
             --tag "${{ inputs.publish_tag || 'macos26-setup' }}"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+  # ===========================================================================
+  # DESKTOP - drive the Setup Assistant, then wait for the wallpaper.
+  # ===========================================================================
+  desktop:
+    needs: setup
+    if: |
+      always() && inputs.desktop_run
+      && (inputs.desktop_from != '' || needs.setup.outputs.tag != '')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: macos26-desktop-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py kvm
+            # 80, the same number the 15 stage uses and for the same reasons - see that
+            # workflow's prepare step. This stage holds the setup disk, its working copy and
+            # the compressed result, and the recorded frames are JPEG now.
+            python3 lib/ci.py free-disk --need 80
+            python3 lib/ci.py tags --prefix macos-
+
+      - name: pull the setup disk
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: desktop-pull
+          interval: "15"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            python3 lib/pull_disk.py \
+              "${{ inputs.desktop_from || needs.setup.outputs.tag }}" --dest out
+
+      # THE SAME DRIVER AS 15, AND THAT IS THE POINT.
+      #
+      # macos/15/drive.py holds a FIXED SEQUENCE of coordinates - country, transfer, account,
+      # Apple ID, then ten panes of Continue - and reads no screen while it does it. That is
+      # exactly what macos/26/README.md says 26 needs and what an OCR-based driver cannot do:
+      #
+      #     the privacy pane's Continue leads into a pairing handshake a container cannot
+      #     complete, and the only escape is a `Not Now` that is replaced by the failure
+      #     alert in about two seconds - shorter than a screencap plus a tesseract pass
+      #     the country list does not take clicks; it needs keyboard navigation
+      #
+      # Both are properties of a driver that DECIDES by reading. drive.py does not decide:
+      # the country list is reached by typing and Page Down - the keyboard path 26 needs -
+      # and the pairing `Not Now` is clicked at a fixed coordinate within a fraction of a
+      # second of the pane appearing, faster than the alert that replaces it.
+      #
+      # The Setup Assistant is the same program in both releases, and macos26's own setup
+      # disk stops on the same "Select Your Country or Region" pane drive.py starts from -
+      # that is the frame run 41835253323 uploaded.
+      #
+      # `/private/var/db/.AppleSetupDone` IS NOT USED, AND MUST NOT BE. It stopped being
+      # honoured after macOS 14: a marker that is ignored produces a disk that boots to the
+      # wizard forever and a stage that reports success - worse than a wizard that has to be
+      # clicked, because nothing fails.
+      - name: drive the Setup Assistant
+        uses: easydev-org/easyagent-github-ext/actions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: desktop-drive
+          interval: "15"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            export SNAPSHOT_INTERVAL=1
+            export MACOS_USER=docker
+            export MACOS_PASSWORD=admin
+            DISK=$(ls out/*.qcow2 | head -1)
+            echo "setup disk: $DISK"
+            python3 macos/15/desktop.py \
+              --disk "$DISK" \
+              --out out/macos26-desktop.qcow2 \
+              --assistant-timeout "${{ inputs.assistant_timeout || '2700' }}" \
+              --desktop-timeout "${{ inputs.desktop_timeout || '1800' }}" \
+              ${{ inputs.inspect_after != '' && format('--inspect-after {0}', inputs.inspect_after) || '' }}
+
+      - name: keep the recording
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos26-desktop-recording
+          path: |
+            out/install.mp4
+            out/last-frame.png
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: keep the last frame
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos26-desktop-last-frame
+          path: out/last-frame.png
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: push the disk
+        if: success()
+        id: publish
+        run: |
+          set -euo pipefail
+          python3 lib/ci.py install-oras
+          python3 lib/ci.py login --registry ghcr.io
+          python3 lib/publish_disk.py out/macos26-desktop.qcow2 --kind macos26-desktop \
+            --tag "${{ inputs.publish_tag || 'macos26-desktop' }}"
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
