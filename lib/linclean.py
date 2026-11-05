@@ -115,6 +115,38 @@ STEPS: list[tuple[str, str]] = [
     # The entries this pipeline wrote when it logged in.
     ("ssh traces",
      "sudo rm -f /root/.ssh/known_hosts /home/*/.ssh/known_hosts"),
+
+    # AUTOMATIC UPDATES OFF, AND THIS IS NOT ABOUT DISK SPACE.
+    #
+    # A desktop install enables two systemd timers that fetch and apply package updates:
+    #
+    #     apt-daily.timer            every 12 hours, with a randomised delay
+    #     apt-daily-upgrade.timer    installs what the first one fetched, and can reboot
+    #
+    # A bake runs for twenty to forty minutes and the applier's delay is up to an hour, so
+    # the window overlaps the run. What that looks like from outside is a guest that
+    # suddenly has a lock held on the dpkg database - every later `apt` call in this stage
+    # blocks - and in the worst case a reboot in the middle of a recording.
+    #
+    # It is disabled here rather than at install time because THIS is the step that has an
+    # ssh connection, and because a disk handed on as a golden image should not surprise
+    # whoever boots it on the first night either.
+    #
+    # `unattended-upgrades` is masked, not just stopped: stopping a service leaves its
+    # timer to start it again at the next boot.
+    ("auto-updates off",
+     "sudo systemctl disable --now apt-daily.timer apt-daily-upgrade.timer "
+     "apt-daily.service apt-daily-upgrade.service 2>/dev/null; "
+     "sudo systemctl mask apt-daily.service apt-daily-upgrade.service "
+     "unattended-upgrades.service 2>/dev/null; "
+     "true"),
+
+    # AND THE CONFIGURATION BEHIND IT, so a later `apt install` does not re-enable it.
+    ("auto-updates config",
+     "printf 'APT::Periodic::Enable \"0\";\n"
+     "APT::Periodic::Update-Package-Lists \"0\";\n"
+     "APT::Periodic::Unattended-Upgrade \"0\";\n' "
+     "| sudo tee /etc/apt/apt.conf.d/99-no-auto-update >/dev/null; true"),
 ]
 
 # USED MiB ON /, ONE NUMBER. Every measuring point goes through this, so the before/after pairs

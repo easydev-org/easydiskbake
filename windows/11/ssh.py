@@ -259,6 +259,176 @@ WINGET_INSTALL = (
 )
 
 
+def configure_guest() -> list[str]:
+    """The settings a VM needs and a workstation does not.
+
+    WHY THIS EXISTS AT ALL
+
+    Every one of these is something this pipeline has been hurt by, in a run, rather than
+    something a tuning guide suggests:
+
+        the screen going dark      windows/11/ssh.py already carries a "lit for sixty seconds
+                                   is a lock page" workaround because Windows blanks the
+                                   display after a minute of no input, and lib/desktop.py
+                                   cannot tell a blank screen from a failed boot. The
+                                   workaround treats the symptom; this removes the cause.
+
+        a restart at the wrong hour  Windows Update's default is to install and reboot. A
+                                   bake that takes ninety minutes is inside that window,
+                                   and the failure looks like a guest that died.
+
+        hiberfil.sys               one file the size of the machine's RAM - 6 GiB of
+                                   incompressible memory image on a disk that is zstd-
+                                   compressed before it is handed out.
+
+        a restore point            System Restore is on by default and keeps a shadow copy
+                                   of every change. A disk built once and never rolled back
+                                   does not need several GiB of its own previous state.
+
+        the preinstalled apps      Xbox, Bing News, Solitaire, the music player: a few GiB,
+                                   several background services, and none of them usable
+                                   without a Microsoft account.
+
+    EVERY STATEMENT IS ONE LINE. Each is typed at a keyboard into PowerShell, so a
+    multi-line script is not an option and `;` joins the parts of a group. Each is allowed
+    to fail: a missing app package is not a reason to throw away a baked disk.
+
+    WHAT IS DELIBERATELY NOT TOUCHED
+
+        pagefile.sys               removing it makes a 6 GiB guest run out of memory under
+                                   a C++ build, and that failure is a crash, not an error
+        the Visual Studio payload  the disk exists to compile things
+    """
+    winlogon = r"HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\System"
+    wu = r"HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU"
+    store = r"HKLM:\SOFTWARE\Policies\Microsoft\WindowsStore"
+
+    bloat = [
+        "Xbox", "BingNews", "BingWeather", "GetHelp", "Getstarted",
+        "Microsoft3DViewer", "MicrosoftOfficeHub", "MicrosoftSolitaireCollection",
+        "MicrosoftStickyNotes", "MinecraftUWP", "MixedReality.Portal",
+        "OneConnect", "People", "SkypeApp", "WindowsFeedbackHub", "WindowsMaps",
+        "WindowsSoundRecorder", "ZuneMusic", "ZuneVideo",
+    ]
+
+    statements = [
+        # --- power: the screen never sleeps, the machine never hibernates ---------------
+        #
+        # BOTH PLANS. `-ac` is mains and `-dc` is battery; a VM has no battery, so Windows
+        # decides for itself which plan applies and it is not always the same one.
+        "powercfg /change monitor-timeout-ac 0",
+        "powercfg /change standby-timeout-ac 0",
+        "powercfg /change hibernate-timeout-ac 0",
+        "powercfg /change monitor-timeout-dc 0",
+        "powercfg /change standby-timeout-dc 0",
+        # THE HIBERNATION FILE IS THE MACHINE'S RAM ON DISK, and a memory image is the one
+        # thing zstd cannot shrink.
+        "powercfg -h off",
+
+        # --- no restart in the middle of a bake ---------------------------------------
+        #
+        # NoAutoRebootWithLoggedOnUsers is the one that matters for a logged-on guest: by
+        # default Windows still scans, downloads and installs, and only the restart is
+        # suppressed. AUOptions=2 is "notify before download", which stops the install too.
+        f"New-Item -Path '{wu}' -Force | Out-Null",
+        f"Set-ItemProperty -Path '{wu}' -Name NoAutoRebootWithLoggedOnUsers -Value 1 -Force",
+        f"Set-ItemProperty -Path '{wu}' -Name AUOptions -Value 2 -Force",
+        f"New-Item -Path '{store}' -Force | Out-Null",
+        f"Set-ItemProperty -Path '{store}' -Name AutoDownload -Value 2 -Force",
+
+        # --- no restore points or shadow copies ---------------------------------------
+        "Disable-ComputerRestore -Drive C: -ErrorAction SilentlyContinue",
+        "vssadmin delete shadows /all /quiet",
+
+        # --- hide the lock/logon credential UI, now that AutoLogon is what logs in ------
+        f"New-Item -Path '{winlogon}' -Force | Out-Null",
+        f"Set-ItemProperty -Path '{winlogon}' -Name DisableLockWorkstation -Value 1 -Force",
+    ]
+
+    for name in bloat:
+        # -AllUsers twice: the package is PROVISIONED for new accounts and INSTALLED for
+        # the current one. Removing only the installed copy leaves it to come back at the
+        # next account creation.
+        statements.append(
+            f"Get-AppxPackage -AllUsers *{name}* -ErrorAction SilentlyContinue | "
+            f"Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue"
+        )
+        statements.append(
+            f"Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue | "
+            f"Where-Object DisplayName -like *{name}* | "
+            f"Remove-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue"
+        )
+
+    # OneDrive is a separate install, not an Appx, and it starts at logon.
+    statements += [
+        "Stop-Process -Name OneDrive -Force -ErrorAction SilentlyContinue",
+        "Start-Process "
+        r"$env:SystemRoot\SysWOW64\OneDriveSetup.exe "
+        "-ArgumentList /uninstall -Wait -ErrorAction SilentlyContinue",
+    ]
+    return statements
+
+
+def apply_guest_settings(port: int) -> None:
+    """Run configure_guest() in the guest over ssh, and report what took.
+
+    EACH STATEMENT IS SENT IN THE SAME SSH SESSION, joined by `;`, because 55 separate
+    connections to a fresh Windows is 55 handshakes and 55 chances to be rate-limited by
+    sshd. PowerShell is the shell on the other end - sshd on Windows starts cmd.exe, which
+    runs `powershell -Command` in turn.
+
+    A STATEMENT THAT FAILS DOES NOT STOP THE REST. That is deliberate and it is what
+    `-ErrorAction SilentlyContinue` is for: a package that is not present on this build is
+    not a reason to ship a disk with its screen set to blank after a minute. What is
+    reported instead is the RESULT, read back afterwards - the power timeouts and the
+    absence of hiberfil.sys are things that either took or did not.
+
+    THE VERDICT IS AT THE END AND IT IS THE SAME SHAPE AS EVERY OTHER STAGE HERE: ask the
+    guest, not the exit code.
+    """
+    import session
+
+    log(f"  {len(configure_guest())} statements")
+    for statement in configure_guest():
+        status, out = session.ssh(port, statement, timeout=120)
+        if status != 0:
+            # Worth a line: this is the only place a wrong policy path shows up, and a
+            # silent skip turns "the screen still blanks" into a mystery later.
+            detail = (out or "").strip().splitlines()
+            log(f"    skipped ({status}): {statement[:60]}"
+                + (f"  <- {detail[-1][:80]}" if detail else ""))
+
+    # DISM REWRITES THE COMPONENT STORE AND TAKES MINUTES. Its own timeout, because the
+    # 120 seconds above is for a powercfg that returns instantly.
+    log("  compacting the component store (several minutes)")
+    status, out = session.ssh(
+        port, "DISM /Online /Cleanup-Image /StartComponentCleanup /ResetBase", timeout=1800)
+    tail = [l.strip() for l in (out or "").splitlines() if l.strip()][-4:]
+    for line in tail:
+        log(f"    {line[:100]}")
+    if status != 0:
+        log(f"    DISM exited {status}; the disk is still usable, just larger")
+
+    # READ BACK WHAT CAN BE READ BACK. These three are the ones whose failure is invisible
+    # until a later stage, and each is a single value.
+    probe = (
+        "powershell -Command \""
+        "$m = (powercfg /query SCHEME_CURRENT SUB_VIDEO VIDEOIDLE 2>$null | "
+        "Select-String 'Current AC Power Setting').ToString().Split(':')[-1].Trim(); "
+        "$s = (powercfg /query SCHEME_CURRENT SUB_SLEEP STANDBYIDLE 2>$null | "
+        "Select-String 'Current AC Power Setting').ToString().Split(':')[-1].Trim(); "
+        "'MONITOR=' + $m + ' STANDBY=' + $s + ' HIBER=' + "
+        "(Test-Path C:\\hiberfil.sys)\""
+    )
+    status, out = session.ssh(port, probe, timeout=180)
+    log(f"  power: {(out or '').strip()[:160]}")
+    if "MONITOR=0x00000000" in (out or "") and "STANDBY=0x00000000" in (out or ""):
+        log("  the screen and the machine will not time out")
+    else:
+        log("  the power settings did not all take; the disk is published anyway, but a")
+        log("  later stage may have to wake a blank screen")
+
+
 def configure_sshd() -> list[str]:
     """The PowerShell statements that make sshd usable, one line each.
 
@@ -493,6 +663,20 @@ def main(argv: list[str]) -> int:
             log("sshd did not answer")
             kb.shot("no-ssh")
             return 1
+
+        # THE GUEST SETTINGS GO OVER SSH, NOT AT THE KEYBOARD.
+        #
+        # configure_guest() is 55 statements and DISM alone runs for minutes. Typed one at
+        # a time that is a hundred keystrokes of settle and a keyboard that has to be
+        # woken for each - and the whole stage exists to hand the disk on, not to prove a
+        # keyboard works. ssh is already up on this line.
+        #
+        # NONE OF IT IS FATAL. A bloatware package that is not installed, a policy key that
+        # lives somewhere else on this build - `-ErrorAction SilentlyContinue` and a check
+        # that reads the RESULT rather than the exit code, because a disk that boots and
+        # answers ssh is the thing being sold here.
+        log("configuring the guest for a VM, over ssh")
+        apply_guest_settings(HOST_SSH_PORT)
 
         # CLEANING IS ITS OWN WORKFLOW STEP, so this stage can be asked to skip it.
         #

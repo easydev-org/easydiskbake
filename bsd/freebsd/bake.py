@@ -479,11 +479,23 @@ def main(argv: list[str]) -> int:
     if not install_evidence.above_floor(
             disk, install_evidence.floor_for("freebsd"), log, "freebsd"):
         return 1
-    if not bsdinstall.check_disk_ufs(disk):
-        log("=== THE DISK HOLDS NO UFS FILESYSTEM ===")
-        log("  a failed bsdinstall leaves a partition table and nothing on it")
+    # ZFS OR UFS, AND EITHER IS A DISK THIS REPOSITORY MADE.
+    #
+    # The installer is scripted for ZFS now (bsd/freebsd/installerconfig sets
+    # ZFSBOOT_DISKS), and the UFS check stays because a disk made by an earlier run of this
+    # repository is a UFS disk and is still a valid thing to verify.
+    #
+    # ONE OF THEM HAS TO HOLD: a failed bsdinstall leaves a partition table and nothing on
+    # it, and that is what these two separate from "the installer ran".
+    has_zfs = bsdinstall.check_disk_zfs(disk)
+    has_ufs = bsdinstall.check_disk_ufs(disk)
+    if not (has_zfs or has_ufs):
+        log("=== THE DISK HOLDS NO FILESYSTEM ===")
+        log("  neither a ZFS label nor a UFS superblock is on it; a failed bsdinstall")
+        log("  leaves a partition table and nothing on it")
         first_error(publish_console(ser, args.out))
         return 1
+    log(f"  filesystem: {'zfs' if has_zfs else 'ufs'}")
 
     log("compressing")
     compress.compress(disk, args.out)

@@ -144,10 +144,38 @@ def _used(port: int) -> int | None:
 #
 # THE WHOLE LINE IS ONE REMOTE SHELL COMMAND. lib/session.ssh builds an argv list, so the local
 # shell never sees this string and the quoting below is the remote sh's, not Python's.
+# ZFS OR UFS, AND THE COMMAND IS NOT THE SAME.
+#
+# This was `fsck_ffs -E`, which is the UFS answer: it walks cylinder groups and tells the
+# device that the free ones are free. The disk is a ZFS pool now (see
+# bsd/freebsd/installerconfig), and fsck_ffs on a zpool is not a smaller pool - it is the
+# wrong tool applied to a device that has no UFS superblock at all.
+#
+#     zpool trim <pool>       hands every unallocated block back to the device
+#
+# and that is the same mechanism the Linux cleaner uses through `fstrim`: virtio-blk
+# discards, `discard=unmap` on the qemu drive drops the clusters, nothing is written.
+#
+# -w WAITS. On a pool this size the trim finishes in seconds, but without -w the command
+# returns before issuing anything and the following compress measures a pool that has not
+# been trimmed yet - the asynchronous path is only interesting on a real SSD.
+#
+# THE POOL IS READ FROM `zpool list`, NOT ASSUMED. `zroot` is what FreeBSD's installer names
+# it and what this bake sets, but a name that does not exist produces "cannot open 'zroot':
+# no such pool", which reads like a broken install rather than a wrong argument.
+#
+# UFS IS STILL SUPPORTED, because the fallback costs one branch and a disk made by an earlier
+# run of this repository is a UFS disk.
 TRIM = (
+    "if command -v zpool >/dev/null 2>&1 && "
+    "pool=$(zpool list -H -o name 2>/dev/null | head -1) && [ -n \"$pool\" ]; then "
+    "echo \"zfs pool: $pool\"; "
+    "sudo zpool trim -w \"$pool\"; "
+    "else "
     "dev=$(df / | awk 'NR==2 {print $1}'); "
-    "echo \"root filesystem: $dev\"; "
-    "sudo fsck_ffs -y -E \"$dev\" 2>&1"
+    "echo \"ufs: $dev\"; "
+    "sudo fsck_ffs -y -E \"$dev\" 2>&1; "
+    "fi"
 )
 
 

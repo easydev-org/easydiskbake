@@ -11,12 +11,42 @@
 # script mode skipping the prompts. So a bake needs no screen, no coordinates and no
 # driver, which is why BSD is closer to the Ubuntu answer-file model than to MX's.
 #
-# PARTITIONS=DEFAULT IS ONE UFS PARTITION AND THE BOOT BLOCKS. ZFS would be the other
-# choice (ZFSBOOT_DISKS plus ZFSBOOT_VDEV_TYPE instead of PARTITIONS); UFS is what a
-# qcow2 worth copying around wants, because a pool's metadata and its ARC make a disk
-# that is larger and slower to compress for no gain in a throwaway VM.
-
-PARTITIONS=DEFAULT
+# ZFS, AND THE REASON IT CHANGED IS THE ONLY REASON THAT WOULD HAVE CHANGED IT.
+#
+# This used UFS, and the note here argued for it: a pool's metadata and its ARC make a disk
+# larger and slower to compress, and a throwaway VM gains nothing from copy-on-write. That
+# argument is still true and it is not the whole picture:
+#
+#     UFS has no snapshot and no trim of its own. The clean stage ran `fsck_ffs -E`, which
+#     walks the cylinder groups and discards the free ones - and then the image came out
+#     barely smaller, because UFS keeps its free space as a bitmap of blocks it once wrote.
+#
+# ZFS can free blocks without being told which ones: `zpool trim` makes the pool tell the
+# device that every unallocated block is unallocated, and `discard=unmap` on the qemu drive
+# drops the clusters. That is the mechanism this repository already relies on for Linux, and
+# FreeBSD was the one system where it did not exist.
+#
+# WHAT IT COSTS: a pool label, the MOS, and an ARC that wants memory. On a 2 GiB guest that
+# is a few hundred MiB of disk and about 100 MiB of RAM. The trade is worth it if the trim
+# releases gigabytes, and that is measured by the run rather than assumed here.
+#
+# THE SCRIPTED FORM IS ZFSBOOT_DISKS, NOT A MENU. Setting it makes bsdinstall's zfsboot take
+# its non-interactive path - f_interactive is false, so the layout menu is skipped entirely
+# (see zfsboot: "Short-circuit if we're running non-interactively").
+#
+#     ZFSBOOT_DISKS=vtbd0          the single virtio disk this bake attaches
+#     ZFSBOOT_VDEV_TYPE=stripe     one disk, no redundancy
+#     ZFSBOOT_SWAP_SIZE=2g         zfsboot insists on a swap partition size
+#     ZFSBOOT_POOL_NAME=zroot      the name FreeBSD's own installer uses
+#
+# NO SWAP IS ACTUALLY WANTED, and 2g is what the variable requires rather than what this
+# needs. A 2 GiB guest with no hibernation does not swap, and the space comes back through
+# the trim anyway.
+ZFSBOOT_DISKS=vtbd0
+ZFSBOOT_VDEV_TYPE=stripe
+ZFSBOOT_POOL_NAME=zroot
+ZFSBOOT_SWAP_SIZE=2g
+export ZFSBOOT_DISKS ZFSBOOT_VDEV_TYPE ZFSBOOT_POOL_NAME ZFSBOOT_SWAP_SIZE
 
 # NO DISTRIBUTIONS, BECAUSE THIS MEDIUM HAS NONE TO UNPACK.
 #

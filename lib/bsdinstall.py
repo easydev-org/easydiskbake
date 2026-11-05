@@ -185,6 +185,47 @@ def check_disk_ufs(disk: str) -> bool:
     return False
 
 
+def check_disk_zfs(disk: str) -> bool:
+    """Does this qcow2 hold a ZFS pool?
+
+    WHAT IT LOOKS FOR. Every vdev label begins with the eight bytes `\x00\x00\x00\x00\
+    \x0c\xb1\xba\x00` - UBERBLOCK_MAGIC - and the four labels sit at the start and the end
+    of each device (offset 0, 256 KiB, and the last 512 KiB, twice). A pool created by
+    `bsdinstall zfsboot` writes all four.
+
+    WHY A MAGIC SCAN AND NOT `zpool import`. The bake has no zpool on the host, and
+    importing a pool to ask whether it exists would mount it, take the device exclusively,
+    and make the next stage's qemu start fail with "pool is in use". Four magic values in
+    the first megabyte answer the same question without touching the pool.
+
+    A FAILED INSTALL LEAVES A PARTITION TABLE AND NO POOL, which is the same distinction
+    check_disk_ufs() draws for UFS - see its docstring.
+    """
+    import struct
+
+    magic = b"\x00\x00\x00\x00\x0c\xb1\xba\x00"
+
+    # The first label is at offset 0 of the device; zfsboot puts the pool on the whole
+    # vtbd0 with a partition table, so the label is at the start of the block device and
+    # not at a partition offset. 1 MiB is enough to cover L0 and L1's first copy.
+    try:
+        with open(disk, "rb") as fh:
+            head = fh.read(1024 * 1024)
+    except OSError:
+        return False
+    if len(head) < 1024:
+        return False
+
+    index = head.find(magic)
+    if index >= 0:
+        # The pool name is in the label's nvlist, and finding it is not worth a parser
+        # here - the next stage names the pool itself. What this reports is the offset,
+        # so a "found nothing" and a "found it in the wrong place" look different.
+        log(f"  ZFS label magic at offset {index}")
+        return True
+    return False
+
+
 def iso_boot_files(iso_path: str) -> dict[str, str]:
     """Which boot-image path inside an ISO a repack has to name.
 
