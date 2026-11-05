@@ -296,7 +296,7 @@ def wait_for_desktop(guest: vm.Guest, frames: str, timeout: int) -> bool:
         if not guest.alive():
             log("qemu exited before a desktop appeared")
             return False
-        if _wallpaper_test().reached_desktop(shots):
+        if _wallpaper_test().reached_desktop(shots, kind="macos"):
             log(f"a macOS desktop is on screen ({(time.time() - started):.0f}s)")
             settle = int(os.environ.get("DESKTOP_SETTLE_SECONDS", "30"))
             log(f"letting the guest settle for {settle}s before stopping it")

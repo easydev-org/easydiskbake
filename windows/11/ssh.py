@@ -588,7 +588,7 @@ def wake_from_lock_screen(kb: "Keyboard") -> bool:
 
     over the Windows 11 bloom wallpaper - the lock screen - and it held that single
     still picture for 257 seconds before Windows turned the display off. Every log line
-    said mean grey 77 and then 0, and desktop.is_desktop() said no, because its test is
+    said mean grey 77 and then 0, and desktop.is_windows_desktop() said no, because its test is
     "a light band on top and a busier one below", which is a taskbar and a desktop, not
     a full-bleed wallpaper with a clock.
 
@@ -664,7 +664,7 @@ def wait_for_desktop(guest: vm.Guest, shots: str, timeout: int,
         elapsed = time.time() - booted
         if on_sample is not None:
             on_sample(shot, elapsed)
-        if shot and desktop.is_desktop(shot):
+        if shot and desktop.is_windows_desktop(shot):
             speak(f"a desktop is on screen ({elapsed:.0f}s)")
             return True
 
@@ -672,7 +672,7 @@ def wait_for_desktop(guest: vm.Guest, shots: str, timeout: int,
         #
         # Run 41575708286 showed "4:06 / Tuesday, November 3" over the bloom wallpaper
         # from 49 seconds, held it for 257 seconds, and then Windows turned the display
-        # off. desktop.is_desktop() said no throughout, because its test asks for a
+        # off. desktop.is_windows_desktop() said no throughout, because its test asks for a
         # taskbar and a lock page is one full-bleed picture.
         #
         # THE TRIGGER IS SIXTY SECONDS OF BEING LIT, and it is brightness rather than a
@@ -723,7 +723,7 @@ def wait_for_desktop(guest: vm.Guest, shots: str, timeout: int,
 def frame_brightness(path: str | None) -> int | None:
     """Mean grey of a PPM, or None if it cannot be read.
 
-    Only for "is anything drawn at all". What IS drawn is desktop.is_desktop()'s
+    Only for "is anything drawn at all". What IS drawn is desktop.is_windows_desktop()'
     question, and answering it twice would be two things to keep in step.
     """
     if not path:
@@ -753,7 +753,7 @@ def frame_brightness(path: str | None) -> int | None:
 def describe_shot(path: str | None) -> str:
     """One line about a frame: size and mean grey, or why it could not be read.
 
-    Deliberately not a description of what is DRAWN. That is what desktop.is_desktop()
+    Deliberately not a description of what is DRAWN. That is what desktop.is_windows_desktop()
     is for, and a second opinion about the screen would be a second thing to keep in
     step - this only reports whether anything was drawn at all.
     """

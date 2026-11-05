@@ -639,7 +639,7 @@ class Baker:
             #
             # reached_desktop looks at the last few frames rather than the newest,
             # because a capture can land mid-repaint or while the screen has blanked.
-            if desktop.reached_desktop(shots):
+            if desktop.reached_desktop(shots, kind="windows"):
                 elapsed = time.time() - started
                 log(f"a Windows desktop is on screen ({elapsed:.0f}s)")
 

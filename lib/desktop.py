@@ -327,21 +327,20 @@ def analyse(path: str) -> dict | None:
     }
 
 
-def is_desktop(path: str, *, explain: bool = False) -> bool:
-    """Is this frame a desktop?
+def is_windows_desktop(path: str, *, explain: bool = False) -> bool:
+    """Is this frame a Windows desktop?
 
-    TWO WAYS TO PASS, AND THE SECOND ONE WAS WRITTEN BECAUSE THE FIRST CANNOT SEE macOS.
+    A bright top band over a dark, varied bottom band: the taskbar and the wallpaper. Three
+    measurements, and each one was chosen because a single one passed something it should not
+    have - see the constants above.
 
-        the Windows test    a bright top band over a dark, varied bottom band - the taskbar
-                            and the wallpaper of a Windows desktop
-        the macOS test      a dark menu bar across the top of an otherwise light screen
+    THIS WAS HALF OF `is_desktop()`, WHICH ALSO ACCEPTED THE MACOS TEST. Keeping them apart
+    matters in both directions:
 
-    See MENU_BAR for the measurements that forced the second: on macOS 15 the variance ratio
-    runs the other way, so every frame that passed the brightness drop failed the variance
-    test and every frame that passed the variance test was a setup pane. Requiring both made
-    the check impossible to satisfy - run 41881240543 sat in reached_desktop() for its whole
-    1800-second budget with the desktop plainly on screen, and its own recording shows the
-    menu bar four frames from the end.
+        a macOS desktop must not be reported as a Windows one, because the Windows stages
+        act on it - windows/11/ssh.py types a password when this returns True
+        a Windows lock screen is bright and full-bleed and fails this test, which is correct
+        and is why ssh.py has a separate "lit for sixty seconds" lock-page check below it
     """
     stats = analyse(path)
     if stats is None:
@@ -352,24 +351,65 @@ def is_desktop(path: str, *, explain: bool = False) -> bool:
     drop = stats["brightness_drop"]
     ratio = stats["variance_ratio"]
     rise = stats["saturation_rise"]
-    menu = stats["menu_bar_mean"]
 
-    windows = (
+    passed = (
         drop >= MIN_BRIGHTNESS_DROP
         and ratio >= MIN_VARIANCE_RATIO
         and rise >= MIN_SATURATION_RISE
     )
-    body = (sum(stats["top_mean"]) + sum(stats["bottom_mean"])) / 6.0
-    macos = menu <= MAX_MENU_BAR_MEAN and body >= MIN_DESKTOP_BRIGHTNESS
-
-    passed = windows or macos
 
     if explain:
         log(f"{os.path.basename(path)}: drop={drop:+.1f} ratio={ratio:.1f}x "
-            f"sat={rise:+.2f} menu={menu:.0f} body={body:.0f} "
-            f"-> {'DESKTOP' if passed else 'not a desktop'}"
-            f" ({'windows' if windows else 'macos menu bar' if macos else 'neither'})")
+            f"sat={rise:+.2f} -> {'WINDOWS DESKTOP' if passed else 'not a windows desktop'}")
     return passed
+
+
+def is_macos_desktop(path: str, *, explain: bool = False) -> bool:
+    """Is this frame a macOS desktop?
+
+    A dark menu bar across the top of an otherwise light screen. See MENU_BAR for the
+    measurements: on macOS 15 the wizard's top strip reads 227 and the desktop's reads 40,
+    while the Windows test's variance ratio runs backwards there - every frame that passed it
+    was a setup pane.
+
+    THE SCREEN UNDER THE BAR HAS TO BE LIT as well, because a menu bar is dark and so is an
+    unlit framebuffer. The first version of this check passed 274 of 349 frames of a recording
+    that began with the guest's boot - all of them black.
+    """
+    stats = analyse(path)
+    if stats is None:
+        if explain:
+            log(f"{os.path.basename(path)}: unreadable or still being written")
+        return False
+
+    menu = stats["menu_bar_mean"]
+    body = (sum(stats["top_mean"]) + sum(stats["bottom_mean"])) / 6.0
+
+    passed = menu <= MAX_MENU_BAR_MEAN and body >= MIN_DESKTOP_BRIGHTNESS
+
+    if explain:
+        log(f"{os.path.basename(path)}: menu={menu:.0f} body={body:.0f} "
+            f"-> {'MACOS DESKTOP' if passed else 'not a macos desktop'}")
+    return passed
+
+
+def is_desktop(path: str, *, explain: bool = False) -> bool:
+    """Is this frame a desktop of either kind?
+
+    Kept for report and for callers that have no opinion - see is_windows_desktop() and
+    is_macos_desktop() for the two tests and why they are separate.
+    """
+    if is_windows_desktop(path, explain=explain):
+        return True
+    return is_macos_desktop(path, explain=explain)
+
+
+# THE DEFAULT FOR reached_desktop(), AND THE ONLY THING A CALLER NORMALLY SETS.
+#
+#   "macos"    the menu-bar test - macos/15/desktop.py and macos/15/ssh.py
+#   "windows"  the taskbar test - windows/11/bake.py and windows/11/ssh.py
+#   "any"      either; for a report, never for a decision
+KINDS = {"windows": is_windows_desktop, "macos": is_macos_desktop, "any": is_desktop}
 
 
 def newest_frame(directory: str) -> str | None:
@@ -384,13 +424,21 @@ def newest_frame(directory: str) -> str | None:
     return os.path.join(directory, names[-1]) if names else None
 
 
-def reached_desktop(directory: str, *, explain: bool = False) -> bool:
-    """Has any of the last few frames looked like a desktop?
+def reached_desktop(directory: str, *, kind: str = "any",
+                    explain: bool = False) -> bool:
+    """Has any of the last few frames looked like a desktop of `kind`?
 
     Looking at more than the newest matters: the screen is captured every few seconds
     and the desktop is stable, but the newest frame can be one taken mid-repaint or
     while the screen saver has blanked it.
+
+    `kind` IS REQUIRED IN PRACTICE, even though it defaults to "any". A caller that knows
+    which system it is booting should say so: the two tests are not equally good at
+    rejecting the other system's screens, and a stage that guesses can wait out its whole
+    timeout on a frame the wrong test happened to like. See KINDS.
     """
+    if kind not in KINDS:
+        raise ValueError(f"kind must be one of {sorted(KINDS)}, not {kind!r}")
     try:
         names = sorted(
             f for f in os.listdir(directory)
@@ -399,8 +447,9 @@ def reached_desktop(directory: str, *, explain: bool = False) -> bool:
     except OSError:
         return False
 
+    test = KINDS[kind]
     for name in reversed(names):
-        if is_desktop(os.path.join(directory, name), explain=explain):
+        if test(os.path.join(directory, name), explain=explain):
             return True
     return False
 
