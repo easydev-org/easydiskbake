@@ -119,6 +119,32 @@ class Shape:
     vnc_display: int = 0
     ssh_port: int = 2222
     rdp_port: int = 3389
+    # THE GUEST NETWORK, WHEN THE DEFAULT ONE IS NOT USABLE.
+    #
+    # qemu's user-mode network hands out 10.0.2.0/24 by default: the guest is 10.0.2.15 and
+    # its peer, when the HOST connects through a forwarded port, is 10.0.2.2.
+    #
+    # THAT RANGE IS WHAT BREAKS sshd ON macOS. Every other system here authenticates from it
+    # without trouble, but on this guest, run 42119835234:
+    #
+    #     dscl . -authonly docker admin   AUTHOK                    password right
+    #     ssh docker@127.0.0.1            Permission denied         loopback fine
+    #     ssh docker@10.0.2.15            Permission denied         own LAN fine
+    #     host -> 10.0.2.2 peer           Connection closed         this range, not fine
+    #
+    # and the unified log names an ADDRESS operation, not an authentication one:
+    #
+    #     sshd: [com.apple.network:libinfo:si_destination_compare] send failed: Invalid
+    #           argument
+    #
+    # si_destination_compare compares socket addresses in libsystem_info. 10.0.0.0/8 is
+    # shared address space, and macOS's libinfo treats parts of it specially - the same
+    # library that answers "is this address local" differently from how Linux does.
+    #
+    # 192.168.240.0/24 is not special to anything: RFC1918, unused by this repository's other
+    # stages, and the guest and gateway addresses are the conventional .2 and .15 within it.
+    # Empty for every system that does not need it, so their command lines do not change.
+    network_args: str = ""
     # A host directory to expose over SMB. Empty means no share, and the netdev is
     # exactly what it was before this field existed - see lib/share.py for why SMB
     # rather than virtiofs or 9p.
@@ -272,7 +298,10 @@ def build_args(work: str, extra: list[str] | None = None,
         )
     else:
         args += [
-            "-netdev", f"user,id=n0,hostfwd=tcp::{shape.ssh_port}-:22,"
+            # NOT 10.0.2.0/24. See the note on Shape.network for why this guest could not
+            # authenticate from that range and every other system could.
+            "-netdev", f"user,id=n0{shape.network_args},"
+                       f"hostfwd=tcp::{shape.ssh_port}-:22,"
                        f"hostfwd=tcp::{shape.rdp_port}-:3389",
             "-device", "virtio-net-pci,netdev=n0",
         ]
