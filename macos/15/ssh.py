@@ -616,6 +616,26 @@ REMOTE_LOGIN_STEPS = [
     # THE EFFECTIVE CONFIG, NOT THE FILE. sshd -T resolves the includes and the defaults, so
     # this says what sshd will actually do rather than what one file happens to spell.
     "sudo /usr/sbin/sshd -T | grep -iE 'password|allow|deny|usepam'",
+    # 7. AND WHY IT SAID NO. Everything above says the refusal SHOULD NOT happen, and run
+    # 42090649098's recording is the proof that it does:
+    #
+    #     ssh -o BatchMode=yes docker@127.0.0.1 true
+    #       -> Permission denied (publickey,password,keyboard-interactive)
+    #     AuthenticationAuthority: ;ShadowHash;HASHLIST:<SALTED-SHA512-PBKDF2..> ;SecureToken;
+    #     sshd -T: usepam yes / passwordauthentication yes / permitemptypasswords no
+    #
+    # BatchMode=yes cannot answer a password prompt, so that line proves only that sshd
+    # OFFERS password authentication - it does not prove a password would be accepted. The
+    # server's own account of the decision is the only thing that distinguishes
+    #
+    #     the password is wrong            (the host types admin/see session.SSH_PASSWORD)
+    #     the account may not log in      (a blocked or expired AuthenticationAuthority)
+    #     PAM refused it                  (the macOS side of usepam yes)
+    #
+    # and macOS writes it to the unified log, not to a file. The predicate is narrow on
+    # purpose: `log show` for a whole hour is thousands of lines and the last five of them are
+    # the wrong five.
+    "sudo log show --last 2m --predicate 'process == \"sshd\"' 2>/dev/null | tail -6",
 ]
 
 # THE VERDICT IS THE GUEST'S, AND IT IS TWO FACTS: the job is loaded, and something is

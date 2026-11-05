@@ -128,6 +128,7 @@ def wait_for_ssh(port: int, seconds: int, note=log, settle: int = 10,
     deadline = time.time() + seconds
     started = time.time()
     out = ""
+    status = None
     while time.time() < deadline:
         status, out = ssh(port, probe, timeout=20)
         if status == 0:
@@ -136,8 +137,68 @@ def wait_for_ssh(port: int, seconds: int, note=log, settle: int = 10,
         time.sleep(settle)
     note(f"=== SSH DID NOT ANSWER IN {seconds}s ===")
     note(f"  the probe was: {probe}")
+    # THE STATUS, NOT ONLY THE OUTPUT. A failure with an EMPTY output says nothing at all,
+    # and that is exactly what run 42090649098 reported:
+    #
+    #     === SSH DID NOT ANSWER IN 180s ===
+    #     the probe was: true
+    #     last output:
+    #
+    # "ssh argued about credentials" and "ssh said nothing" print the same thing when only
+    # the text is reported, and they are different failures. 255 is ssh's own code for a
+    # failed connection or credential; 124 is this function's timeout; 127 is a missing client.
+    note(f"  last status: {status}")
     note(f"  last output: {out[:300]}")
+    explain(port, probe, note)
     return False
+
+
+def explain(port: int, probe: str, note=log) -> None:
+    """One last attempt with ssh's own account of why, printed in full.
+
+    THIS IS NOT A SECOND CHECK, IT IS THE EXPLANATION FOR THE FIRST ONE. Everything the run
+    has gathered so far is ambiguous by construction:
+
+        the guest's own `ssh -o BatchMode=yes` says Permission denied
+            - but BatchMode cannot answer a password prompt, so it proves only that sshd
+              OFFERS password authentication
+
+        `sshd -T` says passwordauthentication yes, usepam yes, no AllowUsers/DenyUsers
+            - so the config should admit the account
+
+        the host's probe fails with an empty output
+            - which is neither an acceptance nor a readable refusal
+
+    `-vvv` prints each method ssh offered, which one it tried, and what the server replied to
+    each. It is the only output in this run that can separate "wrong password" from "PAM
+    refused the account" from "the password never arrived", and it costs one connection.
+    """
+    if not shutil.which("sshpass"):
+        return
+    argv = [
+        "timeout", "30",
+        "sshpass", "-p", SSH_PASSWORD,
+        "ssh", "-vvv", "-p", str(port),
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "GlobalKnownHostsFile=/dev/null",
+        "-o", "ConnectTimeout=10",
+        "-o", "PreferredAuthentications=password",
+        "-o", "PubkeyAuthentication=no",
+        f"{SSH_USER}@127.0.0.1",
+        probe,
+    ]
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        note(f"  the verbose retry failed to run: {exc}")
+        return
+    # THE LAST LINES, BECAUSE THE DECISION IS AT THE END. The banner and the cipher list are
+    # the first twenty lines and say nothing about credentials.
+    tail = [line for line in (result.stdout + result.stderr).splitlines() if line.strip()]
+    note(f"  verbose retry exited {result.returncode}; last lines:")
+    for line in tail[-12:]:
+        note(f"    {line[:200]}")
 
 
 def check_wayland_session(port: int, process: str, note=log,
