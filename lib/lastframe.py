@@ -164,23 +164,61 @@ def convert(source: str, dest: str) -> bool:
     ffmpeg rather than a hand-written PNG encoder, for the reason in the module docstring:
     it reads a PPM and writes a PNG without being told anything about the format.
     """
-    if not os.path.isfile(source):
-        print(f"[lastframe] nothing at {source}", flush=True)
-        return False
     if not shutil.which("ffmpeg"):
         print("[lastframe] no ffmpeg", flush=True)
         return False
 
+    # A FRAME THAT DISAPPEARS IS NOT AN ERROR, AND THIS IS THE ONE PLACE THAT CAN SAY SO.
+    #
+    # lib/snapshots.py converts frame-N.ppm to frame-N.jpg and unlinks the PPM, once a second
+    # for the whole run. Any caller that named that PPM a moment earlier loses the race -
+    # and every caller has its own way of picking a frame, so fixing the pickers one at a
+    # time is how this came back three times:
+    #
+    #     newest_frame           skipped a PPM that already had a JPEG  (fixed, first)
+    #     live._write_last_frame had its own selector                   (fixed, second)
+    #     either of them         between the listing and ffmpeg's open   (this one)
+    #
+    # THE FALLBACK IS THE JPEG WITH THE SAME NAME, and it is the same picture - that is what
+    # the conversion is. So: if the source is gone and a sibling with the same stem exists,
+    # read that instead. Otherwise retry the whole read a few times, because the JPEG appears
+    # before the PPM goes and the window between them is milliseconds.
+    #
+    # Only after that does it say anything, and what it says is "nothing at", not
+    # "ffmpeg failed" - a missing frame is normal traffic in this directory, not a defect in
+    # the encoder.
+    import time as _time
+
+    attempts = [source]
+    stem = os.path.splitext(source)[0]
+    for extension in (".jpg", ".jpeg", ".ppm"):
+        candidate = stem + extension
+        if candidate not in attempts:
+            attempts.append(candidate)
+
     os.makedirs(os.path.dirname(os.path.abspath(dest)) or ".", exist_ok=True)
-    result = subprocess.run(
-        ["ffmpeg", "-y", "-loglevel", "error", "-i", source, dest],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        print(f"[lastframe] ffmpeg failed: {(result.stderr or '').strip()[:300]}",
-              flush=True)
+    last_error = ""
+    for attempt in range(3):
+        for candidate in attempts:
+            if not os.path.isfile(candidate):
+                continue
+            result = subprocess.run(
+                ["ffmpeg", "-y", "-loglevel", "error", "-i", candidate, dest],
+                capture_output=True, text=True,
+            )
+            if result.returncode == 0:
+                return True
+            last_error = (result.stderr or "").strip()[:200]
+        _time.sleep(0.4)
+
+    if not os.path.isfile(source) and not any(os.path.isfile(c) for c in attempts[1:]):
+        # THE HONEST MESSAGE. Nothing was read because nothing was there.
+        print(f"[lastframe] nothing at {os.path.basename(source)} "
+              f"(and no sibling to fall back on)", flush=True)
         return False
-    return True
+    print(f"[lastframe] ffmpeg failed on {os.path.basename(source)}: {last_error}",
+          flush=True)
+    return False
 
 
 def main(argv: list[str]) -> int:

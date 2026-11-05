@@ -219,17 +219,15 @@ class LiveArtifacts:
             sys.path.insert(0, lib_dir)
         import lastframe
 
-        # THE FILE IS CHECKED AGAIN, AND THE WHOLE CHOICE IS RETRIED ONCE.
+        # THE SELECTION ABOVE NARROWS THE WINDOW; convert() CLOSES IT.
         #
-        # Skipping a PPM that has a JPEG beside it closes the common window, not every one:
-        # the listdir can see a lone PPM, the conversion can run, and the mtime lookup or
-        # ffmpeg's open can then find nothing. Both are cheap to survive - the next poll is
-        # twenty seconds away and there is always a newer frame - so a miss must not print an
-        # ffmpeg error that reads like a broken recording.
+        # Skipping a PPM that has a JPEG beside it cannot cover the case where the listing
+        # sees a lone PPM and the conversion runs before ffmpeg opens it. lib/lastframe.convert
+        # now handles exactly that - it falls back to the sibling JPEG with the same stem and
+        # retries - so this does not repeat the logic. One place decides what a missing frame
+        # means, and that place is the function that reads it.
         tmp = part_path(self.last_frame)
         try:
-            if not os.path.isfile(newest):
-                return          # converted away between the listing and now; next poll
             if not lastframe.convert(newest, tmp):
                 if os.path.exists(tmp):
                     os.unlink(tmp)
