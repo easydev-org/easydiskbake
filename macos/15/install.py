@@ -1004,11 +1004,19 @@ def disk_utility(d: Recovery) -> bool:
             "  doing instead."
         )
 
+    # THE ROW IS SELECTED AND THEN CONTINUE LAUNCHES IT - TWO CLICKS, NOT ONE.
+    #
+    # Clicking a row in this menu only highlights it. Run 41997551326's last frame is
+    # exactly that state: Disk Utility highlighted in grey, the Continue button drawn and
+    # unused at (1142, 586), and nothing launched. The window cannot appear until Continue
+    # is pressed, so waiting for it between the two clicks waits for something that is not
+    # going to happen - which is what the first version of this change did, and why both
+    # runs failed at "Disk Utility replaces the menu: NOT seen within 180s".
     d.click((ROW_X, ROW_Y[3]), "Disk Utility row", settle=5)
+    d.click(CONTINUE_MENU, "recovery Continue", settle=20)
 
-    # AND DISK UTILITY HAS TO ACTUALLY REPLACE IT, for the same reason: a click that
-    # lands on the menu is fine, but everything after this line assumes a sidebar with
-    # disks in it. The window is recognised by its own detail pane's labels.
+    # AND NOW IT HAS TO ACTUALLY APPEAR. Everything after this line assumes a sidebar with
+    # disks in it, so this is the check that says the two clicks did what they meant to.
     opened = d.wait_for(
         lambda path: disk_utility_text(path),
         "Disk Utility replaces the menu",
@@ -1018,9 +1026,9 @@ def disk_utility(d: Recovery) -> bool:
     if not opened:
         raise SystemExit(
             "=== DISK UTILITY DID NOT OPEN ===\n"
-            "  the row was clicked but its window never drew a disk list"
+            "  the row was selected and Continue was pressed, but its window never drew\n"
+            "  a disk list - the last frame shows what was on screen instead"
         )
-    d.click(CONTINUE_MENU, "recovery Continue", settle=20)
 
     # THE SIDEBAR HAS TO BE FINISHED BEFORE IT IS TOUCHED, because the next thing the
     # sequence does is press Up twice and those presses move whatever the sidebar has
