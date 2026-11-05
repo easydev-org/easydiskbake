@@ -714,6 +714,60 @@ class Recovery:
             + (f" - {why}" if why else ""))
         return False
 
+    def wait_for(self, ready, what: str, *, timeout: float, interval: float = 5.0) -> str | None:
+        """Poll the screen until `ready(path)` answers truthy, and return that answer.
+
+        A FIXED SLEEP IS A GUESS ABOUT SOMEBODY ELSE'S MACHINE. Reaching the recovery menu
+        was measured at 143s (run 41498618924); the wait was raised to 240s; run 41992924955
+        was still on the Apple logo with its progress bar at eight percent when the 240 ran
+        out, on a slower runner. The click then went into a boot screen, landed on whatever
+        row was there, and every line after it described a window that had never opened.
+
+        So the timeout stops being the mechanism for "wait until this happens" and becomes
+        a backstop for "this is never going to happen". A slow boot costs a slow run instead
+        of a wrong one.
+
+        THE SAME TWO GUARDS AS wait_until_drawn, for the same measured reasons:
+
+            a frame is saved every poll, so the recording shows what the wait saw
+            a frame at the floor of brightness is not read at all - the boot screen would
+              otherwise be handed to OCR five times a second for no purpose, and a blank
+              frame answers no question this verb is asked
+
+        `ready` gets the path to a saved PPM and returns whatever it found: the OCR text for
+        the predicates below, True for a pixel test. Exceptions are caught and treated as
+        "not yet" - a read, not a verdict.
+
+        The DIFFERENCE from wait_until_drawn and wait_for_change is the question: those ask
+        about the screen's own state ("has it settled", "has it changed"), and this asks
+        about its CONTENT, which is what "the menu is up" actually means.
+        """
+        started = time.time()
+        deadline = started + timeout
+        attempt = 0
+        while time.time() < deadline:
+            attempt += 1
+            path = self.screenshot(f"wait-{what}-{attempt:02d}")
+            if path:
+                level = self.brightness()
+                if level is not None and level < NOTHING_DRAWN:
+                    # Nothing is drawn; nothing can be read. See wait_until_drawn's note
+                    # about run 41501519376, where a black screen measured as "settled".
+                    log(f"  {what}: the screen is dark (mean grey {level}), still waiting")
+                else:
+                    try:
+                        answer = ready(path)
+                    except Exception as exc:        # noqa: BLE001 - a read, not a verdict
+                        log(f"  {what}: the check raised {exc}")
+                        answer = None
+                    if answer:
+                        log(f"  {what}: seen after {time.time() - started:.0f}s "
+                            f"(attempt {attempt})")
+                        return answer
+            time.sleep(interval)
+        log(f"  {what}: NOT seen within {timeout:.0f}s ({attempt} attempts)")
+        return None
+
     def wait_for_change(self, timeout: float = 120.0, settle: float = 5.0,
                         why: str = "") -> bool:
         """Wait until the screen stops looking like it did when this was called.
