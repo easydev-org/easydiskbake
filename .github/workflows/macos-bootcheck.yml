@@ -1,0 +1,112 @@
+name: macos-bootcheck
+
+# Boot an ALREADY-INSTALLED macOS disk and report what the screen does.
+#
+#     gh workflow run macos-bootcheck.yml -f tag=macos26-setup -f minutes=20
+#
+# WHY THIS EXISTS AS A SEPARATE, TEMPORARY WORKFLOW
+#
+# macos26 run 42031548356 stopped with its disk at 39,355 MiB - the same size the one
+# successful macos26 setup ended on (39,396) - and then never reached the Setup Assistant.
+# Its recording shows three `HANDOFF TO XNU`, so the installer rebooted twice and stopped
+# drawing.
+#
+# Two explanations fit, and they need different fixes:
+#
+#     the disk is good and the bake's WAIT is wrong        -> change the wait
+#     the disk does not boot to the wizard at all           -> change the install
+#
+# The bake log cannot tell them apart, because the bake stops at the first frame it cannot
+# classify and calls that a failure. So this boots a finished disk, hashes each sample of the
+# screen, and reports how many DISTINCT pictures appeared. Fourteen identical hashes and
+# fourteen different ones are both "no Setup Assistant" to the bake's wait, and they are
+# different problems.
+#
+# IT PUBLISHES NOTHING AND IS NOT PART OF THE CHAIN. Delete it when the question is answered.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Published disk tag to boot"
+        default: "macos26-setup"
+      minutes:
+        description: "How long to watch the screen"
+        default: "20"
+      disk_size:
+        description: "Unused; here so the dispatch form matches the others"
+        default: "128G"
+
+concurrency:
+  group: macos-bootcheck-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  boot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare the runner
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '80'
+
+      - name: prepare
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: bootcheck-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py tags --prefix macos-
+
+      - name: pull the disk
+        id: pull
+        uses: easydev-org/easyactions/oci-pull@main
+        with:
+          tag: ${{ inputs.tag || 'macos26-setup' }}
+          dest: out
+          token: ${{ github.token }}
+
+      - name: boot it and count the screens
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: bootcheck
+          interval: "20"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            DISK=$(ls out/*.qcow2 | head -1)
+            echo "booting $DISK"
+            python3 macos/bootcheck.py \
+              --disk "$DISK" \
+              --out out/bootcheck.mp4 \
+              --minutes "${{ inputs.minutes || '20' }}"
+
+      - name: keep the recording
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bootcheck-recording
+          path: |
+            out/bootcheck.mp4
+            out/bootcheck-work/last-frame.png
+            out/bootcheck-work/console.log
+          if-no-files-found: warn
+          retention-days: 7

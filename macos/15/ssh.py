@@ -490,15 +490,48 @@ REMOTE_LOGIN_STEPS = [
     #    the backup suffix, and GNU sed would treat it as the script.
     "sudo sed -i '' -E 's|^#?[[:space:]]*PasswordAuthentication[[:space:]].*|"
     "PasswordAuthentication yes|' /etc/ssh/sshd_config",
-    # 3. THE ACCESS GROUP. macOS consults com.apple.access_ssh SEPARATELY from sshd_config:
-    #    if the group exists and the account is not in it, sshd accepts the connection and
-    #    then refuses the login. 501 is docker's uid - configuration-minimal.nix creates it
-    #    as the first normal user.
+    # 3. THE ACCESS GROUP, IN FULL. EVERY ATTRIBUTE BELOW IS LOAD-BEARING.
+    #
+    # macOS consults com.apple.access_ssh SEPARATELY from sshd_config, and a HALF-BUILT group
+    # is worse than none: launchd's socket activation sees a group with that name, decides
+    # access is restricted, and resets the connection before sshd ever speaks. That is
+    # exactly what run 42056084784 got, and the message is what names it:
+    #
+    #     kex_exchange_identification: read: Connection reset by peer
+    #
+    # - the TCP connection succeeded and the protocol exchange was cut off, which is a
+    # different failure from `Connection refused` (nothing listening) and from
+    # `Permission denied` (sshd answered and rejected the credential).
+    #
+    # THE FIRST VERSION OF THIS LIST HAD THREE LINES AND NEEDS ELEVEN. It created the group,
+    # set PrimaryGroupID, and appended uid 501. Missing:
+    #
+    #     GroupMembership           the short-name list; without it the group has members it
+    #                               cannot name, and the membership check fails closed
+    #     GroupMembers "0"          root. An access group that does not contain root cannot
+    #                               be used by the system's own administrative paths
+    #     NestedGroups              admin (80), staff (20), _lpoperator (401). docker is in
+    #                               admin, and the check walks nesting - a direct member that
+    #                               is only reachable through a nested group does not count
+    #
+    # The eleven lines are easydev-org/dockur-macos's, in the same order, from
+    # src/install/firstboot/launch.sh. 501 is docker's uid.
     "sudo dscl . -create /Groups/com.apple.access_ssh",
     "sudo dscl . -create /Groups/com.apple.access_ssh PrimaryGroupID 399",
+    "sudo dscl . -create /Groups/com.apple.access_ssh GroupMembership",
+    "sudo dscl . -create /Groups/com.apple.access_ssh GroupMembers 0",
     "sudo dscl . -append /Groups/com.apple.access_ssh GroupMembers 501",
+    "sudo dscl . -create /Groups/com.apple.access_ssh NestedGroups",
+    "sudo dscl . -append /Groups/com.apple.access_ssh NestedGroups 80",
+    "sudo dscl . -append /Groups/com.apple.access_ssh NestedGroups 20",
+    "sudo dscl . -append /Groups/com.apple.access_ssh NestedGroups 401",
     # 4. AND RESTART IT, so all of the above takes effect now rather than at the next boot.
     "sudo launchctl kickstart -k system/com.openssh.sshd",
+    # 5. THE VERDICT, READ FROM THE GUEST ITSELF. Two facts, both required: the group lists
+    #    the account, and something is listening on 22. Printing them means the recording
+    #    carries the answer even when this stage fails later.
+    "sudo dscl . -read /Groups/com.apple.access_ssh GroupMembers NestedGroups",
+    "netstat -an | grep '\\*.22 ' | head -2",
 ]
 
 # THE VERDICT IS THE GUEST'S, AND IT IS TWO FACTS: the job is loaded, and something is
