@@ -641,9 +641,25 @@ def apple_account(d: Driver, release: str = "15") -> None:
             f"  the control is a link on 15 and a menu button on 26; a guessed one is a click "
             f"into empty pane")
     if skip["kind"] == "menu":
-        # Open it, then take the first item with the keyboard.
-        d.click(skip["at"], "Other Sign-In Options", settle=3.0)
-        d.key("ret", settle=3.0)
+        # OPEN IT, WAIT FOR THE MENU TO DRAW, THEN TAKE THE FIRST ITEM.
+        #
+        # Run 42124271946 clicked (670, 802) - inside the button, whose own pill spans
+        # guest x 555..759 at y 802 - and the recording shows the menu NEVER APPEARED: the
+        # frame one second later is the same pane, and the frame ninety seconds later is
+        # still the same pane. 62 actions completed and the wizard never moved.
+        #
+        # A POPUP MENU DRAWS AFTER THE CLICK RETURNS. The 3-second settle used to be enough
+        # for a menu that opens instantly; this one animates out of the button and covers the
+        # pane's lower half while it does. Return sent during that animation closes it again
+        # instead of choosing from it, which is a click that works followed by a key that
+        # undoes it.
+        #
+        # So: click, wait for the animation to finish, THEN Return - and then wait again,
+        # because the pane's next state (desktop, another pane) also animates.
+        d.click(skip["at"], "Other Sign-In Options", settle=4.0)
+        d.wait(4, "the sign-in menu animates open")
+        d.key("ret", settle=4.0)
+        d.wait(6, "the menu choice applies")
     else:
         d.click(skip["at"], "Set Up Later", settle=2.0)
         d.key("ret", settle=3.0)
