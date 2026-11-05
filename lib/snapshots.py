@@ -104,16 +104,43 @@ def main():
     n = 0
     with open(index_path, "a") as index:
         while limit is None or n < limit:
-            name = "frame-%04d.ppm" % n
+            # THE FRAME IS BUILT UNDER A HIDDEN NAME AND RENAMED WHEN IT IS FINISHED.
+            #
+            # Every reader in this repository picks a frame by listing this directory for
+            # names that start with `frame-` and end in .ppm or .jpg. While a screendump is
+            # being written and converted, the final name must therefore hold NOTHING - or
+            # it holds a PPM that is about to be unlinked, and the reader loses it.
+            #
+            # That race cost three separate fixes (lib/lastframe.newest_frame,
+            # lib/live._write_last_frame, and a retry inside convert) and each one only
+            # narrowed the window. The window is the bug: a name that appears before the file
+            # is complete is a lie to every process that reads the directory.
+            #
+            # THE PREFIX IS `.tmp-`, NOT `frame-`. A reader filters on `frame-`, so a
+            # half-written file is invisible to it - it is not "a frame that might be
+            # readable", it is not a frame at all yet. `.tmp-` also sorts out of the way in
+            # any listing and cannot collide with `frame-NNNN`.
+            tmp_ppm = os.path.join(outdir, ".tmp-frame-%04d.ppm" % n)
+            tmp_jpg = os.path.join(outdir, ".tmp-frame-%04d.jpg" % n)
+            name = "frame-%04d.jpg" % n
             path = os.path.join(outdir, name)
             try:
-                reply = q.execute("screendump", filename=path)
+                reply = q.execute("screendump", filename=tmp_ppm)
             except (OSError, RuntimeError):
                 # qemu stopped: that is the end of the run, not an error.
                 print("[snap] QMP closed after %d frames" % n, flush=True)
                 break
             if "error" in reply:
                 print("[snap] screendump %d failed: %s" % (n, reply["error"]), flush=True)
+                # A FAILED SCREENDUMPS LEAVES NOTHING BEHIND. The temporary name is not
+                # visible to a reader, but it is still a file on a runner with a few GB to
+                # spare, and a persistent failure would accumulate them.
+                for leftover in (tmp_ppm, tmp_jpg):
+                    if os.path.exists(leftover):
+                        try:
+                            os.unlink(leftover)
+                        except OSError:
+                            pass
             else:
                 # THE PPM IS CONVERTED TO JPEG AND DELETED, IMMEDIATELY.
                 #
@@ -127,22 +154,34 @@ def main():
                 # same run was 1.8 MB - the frames, not the video, were the problem.
                 #
                 # JPEG at q=4 is 27 KB for the same picture: 0.22 GiB for the whole run.
-                jpeg = path[:-4] + ".jpg"
                 converted = subprocess.run(
                     ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-                     "-i", path, "-q:v", "4", jpeg],
+                     "-i", tmp_ppm, "-q:v", "4", tmp_jpg],
                     capture_output=True, text=True,
                 )
-                if converted.returncode == 0 and os.path.exists(jpeg):
-                    os.unlink(path)
-                    name = os.path.basename(jpeg)
-                    size = os.path.getsize(jpeg)
+                if converted.returncode == 0 and os.path.exists(tmp_jpg):
+                    # THE RENAME IS THE PUBLICATION. Before it, no reader can see this frame
+                    # at all; after it, the name holds a complete JPEG and nothing will
+                    # unlink it. os.replace is atomic within a filesystem, so a listing
+                    # either does not see the name or sees the finished file.
+                    os.replace(tmp_jpg, path)
+                    if os.path.exists(tmp_ppm):
+                        os.unlink(tmp_ppm)
+                    size = os.path.getsize(path)
                 else:
-                    # A CONVERSION THAT FAILED LEAVES THE PPM. It is the frame; losing it to
-                    # save space would be trading the evidence for the room to store it.
+                    # A CONVERSION THAT FAILED PUBLISHES THE PPM INSTEAD. It is the frame,
+                    # and losing it to save space would be trading the evidence for the room
+                    # to store it - so the finished PPM takes the published name and readers
+                    # get a real picture, in the format the recorder could produce.
                     print("[snap] could not convert %s: %s"
                           % (name, (converted.stderr or "").strip()[:120]), flush=True)
+                    png_name = "frame-%04d.ppm" % n
+                    path = os.path.join(outdir, png_name)
+                    name = png_name
+                    os.replace(tmp_ppm, path)
                     size = os.path.getsize(path) if os.path.exists(path) else 0
+                    if os.path.exists(tmp_jpg):
+                        os.unlink(tmp_jpg)
 
                 stamp = time.strftime("%H:%M:%S")
                 index.write("%s %s %s\n" % (name, stamp, size))
