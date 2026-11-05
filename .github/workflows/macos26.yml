@@ -118,6 +118,12 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: prepare
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '80'
+
+      - name: prepare
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
@@ -125,20 +131,6 @@ jobs:
           interval: "10"
           command: |
             set -euo pipefail
-            python3 lib/ci.py kvm
-            # 80, WHICH IS WHAT IT WAS. The disk problem was the frames, not this number.
-            #
-            # It was raised to 110 on the theory that a 39 GB install plus its recording needed
-            # more room - and the standard runner has 83 GB, so every macOS run then failed in
-            # `prepare` before touching a disk:
-            #
-            #     FAILED: at least 110 GB is required, 83 GB is free even after freeing
-            #
-            # The real cause was lib/snapshots.py keeping every 3 MB PPM: an hour of a macOS
-            # install was 11 GiB of frames, and the video they produced was 1.8 MB. Those are
-            # JPEG now, 0.22 GiB for the same run, so 80 leaves room for the install, its
-            # compressed copy and the frames.
-            python3 lib/ci.py free-disk --need 80
             python3 lib/ci.py tags --prefix macos-
 
       - name: bake
@@ -218,6 +210,12 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: prepare
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '80'
+
+      - name: prepare
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
@@ -225,11 +223,6 @@ jobs:
           interval: "10"
           command: |
             set -euo pipefail
-            python3 lib/ci.py kvm
-            # 80, the same number the 15 stage uses and for the same reasons - see that
-            # workflow's prepare step. This stage holds the setup disk, its working copy and
-            # the compressed result, and the recorded frames are JPEG now.
-            python3 lib/ci.py free-disk --need 80
             python3 lib/ci.py tags --prefix macos-
 
       - name: pull the setup disk

@@ -92,6 +92,12 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: prepare
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '30'
+
+      - name: prepare
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
@@ -99,8 +105,6 @@ jobs:
           interval: "10"
           command: |
             set -euo pipefail
-            python3 lib/ci.py kvm
-            python3 lib/ci.py free-disk --need 30
             # THE CLEAN AND THE LAUNCH READ THE GUEST OVER SSH.
             if ! command -v sshpass >/dev/null 2>&1; then
               apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
@@ -202,6 +206,12 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: prepare
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '30'
+
+      - name: prepare
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
@@ -209,8 +219,6 @@ jobs:
           interval: "10"
           command: |
             set -euo pipefail
-            python3 lib/ci.py kvm
-            python3 lib/ci.py free-disk --need 30
             # THE VERDICT IS READ OVER SSH, so the client that supplies the password has to exist.
             if ! command -v sshpass >/dev/null 2>&1; then
               apt-get update -qq && DEBIAN_FRONTEND=noninteractive \

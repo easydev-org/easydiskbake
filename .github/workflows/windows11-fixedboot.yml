@@ -84,6 +84,12 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: prepare
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '25'
+
+      - name: prepare
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
@@ -91,14 +97,6 @@ jobs:
           interval: "10"
           command: |
             set -euo pipefail
-            python3 lib/ci.py kvm
-            # the disk, its raw intermediate, and the result. The raw file is sparse - qemu-img
-            # convert only writes the clusters that exist - so the peak is roughly three copies
-            # of what the disk actually holds, not three times its virtual size.
-            # NOTHING IS CONVERTED. fixedboot.py edits the qcow2 through qemu-io, so the peak is the
-            # disk plus a 100 MiB ESP - not the three copies of a raw round trip, which is what
-            # needed 90 GB and failed in prepare on the standard runner.
-            python3 lib/ci.py free-disk --need 25
             for t in qemu-img mcopy mmd; do
               command -v $t >/dev/null || { echo "missing $t"; exit 1; }
             done
@@ -153,22 +151,11 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: prepare
-        uses: easydev-org/easyactions/log-stream@main
+        uses: easydev-org/easyactions/runner-check@main
         with:
-          token: ${{ github.token }}
-          name: blank-prepare
-          interval: "10"
-          command: |
-            set -euo pipefail
-            python3 lib/ci.py kvm
-            # NOTHING IS CONVERTED. fixedboot.py edits the qcow2 through qemu-io, so the peak is the
-            # disk plus a 100 MiB ESP - not the three copies of a raw round trip, which is what
-            # needed 90 GB and failed in prepare on the standard runner.
-            python3 lib/ci.py free-disk --need 25
+          kvm: true
+          disk-gb: '25'
 
-      # NO BOOTSTATE IS DOWNLOADED. That is the whole experiment: launch_windows.py is given an
-      # empty work directory, so qemu starts with the OVMF template's variables, which contain
-      # no "Windows Boot Manager" entry.
       - name: launch with a fresh variable store
         uses: easydev-org/easyactions/log-stream@main
         with:
