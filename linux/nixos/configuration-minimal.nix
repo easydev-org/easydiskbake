@@ -77,32 +77,31 @@
   # which state migrations the activation script applies.
   system.stateVersion = "26.05";
 
-  # --- basics every image needs, desktop or not ------------------------------
+  # --- basics the SYSTEM needs, and nothing a pipeline wants -----------------
   #
-  # THE SAME TOOLCHAIN EVERY OTHER DISK HERE CARRIES, and the reason is the next stage,
-  # not taste. A disk from this repository is driven over ssh afterwards - bsd-freebsd's
-  # installerconfig.sh installs git, curl, python3, node and jq for that reason, and
-  # Ubuntu's answer file names them in its package list. NixOS had curl and no git, so a
-  # runner that reached it could not clone anything.
+  # git, python3, nodejs, jq and unzip were here. They made the base image and every
+  # derived desktop carry a toolchain, for the same reason the Ubuntu answer file did:
+  # the next stage drives the disk over ssh and needs something to drive it with.
   #
-  # git      the runner's most basic need, and what the derive stage itself uses
-  #          indirectly through nix flakes
-  # python3  jq and the many actions that shell out to python3
-  # nodejs   the other runtime; nodejs rather than a pinned nodejs_22, so the channel
-  #          decides, which is what an unstable-based image should follow
-  # jq       half the actions parse JSON with it
-  # unzip    the other half unpack archives with it
+  # That is the wrong place for it. A base image should answer "what does NixOS look
+  # like"; whatever the pipeline puts on top belongs in the stage that runs on top - and
+  # the tools/derive distinction this repository uses everywhere else already had a slot
+  # for it. See configuration-dev.nix.
   #
-  # bash is NOT listed: it is in NixOS's own base profile already, and naming it here
-  # would suggest it needed adding.
+  # WHAT STAYS, AND WHY EACH ONE IS THE SYSTEM RATHER THAN A TOOL:
+  #
+  #   curl        `derive` fetches its configuration with curl, over the 9p-free HTTP
+  #               server this repository serves it from. Without it the derive stage on
+  #               a fresh base has no way to receive a new configuration at all.
+  #   gnugrep, gawk, findutils, which
+  #               NixOS's minimal profile omits them, and half of what a shell script
+  #               reaches for is one of the four.
+  #   vim, htop   an editor and a process viewer on a machine with no desktop.
+  #
+  # bash is NOT listed: it is in NixOS's own base profile already.
   environment.systemPackages = with pkgs; [
     curl vim htop
     findutils gnugrep gawk which
-    git
-    python3
-    nodejs
-    jq
-    unzip
   ];
 
   # Deliberately absent, and each for a reason:

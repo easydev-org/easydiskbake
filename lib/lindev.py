@@ -1,7 +1,7 @@
 """Install the build toolchain on a running Linux guest, over ssh.
 
-    python3 linux/tools.py --disk out/ubuntu.qcow2 --kind ubuntu
-    python3 lib/linstools.py --port 2222 --kind ubuntu
+    python3 linux/dev.py --disk out/ubuntu.qcow2 --kind ubuntu
+    python3 lib/lindev.py --port 2222 --kind ubuntu
 
 WHY THIS IS A STAGE AND NOT PART OF THE BAKE
 

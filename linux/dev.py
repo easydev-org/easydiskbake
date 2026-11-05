@@ -1,6 +1,6 @@
 """Boot a baked Linux disk, install the toolchain over ssh, clean it and export it.
 
-    python3 linux/tools.py --disk out/ubuntu.qcow2 --out out/ubuntu-tools.qcow2 --kind ubuntu
+    python3 linux/dev.py --disk out/ubuntu.qcow2 --out out/ubuntu-tools.qcow2 --kind ubuntu
 
 WHY THIS BOOTS THE DISK ITSELF
 
@@ -12,7 +12,7 @@ thing a step can receive.
 WHAT IT DOES, IN ORDER
 
     boot          the published bake disk, no install media
-    install       apt update, upgrade, then the toolchain (lib/linstools.py)
+    install       apt update, upgrade, then the toolchain (lib/lindev.py)
     clean         the same cleaner the bake used - an upgrade and a package install leave
                   the deb cache full, and this stage put it there
     shutdown      ACPI, with a long timeout: the cleaner trimmed the filesystem and the
@@ -63,7 +63,7 @@ def main(argv: list[str]) -> int:
         return 2
 
     work = os.path.abspath(args.work or os.path.join(
-        os.path.dirname(os.path.abspath(args.out)), f"{args.kind}-tools-work"))
+        os.path.dirname(os.path.abspath(args.out)), f"{args.kind}-dev-work"))
     os.makedirs(work, exist_ok=True)
 
     # MOVED, NOT COPIED: the disk came from ghcr, so the registry still holds it and a
@@ -90,16 +90,16 @@ def main(argv: list[str]) -> int:
         guest.start()
 
         status = 0
-        log("=== installing the toolchain ===")
-        import linstools
+        log("=== installing the dev toolchain ===")
+        import lindev
 
-        status = linstools.main(
+        status = lindev.main(
             ["--port", "2222", "--kind", args.kind,
              "--boot-timeout", str(args.boot_timeout)]
             + (["--skip-upgrade"] if args.skip_upgrade else []))
 
         if status != 0:
-            log("=== THE TOOLCHAIN STAGE DID NOT FINISH ===")
+            log("=== THE DEV STAGE DID NOT FINISH ===")
             log("  the disk is not exported: it is not what this stage claims to produce")
             return status
 

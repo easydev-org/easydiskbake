@@ -41,6 +41,10 @@ on:
         description: "Derive the desktop disks from the base"
         type: boolean
         default: true
+      dev_run:
+        description: "Add the toolchain and the VM settings to each desktop"
+        type: boolean
+        default: true
       launch_run:
         description: "Start every derived disk and photograph it"
         type: boolean
@@ -59,6 +63,9 @@ on:
         default: ""
       derive_from:
         description: "derive: a tag PREFIX to pull instead of the base job's output (empty = nixos-<desktop>)"
+        default: ""
+      dev_from:
+        description: "dev: a tag PREFIX to pull instead of the derive job's output"
         default: ""
       launch_from:
         description: "launch: a tag PREFIX to start instead of the derive job's output"
@@ -309,8 +316,89 @@ jobs:
           kind: nixos-${{ matrix.desktop }}
           tag: nixos-${{ matrix.desktop }}
           token: ${{ github.token }}
-  launch:
+  # ===========================================================================
+  # DEV - add the toolchain and the VM settings to each derived desktop.
+  # ===========================================================================
+  dev:
     needs: derive
+    if: |
+      always() && inputs.dev_run
+      && (inputs.dev_from != '' || needs.derive.result == 'success')
+    strategy:
+      fail-fast: false
+      matrix:
+        desktop: ${{ fromJSON(github.event.inputs.desktops == '' && '["labwc","gnome","kde","cosmic","hyprland","miracle"]' || github.event.inputs.desktops) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '20'
+
+      - name: pull the desktop disk
+        uses: easydev-org/easyactions/oci-pull@main
+        with:
+          tag: ${{ inputs.dev_from != '' && format('{0}-{1}', inputs.dev_from, matrix.desktop) || format('nixos-{0}-dev', matrix.desktop) }}
+          dest: out
+          token: ${{ github.token }}
+
+      # THE SAME DERIVE SCRIPT WITH --variant dev. It serves configuration-dev.nix as
+      # /etc/nixos/configuration.nix and the desktop one beside it, and the guest runs
+      # nixos-rebuild boot against that - so the toolchain arrives through NixOS's own
+      # mechanism rather than by editing a file the next rebuild would overwrite.
+      - name: add the toolchain and the VM settings
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: nixos-dev-${{ matrix.desktop }}
+          interval: "20"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            python3 linux/nixos/derive.py \
+              --base "out/nixos-${{ matrix.desktop }}.qcow2" \
+              --desktop "${{ matrix.desktop }}" \
+              --variant dev \
+              --out "out/nixos-${{ matrix.desktop }}-dev.qcow2" \
+              --timeout "${{ inputs.derive_timeout || '3600' }}"
+
+      - name: keep the console
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nixos-${{ matrix.desktop }}-dev-console
+          path: out/nixos-${{ matrix.desktop }}-dev-console.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: push the disk
+        if: success()
+        id: publish
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/nixos-${{ matrix.desktop }}-dev.qcow2
+          kind: nixos-${{ matrix.desktop }}-dev
+          tag: nixos-${{ matrix.desktop }}-dev
+          token: ${{ github.token }}
+
+  launch:
+    # DEV, BECAUSE THAT IS THE DISK THIS SHOULD START. The derived disk is a
+    # desktop; the dev disk is the one with the toolchain this pipeline hands out.
+    needs: [derive, dev]
     if: |
       always() && inputs.launch_run
       && (inputs.launch_from != '' || needs.derive.result == 'success')
@@ -364,7 +452,7 @@ jobs:
             export GITHUB_TOKEN="${{ github.token }}"
             export SNAPSHOT_INTERVAL=1
             python3 linux/nixos/launch.py \
-              --tag "${{ inputs.launch_from != '' && format('{0}-{1}', inputs.launch_from, matrix.desktop) || format('nixos-{0}', matrix.desktop) }}" \
+              --tag "${{ inputs.launch_from != '' && format('{0}-{1}', inputs.launch_from, matrix.desktop) || format('nixos-{0}-dev', matrix.desktop) }}" \
               --desktop "${{ matrix.desktop }}" \
               --artifacts "out/nixos-${{ matrix.desktop }}-launch" \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}" \

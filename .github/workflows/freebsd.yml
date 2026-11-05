@@ -36,8 +36,8 @@ on:
         description: "Start the disk and prove it boots"
         type: boolean
         default: true
-      tools_run:
-        description: "Install the toolchain on the baked disk - ~15 minutes"
+      dev_run:
+        description: "Install the dev toolchain on the baked disk - ~15 minutes"
         type: boolean
         default: true
 
@@ -45,11 +45,11 @@ on:
       bake_from:
         description: "bake: pull this tag instead of installing"
         default: ""
-      tools_from:
-        description: "tools: pull this tag instead of the bake job's output"
+      dev_from:
+        description: "dev: pull this tag instead of the bake job's output"
         default: ""
-      tools_publish_tag:
-        description: "tools: tag to publish under; empty for bsd-freebsd-tools"
+      dev_publish_tag:
+        description: "dev: tag to publish under; empty for bsd-freebsd-dev"
         default: ""
       launch_from:
         description: "launch: the tag to start; empty for the bake job's output"
@@ -196,13 +196,13 @@ jobs:
           tag: ${{ inputs.publish_tag || 'bsd-freebsd' }}
           token: ${{ github.token }}
   # ===========================================================================
-  # TOOLS - boot the baked disk, install the toolchain, clean, export.
+  # DEV - boot the baked disk, install the toolchain, clean, export.
   # ===========================================================================
-  tools:
+  dev:
     needs: bake
     if: |
-      always() && inputs.tools_run
-      && (inputs.tools_from != '' || needs.bake.outputs.tag != '')
+      always() && inputs.dev_run
+      && (inputs.dev_from != '' || needs.bake.outputs.tag != '')
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     container:
@@ -216,7 +216,7 @@ jobs:
       checks: write
       packages: write
     outputs:
-      tag: ${{ inputs.tools_from || steps.publish.outputs.tag }}
+      tag: ${{ inputs.dev_from || steps.publish.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -229,7 +229,7 @@ jobs:
       - name: pull the bake disk
         uses: easydev-org/easyactions/oci-pull@main
         with:
-          tag: ${{ inputs.tools_from || needs.bake.outputs.tag }}
+          tag: ${{ inputs.dev_from || needs.bake.outputs.tag }}
           dest: out
           token: ${{ github.token }}
 
@@ -239,16 +239,16 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: freebsd_tools
+          name: freebsd-dev
           interval: "20"
           command: |
             set -euo pipefail
             export GITHUB_TOKEN="${{ github.token }}"
             DISK=$(ls out/*.qcow2 | head -1)
             echo "bake disk: $DISK"
-            python3 linux/tools.py \
+            python3 linux/dev.py \
               --disk "$DISK" \
-              --out out/freebsd_tools.qcow2 \
+              --out out/freebsd-dev.qcow2 \
               --kind freebsd \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}"
 
@@ -256,8 +256,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: freebsd_tools-console
-          path: out/freebsd-tools-work/console.log
+          name: freebsd-dev-console
+          path: out/freebsd-dev-work/console.log
           if-no-files-found: warn
           retention-days: 7
 
@@ -266,13 +266,13 @@ jobs:
         id: publish
         uses: easydev-org/easyactions/oci-push@main
         with:
-          path: out/freebsd_tools.qcow2
-          kind: bsd-freebsd-tools
-          tag: ${{ inputs.tools_publish_tag || 'bsd-freebsd-tools' }}
+          path: out/freebsd-dev.qcow2
+          kind: bsd-freebsd-dev
+          tag: ${{ inputs.dev_publish_tag || 'bsd-freebsd-dev' }}
           token: ${{ github.token }}
 
   launch:
-    needs: [bake, tools]
+    needs: [bake, dev]
     if: |
       always() && inputs.launch_run
       && (inputs.launch_from != '' || needs.bake.outputs.tag != '')
@@ -323,7 +323,7 @@ jobs:
             set -euo pipefail
             export GITHUB_TOKEN="${{ github.token }}"
             python3 lib/launch_linux.py \
-              --tag "${{ inputs.launch_from || needs.tools.outputs.tag }}" \
+              --tag "${{ inputs.launch_from || needs.dev.outputs.tag }}" \
               --kind freebsd \
               --artifacts "out/freebsd-launch" \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}" \

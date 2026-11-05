@@ -65,24 +65,45 @@ def log(message: str) -> None:
     print(f"[derive {time.strftime('%H:%M:%S')}] {message}", flush=True)
 
 
-def serve(work: str, desktop: str) -> subprocess.Popen:
-    """Serve the PAIR of nix files the guest needs.
+def serve(work: str, desktop: str, *, variant: str = "desktop") -> subprocess.Popen:
+    """Serve the nix files the guest needs.
 
-    configuration-desktop.nix IMPORTS ./configuration-minimal.nix by a relative path.
-    Sending only the first leaves nixos-rebuild failing with "path
-    /etc/nixos/configuration-minimal.nix does not exist" - and the import is what keeps
-    the filesystems, boot loader and users the base was installed with. A desktop config
-    that did not import it would produce a disk that cannot boot.
+    THE FILES ARE SERVED AS A SET, NOT AS ONE. configuration-desktop.nix IMPORTS
+    ./configuration-minimal.nix by a relative path, and configuration-dev.nix imports the
+    desktop one - so the whole chain has to be present or nixos-rebuild fails with "path
+    /etc/nixos/configuration-minimal.nix does not exist", and the import is what keeps the
+    filesystems, boot loader and users the base was installed with. A config that did not
+    import them would produce a disk that cannot boot.
+
+        --variant desktop    configuration.nix          = desktop
+                             configuration-minimal.nix  = minimal
+        --variant dev        configuration.nix          = dev
+                             configuration-desktop.nix  = desktop
+                             configuration-minimal.nix  = minimal
+
+    DEV IMPORTS THE DESKTOP rather than the minimal config, because a dev disk is a desktop
+    with a toolchain on it. Serving the minimal one under the desktop name would build a
+    headless image and call it a desktop.
     """
     srv = os.path.join(work, "srv")
     os.makedirs(srv, exist_ok=True)
 
-    with open(os.path.join(HERE, "configuration-desktop.nix"), encoding="utf-8") as fh:
-        target = fh.read().replace("@DESKTOP@", desktop)
-    with open(os.path.join(srv, "configuration.nix"), "w", encoding="utf-8") as fh:
-        fh.write(target)
+    def render(name: str, out_name: str) -> None:
+        with open(os.path.join(HERE, name), encoding="utf-8") as fh:
+            text = fh.read().replace("@DESKTOP@", desktop)
+        with open(os.path.join(srv, out_name), "w", encoding="utf-8") as fh:
+            fh.write(text)
+
+    # the minimal config is always needed: both branches import it, directly or through the
+    # desktop one
     shutil.copyfile(os.path.join(HERE, "configuration-minimal.nix"),
                     os.path.join(srv, "configuration-minimal.nix"))
+
+    if variant == "dev":
+        render("configuration-desktop.nix", "configuration-desktop.nix")
+        render("configuration-dev.nix", "configuration.nix")
+    else:
+        render("configuration-desktop.nix", "configuration.nix")
 
     return subprocess.Popen(
         [sys.executable, "-m", "http.server", str(CONFIG_PORT), "--bind", "0.0.0.0"],
@@ -110,6 +131,11 @@ else
 fi
 curl -fsS -o /etc/nixos/configuration.nix http://10.0.2.2:{CONFIG_PORT}/configuration.nix || {{ echo CONFIG_FAIL; echo DERIVE_RC=1; sync; poweroff -f; }}
 curl -fsS -o /etc/nixos/configuration-minimal.nix http://10.0.2.2:{CONFIG_PORT}/configuration-minimal.nix || {{ echo MINIMAL_FAIL; echo DERIVE_RC=1; sync; poweroff -f; }}
+# THE DESKTOP FILE IS OPTIONAL AND IS ASKED FOR SEPARATELY. The dev variant imports it and
+# the desktop one does not use it, so a 404 here is not a failure - but a silent skip would
+# leave configuration.nix importing a file that is not there, and nixos-rebuild says so with
+# a path error a long way from the cause.
+curl -fsS -o /etc/nixos/configuration-desktop.nix http://10.0.2.2:{CONFIG_PORT}/configuration-desktop.nix 2>/dev/null || rm -f /etc/nixos/configuration-desktop.nix
 echo GOT_CONFIG
 export NIX_PATH="nixpkgs=https://github.com/NixOS/nixpkgs/archive/nixos-unstable.tar.gz:nixos-config=/etc/nixos/configuration.nix"
 nixos-rebuild boot
@@ -128,6 +154,9 @@ def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--base", required=True, help="the installed base qcow2")
     p.add_argument("--desktop", required=True, choices=DESKTOPS)
+    p.add_argument("--variant", default="desktop", choices=["desktop", "dev"],
+                   help="desktop derives a desktop from the base; dev adds the toolchain "
+                        "and the VM settings on top of one")
     p.add_argument("--out", default=None)
     p.add_argument("--copy", action="store_true",
                    help="copy the input disk instead of moving it; the default is to "
@@ -205,7 +234,7 @@ def main(argv: list[str]) -> int:
     else:
         log(f"the disk is {virtual_gib:.0f}G; nothing to grow")
 
-    server = serve(work, args.desktop)
+    server = serve(work, args.desktop, variant=args.variant)
     # THE GUEST SCRIPT IS SERVED, NOT TYPED - see guest_script().
     srv = os.path.join(work, "srv")
     with open(os.path.join(srv, "derive-guest.sh"), "w", encoding="utf-8") as fh:
