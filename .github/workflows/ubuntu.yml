@@ -158,8 +158,14 @@ jobs:
             # THE GUEST'S CONSOLE. It is not console.log any more: the bake puts the serial on
             # a fifo chardev so it can be read and driven, and lib/serial.py writes what the
             # guest said to serial.out.log. qemu's own stdout carries only warnings.
+            #
+            # serial2 IS THE SECOND BOOT'S CONSOLE - the one that proves the disk starts.
+            # It was thrown away until run 42192264451, whose ten-minute silence said only
+            # "No route to host" and nothing about whether the guest had booted at all.
             out/serial.out.log
+            out/serial2.out.log
             out/console.log
+            out/frames2
           if-no-files-found: warn
           retention-days: 14
 

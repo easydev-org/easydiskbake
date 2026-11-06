@@ -132,15 +132,43 @@ def boot_installed(work: str, args, disk: str) -> bool:
     a real KDE screen, and guessing one from a Windows desktop is the
     mistake this repository keeps recording. This boot's job is to produce the recording
     and the frames that measurement will be taken from.
+
+    IT KEEPS ITS CONSOLE, AND IT DID NOT UNTIL RUN 42192264451. That boot was started with
+    no `serial_pipe`, so lib/vm.py used `-serial mon:stdio`, and `stdout=os.devnull` threw
+    the guest's console away. The run then sat for ten minutes and reported
+
+        === SSH DID NOT ANSWER IN 600s ===
+          last output: ssh: connect to host 172.30.0.1 port 2222: No route to host
+
+    with NOT ONE LINE from the guest - no DHCP request, no cloud-init, no kernel message -
+    so "the disk did not boot" and "the disk booted and got no address" looked identical.
+    The installer stage has always had a fifo chardev for exactly this reason; the second
+    boot never did, because it was written before anyone needed to watch it fail.
+
+    A FIFO CHARDDEV PLUS SNAPSHOTS. The console goes to out/serial.out.log through
+    lib/serial.py, which the workflow already uploads for the install stage, and a frame is
+    taken every second so the firmware, GRUB and the desktop are in the artifact even when
+    the guest never reaches a shell.
     """
-    shape = vm.Shape(cpus=args.cpus, mem_mb=args.mem, machine="q35", vga="std")
+    ser = serial.Serial(work, "serial2",
+                        sink=os.path.join(work, "serial2.out.log"))
+    shape = vm.Shape(cpus=args.cpus, mem_mb=args.mem, machine="q35", vga="std",
+                     serial_pipe=ser.stdin.removesuffix(".in"))
     guest = vm.Guest(work, extra=["-drive", f"file={disk},if=virtio,format=qcow2,discard=unmap"],
                      shape=shape, stdout=os.devnull)
     shots2 = os.path.join(work, "frames2")
     os.makedirs(shots2, exist_ok=True)
+    frames = None
     try:
         guest.start()
-        # NO RECORDING HERE. See the note at the installer's own capture below.
+        # THE CONSOLE IS OPENED AFTER QEMU, because a fifo has no writer until qemu starts
+        # reading it. See the same call in the installer stage.
+        ser.open(timeout=60)
+        frames = subprocess.Popen(
+            [sys.executable, os.path.join(REPO, "lib", "snapshots.py"),
+             guest.paths.record, shots2, os.environ.get("SNAPSHOT_INTERVAL", "1")],
+            stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
+        )
         # THE DESKTOP IS VERIFIED BY ITS WAYLAND SESSION, NOT BY ITS PIXELS.
         #
         # This used to watch for the whole of --timeout and then return True regardless -
@@ -162,7 +190,17 @@ def boot_installed(work: str, args, disk: str) -> bool:
 
         return True
     finally:
+        # AFTER guest.stop(), NOT BEFORE - closing the writer tells qemu its console is
+        # gone, and a guest mid-shutdown loses the line that says why. Same order as the
+        # installer stage.
         guest.stop()
+        if frames is not None:
+            frames.terminate()
+            try:
+                frames.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                frames.kill()
+        ser.close()
 
 
 def main(argv: list[str]) -> int:
