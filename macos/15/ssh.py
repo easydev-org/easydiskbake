@@ -703,10 +703,27 @@ def enable_remote_login(guest: vm.Guest) -> None:
         click(1145, 353, settle=4.0)
         shot("4-remote-login-on")
 
-        # 5. AND FULL DISK ACCESS FOR REMOTE USERS, the option that makes the difference
-        #    between "sshd answers" and "sshd can look the account up". (1145, 420).
-        log("=== allowing full disk access for remote users ===")
-        click(1145, 420, settle=4.0)
+        # 5. FULL DISK ACCESS IS ALREADY ON, AND CLICKING IT AGAIN TURNS IT OFF.
+        #
+        # The switch above is not independent: turning Remote Login ON turns
+        # `Allow full disk access for remote users` ON with it, on this release. The frames of
+        # run 42167875539 show it exactly -
+        #
+        #     remote-login-4-remote-login-on.png    both switches blue
+        #     remote-login-5-full-disk-access.png   Remote Login blue, full disk access GREY
+        #
+        # and the second frame is one click after the first. This stage had been pressing it
+        # "to be sure", which is the one thing that un-does it. The cost was the clean:
+        #
+        #     === diskutil apfs trim WAS REFUSED (exit 1) ===
+        #
+        # because a remote session without Full Disk Access cannot trim the volume it is
+        # running from.
+        #
+        # SO IT IS READ, NOT PRESSED. One frame is taken so the recording says what the state
+        # was; if a release ever ships with the two switches independent, that frame is where
+        # the next reader will see it.
+        log("=== full disk access (on with Remote Login; not touched) ===")
         shot("5-full-disk-access")
 
         # 6. DONE, so the pane closes and the daemon settles rather than staying in a
