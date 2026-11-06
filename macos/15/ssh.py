@@ -774,6 +774,23 @@ REMOTE_LOGIN_STEPS = [
     #
     # Two different repairs, one line.
     "ssh -o BatchMode=yes -o ConnectTimeout=10 docker@10.0.2.2 true; echo GW=$?",
+    # 6d. WHY THE PROCESS DIED, FROM THE SYSTEM THAT WATCHES IT.
+    #
+    # Five changes have now been made on theory and none moved the failure: UseDNS no,
+    # UsePAM no, the 10.0.0.0/8 subnet, and the NIC's MAC + romfile. Every fact the guest can
+    # report says it should work - AUTHOK, `*.22 LISTEN`, `state = not running` (correct for a
+    # socket-activated job), and its own logins answering "Permission denied".
+    #
+    # macOS writes a report for every process that dies abnormally. sshd IS dying: the host's
+    # log stops at "we sent a password packet, wait for reply" and the connection is closed,
+    # which is the server ending rather than refusing. The report names the exception and the
+    # frames, which is what six runs have been inferring from unrelated log lines.
+    #
+    # /Library/Logs/DiagnosticReports MAY HOLD NO sshd REPORT AT ALL, and that absence is
+    # itself the fact that would redirect this.
+    "sudo ls -t /Library/Logs/DiagnosticReports/ 2>/dev/null | head -3",
+    "sudo ls -t /Library/Logs/DiagnosticReports/sshd* 2>/dev/null | head -1",
+    "sudo grep -m3 -iE 'exception|termination|reason' /Library/Logs/DiagnosticReports/sshd*.ips 2>/dev/null || echo NO-REPORT",
 ]
 
 # THE VERDICT IS THE GUEST'S, AND IT IS TWO FACTS: the job is loaded, and something is
