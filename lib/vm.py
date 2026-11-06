@@ -164,6 +164,33 @@ class Shape:
     #
     # Empty by default so no other system's command line changes.
     net_device_args: str = ""
+    # A BRIDGED TAP INSTEAD OF SLIRP, WHEN THE GUEST NEEDS A REAL ROUTE OUT.
+    #
+    # qemu's user-mode network is a userspace NAT: the guest's packets are terminated inside
+    # qemu and re-issued by the qemu PROCESS. That is fine when the only peer is the host, and
+    # useless when the guest must reach the internet through a proxy the container has and
+    # qemu does not:
+    #
+    #     container -> proxy      apple.com 200 in 0.17s
+    #     container -> direct     gdmf.apple.com (macOS's update API) FAILS
+    #     guest -> slirp -> container -> direct   hangs
+    #
+    # macOS 26's Setup Assistant sits on "Update Mac Automatically" waiting for that API -
+    # measured here, still spinning after six minutes, and Escape does not interrupt it.
+    #
+    # A tap on a bridge with MASQUERADE is what easydev-org/easysandbox-macos does
+    # (sandbox.sh, setup_network), and it gives the guest a real address on a real link:
+    #
+    #     ip link add qemubr0 type bridge; ip addr add 172.30.0.1/24
+    #     ip tuntap add qemutap0 mode tap; ip link set qemutap0 master qemubr0
+    #     dnsmasq --dhcp-range=172.30.0.2,172.30.0.2 --dhcp-host=<mac>,,172.30.0.2
+    #     iptables -t nat -A POSTROUTING -s 172.30.0.0/24 -j MASQUERADE
+    #
+    # The guest then ARPs, DHCPs and routes like any machine, and its packets leave through
+    # the same stack the container uses - including whatever policy routing that stack has.
+    tap_ifname: str = ""
+    tap_mac: str = ""
+    tap_ssh_port: int = 2222
     # A host directory to expose over SMB. Empty means no share, and the netdev is
     # exactly what it was before this field existed - see lib/share.py for why SMB
     # rather than virtiofs or 9p.
@@ -308,7 +335,15 @@ def build_args(work: str, extra: list[str] | None = None,
     # Networking, with or without a share. A share adds `smb=<dir>` to the same
     # user-mode netdev, which makes qemu fork its own smbd; the guest reaches it at
     # 10.0.2.4. See lib/share.py.
-    if shape.share_path:
+    if shape.tap_ifname:
+        # -netdev tap,script=no: THE INTERFACE IS ALREADY UP AND BRIDGED, and qemu must not
+        # try to run a helper script (there is no /etc/qemu-ifup in a container, and the
+        # default script fails loudly). `downscript=no` is the same argument on the way out.
+        args += [
+            "-netdev", f"tap,id=n0,ifname={shape.tap_ifname},script=no,downscript=no",
+            "-device", f"virtio-net-pci,netdev=n0{shape.net_device_args or ',' + 'mac=' + shape.tap_mac if shape.tap_mac else ''}",
+        ]
+    elif shape.share_path:
         from share import Share
 
         share = Share(shape.share_path)

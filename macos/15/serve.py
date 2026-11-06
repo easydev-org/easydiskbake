@@ -49,6 +49,13 @@ def main(argv: list[str]) -> int:
     p.add_argument("--ssh-port", type=int, default=2222)
     p.add_argument("--vnc-port", type=int, default=5900)
     p.add_argument("--release", default=os.environ.get("MACOS_RELEASE", "15"))
+    p.add_argument("--tap", default=os.environ.get("MACOS_TAP", ""),
+                   help="a bridged tap interface to attach instead of qemu's user-mode NAT. "
+                        "The guest then has a real address and a real route out, which "
+                        "Setup Assistant needs on macOS 26 to reach Apple's update API. "
+                        "See Shape.tap_ifname.")
+    p.add_argument("--tap-mac", default=os.environ.get("MACOS_TAP_MAC", ""),
+                   help="the MAC dnsmasq is configured to hand 172.30.0.2 to")
     p.add_argument("--capture", default=None,
                    help="a directory to write one frame per second into")
     args = p.parse_args(argv)
@@ -86,6 +93,13 @@ def main(argv: list[str]) -> int:
     # 127.0.0.1 inside a container is not reachable from outside it.
     shape.vnc_bind = "0.0.0.0"
     shape.vnc_display = 0
+    # A TAP INSTEAD OF SLIRP, WHEN ONE IS NAMED. The interface is created, bridged and NATed
+    # outside this process (see Shape.tap_ifname for the four commands), because those need
+    # NET_ADMIN and belong to whoever prepared the machine.
+    if args.tap:
+        shape.tap_ifname = args.tap
+        shape.tap_mac = args.tap_mac
+        log(f"net    tap {args.tap} (bridged, NATed) mac={args.tap_mac or 'auto'}")
     # AND NO CONSOLE ON STDIO, BECAUSE THERE IS NO TTY.
     #
     # The default is `-serial mon:stdio`, which puts the guest's serial port on qemu's OWN
