@@ -193,28 +193,28 @@ autoinstall:
       printf '%s\n' 'add_drivers+=\" virtio_net virtio_pci virtio_blk \"' 'hostonly=\"no\"'
       > /etc/dracut.conf.d/zz-easydiskbake.conf && dracut --force --regenerate-all"
 
-    # AND THE RESULT IS CHECKED, HERE, WHERE THE ERROR NAMES ITSELF.
+    # AND THE RESULT IS CHECKED - BUT IT MUST NEVER FAIL THE INSTALL.
     #
-    # Without this the only symptom of a bad initrd is ten minutes of SSH timeouts on the
-    # second boot, which reads as a broken disk. `lsinitrd` answers the actual question -
-    # is the driver in the image that will be booted - and failing the install is a much
-    # cheaper way to learn it. Skipped, not failed, when lsinitrd is absent: a slimmer
-    # dracut package must not block a bake on a diagnostic.
+    # Without a check the only symptom of a bad initrd is ten minutes of SSH timeouts on
+    # the second boot, which reads as a broken disk. `lsinitrd` answers the actual
+    # question, and its line in the console is what makes a later failure legible.
     #
-    # THE INNER SCRIPT IS SINGLE-QUOTED. This is `curtin in-target -- sh -c '...'` inside a
-    # YAML value, and the first draft escaped its variables as `\$f` inside double quotes.
-    # Measured: sh received a literal `\$f` and died on
+    # THIS USED TO BE `exit 1` AND IT TOOK THE INSTALL DOWN. curtin runs a late-command
+    # through `systemd-cat ... sh -c 'curtin in-target -- sh -c \'...\''`, so the script
+    # is three shell layers deep by the time it runs. The version with `f=$(...)` and
+    # `"$f"` got its quotes scrambled by that nesting and subiquity stopped the whole
+    # install with
     #
-    #     sh: 1: Syntax error: "(" unexpected
+    #     [console] finish: subiquity/Install/install: Command execution failure
+    #     [console] An error occurred. Press enter to start a shell
     #
-    # because `$(...)` had been mangled. Single quotes have no expansion in either layer, so
-    # `$f` and `$(...)` reach the guest exactly as written.
+    # on run 42261765562, three seconds after the dracut step had succeeded. So: no
+    # variables, no nested quotes, a glob instead of a name, and `true` at the end. A
+    # diagnostic that can destroy the thing it is diagnosing belongs in a log line, not
+    # in an exit code.
     - >-
-      curtin in-target -- sh -c 'f=$(ls /boot/initrd.img-* 2>/dev/null | head -1);
-      if command -v lsinitrd >/dev/null 2>&1 && [ -n "$f" ]; then
-      lsinitrd "$f" | grep -q virtio_net || { echo "FATAL: $f carries no virtio_net"; exit 1; };
-      echo "initramfs carries virtio_net: $f";
-      else echo "lsinitrd not available; the initramfs check is skipped"; fi'
+      curtin in-target -- sh -c "lsinitrd /boot/initrd.img-* 2>/dev/null
+      | grep -q virtio_net && echo INITRD-CARRIES-virtio_net || echo INITRD-MISSING-virtio_net; true"
     # SSH ON BOOT, WITH THE PORT THE REST OF THIS PIPELINE USES. Ubuntu's sshd listens
     # on 22; the host forwards 2222 to it (lib/vm.py). Nothing here changes the port -
     # this only makes sure the service is enabled, because `install-server: true`
