@@ -48,6 +48,56 @@ def log(message: str) -> None:
     print(f"[overlay] {message}", flush=True)
 
 
+def qemu_img() -> str:
+    """The qemu-img that matches qemu-system-x86_64, not the one PATH happens to find.
+
+    ASK lib/compress.py, DO NOT RESOLVE IT AGAIN HERE.
+
+    This module called a bare `qemu-img` in two places - `create` and `convert` - and the
+    image puts /opt/android-sdk/emulator ahead of /usr/bin on PATH:
+
+        /opt/android-sdk/emulator/qemu-img   2.12.0  (2017)  <- what "qemu-img" meant
+        /usr/bin/qemu-img                    11.1.0  (Debian) <- what can read a modern disk
+
+    The 2017 binary does not know the option this module needs:
+
+        qemu-img: Invalid parameter 'compression_type'
+        qemu-img: /tmp/z.qcow2: Invalid options for file format 'qcow2'
+
+    and cannot open the disks this repository publishes:
+
+        qemu-img: Could not open 'macos15-setup.qcow2': Unsupported qcow2 feature(s):
+        compression type
+
+    lib/compress.py has resolved this since the first Windows bake - it holds the reason,
+    the `QEMU_IMG` override and a `run()` that prints qemu-img's own words on failure. Two
+    copies of that knowledge is exactly the "one fact in thirteen places" mistake this
+    repository has already paid for (see the Containerfile's note on sshpass), so this
+    imports its answer rather than re-deriving one. The import is inside the function
+    because overlay.py is also run as a script, from lib/, where the package layout is not
+    the one the other callers see.
+    """
+    try:
+        import compress
+        return compress.qemu_img()
+    except ImportError:
+        pass
+    # STANDALONE FALLBACK, the same rule compress.py states: /usr/bin first, QEMU_IMG wins.
+    override = os.environ.get("QEMU_IMG", "")
+    if override:
+        return override
+    for candidate in ("/usr/bin/qemu-img", "/usr/local/bin/qemu-img"):
+        if os.path.exists(candidate):
+            return candidate
+    return "qemu-img"
+
+
+def run(*args: str) -> subprocess.CompletedProcess:
+    """qemu-img with the resolved binary, and its own error text when it fails."""
+    binary = qemu_img()
+    return subprocess.run([binary, *args], capture_output=True, text=True)
+
+
 class Overlay:
     """A writable qcow2 whose parent is a read-only base disk."""
 
@@ -77,14 +127,15 @@ class Overlay:
             os.unlink(self.path)
 
         log(f"base   {self.base} ({os.path.getsize(self.base) >> 20} MiB, read-only)")
-        result = subprocess.run(
-            ["qemu-img", "create", "-f", "qcow2", "-F", "qcow2",
-             "-b", self.base, self.path],
-            capture_output=True, text=True,
-        )
+        # THE RESOLVED BINARY, NOT "qemu-img". See qemu_img() above: the bare name is the
+        # Android SDK's 2.12.0 in this image, and it fails here with a message about the
+        # option rather than about the binary.
+        result = run("create", "-f", "qcow2", "-F", "qcow2",
+                     "-b", self.base, self.path)
         if result.returncode != 0:
             raise SystemExit(
-                f"could not create the overlay: {(result.stderr or result.stdout).strip()[:300]}")
+                f"could not create the overlay: "
+                f"{(result.stderr or result.stdout).strip()[:300]}")
         log(f"overlay {self.path} ({os.path.getsize(self.path) >> 10} KiB)")
         return self.path
 
@@ -124,14 +175,15 @@ class Overlay:
         dest = os.path.abspath(dest)
         os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
         log(f"flattening {os.path.basename(self.path)} -> {os.path.basename(dest)}")
-        result = subprocess.run(
-            ["qemu-img", "convert", "-O", "qcow2", "-c",
-             "-o", "compression_type=zstd", self.path, dest],
-            capture_output=True, text=True,
-        )
+        # compression_type=zstd IS THE OPTION THE ANDROID SDK'S qemu-img DOES NOT HAVE, so
+        # this call was the one that failed loudest there ("Invalid parameter
+        # 'compression_type'"). Resolved the same way as create().
+        result = run("convert", "-O", "qcow2", "-c",
+                     "-o", "compression_type=zstd", self.path, dest)
         if result.returncode != 0:
             raise SystemExit(
-                f"could not flatten the overlay: {(result.stderr or result.stdout).strip()[:300]}")
+                f"could not flatten the overlay: "
+                f"{(result.stderr or result.stdout).strip()[:300]}")
         log(f"  {dest} ({os.path.getsize(dest) >> 20} MiB)")
         return dest
 
