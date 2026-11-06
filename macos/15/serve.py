@@ -86,6 +86,32 @@ def main(argv: list[str]) -> int:
     # 127.0.0.1 inside a container is not reachable from outside it.
     shape.vnc_bind = "0.0.0.0"
     shape.vnc_display = 0
+    # AND NO CONSOLE ON STDIO, BECAUSE THERE IS NO TTY.
+    #
+    # The default is `-serial mon:stdio`, which puts the guest's serial port on qemu's OWN
+    # stdin/stdout. That is right for a bake, where the log is the point and the process has a
+    # terminal. It is fatal for a long-running container: Kubernetes gives the process no tty,
+    # so qemu's first write to that console hits a closed descriptor and the process dies -
+    # measured, twice, as a pod that logged
+    #
+    #     [vm] qemu pid 18
+    #     [serve] the machine is up
+    #
+    # at 02:54:41 and exited 1 at 02:54:43, two seconds later, with the whole boot still ahead
+    # of it.
+    #
+    # A pipe chardev instead: the console goes to a file in `work`, which is also better -
+    # `console.log` survives a restart and can be read while the machine runs, where stdio
+    # only reaches the container log after the process ends.
+    #
+    # lib/serial.Serial OPENS BOTH SIDES. `-chardev pipe` is two fifos and qemu writes the
+    # reader side; a fifo with no reader fills its 64 KiB buffer and then qemu BLOCKS, which
+    # froze a NixOS install for forty-four minutes in run 41592290525. Serial().open() starts
+    # the thread that drains it into console.log, so the machine can talk as much as it likes.
+    import serial as serialmod
+
+    console = serialmod.Serial(args.work, name="console", sink=os.path.join(args.work, "console.log"))
+    shape.serial_pipe = console.stdin.removesuffix(".in")
 
     guest = vm.Guest(
         args.work,
@@ -101,6 +127,14 @@ def main(argv: list[str]) -> int:
         shape=shape,
         stdout=os.path.join(args.work, "console.log"),
     ).start()
+
+    # THE FIFOS ARE OPENED AFTER QEMU, WHICH IS THE ONLY ORDER THAT DOES NOT DEADLOCK.
+    # `Serial.open()` blocks until qemu opens the read side of console.in, and qemu is the
+    # process that does it - so opening first waits for a process that has not started, and
+    # the 60-second timeout then reports "qemu never opened console.in". Starting qemu first
+    # means the fifo already has its writer when open() runs, and the drain thread attaches
+    # to console.out immediately afterwards.
+    console.open(timeout=60)
 
     log(f"ssh  localhost:{args.ssh_port} -> guest:22")
     log(f"vnc   :{args.vnc_port}  (display :0)")
@@ -143,6 +177,10 @@ def main(argv: list[str]) -> int:
                 capture.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 capture.kill()
+        try:
+            console.close()
+        except Exception:                     # noqa: BLE001 - the console is not the verdict
+            pass
         if run is not None:
             run.close()
     return rc
