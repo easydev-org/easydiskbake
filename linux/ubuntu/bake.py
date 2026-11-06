@@ -12,7 +12,7 @@ looks at a screen.
 
 WHY -kernel/-initrd AND NOT THE ISO'S BOOT MENU
 
-The config is found from `ds=nocloud-net;s=http://10.0.2.2:PORT/` on the kernel command
+The config is found from `ds=nocloud-net;s=http://{net.BRIDGE_IP}:PORT/` on the kernel command
 line. Getting that onto the command line through the ISO's own GRUB means typing it at
 the GRUB prompt, which is a screen this would then have to read. Booting the ISO's kernel
 directly puts it there in the qemu arguments.
@@ -48,6 +48,7 @@ REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, REPO)
 
 from lib import compress, install_evidence, iso, serial, session, smoke, vm  # noqa: E402
+import net  # noqa: E402 - the one place the guest's gateway is named
 
 CONFIG_PORT = 8000
 UBUNTU_TAG = "iso-ubuntu"
@@ -218,7 +219,7 @@ def main(argv: list[str]) -> int:
     log(f"disk created: {args.disk_size}")
 
     server = serve(work, args.flavour)
-    seed_url = f"http://10.0.2.2:{CONFIG_PORT}/{SEED}"
+    seed_url = f"http://{net.BRIDGE_IP}:{CONFIG_PORT}/{SEED}"
     log(f"seed served at {seed_url}")
 
     # THE KERNEL COMMAND LINE, and each part of it is load-bearing:
@@ -238,7 +239,7 @@ def main(argv: list[str]) -> int:
     # one argument. This append is already one argv element handed straight to qemu, with
     # no shell anywhere, so quoting it put literal quotation marks into /proc/cmdline:
     #
-    #     Command line: autoinstall "ds=nocloud-net;s=http://10.0.2.2:8000/autoinstall/" ...
+    #     Command line: autoinstall "ds=nocloud-net;s=http://the bridge address:8000/autoinstall/" ...
     #
     # cloud-init splits that on spaces and gets the token `"ds=nocloud-net;s=http://...`
     # starting with a quotation mark, so it recognises no datasource, runs all three of

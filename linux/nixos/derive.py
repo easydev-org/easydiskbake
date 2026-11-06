@@ -47,6 +47,7 @@ REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, REPO)
 
 from lib import compress, serial, smoke, vm  # noqa: E402
+import net  # noqa: E402 - the one place the guest's gateway is named
 
 # The six desktops easysandbox-vm derives, and the display manager each needs. Kept as a
 # table rather than free text so a typo fails here instead of at nix evaluation inside a
@@ -153,13 +154,13 @@ if curl -fsS -o /dev/null -m 30 https://cache.nixos.org/nix-cache-info; then
 else
   echo NET_FAIL; echo DERIVE_RC=1; sync; poweroff -f
 fi
-curl -fsS -o /etc/nixos/configuration.nix http://10.0.2.2:{CONFIG_PORT}/configuration.nix || {{ echo CONFIG_FAIL; echo DERIVE_RC=1; sync; poweroff -f; }}
-curl -fsS -o /etc/nixos/configuration-minimal.nix http://10.0.2.2:{CONFIG_PORT}/configuration-minimal.nix || {{ echo MINIMAL_FAIL; echo DERIVE_RC=1; sync; poweroff -f; }}
+curl -fsS -o /etc/nixos/configuration.nix http://{net.BRIDGE_IP}:{CONFIG_PORT}/configuration.nix || {{ echo CONFIG_FAIL; echo DERIVE_RC=1; sync; poweroff -f; }}
+curl -fsS -o /etc/nixos/configuration-minimal.nix http://{net.BRIDGE_IP}:{CONFIG_PORT}/configuration-minimal.nix || {{ echo MINIMAL_FAIL; echo DERIVE_RC=1; sync; poweroff -f; }}
 # THE DESKTOP FILE IS OPTIONAL AND IS ASKED FOR SEPARATELY. The dev variant imports it and
 # the desktop one does not use it, so a 404 here is not a failure - but a silent skip would
 # leave configuration.nix importing a file that is not there, and nixos-rebuild says so with
 # a path error a long way from the cause.
-curl -fsS -o /etc/nixos/configuration-desktop.nix http://10.0.2.2:{CONFIG_PORT}/configuration-desktop.nix 2>/dev/null || rm -f /etc/nixos/configuration-desktop.nix
+curl -fsS -o /etc/nixos/configuration-desktop.nix http://{net.BRIDGE_IP}:{CONFIG_PORT}/configuration-desktop.nix 2>/dev/null || rm -f /etc/nixos/configuration-desktop.nix
 echo GOT_CONFIG
 export NIX_PATH="nixpkgs=https://github.com/NixOS/nixpkgs/archive/{NIXPKGS_COMMIT}.tar.gz:nixos-config=/etc/nixos/configuration.nix"
 nixos-rebuild boot
@@ -286,7 +287,7 @@ def main(argv: list[str]) -> int:
         log("waiting 120s for the installed base to boot")
         time.sleep(120)
         ser.say(
-            f"curl -fsS -o /tmp/derive.sh http://10.0.2.2:{CONFIG_PORT}/derive-guest.sh "
+            f"curl -fsS -o /tmp/derive.sh http://{net.BRIDGE_IP}:{CONFIG_PORT}/derive-guest.sh "
             f"&& echo GOT_SCRIPT || echo SCRIPT_FAIL", wait=8)
         ser.say("", wait=1)
         ser.say("sudo -i sh /tmp/derive.sh", wait=20)

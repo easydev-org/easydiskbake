@@ -47,6 +47,7 @@ REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, REPO)
 
 from lib import compress, iso, live as livelib, serial, smoke, vm  # noqa: E402
+import net  # noqa: E402 - the one place the guest's gateway is named
 
 NIXOS_TAG = "iso-nixos"
 CONFIG_NAME = "configuration.nix"
@@ -209,8 +210,8 @@ def partition_script() -> list[tuple[str, float]]:
     """
     return [
         ("echo BAKE_BEGIN", 3),
-        ("curl -fsS -o /tmp/c.nix http://10.0.2.2:%d/%s && wc -l /tmp/c.nix"
-         % (CONFIG_PORT, CONFIG_NAME), 8),
+        (f"curl -fsS -o /tmp/c.nix http://{net.BRIDGE_IP}:{CONFIG_PORT}/{CONFIG_NAME}"
+         f" && wc -l /tmp/c.nix", 8),
         ("sudo sgdisk --zap-all /dev/vda >/dev/null 2>&1 || true", 2),
         ("sudo parted -s /dev/vda mklabel msdos", 3),
         ("sudo parted -s /dev/vda mkpart primary ext4 1MiB 100%", 3),
@@ -248,9 +249,9 @@ def serve_config(work: str, release: str) -> subprocess.Popen:
 
     WHY HTTP AND NOT THE SERIAL. The file is a hundred lines of Nix with quotes, braces
     and newlines. `type_text` cannot send a newline and a heredoc over a serial line
-    needs every `$` and quote escaped twice. qemu's user netdev puts the host at
-    10.0.2.2, so the guest curls the file - which is what easysandbox-vm does and the
-    reason its bake needs no network beyond that.
+    needs every `$` and quote escaped twice. The host is the bridge's own address - the
+    default gateway the guest learns over DHCP - so the guest curls the file, which is what
+    easysandbox-vm does and the reason its bake needs no network beyond that.
     """
     srv = os.path.join(work, "srv")
     os.makedirs(srv, exist_ok=True)
@@ -313,7 +314,7 @@ def main(argv: list[str]) -> int:
     log(f"disk created: {args.disk_size}")
 
     server = serve_config(work, "minimal")
-    log(f"configuration served on :{CONFIG_PORT} (the guest reaches it at 10.0.2.2)")
+    log(f"configuration served on :{CONFIG_PORT} (the guest reaches it at {net.BRIDGE_IP})")
 
     # THE SERIAL IS A PAIR OF FIFOS - see lib/serial.py for why, and for why this is
     # the only bake here that writes to a console instead of looking at a screen.
