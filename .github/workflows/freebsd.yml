@@ -91,7 +91,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-      options: --device /dev/kvm
+      options: --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN
     permissions:
       contents: read
       checks: write
@@ -205,7 +205,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-      options: --device /dev/kvm
+      options: --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN
     permissions:
       contents: read
       checks: write
@@ -301,7 +301,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-      options: --device /dev/kvm
+      options: --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN
     permissions:
       contents: read
       packages: read
