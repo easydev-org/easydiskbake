@@ -82,6 +82,9 @@ def main(argv: list[str]) -> int:
     p.add_argument("--disk", required=True,
                    help="the setup-stage disk: macOS installed, at the Setup Assistant")
     p.add_argument("--out", default=None)
+    p.add_argument("--overlay", action="store_true",
+                   help="treat --disk as a READ-ONLY base and write into a throwaway qcow2 "
+                        "overlay; the base is never modified. See lib/overlay.py")
     p.add_argument("--copy", action="store_true",
                    help="copy the input disk instead of moving it; the default is to "
                         "move, because the disk normally came from ghcr and the "
@@ -116,8 +119,15 @@ def main(argv: list[str]) -> int:
     # case where this disk really is the only copy.
     import working_copy as wc
 
-    disk = wc.working_copy(args.disk, os.path.join(work, "desktop.qcow2"),
-                           copy=args.copy, note=log)
+    run_overlay = None
+    if getattr(args, "overlay", False):
+        import overlay as overlaymod
+
+        run_overlay = overlaymod.Overlay(args.disk, work, name="desktop-overlay.qcow2")
+        disk = run_overlay.open()
+    else:
+        disk = wc.working_copy(args.disk, os.path.join(work, "desktop.qcow2"),
+                               copy=args.copy, note=log)
 
     # THE RECOVERY IMAGE IS AN INPUT EVEN THOUGH THIS STAGE DOES NOT BOOT FROM IT.
     #
@@ -260,8 +270,11 @@ def main(argv: list[str]) -> int:
         return 1
 
     log("compressing")
-    compress.compress(disk, out)
-    log(f"BAKED macos15 desktop -> {out} ({os.path.getsize(out) >> 20} MiB)")
+    if run_overlay is not None:
+        run_overlay.flatten(out)
+    else:
+        compress.compress(disk, out)
+    log(f"BAKED macOS {args.release} desktop -> {out} ({os.path.getsize(out) >> 20} MiB)")
     log("  this disk reaches its desktop without any wizard; the ssh stage can use it")
     return 0
 
