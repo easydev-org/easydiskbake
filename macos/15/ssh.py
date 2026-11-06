@@ -445,12 +445,25 @@ def dismiss_keyboard_assistant(guest: vm.Guest) -> bool:
             return False
         time.sleep(1)
 
+    # THREE CLICKS SPACED OUT, NOT ONE. The dialog appears WITH the first desktop session and
+    # the session takes a while to finish drawing itself, so a single click can arrive before
+    # the dialog exists - which lands on the wallpaper, does nothing, and looks identical in
+    # the log to a click that dismissed it.
+    #
+    # Run 42162859846 is that exact case: the log says "clicking Quit ... 04:46:32", the
+    # desktop test passed at 04:46:51, and the recording at t=130s still shows the dialog
+    # covering the screen while Spotlight is open behind it. Every keystroke after it went to
+    # the dialog, and the switch sequence ran against a screen it could not see.
+    #
+    # A click on a machine with no dialog is harmless - that point is wallpaper - so three is
+    # free when the dialog is absent and enough when it arrives late.
     q = qmpmod.QMP(kb_work)
     try:
-        log(f"  clicking Quit on the Keyboard Setup Assistant at "
-            f"{KEYBOARD_ASSISTANT_QUIT}, if it is up")
-        qmpmod.click(q, *KEYBOARD_ASSISTANT_QUIT)
-        time.sleep(3)
+        for attempt in range(3):
+            log(f"  clicking Quit on the Keyboard Setup Assistant at "
+                f"{KEYBOARD_ASSISTANT_QUIT} (attempt {attempt + 1})")
+            qmpmod.click(q, *KEYBOARD_ASSISTANT_QUIT)
+            time.sleep(4)
     finally:
         q.close()
     return True
@@ -621,6 +634,11 @@ def enable_remote_login(guest: vm.Guest) -> None:
         if time.time() > deadline:
             raise SystemExit(f"no QMP socket at {kb_work}")
         time.sleep(1)
+
+    # THE DIALOG OWNS THE KEYBOARD, so it is dismissed again here rather than trusting that
+    # the earlier attempt was early enough. The earlier one runs right after unlock(); this
+    # one runs right before the first Spotlight chord, which is the moment that matters.
+    dismiss_keyboard_assistant(guest)
 
     q = qmpmod.QMP(kb_work)
 
