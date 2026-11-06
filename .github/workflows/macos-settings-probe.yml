@@ -1,0 +1,90 @@
+name: macos-settings-probe
+
+# Measure the Sharing pane of System Settings so the Remote Login switch can be driven.
+#
+#     gh workflow run macos-settings-probe.yml -f from=macos15-desktop
+#
+# WHY. `sudo systemsetup -setremotelogin on` refuses on macOS 13+:
+#
+#     setremotelogin: Turning Remote Login on or off requires Full Disk Access privileges.
+#
+# sudo and TCC are orthogonal - the first says the process runs as root, the second says
+# whether THIS APPLICATION may touch this KIND OF DATA. systemsetup has no grant.
+# System Settings.app does, so the switch inside it does what the tool cannot, and it also
+# takes macOS's own path to it rather than the three launchctl calls this repository has been
+# issuing by hand.
+#
+# THIS IS A PROBE. It produces no disk, publishes nothing, and exists to put the pane on
+# screen once so its controls can be measured. The frames it writes are the deliverable;
+# macos/15/settings_probe.py and this file are deleted once the sequence is in ssh.py.
+
+on:
+  workflow_dispatch:
+    inputs:
+      from:
+        description: "Published desktop tag to boot"
+        default: "macos15-desktop"
+      login_delay:
+        description: "Seconds to wait for the login window"
+        default: "120"
+
+concurrency:
+  group: macos-settings-probe-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      checks: write
+      packages: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare the runner
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '80'
+
+      - name: pull the desktop disk
+        uses: easydev-org/easyactions/oci-pull@main
+        with:
+          tag: ${{ inputs.from || 'macos15-desktop' }}
+          dest: out
+          token: ${{ github.token }}
+
+      - name: open System Settings and photograph it
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: settings-probe
+          interval: "20"
+          command: |
+            set -euo pipefail
+            export MACOS_USER=docker
+            export MACOS_PASSWORD=admin
+            DISK=$(ls out/*.qcow2 | head -1)
+            echo "disk: $DISK"
+            python3 macos/15/settings_probe.py \
+              --disk "$DISK" \
+              --out out/settings-probe \
+              --login-delay "${{ inputs.login_delay || '120' }}"
+
+      - name: keep the frames
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: settings-probe-frames
+          path: out/settings-probe/*.png
+          if-no-files-found: warn
+          retention-days: 7
