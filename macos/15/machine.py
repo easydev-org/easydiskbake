@@ -114,26 +114,8 @@ def shape(assets: dict, *, cpus: int = 4, mem_mb: int = 8192) -> vm.Shape:
              "+xsave,+xsaveopt,+xgetbv1,+movbe,+rdrand,check"),
         # dockur's configureSmp(): a topology macOS understands, not a bare count.
         smp_topology=f"{cpus},sockets=1,dies=1,cores={cpus},threads=1",
-        # THE CARD AND THE IDENTITY HAVE TO AGREE, AND THE ROM HAS TO BE GONE.
-        #
-        # dockur's drive-in-container.sh - a macOS guest that answers ssh - declares
-        #
-        #     virtio-net-pci,id=net0,netdev=hostnet0,romfile=,mac=00:16:CB:53:E9:8C
-        #
-        # while this repository declared a bare `virtio-net-pci,netdev=n0`. The two things
-        # it was missing are both facts macOS reads at login:
-        #
-        #     mac=       the same address as assets["identity"]["mac"]. The setup disk's
-        #                account and its network service records are built around that
-        #                identity; a NIC announcing a DIFFERENT address is a second record
-        #                for one machine, and the libinfo calls that fail here
-        #                (si_destination_compare - "which address is this host") are the ones
-        #                that reconcile them.
-        #     romfile=   no iPXE option ROM, so the firmware never probes this card as a boot
-        #                device.
-        #
-        # Only the macOS machine sets these; every other system keeps the bare device.
-        net_device_args=f",romfile=,mac={assets['identity']['mac']}",
+        # THE MAC MUST MATCH dnsmasq's LEASE and OpenCore's identity - see lib/net.py.
+        tap_mac=assets["identity"]["mac"],
         extra_args=[
             # ICH9's sleep states hang this guest at a black screen; the PCIe hotplug
             # bridge is mishandled by macOS on ICH9.

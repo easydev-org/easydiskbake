@@ -18,15 +18,31 @@ Four channels, and each has a reason:
                    socket and the driver and the recorder must not fight for it.
   -serial stdio    the guest's own words, which is what most automated checks
                    read.
-  hostfwd 22->2222 a way in that does not depend on the console at all.
+  a tap             a real interface on a real link, so the guest's packets leave
+                    through the HOST's stack rather than being re-issued by qemu.
 
-WHY hostfwd AND NOT A BRIDGE
+WHY A TAP AND NOT qemu's USER-MODE NAT
 
-User-mode networking gives the guest 10.0.2.15 with the host at 10.0.2.2, and
-hostfwd puts a host port in front of a guest port. No bridge, no tap device, no
-privileges beyond /dev/kvm - which is what makes this runnable inside a container
-job. The cost is that the guest cannot be dialled from elsewhere on the network;
-for a bake that is a feature, not a limitation.
+The userspace NAT looked cheaper: hostfwd, smb= and a DHCP server come free, and it needs no
+privileges beyond /dev/kvm. It also terminates the guest's packets inside qemu and re-issues
+them from the QEMU PROCESS, which is a different process from the one that has this cluster's
+proxy configuration:
+
+    container -> proxy      apple.com 200 in 0.17s
+    container -> direct     gdmf.apple.com (macOS's update API) FAILS
+    guest -> slirp -> container -> direct   hangs forever
+
+macOS 26's Setup Assistant sat on "Update Mac Automatically" for six minutes because of that,
+still spinning, and Escape did not interrupt it. A tap makes the guest's packets leave through
+the container's own stack, where whatever routing that stack has applies.
+
+THE THREE THINGS SLIRP GAVE FOR FREE ARE IN lib/net.py, once for every system: the bridge and
+tap, dnsmasq for DHCP and DNS, MASQUERADE for outbound, and iptables DNAT for the port forwards
+that used to be hostfwd. Guest.start() calls net.up(), so no caller has to remember.
+
+The VNC port is bound to 127.0.0.1 unless VNC_BIND says otherwise. A bake is not
+a service, and an unauthenticated VNC server on a shared runner is not something
+to publish by accident.
 
 The VNC port is bound to 127.0.0.1 unless VNC_BIND says otherwise. A bake is not
 a service, and an unauthenticated VNC server on a shared runner is not something
@@ -144,7 +160,6 @@ class Shape:
     # 192.168.240.0/24 is not special to anything: RFC1918, unused by this repository's other
     # stages, and the guest and gateway addresses are the conventional .2 and .15 within it.
     # Empty for every system that does not need it, so their command lines do not change.
-    network_args: str = ""
     # THE NIC'S OWN ARGUMENTS, WHEN THE DEFAULT DEVICE IS NOT ENOUGH.
     #
     # easydev-org/dockur-macos's drive-in-container.sh, which is a macOS guest that answers
@@ -163,7 +178,6 @@ class Shape:
     #                "which address is this host" lookups.
     #
     # Empty by default so no other system's command line changes.
-    net_device_args: str = ""
     # A BRIDGED TAP INSTEAD OF SLIRP, WHEN THE GUEST NEEDS A REAL ROUTE OUT.
     #
     # qemu's user-mode network is a userspace NAT: the guest's packets are terminated inside
@@ -188,13 +202,17 @@ class Shape:
     #
     # The guest then ARPs, DHCPs and routes like any machine, and its packets leave through
     # the same stack the container uses - including whatever policy routing that stack has.
+    # THERE IS ONE NETWORK MODE. See lib/net.py for why: a userspace NAT re-issues the
+    # guest's packets from qemu's own process, which does not carry the proxy this cluster
+    # needs, and macOS 26 hung for six minutes waiting for an Apple API it could not reach.
+    #
+    # Every guest now runs on a tap created by lib/net.py - bridge, dnsmasq, MASQUERADE and
+    # the port forwards - so this field only says WHICH tap. Empty means the default.
     tap_ifname: str = ""
     tap_mac: str = ""
-    tap_ssh_port: int = 2222
     # A host directory to expose over SMB. Empty means no share, and the netdev is
     # exactly what it was before this field existed - see lib/share.py for why SMB
     # rather than virtiofs or 9p.
-    share_path: str = ""
     # HOW THE GUEST's SERIAL PORT IS WIRED.
     #
     # The default is "-serial mon:stdio", which multiplexes the monitor and the console
@@ -245,7 +263,6 @@ class Shape:
             vnc_display=int(env.get("VNC_DISPLAY", 0)),
             ssh_port=int(env.get("SSH_PORT", 2222)),
             rdp_port=int(env.get("RDP_PORT", 3389)),
-            share_path=env.get("VM_SHARE_PATH", ""),
         )
 
 
@@ -335,30 +352,18 @@ def build_args(work: str, extra: list[str] | None = None,
     # Networking, with or without a share. A share adds `smb=<dir>` to the same
     # user-mode netdev, which makes qemu fork its own smbd; the guest reaches it at
     # 10.0.2.4. See lib/share.py.
-    if shape.tap_ifname:
-        # -netdev tap,script=no: THE INTERFACE IS ALREADY UP AND BRIDGED, and qemu must not
-        # try to run a helper script (there is no /etc/qemu-ifup in a container, and the
-        # default script fails loudly). `downscript=no` is the same argument on the way out.
-        args += [
-            "-netdev", f"tap,id=n0,ifname={shape.tap_ifname},script=no,downscript=no",
-            "-device", f"virtio-net-pci,netdev=n0{shape.net_device_args or ',' + 'mac=' + shape.tap_mac if shape.tap_mac else ''}",
-        ]
-    elif shape.share_path:
-        from share import Share
-
-        share = Share(shape.share_path)
-        args += share.netdev_args(
-            ssh_port=shape.ssh_port, rdp_port=shape.rdp_port,
-        )
-    else:
-        args += [
-            # NOT 10.0.2.0/24. See the note on Shape.network for why this guest could not
-            # authenticate from that range and every other system could.
-            "-netdev", f"user,id=n0{shape.network_args},"
-                       f"hostfwd=tcp::{shape.ssh_port}-:22,"
-                       f"hostfwd=tcp::{shape.rdp_port}-:3389",
-            "-device", f"virtio-net-pci,netdev=n0{shape.net_device_args}",
-        ]
+    # THE ONE NETWORK MODE. lib/net.py creates the bridge, the tap, DHCP, NAT and the port
+    # forwards; this only attaches qemu to the interface that already exists.
+    #
+    # `script=no,downscript=no` BECAUSE THERE IS NO HELPER. qemu's default is to run
+    # /etc/qemu-ifup when the tap comes up, and a container has no such file - so the default
+    # fails loudly, after the guest has been created.
+    tap = shape.tap_ifname or "qemutap0"
+    mac = shape.tap_mac or "52:54:00:56:4d:01"
+    args += [
+        "-netdev", f"tap,id=n0,ifname={tap},script=no,downscript=no",
+        "-device", f"virtio-net-pci,netdev=n0,mac={mac},romfile=",
+    ]
 
     if shape.machine:
         args += ["-machine", shape.machine]
@@ -440,6 +445,23 @@ class Guest:
 
     def start(self) -> "Guest":
         self.paths.clear()
+
+        # THE LINK IS BROUGHT UP HERE, NOT BY EACH CALLER.
+        #
+        # Twenty-odd places create a Guest and call start(), and every one of them used to get
+        # its networking from qemu's user-mode NAT with no setup at all. Moving to a tap means
+        # somebody has to create the bridge, the tape device, the DHCP server, the MASQUERADE
+        # rules and the port forwards - and "somebody" cannot be twenty callers, because the
+        # one that forgets produces a guest with no network and a failure a long way from the
+        # cause.
+        #
+        # net.up() is idempotent: the second and later calls find what is already there.
+        import net
+
+        net.up(ssh_port=self.shape.ssh_port, rdp_port=self.shape.rdp_port)
+        self.shape.tap_ifname = self.shape.tap_ifname or net.TAP
+        self.shape.tap_mac = self.shape.tap_mac or net.GUEST_MAC
+
         args = build_args(self.work, self.extra, self.shape)
 
         log(f"vnc    {self.shape.vnc_bind}:{5900 + self.shape.vnc_display}")
@@ -574,8 +596,10 @@ def rdp_serving(rdp_port: int, host: str = "127.0.0.1") -> bool:
 
     THIS IS NOT THE SAME AS port_open, AND THE DIFFERENCE COST A RUN.
 
-    `-netdev user,hostfwd=tcp::3389-:3389` makes QEMU bind the HOST port the moment
-    it starts, before the guest has booted anything. A TCP handshake with that port
+    A PORT FORWARD BINDS THE HOST PORT THE MOMENT IT EXISTS, not when the guest answers. That
+    was true of qemu's `hostfwd` and it is still true of the iptables DNAT that replaced it
+    (lib/net.py): the rule is in place before qemu has even started, and a TCP handshake with
+    that port
     therefore succeeds immediately and proves only that QEMU is alive - and a bake
     that checked port_open() declared "the guest is a running Windows" six seconds
     after qemu-img create, having installed nothing at all.
