@@ -142,6 +142,29 @@ autoinstall:
     # disagree is a coin toss decided by filename order, and 50-easydiskbake must be the
     # only one that names an interface.
     - curtin in-target -- sh -c "rm -f /etc/netplan/00-installer-config.yaml /etc/netplan/00-installer-config.yaml.disabled || true"
+
+    # THE INITRAMFS HAS TO CARRY virtio_net, OR THERE IS NO INTERFACE AT ALL.
+    #
+    # Run 42209407536's second boot enumerated the NIC and never bound a driver to it:
+    #
+    #     pci 0000:00:02.0: [1af4:1000] type 00 class 0x020000   <- virtio-net, present
+    #     (no virtio_pci, no virtio_net, no enp*, not one line, for the whole boot)
+    #     ubuntu login:                                          <- and then a login prompt
+    #
+    # so the kernel had the device and no driver for it, netplan had nothing to configure,
+    # and the bake reported "No route to host" about a machine that was working perfectly
+    # except for having no network.
+    #
+    # WHY THE INSTALLER NEVER SEES THIS. The install boots with `-kernel` and `-initrd`
+    # supplied by qemu, so it runs the ISO's initramfs, which carries every module. The
+    # installed system builds its own with Ubuntu's default MODULES=dep, which includes only
+    # what the module dependency walk could see AT BUILD TIME - and building it inside the
+    # installer's chroot is not the same view as booting the disk.
+    #
+    # `MODULES=most` puts the full set in, which is what a cloud image ships and what makes
+    # the disk bootable on a machine whose NIC is not the one it was built on. It costs about
+    # 40 MiB of initramfs and removes the whole class of failure.
+    - curtin in-target -- sh -c "printf 'MODULES=most\n' > /etc/initramfs-tools/conf.d/zz-easydiskbake.conf && update-initramfs -u -k all"
     # SSH ON BOOT, WITH THE PORT THE REST OF THIS PIPELINE USES. Ubuntu's sshd listens
     # on 22; the host forwards 2222 to it (lib/vm.py). Nothing here changes the port -
     # this only makes sure the service is enabled, because `install-server: true`
