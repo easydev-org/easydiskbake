@@ -34,11 +34,16 @@ SO THE THREE THINGS SLIRP GAVE FOR FREE ARE BUILT HERE, ONCE, FOR EVERY SYSTEM:
     hostfwd 22 -> 2222      an iptables DNAT rule from the bridge address to the guest
     built-in DHCP           dnsmasq, bound to the bridge, handing out one address
     built-in DNS            dnsmasq, forwarding to the resolver the container has
-    smb=DIR                 a real smbd on the bridge address (see lib/share.py)
 
 The addresses are easydev-org/easysandbox-macos's: 172.30.0.1/24 on the bridge, 172.30.0.2
 for the guest, 172.30.0.254 reserved for the host side. They are deliberately not 10.0.2.0/24
 so a guest configured by an old slirp run cannot half-work against the new link.
+
+THE FORWARDED PORTS LIVE ON THE BRIDGE ADDRESS AND NOWHERE ELSE. `FORWARD_HOST` is that
+address, and every client in this repository - every ssh, every rdp, every port probe - names
+it instead of writing 127.0.0.1. A loopback address cannot be forwarded to a guest: DNAT
+rewrites the destination but not the source, so the guest answers 127.0.0.1 to its own
+loopback and the connection hangs until its timeout. See the OUTPUT rule below.
 
 WHAT THIS NEEDS FROM THE CONTAINER: NET_ADMIN and /dev/net/tun. A container without them
 cannot run any of this, and up() says so in one sentence instead of failing at the first ip
@@ -65,6 +70,10 @@ GUEST_IP = os.environ.get("VM_GUEST_IP", "172.30.0.2")
 HOST_IP = os.environ.get("VM_HOST_IP", "172.30.0.254")
 MASK = "255.255.255.0"
 MTU = 1500
+
+# THE ADDRESS A CLIENT INSIDE THE CONTAINER CONNECTS TO FOR A FORWARDED PORT. It is the
+# bridge's own address, and it is the only one that works: see the OUTPUT rule in up().
+FORWARD_HOST = BRIDGE_IP
 
 # THE MAC IS FIXED, NOT RANDOM. dnsmasq is told which address to hand to which MAC, so a guest
 # that comes up with a different one gets no lease - and macOS, which keeps its MAC in NVRAM,
@@ -184,11 +193,32 @@ def up(*, ssh_port: int = 2222, rdp_port: int = 3389,
     _sh(f"iptables -t nat -C PREROUTING -d {BRIDGE_IP}/32 -j VM_FWD")
     if _sh(f"iptables -t nat -C PREROUTING -d {BRIDGE_IP}/32 -j VM_FWD").returncode != 0:
         _sh(f"iptables -t nat -A PREROUTING -d {BRIDGE_IP}/32 -j VM_FWD")
-    # AND ON THE CONTAINER'S OWN ADDRESS, so `localhost:2222` from inside the container works -
-    # which is what every launcher and every ssh check in this repository does.
-    _sh(f"iptables -t nat -C OUTPUT -p tcp -j VM_FWD")
-    if _sh("iptables -t nat -C OUTPUT -p tcp -j VM_FWD").returncode != 0:
-        _sh("iptables -t nat -A OUTPUT -p tcp -j VM_FWD")
+    # AND ON THE CONTAINER'S OWN ADDRESS, so a client inside the container reaches the guest
+    # without leaving the machine. IT MUST BE SCOPED TO THE BRIDGE ADDRESS.
+    #
+    # Run 42188488710 was the first ubuntu bake to reach its second boot on a tap, and it
+    # failed with
+    #
+    #     === SSH DID NOT ANSWER IN 600s ===
+    #       last output: ssh: connect to host 127.0.0.1 port 2222: Connection timed out
+    #
+    # TEN MINUTES, although the installer had finished in 570s and the disk was fine. The
+    # rule was `-A OUTPUT -p tcp -j VM_FWD` with no address, so it also caught the probe's
+    # connection to 127.0.0.1:2222 and DNAT'd it to the guest. DNAT rewrites the DESTINATION
+    # and leaves the SOURCE alone, so the guest saw a SYN from 127.0.0.1 and sent its reply
+    # to what is, on the guest, its OWN loopback. The reply never arrived and nothing reset
+    # the connection, so the probe sat on its connect timeout instead of being refused.
+    #
+    # Measured on a live guest from the same rule set, one address apart:
+    #
+    #     172.30.0.1:2222  -> refused in 3ms   (reply came back; the link is fine)
+    #     127.0.0.1:2222   -> timed out at 4s   (reply went to the guest's loopback)
+    #
+    # SO THE MATCH IS THE BRIDGE ADDRESS, which is also what FORWARD_HOST names, and every
+    # ssh and rdp client in this repository uses that name rather than a literal.
+    _sh(f"iptables -t nat -C OUTPUT -d {BRIDGE_IP}/32 -p tcp -j VM_FWD")
+    if _sh(f"iptables -t nat -C OUTPUT -d {BRIDGE_IP}/32 -p tcp -j VM_FWD").returncode != 0:
+        _sh(f"iptables -t nat -A OUTPUT -d {BRIDGE_IP}/32 -p tcp -j VM_FWD")
 
     log(f"bridge {BRIDGE} {BRIDGE_IP}/{PREFIX}, tap {TAP}, guest {GUEST_IP} "
         f"mac {GUEST_MAC}, forwards {sorted(forwards)}")

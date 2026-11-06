@@ -337,7 +337,12 @@ def check_sshd(note) -> int:
     """
     import socket
 
-    host, port = "127.0.0.1", 2222
+    import net
+
+    # THE FORWARD IS ON THE BRIDGE ADDRESS, NOT ON LOOPBACK: DNAT rewrites the destination
+    # and not the source, so a probe from 127.0.0.1 makes the guest answer its own loopback
+    # and the connect hangs. lib/net.py records the measurement.
+    host, port = net.FORWARD_HOST, 2222
     note(f"checking sshd on {host}:{port}")
     try:
         with socket.create_connection((host, port), timeout=20) as sock:

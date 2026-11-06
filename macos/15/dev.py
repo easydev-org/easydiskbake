@@ -50,7 +50,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, REPO)
 
-from lib import compress, smoke  # noqa: E402
+from lib import compress, net, smoke  # noqa: E402
 
 SSH_USER = os.environ.get("MACOS_USER", "docker")
 SSH_PASSWORD = os.environ.get("MACOS_PASSWORD", "admin")
@@ -96,7 +96,7 @@ def ssh_base(port: int) -> list[str]:
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
         "-o", "ConnectTimeout=15",
-        "-p", str(port), f"{SSH_USER}@127.0.0.1",
+        "-p", str(port), f"{SSH_USER}@{net.FORWARD_HOST}",
     ]
 
 
@@ -119,7 +119,7 @@ def wait_for_ssh(port: int, seconds: int = 180) -> bool:
     deadline = time.time() + seconds
     while time.time() < deadline:
         try:
-            with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
+            with socket.create_connection((net.FORWARD_HOST, port), timeout=10) as sock:
                 sock.settimeout(10)
                 if not sock.recv(256).startswith(b"SSH-2.0"):
                     time.sleep(10)

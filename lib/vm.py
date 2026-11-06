@@ -465,7 +465,7 @@ class Guest:
         args = build_args(self.work, self.extra, self.shape)
 
         log(f"vnc    {self.shape.vnc_bind}:{5900 + self.shape.vnc_display}")
-        log(f"ssh    localhost:{self.shape.ssh_port} -> guest:22")
+        log(f"ssh    {net.FORWARD_HOST}:{self.shape.ssh_port} -> guest:22")
         log(f"qmp    drive={self.paths.drive} record={self.paths.record}")
         # SAY WHICH CONSOLE, NOT A CONSTANT. This line used to read "serial stdio"
         # whatever the shape said, and during an earlier debugging pass it read that way for
@@ -591,7 +591,7 @@ def port_open(host: str, port: int, timeout: float = 1.0) -> bool:
         return False
 
 
-def rdp_serving(rdp_port: int, host: str = "127.0.0.1") -> bool:
+def rdp_serving(rdp_port: int, host: str = "") -> bool:
     """Is the guest actually answering RDP, rather than just the forward existing?
 
     THIS IS NOT THE SAME AS port_open, AND THE DIFFERENCE COST A RUN.
@@ -608,7 +608,13 @@ def rdp_serving(rdp_port: int, host: str = "127.0.0.1") -> bool:
     sending a TPKT/COTP Connection Confirm (or a Negotiation Response) before the
     client says anything. So the check reads bytes and requires them to look like
     X.224: version 3, and a packet length that matches what arrived.
+
+    THE DEFAULT HOST IS THE BRIDGE ADDRESS, not loopback: a forwarded port exists only
+    there. lib/net.py explains the measurement.
     """
+    if not host:
+        import net
+        host = net.FORWARD_HOST
     try:
         with socket.create_connection((host, rdp_port), timeout=3) as sock:
             sock.settimeout(3)

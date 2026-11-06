@@ -33,6 +33,8 @@ sys.path.insert(0, REPO)
 sys.path.insert(0, os.path.join(REPO, "lib"))
 sys.path.insert(0, HERE)
 
+import net  # noqa: E402
+
 
 def log(message: str) -> None:
     print(f"[serve {time.strftime('%H:%M:%S')}] {message}", flush=True)
@@ -150,7 +152,7 @@ def main(argv: list[str]) -> int:
     # to console.out immediately afterwards.
     console.open(timeout=60)
 
-    log(f"ssh  localhost:{args.ssh_port} -> guest:22")
+    log(f"ssh  {net.FORWARD_HOST}:{args.ssh_port} -> guest:22")
     log(f"vnc   :{args.vnc_port}  (display :0)")
     log("the machine is up; Ctrl-C to stop")
 

@@ -64,6 +64,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, REPO)
 sys.path.insert(0, os.path.join(REPO, "lib"))
 
+import net  # noqa: E402
 import vm  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -71,6 +72,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SSH_PORT = 2222
 SSH_USER = "docker"
 SSH_PASSWORD = os.environ.get("WINDOWS_ADMIN_PASSWORD", "admin")
+
+# THE FORWARDED PORT EXISTS ON THE BRIDGE ADDRESS AND NOWHERE ELSE. A probe to
+# 127.0.0.1:2222 is DNAT'd to the guest with a loopback source, and the guest answers
+# that to its own loopback, so the connect hangs instead of being refused. lib/net.py
+# records the measurement.
+SSH_HOST = net.FORWARD_HOST
 
 # The workload is the slow part: a fresh machine takes about twenty minutes, and the
 # allowance covers a cold Windows Update check on top.
@@ -118,7 +125,7 @@ def ssh_base() -> list[str]:
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
         "-o", "ConnectTimeout=15",
-        "-p", str(SSH_PORT), f"{SSH_USER}@127.0.0.1",
+        "-p", str(SSH_PORT), f"{SSH_USER}@{SSH_HOST}",
     ]
 
 
@@ -133,7 +140,7 @@ def scp_to(local: str, remote: str, *, timeout: int = 300) -> None:
         ["sshpass", "-p", SSH_PASSWORD, "scp",
          "-o", "StrictHostKeyChecking=no",
          "-o", "UserKnownHostsFile=/dev/null",
-         "-P", str(SSH_PORT), local, f"{SSH_USER}@127.0.0.1:{remote}"],
+         "-P", str(SSH_PORT), local, f"{SSH_USER}@{SSH_HOST}:{remote}"],
         capture_output=True, text=True, timeout=timeout,
     )
     if result.returncode != 0:
@@ -231,7 +238,7 @@ def wait_for_ssh(seconds: int, why: str = "") -> bool:
     deadline = time.time() + seconds
     while time.time() < deadline:
         try:
-            with socket.create_connection(("127.0.0.1", SSH_PORT), timeout=5) as sock:
+            with socket.create_connection((SSH_HOST, SSH_PORT), timeout=5) as sock:
                 sock.settimeout(5)
                 if sock.recv(64).startswith(b"SSH-"):
                     return True

@@ -51,9 +51,20 @@ import shutil
 import subprocess
 import time
 
+try:  # `import session` with lib/ on the path, or `from lib import session`
+    import net
+except ModuleNotFoundError:  # pragma: no cover - depends on how the caller added lib/
+    from lib import net
+
 # THE ACCOUNT, WHICH IS THE SAME ONE EVERY IMAGE IN THIS REPOSITORY USES.
 SSH_USER = "docker"
 SSH_PASSWORD = "admin"
+
+# THE FORWARDED PORT EXISTS ON THE BRIDGE ADDRESS AND NOWHERE ELSE. Connecting to
+# 127.0.0.1:2222 inside the container reaches the DNAT rule too, but DNAT does not rewrite
+# the source, so the guest replies to its own loopback and the connect hangs. lib/net.py has
+# the measurement; this is the one place the address is read from.
+SSH_HOST = net.FORWARD_HOST
 
 
 def log(message: str) -> None:
@@ -82,7 +93,7 @@ def ssh(port: int, command: str, timeout: int = 30) -> tuple[int, str]:
         "-o", "ConnectTimeout=10",
         "-o", "PreferredAuthentications=password",
         "-o", "PubkeyAuthentication=no",
-        f"{SSH_USER}@127.0.0.1",
+        f"{SSH_USER}@{SSH_HOST}",
         command,
     ]
     try:
@@ -185,7 +196,7 @@ def explain(port: int, probe: str, note=log) -> None:
         "-o", "ConnectTimeout=10",
         "-o", "PreferredAuthentications=password",
         "-o", "PubkeyAuthentication=no",
-        f"{SSH_USER}@127.0.0.1",
+        f"{SSH_USER}@{SSH_HOST}",
         probe,
     ]
     try:

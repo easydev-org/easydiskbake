@@ -80,7 +80,8 @@ def clean(*, port: int, user: str = "docker", note=print, timeout: int = 1800,
     """
     import subprocess
 
-    from session import SSH_PASSWORD
+    # THE FORWARD IS ON THE BRIDGE ADDRESS; see lib/net.py's OUTPUT rule.
+    from session import SSH_HOST, SSH_PASSWORD
     if not os.path.isfile(SCRIPT):
         raise SystemExit(f"{SCRIPT} is missing; the disk would ship with its build traces")
 
@@ -100,7 +101,7 @@ def clean(*, port: int, user: str = "docker", note=print, timeout: int = 1800,
         copied = subprocess.run(
             ["sshpass", "-p", SSH_PASSWORD, "scp",
              "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-             "-P", str(port), SCRIPT, f"{user}@127.0.0.1:{remote}"],
+             "-P", str(port), SCRIPT, f"{user}@{SSH_HOST}:{remote}"],
             capture_output=True, text=True, timeout=300,
         )
     except (OSError, subprocess.SubprocessError) as exc:
@@ -115,7 +116,7 @@ def clean(*, port: int, user: str = "docker", note=print, timeout: int = 1800,
         ["sshpass", "-p", SSH_PASSWORD, "ssh",
          "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
          "-o", "ConnectTimeout=15",
-         "-p", str(port), f"{user}@127.0.0.1",
+         "-p", str(port), f"{user}@{SSH_HOST}",
          f"powershell -NoProfile -ExecutionPolicy Bypass -File {remote}"],
         capture_output=True, text=True, timeout=timeout,
     )

@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import compress  # noqa: E402
 import iso  # noqa: E402
+import net  # noqa: E402
 import smoke  # noqa: E402
 import vm  # noqa: E402
 
@@ -112,9 +113,11 @@ def main() -> int:
     results = {
         "vnc 5900": vm.wait_port("127.0.0.1", 5900, 60, "vnc"),
         # Alpine's initrd has no sshd, so this proves the forward exists, not the
-        # daemon behind it.
-        "ssh forward 2222": vm.wait_port("127.0.0.1", 2222, 30, "ssh forward"),
-        "rdp forward 3389": vm.wait_port("127.0.0.1", 3389, 10, "rdp forward"),
+        # daemon behind it. THE FORWARD IS ON THE BRIDGE ADDRESS: loopback would be
+        # DNAT'd to the guest with a loopback source, and the guest answers that to
+        # its own loopback. See lib/net.py's OUTPUT rule.
+        "ssh forward 2222": vm.wait_port(net.FORWARD_HOST, 2222, 30, "ssh forward"),
+        "rdp forward 3389": vm.wait_port(net.FORWARD_HOST, 3389, 10, "rdp forward"),
     }
 
     log("=== screenshots over the second qmp socket ===")

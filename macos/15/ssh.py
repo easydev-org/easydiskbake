@@ -615,8 +615,9 @@ def enable_remote_login(guest: vm.Guest) -> None:
 
     So the switch is pressed in the application that HAS the privilege, which is System
     Settings. Measured on this machine: after this sequence, `sshpass -p admin ssh -p 2222
-    docker@127.0.0.1` returns SSH_OK, `sw_vers` and `id` run, and a second connection later
-    still works.
+    docker@172.30.0.1` returns SSH_OK, `sw_vers` and `id` run, and a second connection later
+    still works. THE ADDRESS IS THE BRIDGE'S, not loopback: lib/net.py's OUTPUT rule explains
+    why a forward cannot be reached at 127.0.0.1.
 
     THE COORDINATES ARE 1920x1080, THE SAME UNIT AS A SCREENDUMP. screendump writes the
     guest's own framebuffer at its own size, so a pixel measured in a saved frame IS the

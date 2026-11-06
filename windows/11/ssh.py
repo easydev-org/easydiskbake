@@ -55,6 +55,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, REPO)
 sys.path.insert(0, os.path.join(REPO, "lib"))
 
+import net  # noqa: E402
 import qmp as qmpmod  # noqa: E402
 import vm  # noqa: E402
 
@@ -1031,7 +1032,7 @@ def wait_for_ssh(port: int = 2222, timeout: int = 120) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+            with socket.create_connection((net.FORWARD_HOST, port), timeout=5) as sock:
                 # sshd speaks first. Reading a byte proves it is sshd and not something
                 # else listening after a port collision.
                 sock.settimeout(5)
