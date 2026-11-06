@@ -63,7 +63,15 @@ TIME_ZONE_CONTINUE = (1306, 806)
 LOOK_CONTINUE = (1306, 805)
 
 COUNTRY_LIST = (900, 500)
-TRANSFER_SET_UP_AS_NEW = (825, 669)   # the radio circle itself
+# THE TRANSFER PANE'S ROW MOVES BETWEEN RELEASES, and this is the coordinate that has been
+# wrong most often. drive.py records the measurements: on 15 the "Set up as new" circle is at
+# y=669, on 26 it is at 706 - 37 pixels apart, which is more than a row is tall, so the 15
+# value lands in the GAP between "iPhone" and "as new" on 26 and selects nothing while the
+# wizard carries on. A table per release is the only shape that survives a release bump.
+TRANSFER_SET_UP_AS_NEW = {
+    "15": (825, 669),
+    "26": (825, 706),
+}
 TERMS_AGREE = (1298, 806)             # the footer's Agree, which opens the licence sheet
 LICENCE_AGREE = (1019, 616)           # the sheet's own Agree, a different click
 APPLE_SET_UP_LATER = (620, 811)
@@ -75,9 +83,10 @@ WELCOME_CONTINUE = (960, 990)
 KEYBOARD_QUIT = (1222, 818)
 
 ACCOUNT_FIELDS = {
-    "full": (945, 447),
-    "password": (850, 531),
-    "verify": (1086, 531),
+    # 26 splits the password row into two boxes that do not start where a single centred
+    # click assumes - drive.py's ACCOUNT_FIELDS carries the measurement; these are its values.
+    "15": {"full": (945, 447), "password": (850, 531), "verify": (1086, 531)},
+    "26": {"full": (1050, 497), "password": (842, 601), "verify": (1075, 601)},
 }
 
 
@@ -89,8 +98,9 @@ class Wizard:
     """Look at the screen, then act. Every check below is a title tesseract read."""
 
     def __init__(self, qmp_path: str, frames: str, *, width: int = 1920,
-                 height: int = 1080) -> None:
+                 height: int = 1080, release: str = "15") -> None:
         os.makedirs(frames, exist_ok=True)
+        self.release = release
         self.screen = ocr.Screen(qmp_path, frames, width=width, height=height)
         self.q = self.screen.q
         self.frames = frames
@@ -187,7 +197,11 @@ def pane_transfer(w: Wizard) -> bool:
     # because two clicks on the circle at (824,666) changed nothing in ITS frame. On this
     # disk the circle at (825,669) takes the selection in one click - confirmed against the
     # screendump in the commit - so the circle is what this uses.
-    w.click(TRANSFER_SET_UP_AS_NEW, "the 'Set up as new' radio", settle=4.0)
+    row = TRANSFER_SET_UP_AS_NEW.get(w.release)
+    if row is None:
+        log(f"  NO TRANSFER ROW FOR macOS {w.release}; known: {sorted(TRANSFER_SET_UP_AS_NEW)}")
+        return True
+    w.click(row, f"the 'Set up as new' radio (macOS {w.release})", settle=4.0)
     w.click(CONTINUE, "transfer Continue", settle=10.0)
     return True
 
@@ -222,10 +236,15 @@ def pane_account(w: Wizard, user: str, password: str) -> bool:
     if not w.says("account"):
         return False
     log(f"pane: Create a Mac Account ({user})")
+    fields = ACCOUNT_FIELDS.get(w.release)
+    if fields is None:
+        log(f"  NO ACCOUNT-FIELD TABLE FOR macOS {w.release}; a guessed one types the "
+            f"password into whatever row the guess lands on")
+        return True
     for key, value, label in (("full", user, "full name"),
                               ("password", password, "password"),
                               ("verify", password, "verify")):
-        w.click(ACCOUNT_FIELDS[key], f"the {label} field", settle=2.5)
+        w.click(fields[key], f"the {label} field", settle=2.5)
         w.clear_field()
         w.type_text(value, per_char=0.4)
         time.sleep(2.0)
@@ -355,8 +374,9 @@ PANES = [
 
 
 def run(qmp_path: str, frames: str, user: str, password: str,
-        *, boot_timeout: int = 1800) -> int:
-    w = Wizard(qmp_path, frames)
+        *, boot_timeout: int = 1800, release: str = "15") -> int:
+    w = Wizard(qmp_path, frames, release=release)
+    log(f"release: macOS {release}")
     log("waiting for the Setup Assistant")
     if not w.wait_for("country", timeout=boot_timeout, poll=10, label="boot"):
         log("=== THE WIZARD DID NOT COME UP ===")
@@ -409,9 +429,12 @@ def main(argv: list[str]) -> int:
     p.add_argument("--user", default=os.environ.get("MACOS_USER", "docker"))
     p.add_argument("--password", default=os.environ.get("MACOS_PASSWORD", "admin"))
     p.add_argument("--boot-timeout", type=int, default=1800)
+    p.add_argument("--release", default=os.environ.get("MACOS_RELEASE", "15"),
+                   help="which release the disk is; the transfer row and the account fields "
+                        "differ between them and a shared table is wrong by 37 pixels")
     args = p.parse_args(argv)
     return run(args.qmp, args.frames, args.user, args.password,
-               boot_timeout=args.boot_timeout)
+               boot_timeout=args.boot_timeout, release=args.release)
 
 
 if __name__ == "__main__":

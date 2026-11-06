@@ -237,6 +237,7 @@ def main(argv: list[str]) -> int:
                 [sys.executable, os.path.join(HERE, "drive_read.py"),
                  "--qmp", guest.paths.drive, "--frames", frames,
                  "--user", args.user, "--password", args.password,
+                 "--release", args.release,
                  "--boot-timeout", str(args.desktop_timeout)],
                 check=False, timeout=args.assistant_timeout,
             )
