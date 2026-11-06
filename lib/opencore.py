@@ -272,8 +272,32 @@ def extract_template_boot(template_iso: str, dest: str) -> str:
     at its top level.
     """
     out = os.path.join(dest, "template")
+    # THE CACHE HAS TO BE A FULL EXTRACTION, NOT JUST A DIRECTORY.
+    #
+    # This returned `out` whenever the directory existed, and `out` is where 7z unpacks - not
+    # where the EFI tree ends up. A run that was interrupted during the extraction (or one
+    # that failed later and was restarted on the same emptyDir) left `out` present and empty,
+    # so the next call returned the extraction ROOT and the caller looked for
+    # `<root>/OC/Kexts`, found nothing, and reported
+    #
+    #     the template supplied no OC/Kexts; the guest would boot to a prohibited sign
+    #
+    # while the template on disk was perfectly good. `template/EFI_RELEASE/EFI` is the tree
+    # that is wanted; `template` alone proves only that something was started.
+    marker = os.path.join(out, ".complete")
+    if os.path.isfile(marker):
+        # THE MARKER RECORDS THE CHOSEN TREE, so a cache hit returns `.../EFI_RELEASE/EFI`
+        # and not the extraction root. Returning `out` was the bug that made a warm cache
+        # behave differently from a cold one.
+        with open(marker, encoding="utf-8") as fh:
+            cached = fh.read().strip()
+        if cached and os.path.isdir(os.path.join(cached, "OC")):
+            return cached
+        log(f"  {marker} names {cached!r}, which is not an EFI tree; unpacking again")
+        shutil.rmtree(out, ignore_errors=True)
     if os.path.isdir(out):
-        return out
+        log(f"  {out} exists but the extraction never finished; unpacking again")
+        shutil.rmtree(out, ignore_errors=True)
     os.makedirs(out, exist_ok=True)
     subprocess.run(["7z", "x", "-y", f"-o{out}", template_iso], check=True,
                    stdout=subprocess.DEVNULL)
@@ -308,6 +332,10 @@ def extract_template_boot(template_iso: str, dest: str) -> str:
                 f"{template_iso} has no {required} under {chosen}; the guest would "
                 f"boot to a prohibited sign with nothing in any log to explain it"
             )
+    # THE MARKER IS WRITTEN ONLY AFTER EVERYTHING ABOVE PASSED, so its presence means "this
+    # directory holds a complete, checked extraction" and nothing weaker.
+    with open(os.path.join(out, ".complete"), "w", encoding="utf-8") as fh:
+        fh.write(chosen)
     log(f"template: {chosen}")
     return chosen
 
