@@ -69,7 +69,47 @@ BRIDGE_IP = os.environ.get("VM_BRIDGE_IP", "172.30.0.1")
 GUEST_IP = os.environ.get("VM_GUEST_IP", "172.30.0.2")
 HOST_IP = os.environ.get("VM_HOST_IP", "172.30.0.254")
 MASK = "255.255.255.0"
-MTU = 1500
+
+# THE GUEST'S MTU HAS TO FIT INSIDE THE CONTAINER'S, AND IT DID NOT.
+#
+# This was a constant 1500 while the container's own eth0 is 1450 - Kubernetes and the CNI
+# underneath it take fifty bytes for their encapsulation. So the guest was TOLD 1500 over
+# DHCP, sent 1500-byte packets, and every one of them was dropped silently on the way out
+# because they did not fit. Nothing reports that: no ICMP comes back, because the drop is on
+# a link the container has no visibility into.
+#
+# WHAT IT LOOKED LIKE. macOS 15 sat on the Setup Assistant's Screen Time pane for eight
+# minutes with a spinner, holding three ESTABLISHED connections to an Apple CDN whose byte
+# counter did not move once (MASQUERADE 285K -> 285K over twenty seconds). The TCP handshake
+# had completed - those are small packets - and so had the TLS ClientHello, a few hundred
+# bytes. The server's Certificate message is several kilobytes, does not fit, and never
+# arrived, so TLS never finished and the pane waited for an answer that could not come.
+#
+# Run 42162859846's macOS 26 was blamed on "gdmf.apple.com being unreachable" and run
+# 4220xxxxx's on "17.57.x.x being a broken Apple range". Both were this. Measured from the
+# container, one size apart:
+#
+#     ping -M do -s 1422 17.157.64.66   (packet 1450)  OK
+#     ping -M do -s 1472 17.157.64.66   (packet 1500)  DROPPED
+#
+# SO THE MTU IS READ FROM THE INTERFACE THAT LEAVES, not assumed. VM_MTU overrides it for a
+# host whose uplink differs; the fallback is 1500 because a container with no eth0 has no
+# link to fit inside.
+def _uplink_mtu() -> int:
+    """The MTU of the interface this container's traffic actually leaves through."""
+    for dev in ("eth0", "enp0s1", "ens3"):
+        path = f"/sys/class/net/{dev}/mtu"
+        try:
+            with open(path) as fh:
+                value = int(fh.read().strip())
+            if value >= 576:            # below IPv4's minimum is not a usable link
+                return value
+        except (OSError, ValueError):
+            continue
+    return 1500
+
+
+MTU = int(os.environ.get("VM_MTU") or _uplink_mtu())
 
 # THE ADDRESS A CLIENT INSIDE THE CONTAINER CONNECTS TO FOR A FORWARDED PORT. It is the
 # bridge's own address, and it is the only one that works: see the OUTPUT rule in up().
@@ -171,6 +211,28 @@ def up(*, ssh_port: int = 2222, rdp_port: int = 3389,
         raise SystemExit(f"=== dnsmasq DID NOT START ===\n  {started.stderr.strip()[:300]}")
 
     # OUTBOUND: the guest's traffic leaves as this container does.
+    #
+    # MSS CLAMPING ON BOTH LEGS. The DHCP option above tells the guest the right MTU, and
+    # that is the fix - but a guest that ignores it, or a path whose MTU changes after the
+    # lease, fails the same way: full-size packets vanish and TLS stalls in its handshake.
+    # Clamping rewrites the MSS in the SYN/SYN-ACK to fit this link, so the peer never offers
+    # more than can be carried. It costs one rule and removes the silent failure for good.
+    #
+    # FORWARD covers the guest; OUTPUT covers this container's own connections, which share
+    # the same uplink and were measured dropping 1500-byte packets too.
+    _sh(f"iptables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN "
+        f"-j TCPMSS --clamp-mss-to-pmtu")
+    if _sh(f"iptables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN "
+           f"-j TCPMSS --clamp-mss-to-pmtu").returncode != 0:
+        _sh(f"iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN "
+            f"-j TCPMSS --clamp-mss-to-pmtu")
+    _sh("iptables -t mangle -C OUTPUT -p tcp --tcp-flags SYN,RST SYN "
+        "-j TCPMSS --clamp-mss-to-pmtu")
+    if _sh("iptables -t mangle -C OUTPUT -p tcp --tcp-flags SYN,RST SYN "
+           "-j TCPMSS --clamp-mss-to-pmtu").returncode != 0:
+        _sh("iptables -t mangle -A OUTPUT -p tcp --tcp-flags SYN,RST SYN "
+            "-j TCPMSS --clamp-mss-to-pmtu")
+
     _sh(f"iptables -t nat -C POSTROUTING -s {BRIDGE_IP}/{PREFIX} -j MASQUERADE")
     if _sh(f"iptables -t nat -C POSTROUTING -s {BRIDGE_IP}/{PREFIX} -j MASQUERADE").returncode != 0:
         _sh(f"iptables -t nat -A POSTROUTING -s {BRIDGE_IP}/{PREFIX} "
