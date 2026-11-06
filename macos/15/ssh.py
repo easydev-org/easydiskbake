@@ -659,13 +659,24 @@ def enable_remote_login(guest: vm.Guest) -> None:
         log("=== searching for remote login ===")
         click(715, 267, settle=2.0)
         keys.type_into(q, "remote login")
-        time.sleep(4)
+        # THE RESULT LIST FILTERS AS YOU TYPE, and on a loaded runner it lags the keystrokes.
+        # Four seconds was measured on a machine with nothing else running; run 42162859846
+        # is what happens when the click arrives first: the search field holds "remote login"
+        # and the pane behind it is still the Sharing OVERVIEW, so the next click - aimed at
+        # a row that has not been drawn yet - lands on that overview and every step after it
+        # is off by one screen. Ten seconds costs six and removes the race.
+        time.sleep(10)
         shot("2-searched")
 
         # 3. THE RESULT. The list puts "Sharing" as a header and "Remote Login" under it;
         #    (703, 336) is that row.
         log("=== opening Remote Login ===")
-        click(703, 336, settle=5.0)
+        # THE PANE HAS TO FINISH SWAPPING BEFORE THE SWITCHES ARE CLICKED, and that swap is
+        # a whole page of layout. Five seconds was enough locally; the recording of run
+        # 42162859846 shows a click at this row that selected the sidebar item while the right
+        # side still showed the Sharing OVERVIEW, so the next two clicks - meant for the
+        # Remote Login switch and the full-disk-access switch - hit list rows instead.
+        click(703, 336, settle=12.0)
         shot("3-pane")
 
         # 4. THE SWITCH. (1145, 353) is the Remote Login toggle, which reads "Off" until it

@@ -409,6 +409,20 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      # THE SIX FRAMES THE SEQUENCE TAKES OF ITSELF. enable_remote_login() calls shot() after
+      # every step - opened, searched, pane, remote-login-on, full-disk-access, done - and
+      # those are the only record of WHICH STEP DID NOT LAND when the switch sequence runs but
+      # sshd still does not answer. Run 42162859846 had that exact outcome and the six frames
+      # were written to the work directory and thrown away with the container.
+      - name: keep the remote-login frames
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos15-ssh-remote-login-frames
+          path: out/remote-login-*.png
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: push the disk
         if: success()
         id: publish
