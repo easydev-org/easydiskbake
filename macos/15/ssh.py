@@ -569,259 +569,7 @@ def unlock(guest: vm.Guest) -> bool:
 #
 # Each entry is typed, Return is pressed, and the next waits. sudo caches its credential
 # after the first one, so the later commands do not prompt again.
-REMOTE_LOGIN_STEPS = [
-    # 1. THE JOB. `enable` marks it for boot, `load -w` loads it now.
-    "sudo launchctl enable system/com.openssh.sshd",
-    "sudo launchctl load -w /System/Library/LaunchDaemons/ssh.plist",
-    # 2. PASSWORD AUTHENTICATION, which is what makes sshpass usable. macOS ships the line
-    #    commented out, and `sed -i ''` is BSD sed's in-place form - the empty argument is
-    #    the backup suffix, and GNU sed would treat it as the script.
-    "sudo sed -i '' -E 's|^#?[[:space:]]*PasswordAuthentication[[:space:]].*|"
-    "PasswordAuthentication yes|' /etc/ssh/sshd_config",
-    # 2b. AND NO REVERSE LOOKUP, WHICH IS WHAT ACTUALLY KILLS THE CONNECTION HERE.
-    #
-    # The host's verbose log of run 42095016629 says the credentials were never rejected -
-    # the connection was CLOSED while waiting for the answer:
-    #
-    #     debug1: Next authentication method: password
-    #     debug3: send packet: type 50
-    #     debug2: we sent a password packet, wait for reply
-    #     Connection closed by 127.0.0.1 port 2222
-    #
-    # "Permission denied" is what sshd says when it decides; this says nothing, which is what
-    # sshd does when it dies on the way to deciding. The guest's own unified log, printed by
-    # step 19 of this list, names the call:
-    #
-    #     sshd: (libsystem_info.dylib) Retrieve User by Name
-    #     sshd: (libsystem_info.dylib) [com.apple.network:libinfo:si_destination_compare]
-    #           send failed: Invalid argument
-    #
-    # si_destination_compare compares SOCKET ADDRESSES - it is the name/address resolution
-    # path, and the address it is looking at is the one qemu's user-mode network gives the
-    # host (10.0.2.2). sshd resolves the client before it finishes the login, that call fails
-    # with EINVAL, and the process ends.
-    #
-    # A guest logging in to itself never takes that path - its peer is 127.0.0.1 - which is
-    # exactly why the guest's own `ssh docker@127.0.0.1` answered "Permission denied" while
-    # the host got a closed connection. THAT ASYMMETRY IS THE WHOLE DIAGNOSIS.
-    #
-    # UseDNS no is the sshd setting for not doing the lookup at all. macOS ships it commented
-    # out (the default is `yes`, with a historical caveat), so it costs one line.
-    #
-    # THE sed ALONE IS NOT ENOUGH AND THE SECOND COMMAND IS NOT A CHECK. sed -i rewrites a
-    # line that MATCHES; if the file has no UseDNS line at all, it rewrites nothing and exits
-    # 0, and this would look done. `grep -q ... || echo >>` appends only when the pattern is
-    # missing, which is the case the sed cannot cover.
-    "sudo sed -i '' -E 's|^#?[[:space:]]*UseDNS[[:space:]].*|UseDNS no|' /etc/ssh/sshd_config",
-    "sudo sh -c \"grep -q '^UseDNS no' /etc/ssh/sshd_config || echo 'UseDNS no'"
-    " >> /etc/ssh/sshd_config\"",
-    # 3. THE ACCESS GROUP, IN FULL. EVERY ATTRIBUTE BELOW IS LOAD-BEARING.
-    #
-    # macOS consults com.apple.access_ssh SEPARATELY from sshd_config, and a HALF-BUILT group
-    # is worse than none: launchd's socket activation sees a group with that name, decides
-    # access is restricted, and resets the connection before sshd ever speaks. That is
-    # exactly what run 42056084784 got, and the message is what names it:
-    #
-    #     kex_exchange_identification: read: Connection reset by peer
-    #
-    # - the TCP connection succeeded and the protocol exchange was cut off, which is a
-    # different failure from `Connection refused` (nothing listening) and from
-    # `Permission denied` (sshd answered and rejected the credential).
-    #
-    # THE FIRST VERSION OF THIS LIST HAD THREE LINES AND NEEDS ELEVEN. It created the group,
-    # set PrimaryGroupID, and appended uid 501. Missing:
-    #
-    #     GroupMembership           the short-name list; without it the group has members it
-    #                               cannot name, and the membership check fails closed
-    #     GroupMembers "0"          root. An access group that does not contain root cannot
-    #                               be used by the system's own administrative paths
-    #     NestedGroups              admin (80), staff (20), _lpoperator (401). docker is in
-    #                               admin, and the check walks nesting - a direct member that
-    #                               is only reachable through a nested group does not count
-    #
-    # The eleven lines are easydev-org/dockur-macos's, in the same order, from
-    # src/install/firstboot/launch.sh. 501 is docker's uid.
-    "sudo dscl . -create /Groups/com.apple.access_ssh",
-    "sudo dscl . -create /Groups/com.apple.access_ssh PrimaryGroupID 399",
-    "sudo dscl . -create /Groups/com.apple.access_ssh GroupMembership",
-    "sudo dscl . -create /Groups/com.apple.access_ssh GroupMembers 0",
-    "sudo dscl . -append /Groups/com.apple.access_ssh GroupMembers 501",
-    "sudo dscl . -create /Groups/com.apple.access_ssh NestedGroups",
-    "sudo dscl . -append /Groups/com.apple.access_ssh NestedGroups 80",
-    "sudo dscl . -append /Groups/com.apple.access_ssh NestedGroups 20",
-    "sudo dscl . -append /Groups/com.apple.access_ssh NestedGroups 401",
-    # 4. AND RESTART IT, so all of the above takes effect now rather than at the next boot.
-    "sudo launchctl kickstart -k system/com.openssh.sshd",
-    # 5. THE VERDICT, READ FROM THE GUEST ITSELF. Two facts, both required: the group lists
-    #    the account, and something is listening on 22. Printing them means the recording
-    #    carries the answer even when this stage fails later.
-    "sudo dscl . -read /Groups/com.apple.access_ssh GroupMembers NestedGroups",
-    "netstat -an | grep '\\*.22 ' | head -2",
-    # 6. AND THE ONLY TEST THAT MATTERS: THE GUEST LOGGING IN TO ITSELF.
-    #
-    # The three commands above were added so a failure would carry its own state, and run
-    # 42087483424's recording shows they all passed - GroupMembers: 0 501, NestedGroups:
-    # 80 20 401, `*.22 LISTEN` - while the host's authenticated probe got an empty answer and
-    # the stage failed. So none of them is the missing fact.
-    #
-    # THIS IS. `ssh docker@127.0.0.1 true` asks exactly what the host-side check asks, from
-    # inside, and prints what ssh itself says when it says no. The two failures worth telling
-    # apart are both invisible from the group and the socket:
-    #
-    #     docker is not in the password database the way sshd reads it   -> denied
-    #     the account has no password, or its AuthenticationAuthority is
-    #     missing/disabled                                               -> denied
-    #     AllowUsers / DenyUsers / an sshd_config directive              -> denied
-    #
-    # `dscl . -read /Users/docker AuthenticationAuthority` is the field that says whether a
-    # password is set at all. macOS keeps it in a separate attribute from the account record,
-    # and an account created by the Setup Assistant always has it - but nothing so far has
-    # ever printed it, so "the account cannot authenticate" has been an assumption for every
-    # run of this stage.
-    #
-    # EVERY ONE OF THESE IS SHORT. The whole sequence typed as one line was 471 characters
-    # and a shell that redraws its input line coalesces keystrokes - run 41997580476 typed a
-    # 105-character winget command into Windows and the guest received `get install`. The
-    # longest here is under 80.
-    #
-    # BatchMode=yes so ssh FAILS instead of waiting at a password prompt this list cannot
-    # answer, and the failure is the useful part: ssh names the methods the server offered.
-    "ssh -o BatchMode=yes -o StrictHostKeyChecking=no docker@127.0.0.1 true",
-    "sudo dscl . -read /Users/docker AuthenticationAuthority",
-    # THE EFFECTIVE CONFIG, NOT THE FILE. sshd -T resolves the includes and the defaults, so
-    # this says what sshd will actually do rather than what one file happens to spell.
-    # 7. AND WHY IT SAID NO. Everything above says the refusal SHOULD NOT happen, and run
-    # 42090649098's recording is the proof that it does:
-    #
-    #     ssh -o BatchMode=yes docker@127.0.0.1 true
-    #       -> Permission denied (publickey,password,keyboard-interactive)
-    #     AuthenticationAuthority: ;ShadowHash;HASHLIST:<SALTED-SHA512-PBKDF2..> ;SecureToken;
-    #     sshd -T: usepam yes / passwordauthentication yes / permitemptypasswords no
-    #
-    # BatchMode=yes cannot answer a password prompt, so that line proves only that sshd
-    # OFFERS password authentication - it does not prove a password would be accepted. The
-    # server's own account of the decision is the only thing that distinguishes
-    #
-    #     the password is wrong            (the host types admin/see session.SSH_PASSWORD)
-    #     the account may not log in      (a blocked or expired AuthenticationAuthority)
-    #     PAM refused it                  (the macOS side of usepam yes)
-    #
-    # and macOS writes it to the unified log, not to a file. The predicate is narrow on
-    # purpose: `log show` for a whole hour is thousands of lines and the last five of them are
-    # the wrong five.
-    "sudo log show --last 2m --predicate 'process == \"sshd\"' 2>/dev/null | tail -6",
-    # 6b. THE SAME LOG WITHOUT THE NOISE THAT HAS BEEN FILLING IT.
-    #
-    # Every frame so far has shown the same three lines repeated - si_destination_compare
-    # errors around "Retrieve User by Name" - because that is what tail -6 takes from a log
-    # where those dominate. If that error is HARMLESS (and the guest's own successful logins
-    # suggest it might be, since they resolve users too) then the line that matters is
-    # somewhere in the other output, and tail -6 is hiding it.
-    #
-    # Dropping the process-match predicate keeps ordinary sshd session lines - accepted,
-    # refused, preauth - and `grep -v` removes the one message that has been drowning them.
-    # LowVolume shortens the output; --style compact drops the field headers so more lines fit
-    # on the 80-column terminal.
-    "sudo log show --last 2m --style compact 2>/dev/null "
-    "| grep -i sshd | grep -vi destination_compare | tail -5",
-    # 6c. IS THE JOB PETRIFIED? The filtered log above finally showed why sshd stops answering
-    #     after the first few connections, and it is launchd, not sshd:
-    #
-    #         2026-11-05 15:32:25.913  launchd[1:26e1] [system:] removing service:
-    #                                  com.openssh.sshd.5F33B3B5-D4F5-48BD-9AD7-C8FE1C260A53
-    #         2026-11-05 15:32:25.913  launchd[...] internal event: PETRIFIED, code = 0
-    #         2026-11-05 15:32:25.913  launchd[...] service state: not running
-    #
-    #     PETRIFIED is launchd's word for "this job failed enough times that I will not start
-    #     it again". It is why a guest whose sshd answered earlier stops answering: not a
-    #     config error, not a network error, the supervisor gave up.
-    #
-    #     `launchctl print` reports that state directly, so the run says whether the thing it
-    #     is fighting is a service that will not be started at all:
-    #
-    #         state = running / not running / spawn scheduled
-    #
-    #     and the two settings that decide how soon launchd gives up, which are what the fix
-    #     will have to raise if this is confirmed.
-    "sudo launchctl print system/com.openssh.sshd 2>&1 | head -8",
-    "sudo launchctl print system/com.openssh.sshd 2>&1 | grep -iE 'state|failed' | head -4",
-    # 8. DOES THE PASSWORD WORK AT ALL? This is the one question that splits the two
-    #    remaining hypotheses, and it never touches ssh.
-    #
-    #    `dscl . -authonly` asks the directory service to authenticate the account with the
-    #    password, exactly as a login would, and prints nothing on success. So:
-    #
-    #        exits 0        the password is right, and the fault is in how sshd takes it
-    #                       from this client - qemu's NAT address, the auth plugin, PAM
-    #        exits non-0    the password is wrong, and NOTHING about sshd matters
-    #
-    #    Every run so far has assumed the first without testing it. The account is created by
-    #    the desktop stage through the Setup Assistant, whose form validates as it is typed
-    #    and drops characters that arrive too fast - run 42085569136's account form even
-    #    ended up with "admin" in Full name and an empty Password after a coordinate bug.
-    #    A disk whose account password never got set would fail exactly like this, and the
-    #    ssh-side diagnostics cannot see it.
-    #
-    #    "&& echo AUTHOK || echo AUTHFAIL" turns the verdict into a word the recording shows
-    #    without anyone having to know what dscl prints on failure.
-    "sudo dscl . -authonly docker admin && echo AUTHOK || echo AUTHFAIL",
-    # 9. THE TWO QUESTIONS RUN 42105500358 LEFT UNANSWERED, LAST SO THEY STAY ON SCREEN.
-    #
-    # `dscl . -authonly docker admin` printed AUTHOK: THE PASSWORD IS RIGHT. So the account
-    # and the password are not in question, and neither is the config's intent - every value
-    # sshd -T has reported says yes. The only thing left is what sshd does with THIS client.
-    #
-    # 9a. DID UseDNS no ACTUALLY APPLY? It was set and the failure did not change, which is
-    #     either "the directive took and is not what this is" or "the directive never took".
-    #     macOS reads /etc/ssh/sshd_config.d/*.conf through an Include, and a later include
-    #     can put back what an earlier sed removed. sshd -T prints the resolved value, so it
-    #     settles which. Printed LAST because the six-word grep used to scroll away.
-    "sudo /usr/sbin/sshd -T | grep -i usedns",
-    # 9b. DOES A NON-LOOPBACK PEER BREAK IT FROM INSIDE THE GUEST?
-    #
-    #     The guest's `ssh docker@127.0.0.1` has always answered "Permission denied" - a real
-    #     decision - while the host's comes from 10.0.2.2 and gets a closed connection. If the
-    #     guest connecting to its OWN LAN address (10.0.2.15, what qemu's DHCP gives it) also
-    #     gets a closed connection, then it is not qemu and not the NAT: sshd fails for any
-    #     peer whose address it has to resolve, and 127.0.0.1 is exempt because it never
-    #     leaves the loopback.
-    #
-    #     That is a different fix from anything on the sshd side, and this one line says
-    #     which of the two it is.
-    "ssh -o BatchMode=yes -o StrictHostKeyChecking=no docker@10.0.2.15 true; echo PEER=$?",
-    # 10. AND THE ONE ADDRESS THE HOST'S CONNECTION ACTUALLY LOOKS LIKE FROM INSIDE.
-    #
-    # 10.0.2.15 (the guest's own LAN address) works. 10.0.2.2 is the qemu gateway - it is
-    # what the guest sees when the HOST is the peer, and it is the only address on this
-    # machine that has no reverse record and is not local. Run 42114962189 set UseDNS no AND
-    # UsePAM no, and the connection still closed, so neither of those is the whole story.
-    #
-    # This line asks sshd the same question with the same peer as the host's connection,
-    # from a shell that does not go through qemu's forwarding:
-    #
-    #   closed / no answer   the peer ADDRESS is what breaks sshd, not the forwarding path
-    #   Permission denied    the address is fine and the difference is the forwarding itself
-    #
-    # Two different repairs, one line.
-    "ssh -o BatchMode=yes -o ConnectTimeout=10 docker@10.0.2.2 true; echo GW=$?",
-    # 6d. WHY THE PROCESS DIED, FROM THE SYSTEM THAT WATCHES IT.
-    #
-    # Five changes have now been made on theory and none moved the failure: UseDNS no,
-    # UsePAM no, the 10.0.0.0/8 subnet, and the NIC's MAC + romfile. Every fact the guest can
-    # report says it should work - AUTHOK, `*.22 LISTEN`, `state = not running` (correct for a
-    # socket-activated job), and its own logins answering "Permission denied".
-    #
-    # macOS writes a report for every process that dies abnormally. sshd IS dying: the host's
-    # log stops at "we sent a password packet, wait for reply" and the connection is closed,
-    # which is the server ending rather than refusing. The report names the exception and the
-    # frames, which is what six runs have been inferring from unrelated log lines.
-    #
-    # /Library/Logs/DiagnosticReports MAY HOLD NO sshd REPORT AT ALL, and that absence is
-    # itself the fact that would redirect this.
-    "sudo ls -t /Library/Logs/DiagnosticReports/ 2>/dev/null | head -3",
-    "sudo ls -t /Library/Logs/DiagnosticReports/sshd* 2>/dev/null | head -1",
-    "sudo grep -m3 -iE 'exception|termination|reason' /Library/Logs/DiagnosticReports/sshd*.ips 2>/dev/null || echo NO-REPORT",
-]
+REMOTE_LOGIN_STEPS: list[str] = []  # replaced by the System Settings sequence
 
 # THE VERDICT IS THE GUEST'S, AND IT IS TWO FACTS: the job is loaded, and something is
 # listening. `launchctl list` alone says the job exists; only the socket says sshd is up.
@@ -829,20 +577,40 @@ REMOTE_LOGIN_CHECK = "netstat -an | grep -c '*.22 '"
 
 
 def enable_remote_login(guest: vm.Guest) -> None:
-    """Open Terminal and set Remote Login on, as root.
+    """Turn Remote Login on THROUGH SYSTEM SETTINGS, which is the only way that works.
 
-    SPOTLIGHT, NOT THE DOCK. Cmd-Space opens Spotlight wherever the Dock is and whatever
-    is in it, and the wizard's choices do not move it - which is why this is a keyboard
-    route rather than a click at a Dock icon whose position depends on what the user
-    pinned.
+    THIS REPLACES THIRTY SHELL COMMANDS, AND THE THIRTY WERE THE BUG.
 
-    sudo READS ITS PASSWORD FROM THE TERMINAL, so it is typed after the command rather
-    than passed to it. `echo` is not used: the password would land in the guest's shell
-    history and in any frame taken while it scrolled past.
+    The old version opened Terminal and typed launchctl enable / launchctl load / a sed on
+    sshd_config / ten dscl calls for the access group / launchctl kickstart. Every one of
+    those is the right command, they all ran, and the result was still unusable: the host
+    connected, sent its password packet, and sshd CLOSED the connection - six runs of
+    diagnostics (UseDNS, UsePAM, the subnet, the NIC's MAC, the access group, the crash
+    reports) never explained it.
 
-    EVERY KEY COMES FROM lib/keys.py, which is also what the Windows stage types with -
-    a second table here is a second place for ":" to mean the wrong thing, and that
-    failure reads as a shell syntax error rather than as a keyboard bug.
+    The difference is `Allow full disk access for remote users`, which exists only on this
+    pane. Without it a remote session runs without Full Disk Access, and the account
+    lookups sshd performs fail on data TCC protects - the log said
+
+        sshd: (libsystem_info.dylib) Retrieve User by Name
+        sshd: (libsystem_info.dylib) [...si_destination_compare] send failed: Invalid argument
+
+    and closed the connection at exactly that point. There is no launchctl command for
+    this, no sshd_config directive, and `systemsetup -setremotelogin on` refuses outright:
+
+        setremotelogin: Turning Remote Login on or off requires Full Disk Access privileges.
+
+    So the switch is pressed in the application that HAS the privilege, which is System
+    Settings. Measured on this machine: after this sequence, `sshpass -p admin ssh -p 2222
+    docker@127.0.0.1` returns SSH_OK, `sw_vers` and `id` run, and a second connection later
+    still works.
+
+    THE COORDINATES ARE 1920x1080, THE SAME UNIT AS A SCREENDUMP. screendump writes the
+    guest's own framebuffer at its own size, so a pixel measured in a saved frame IS the
+    coordinate to send - multiplying it by 1.5 (which a 1280x800 recording would need) moves
+    the click into the middle of the window and does something else entirely. That mistake
+    cost three attempts: every click at the "search box" opened Safari, because the point it
+    really hit was a link on the Software Update pane.
     """
     import qmp as qmpmod
     from lib import keys
@@ -855,78 +623,78 @@ def enable_remote_login(guest: vm.Guest) -> None:
         time.sleep(1)
 
     q = qmpmod.QMP(kb_work)
+
+    def click(x: int, y: int, settle: float = 2.0) -> None:
+        qmpmod.click(q, x, y)
+        time.sleep(settle)
+
+    def shot(name: str) -> None:
+        """One frame per step, so a failure says which pane it stopped on."""
+        try:
+            import lastframe
+            work = os.path.dirname(kb_work)
+            ppm = os.path.join(work, f"remote-login-{name}.ppm")
+            q.execute("screendump", filename=ppm)
+            lastframe.convert(ppm, os.path.join(work, f"remote-login-{name}.png"))
+        except (OSError, RuntimeError) as exc:
+            log(f"  screendump {name} failed: {exc}")
+
     try:
-        # Escape first: a notification or an update overlay swallows the next chord.
+        # 1. SYSTEM SETTINGS, THROUGH SPOTLIGHT. The full name is used rather than "settings"
+        #    because Spotlight's first row for a short query can be a web suggestion, and
+        #    Return takes the highlighted row.
+        log("=== opening System Settings ===")
         qmpmod.key(q, "esc")
         time.sleep(1)
-
-        # SPOTLIGHT, AND THE FIRST RESULT IS NOT ALWAYS THE APPLICATION.
-        #
-        # Run 42028663003's last frame is SAFARI with a Google search for
-        #
-        #     terminalsudo systemsetup -setremotelogin onadmin
-        #
-        # `terminal` DID appear as a result - the word matched, the app was found - but
-        # Spotlight's own top row for that query is the web-search suggestion, and Return
-        # takes the highlighted row. So Return opened the browser, and the command and the
-        # password that followed were typed into the search field. sshd never started and the
-        # stage reported "something answered, but not sshd" for its whole budget.
-        #
-        # THE SEARCH TERM IS THEREFORE THE FULL PATH, which has no web suggestion, and the
-        # wait before Return is longer than Spotlight's index needs to answer. Both are
-        # cheap; guessing which row is highlighted is not.
-        qmpmod.key_combo(q, "meta_l", "spc")   # Spotlight
+        qmpmod.key_combo(q, "meta_l", "spc")
         time.sleep(3)
-        keys.type_into(q, "terminal")
-        # TEN SECONDS BETWEEN EVERY STEP, BECAUSE EACH ONE IS A DIFFERENT WINDOW'S TURN.
-        #
-        #     1. type "terminal"     Spotlight has to search and draw its result list
-        #     2. Return              Spotlight has to launch the application
-        #     3. the next command    Terminal has to open a window and a login shell
-        #
-        # Every one of those is a separate process starting on a guest with four vCPUs and
-        # no cache to help it, and typing into an application that has not appeared puts the
-        # text wherever focus happens to be. The waits above were 3s, 5s and 12s, chosen at
-        # different times for different reasons; this is ten seconds for each, which is what
-        # the slowest of them needed.
-        #
-        # `/Applications/Utilities/Terminal.app` WAS TRIED AND IS NOT THE ANSWER. It was
-        # meant to avoid Spotlight's web-search row, but run 42034256322 showed the real
-        # cause was elsewhere: Keyboard Setup Assistant was on screen and took the Return.
-        # The dialog is dismissed before this is reached - see dismiss_keyboard_assistant().
-        time.sleep(10)
+        keys.type_into(q, "system settings")
+        time.sleep(7)
         qmpmod.key(q, "ret")
-        time.sleep(10)
+        time.sleep(14)
+        shot("1-opened")
 
-        # FIRST COMMAND, THEN THE PASSWORD - sudo reads it from the terminal.
-        #
-        # THE PASSWORD IS TYPED AFTER THE COMMAND, never passed as an argument:
-        # `echo password | sudo -S` would leave it in the guest's shell history and in every
-        # frame taken while it scrolled past.
-        first, *rest = REMOTE_LOGIN_STEPS
-        log(f"  {first}")
-        keys.type_into(q, first)
+        # 2. THE SEARCH FIELD, AT ITS MEASURED PIXEL. (715, 267) is the centre of the box
+        #    whose interior spans x 630..800, y 250..284 in a 1920x1080 frame.
+        log("=== searching for remote login ===")
+        click(715, 267, settle=2.0)
+        keys.type_into(q, "remote login")
+        time.sleep(4)
+        shot("2-searched")
+
+        # 3. THE RESULT. The list puts "Sharing" as a header and "Remote Login" under it;
+        #    (703, 336) is that row.
+        log("=== opening Remote Login ===")
+        click(703, 336, settle=5.0)
+        shot("3-pane")
+
+        # 4. THE SWITCH. (1145, 353) is the Remote Login toggle, which reads "Off" until it
+        #    is pressed.
+        log("=== turning Remote Login on ===")
+        click(1145, 353, settle=4.0)
+        shot("4-remote-login-on")
+
+        # 5. AND FULL DISK ACCESS FOR REMOTE USERS, the option that makes the difference
+        #    between "sshd answers" and "sshd can look the account up". (1145, 420).
+        log("=== allowing full disk access for remote users ===")
+        click(1145, 420, settle=4.0)
+        shot("5-full-disk-access")
+
+        # 6. DONE, so the pane closes and the daemon settles rather than staying in a
+        #    settings sheet that may hold the change until dismissal.
+        log("=== Done ===")
+        click(1145, 679, settle=5.0)
+        shot("6-done")
+
+        # AND THE PREFERENCE IS READ BACK ON THE CONSOLE, because a switch that looks on is
+        # not the same fact as sshd listening. The caller waits for the port afterwards.
+        keys.type_into(q, "sudo systemsetup -getremotelogin")
         qmpmod.key(q, "ret")
-        time.sleep(10)
+        time.sleep(4)
         keys.type_into(q, GUEST_PASSWORD)
         qmpmod.key(q, "ret")
-        # sudo CACHES THE CREDENTIAL AFTER THE FIRST SUCCESS, so the rest do not prompt.
-        # Ten seconds each: launchctl talks to launchd, sed rewrites a file in /etc, and
-        # dscl writes the directory store - each is a separate privileged operation.
-        for step in rest:
-            log(f"  {step[:80]}")
-            time.sleep(6)
-            keys.type_into(q, step)
-            qmpmod.key(q, "ret")
-            time.sleep(6)
-
-        # SETREMOTELOGIN PRINTS ONLY ON REFUSAL, so the preference is read back rather
-        # than trusted: -getremotelogin answers "Remote Login: On" when it took. The read
-        # back is what the recording is checked against - if it says On and sshd still does
-        # not answer, the problem is sshd rather than the preference.
-        keys.type_into(q, REMOTE_LOGIN_CHECK)
-        qmpmod.key(q, "ret")
-        time.sleep(10)
+        time.sleep(6)
+        shot("7-verdict")
     finally:
         q.close()
 
