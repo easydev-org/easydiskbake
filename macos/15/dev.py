@@ -140,6 +140,9 @@ def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--disk", required=True, help="the ssh-stage disk")
     p.add_argument("--out", default=None)
+    p.add_argument("--overlay", action="store_true",
+                   help="treat --disk as a READ-ONLY base and write into a throwaway qcow2 "
+                        "overlay; the base is never modified. See lib/overlay.py")
     p.add_argument("--copy", action="store_true",
                    help="copy the input disk instead of moving it; the default is to "
                         "move, because the disk normally came from ghcr and the "
@@ -177,8 +180,15 @@ def main(argv: list[str]) -> int:
     # MOVED, NOT COPIED - the ssh disk came from ghcr, so the registry still holds it.
     import working_copy as wc
 
-    disk = wc.working_copy(args.disk, os.path.join(work, "dev.qcow2"),
-                           copy=args.copy, note=log)
+    run_overlay = None
+    if getattr(args, "overlay", False):
+        import overlay as overlaymod
+
+        run_overlay = overlaymod.Overlay(args.disk, work, name="dev-overlay.qcow2")
+        disk = run_overlay.open()
+    else:
+        disk = wc.working_copy(args.disk, os.path.join(work, "dev.qcow2"),
+                               copy=args.copy, note=log)
 
     import opencore
     import macos_recovery
@@ -273,7 +283,10 @@ def main(argv: list[str]) -> int:
                 log("=== THE DISK FAILED ITS CHECKS ===")
                 raise SystemExit(1)
             log("compressing")
-            compress.compress(disk, out)
+            if run_overlay is not None:
+                run_overlay.flatten(out)
+            else:
+                compress.compress(disk, out)
             log(f"BAKED macos15 dev -> {out} ({os.path.getsize(out) >> 20} MiB)")
 
 

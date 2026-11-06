@@ -96,6 +96,10 @@ def main(argv: list[str]) -> int:
     p.add_argument("--ssh-port", type=int, default=2223,
                    help="the HOST port the guest's 22 is forwarded to")
     p.add_argument("--boot-timeout", type=int, default=900)
+    p.add_argument("--overlay", action="store_true",
+                   help="treat --disk as a READ-ONLY base and write into a throwaway qcow2 "
+                        "overlay: the base is never modified and the overlay is deleted at "
+                        "the end, so every run starts from the same bytes. See lib/overlay.py")
     args = p.parse_args(argv)
 
     out = args.out or args.disk.replace(".qcow2", "-ssh.qcow2")
@@ -106,11 +110,30 @@ def main(argv: list[str]) -> int:
     if not os.path.isfile(args.disk):
         raise SystemExit(f"no disk at {args.disk}")
 
-    # MOVED, NOT COPIED - the desktop disk came from ghcr, so the registry still holds it.
-    import working_copy as wc
+    # THE DISK THIS RUN WRITES TO.
+    #
+    # --overlay IS THE ONE THAT KEEPS THE BASE INTACT. It makes a qcow2 whose backing file is
+    # the published disk, so qemu reads through to the base for everything the run does not
+    # change and writes only its own clusters into the overlay. The base is opened read-only
+    # while a backing file is in use, and close() deletes the overlay - which restores the disk
+    # to exactly what was published, not approximately. lib/overlay.py also records the base's
+    # size and mtime before qemu starts and checks them after, because "I did not write to it"
+    # is an assumption and this is a stage that has been wrong about assumptions.
+    #
+    # WITHOUT IT the old behaviour stands: `working_copy` moves the disk (the default, since
+    # the disk normally came from ghcr and the registry still holds it) or copies it when
+    # --copy is given.
+    run_overlay = None
+    if args.overlay:
+        import overlay as overlaymod
 
-    disk = wc.working_copy(args.disk, os.path.join(work, "ssh.qcow2"),
-                           copy=args.copy, note=log)
+        run_overlay = overlaymod.Overlay(args.disk, work, name="ssh-overlay.qcow2")
+        disk = run_overlay.open()
+    else:
+        import working_copy as wc
+
+        disk = wc.working_copy(args.disk, os.path.join(work, "ssh.qcow2"),
+                               copy=args.copy, note=log)
 
     # THE RECOVERY IMAGE IS AN INPUT EVEN THOUGH THIS STAGE DOES NOT BOOT FROM IT.
     #
@@ -317,8 +340,15 @@ def main(argv: list[str]) -> int:
                 log("=== THE DISK FAILED ITS CHECKS ===")
                 raise SystemExit(1)
             log("compressing")
-            compress.compress(disk, out)
-            log(f"BAKED macos15 ssh -> {out} ({os.path.getsize(out) >> 20} MiB)")
+            if run_overlay is not None:
+                # AN OVERLAY IS A DIFF, NOT A DISK. It only means anything next to the base
+                # it was made from, so the published artifact is produced by reading the chain
+                # and writing one standalone file - which is what flatten() does.
+                run_overlay.flatten(out)
+                log(f"BAKED macos15 ssh -> {out} ({os.path.getsize(out) >> 20} MiB)")
+            else:
+                compress.compress(disk, out)
+                log(f"BAKED macos15 ssh -> {out} ({os.path.getsize(out) >> 20} MiB)")
 
 
 def wait_for_desktop(guest: vm.Guest, frames: str, timeout: int) -> bool:
