@@ -142,7 +142,24 @@ jobs:
               --disk-size "${{ inputs.disk_size || '128G' }}" \
               --timeout "${{ inputs.bake_timeout || '3600' }}"
 
-      # THE CONSOLE IS THE RECORD. THERE IS NO VIDEO, AND THAT IS DELIBERATE.
+      - name: keep the second boot's recording
+        if: always() && inputs.bake_from == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-boot-recording
+          # THE VIDEO, NOT THE FRAMES. boot_installed() takes a frame a second and
+          # lib/live.py encodes them into this mp4, deleting each frame as it goes - the
+          # same three files every other stage uploads (see macos15.yml's "keep the
+          # recording"). Uploading out/frames2 instead put six hundred JPEGs in a zip
+          # nobody could watch in order, for a boot that lasts ten minutes.
+          path: |
+            out/install.mp4
+            out/last-frame.png
+          if-no-files-found: warn
+          retention-days: 14
+
+      # THE CONSOLE IS THE RECORD FOR THE INSTALLER. THERE IS NO VIDEO FOR THAT STAGE,
+      # AND THAT IS DELIBERATE.
       #
       # This used to upload install.mp4 and last-frame.png. What those held was 12 MiB of
       # `curtin command in-target` scrolling past at 720x400, every character smeared by the
@@ -165,7 +182,6 @@ jobs:
             out/serial.out.log
             out/serial2.out.log
             out/console.log
-            out/frames2
           if-no-files-found: warn
           retention-days: 14
 

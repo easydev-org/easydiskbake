@@ -47,7 +47,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, REPO)
 
-from lib import compress, install_evidence, iso, serial, session, smoke, vm  # noqa: E402
+from lib import (compress, install_evidence, iso, live as livelib, serial, session,  # noqa: E402
+                 smoke, vm)
 import net  # noqa: E402 - the one place the guest's gateway is named
 
 CONFIG_PORT = 8000
@@ -159,6 +160,7 @@ def boot_installed(work: str, args, disk: str) -> bool:
     shots2 = os.path.join(work, "frames2")
     os.makedirs(shots2, exist_ok=True)
     frames = None
+    live = None
     try:
         guest.start()
         # THE CONSOLE IS OPENED AFTER QEMU, because a fifo has no writer until qemu starts
@@ -168,6 +170,20 @@ def boot_installed(work: str, args, disk: str) -> bool:
             [sys.executable, os.path.join(REPO, "lib", "snapshots.py"),
              guest.paths.record, shots2, os.environ.get("SNAPSHOT_INTERVAL", "1")],
             stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
+        )
+        # THE FRAMES BECOME A VIDEO AND ARE DELETED, NOT UPLOADED.
+        #
+        # Writing the frames into the artifact was wrong twice over: it put six hundred
+        # JPEGs in a zip nobody could watch in order, and it made the artifact twenty-odd
+        # MiB for a boot that lasts ten minutes. lib/live.py encodes what has accumulated
+        # every LIVE_ARTIFACT_SECONDS and unlinks each frame as it goes, so the work
+        # directory holds a growing mp4 and at most one interval of pictures - which is
+        # also what every other stage in this repository does (see macos/15/ssh.py,
+        # windows/11/launch.py and linux/nixos/bake.py).
+        live = livelib.start(
+            [shots2], os.path.join(work, "install.mp4"),
+            os.path.join(work, "last-frame.png"),
+            every=float(os.environ.get("LIVE_ARTIFACT_SECONDS", "20")),
         )
         # THE DESKTOP IS VERIFIED BY ITS WAYLAND SESSION, NOT BY ITS PIXELS.
         #
@@ -200,6 +216,9 @@ def boot_installed(work: str, args, disk: str) -> bool:
                 frames.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 frames.kill()
+        # AFTER THE FRAMES STOP ARRIVING, so the encode includes the last ones.
+        if live is not None:
+            live.stop()
         ser.close()
 
 
