@@ -176,7 +176,7 @@ class Wizard:
 # False as "try the next one", so a pane that was skipped by the guest does not stop the run.
 
 def pane_country(w: Wizard) -> bool:
-    if not w.says("country"):
+    if not w.says("country", "region"):
         return False
     log("pane: Select Your Country or Region")
     # TYPING SELECTS THE ROW. The list takes nothing from a click except focus; typing
@@ -190,7 +190,7 @@ def pane_country(w: Wizard) -> bool:
 
 
 def pane_transfer(w: Wizard) -> bool:
-    if not w.says("transfer"):
+    if not w.says("transfer", "data"):
         return False
     log("pane: Transfer Your Data to This Mac")
     # THE CIRCLE, WHICH IS THE CONTROL. drive.py's 15 branch clicks the label at (880,666)
@@ -207,7 +207,7 @@ def pane_transfer(w: Wizard) -> bool:
 
 
 def pane_languages(w: Wizard) -> bool:
-    if not w.says("languages"):
+    if not w.says("spoken", "languages"):
         return False
     log("pane: Written and Spoken Languages")
     w.click(CONTINUE, "languages Continue", settle=8.0)
@@ -215,7 +215,7 @@ def pane_languages(w: Wizard) -> bool:
 
 
 def pane_accessibility(w: Wizard) -> bool:
-    if not w.says("accessibility"):
+    if not w.says("accessibility", "individual"):
         return False
     log("pane: Accessibility")
     # NOT "Continue". This pane's forward button says Not Now, and it sits four pixels
@@ -225,7 +225,7 @@ def pane_accessibility(w: Wizard) -> bool:
 
 
 def pane_privacy(w: Wizard) -> bool:
-    if not w.says("privacy"):
+    if not w.says("data", "privacy"):
         return False
     log("pane: Data & Privacy")
     w.click(CONTINUE, "privacy Continue", settle=8.0)
@@ -233,7 +233,7 @@ def pane_privacy(w: Wizard) -> bool:
 
 
 def pane_account(w: Wizard, user: str, password: str) -> bool:
-    if not w.says("account"):
+    if not w.says("full", "name"):
         return False
     log(f"pane: Create a Mac Account ({user})")
     fields = ACCOUNT_FIELDS.get(w.release)
@@ -253,7 +253,7 @@ def pane_account(w: Wizard, user: str, password: str) -> bool:
 
 
 def pane_apple(w: Wizard) -> bool:
-    if not w.says("apple"):
+    if not w.says("sign", "apple"):
         return False
     log("pane: Sign In to Your Apple Account")
     w.click(APPLE_SET_UP_LATER, "Set Up Later", settle=6.0)
@@ -266,7 +266,7 @@ def pane_apple(w: Wizard) -> bool:
 
 
 def pane_terms(w: Wizard) -> bool:
-    if not w.says("terms"):
+    if not w.says("terms", "conditions"):
         return False
     log("pane: Terms and Conditions")
     # TWO CLICKS, AND THE SECOND ONE IS THE ONE THAT COUNTS.
@@ -283,7 +283,7 @@ def pane_terms(w: Wizard) -> bool:
 
 
 def pane_location(w: Wizard) -> bool:
-    if not w.says("location"):
+    if not w.says("location", "services"):
         return False
     log("pane: Enable Location Services")
     w.click(CONTINUE, "location Continue, which opens the confirmation", settle=6.0)
@@ -298,7 +298,7 @@ def pane_location(w: Wizard) -> bool:
 
 
 def pane_timezone(w: Wizard) -> bool:
-    if not w.says("zone"):
+    if not w.says("time", "zone"):
         return False
     log("pane: Select Your Time Zone")
     w.click(TIME_ZONE_CONTINUE, "time zone Continue", settle=10.0)
@@ -306,7 +306,7 @@ def pane_timezone(w: Wizard) -> bool:
 
 
 def pane_analytics(w: Wizard) -> bool:
-    if not w.says("analytics"):
+    if not w.says("analytics", "improve"):
         return False
     log("pane: Analytics")
     # UNTICK FIRST. The box is on when the pane opens; clicking it clears it and greys the
@@ -317,7 +317,7 @@ def pane_analytics(w: Wizard) -> bool:
 
 
 def pane_screen_time(w: Wizard) -> bool:
-    if not w.says("time") or not w.says("screen"):
+    if not w.says("screen", "report"):
         return False
     log("pane: Screen Time")
     w.click(SCREEN_TIME_LATER, "Screen Time: Set Up Later", settle=8.0)
@@ -329,7 +329,7 @@ def pane_screen_time(w: Wizard) -> bool:
 
 
 def pane_look(w: Wizard) -> bool:
-    if not w.says("look"):
+    if not w.says("look", "appearance"):
         return False
     log("pane: Choose Your Look")
     w.click(LOOK_CONTINUE, "look Continue", settle=12.0)
@@ -337,7 +337,7 @@ def pane_look(w: Wizard) -> bool:
 
 
 def pane_update(w: Wizard) -> bool:
-    if not w.says("update"):
+    if not w.says("update", "automatically"):
         return False
     log("pane: Update Mac Automatically")
     w.click(CONTINUE, "update Continue", settle=15.0)
@@ -345,7 +345,7 @@ def pane_update(w: Wizard) -> bool:
 
 
 def pane_welcome(w: Wizard) -> bool:
-    if not w.says("welcome"):
+    if not w.says("welcome", "mac"):
         return False
     log("pane: Welcome to Mac")
     w.click(WELCOME_CONTINUE, "welcome Continue", settle=20.0)
@@ -353,7 +353,7 @@ def pane_welcome(w: Wizard) -> bool:
 
 
 def pane_keyboard(w: Wizard) -> bool:
-    if not w.says("keyboard"):
+    if not w.says("keyboard", "assistant"):
         return False
     log("pane: Keyboard Setup Assistant (a dialog over the desktop)")
     # THIS DIALOG EATS THE NEXT KEYSTROKE, which is why sshd could not be enabled until it
@@ -396,10 +396,16 @@ def run(qmp_path: str, frames: str, user: str, password: str,
     # EACH PASS LOOKS AT THE SCREEN AND RUNS THE FIRST PANE THAT MATCHES. A pane that the
     # guest skipped is simply not matched; the loop ends when nothing matches twice in a row,
     # which is either the desktop or a pane no handler knows.
+    #
+    # "WELCOME TO MAC" IS A PANE, NOT THE DESKTOP. It is a full-screen card with a Continue
+    # button, and treating it as arrival skipped pane_welcome and left the wizard one click
+    # from finished - the same class of mistake as an earlier version of this loop that
+    # matched the word "up" inside a paragraph. The desktop is Finder's menu bar and nothing
+    # else, so that is the only word that ends the loop.
     stuck = 0
     while stuck < 2:
         w.look("pass")
-        if w.says("welcome") or w.says("finder"):
+        if w.says("finder"):
             log("=== THE DESKTOP ===")
             break
 

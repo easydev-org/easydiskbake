@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -175,6 +176,24 @@ def main(argv: list[str]) -> int:
     # opencore.build() takes Apple's APFS driver out of that image and installs it into
     # boot.img. A 26 disk booted through a driver taken from 15 is a boot that can fail for a
     # reason no other line in the run would name.
+    #
+    # A HANDLER BEFORE THERE IS A GUEST TO STOP. This call downloads 848 MiB through
+    # lib/opencore's fetch, and it is the longest stretch of a desktop stage that produces no
+    # output of its own - lib/iso.py's progress lines go to stdout, but a transfer that
+    # stalls produces none. Run 42280638394 was cancelled three times while sitting here and
+    # never stopped, because nothing in this process was listening: the handler below is
+    # installed after guest.start(), which is after this call.
+    #
+    # There is nothing to clean up at this point, so the handler only has to exit. os._exit
+    # rather than sys.exit because a signal handler that returns into a blocked socket read
+    # gets to hang again.
+    def _stop_early(signum: int, _frame) -> None:
+        log(f"signal {signum}: exiting during the boot-asset build (no guest yet)")
+        os._exit(143)
+
+    for _sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(_sig, _stop_early)
+
     assets = opencore.build(args.release, work)
     log(f"identity {assets['identity']['serial']} / {assets['identity']['mac']}")
 
@@ -192,6 +211,39 @@ def main(argv: list[str]) -> int:
         shape=machine.shape(assets, cpus=args.cpus, mem_mb=args.mem),
         stdout=os.path.join(work, "console.log"),
     ).start()
+
+    # WHOEVER STARTED QEMU HAS TO STOP IT. This process did, so this process does.
+    #
+    # qemu is started with start_new_session=True (lib/vm.py), which puts it in a session of
+    # its own. log-stream's cancel handler walks the process table for ppid descendants and
+    # signals each group it finds - but that walk needs THIS process to still exist to connect
+    # it to qemu. If this process is killed outright, qemu is reparented to PID 1 and the
+    # walk can no longer reach it: the guest keeps booting, the runner keeps the KVM device
+    # checked out, and `gh run cancel` looks like it did nothing.
+    #
+    # That is run 42280638394. It was cancelled three times - the request was accepted each
+    # time - and it stayed in_progress with no log-stream line to say why, because the signal
+    # never reached the streamer: the stage was waiting on opencore.build()'s 848 MiB recovery
+    # download, before log-stream had a check run to report into. The handle below is what
+    # makes a cancel at ANY point in this stage stop the guest.
+    #
+    # SIGTERM FIRST, NOT SIGKILL. A guest stopped mid-write produces a disk that repairs
+    # itself on the next boot, which is a worse artifact than a slower cancel - the same rule
+    # lib/vm.py's stop() and log_stream's _kill_tree_of() both state.
+    def _stop(signum: int, _frame) -> None:
+        log(f"signal {signum}: stopping the guest and exiting")
+        try:
+            guest.stop(acpi_first=False)
+        except Exception as exc:                       # noqa: BLE001 - shutting down
+            log(f"  the guest did not stop cleanly: {exc}")
+        finally:
+            # 143 IS SHELL CONVENTION FOR "TERMINATED BY SIGTERM", which is what a cancelled
+            # step is. Exiting through the normal path would report a cancel as a build
+            # failure and run the publish steps.
+            os._exit(143)
+
+    for _sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(_sig, _stop)
 
     frames = os.path.join(work, "frames")
     os.makedirs(frames, exist_ok=True)
@@ -300,6 +352,34 @@ def main(argv: list[str]) -> int:
     return 0
 
 
+def _frame_age(directory: str) -> str:
+    """How old the newest frame is, as a phrase for the heartbeat.
+
+    WHY IT IS PART OF THE HEARTBEAT AND NOT A SEPARATE LINE. A desktop that has not arrived
+    has two very different causes, and the frame's age separates them:
+
+        frames arriving, test not matching     the wallpaper test is wrong
+        frames stopped days... minutes ago     the guest stopped drawing, which is a pane
+                                               waiting for an answer
+
+    The second is the one that used to cost a whole run. A wizard stopped on a modal sheet
+    does not change the screen, so every later frame is identical and the recorder keeps
+    writing them; the newest frame's mtime is what tells the two apart.
+    """
+    try:
+        newest = max(
+            (os.path.join(directory, f) for f in os.listdir(directory)),
+            key=os.path.getmtime,
+            default=None,
+        )
+        if newest is None:
+            return "none"
+        age = time.time() - os.path.getmtime(newest)
+        return f"{age:.0f}s old"
+    except OSError:
+        return "unreadable"
+
+
 def wait_for_desktop(guest: vm.Guest, frames: str, timeout: int) -> bool:
     """Wait until the wallpaper test passes, then let the guest settle.
 
@@ -331,6 +411,21 @@ def wait_for_desktop(guest: vm.Guest, frames: str, timeout: int) -> bool:
     shots = frames
     deadline = time.time() + timeout
     started = time.time()
+    # A HEARTBEAT, BECAUSE THIS LOOP CAN RUN FOR HALF AN HOUR IN SILENCE.
+    #
+    # The loop below checks the wallpaper every five seconds and says nothing until it
+    # succeeds or the budget runs out. At the default 1800s that is thirty minutes in which
+    # the Actions log and the check run show one line - "waiting for a desktop" - and the
+    # stage is indistinguishable from a hang. The UI cannot tell them apart either, which is
+    # why a cancelled run and a slow one looked the same.
+    #
+    # Every minute it now says how long it has been, whether the guest is alive, and how old
+    # the newest frame is. The frame age is the part that separates "the guest is drawing and
+    # the test has not matched yet" from "the screen has not changed since the pane that
+    # stopped us" - the second is a wizard that never finished, and reading it here is much
+    # cheaper than reading it out of a video afterwards.
+    beat = int(os.environ.get("DESKTOP_HEARTBEAT_SECONDS", "60"))
+    last_beat = 0.0
     while time.time() < deadline:
         if not guest.alive():
             log("qemu exited before a desktop appeared")
@@ -344,6 +439,11 @@ def wait_for_desktop(guest: vm.Guest, frames: str, timeout: int) -> bool:
                 log("the guest exited while settling - not keeping the disk")
                 return False
             return True
+        elapsed = time.time() - started
+        if elapsed - last_beat >= beat:
+            last_beat = elapsed
+            log(f"  still waiting: {elapsed:.0f}s of {timeout}s, "
+                f"newest frame {_frame_age(shots)}")
         time.sleep(5)
     log(f"timed out after {timeout}s")
     return False

@@ -279,7 +279,17 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: desktop-drive
+          # THE NAME CARRIES THE RUN, BECAUSE TWO WORKFLOWS SHARE THIS SUITE.
+          #
+          # macos15.yml and macos26.yml both run this stage under the name `desktop-drive`,
+          # and both were dispatched against the same commit - so the two check runs had the
+          # same name, the same sha and the same repository. Reading one, there was no way to
+          # tell which run it belonged to, and an hour was spent reading macos26's log while
+          # looking for macos15's. run 42280638394 was the cost.
+          #
+          # github.run_id is unique per dispatch and is what the rest of the workflow already
+          # uses to key its artifacts.
+          name: desktop-drive-${{ github.run_id }}
           interval: "15"
           command: |
             set -euo pipefail
