@@ -62,6 +62,40 @@ from dataclasses import dataclass, field
 QEMU = "qemu-system-x86_64"
 
 
+def _net():
+    """lib/net.py, however this file was reached.
+
+    `import net` ONLY WORKS WHEN lib/ IS ON sys.path, and not every entry point puts it
+    there: bsd/freebsd/bake.py adds the repository root and imports `from lib import ...`,
+    which is enough for every module except this one. Run 42209680016 died on exactly that,
+    forty seconds in, at the first Guest.start():
+
+        File "lib/vm.py", line 459, in start
+            import net
+        ModuleNotFoundError: No module named 'net'
+
+    A FUNCTION-RUN IMPORT IS WHY IT WAS INVISIBLE FOR SO LONG - the freebsd bake was the
+    first caller that starts a guest without lib/ on the path, and every other system
+    happened to add it.
+
+    Loading it from this file's own directory removes the question: lib/net.py sits beside
+    lib/vm.py by construction, so there is always exactly one answer.
+    """
+    global _NET
+    try:
+        return _NET
+    except NameError:
+        pass
+    import importlib.util
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    spec = importlib.util.spec_from_file_location("net", os.path.join(here, "net.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)          # type: ignore[union-attr]
+    _NET = module
+    return module
+
+
 def log(msg: str) -> None:
     print(f"[vm] {msg}", flush=True)
 
@@ -456,7 +490,7 @@ class Guest:
         # cause.
         #
         # net.up() is idempotent: the second and later calls find what is already there.
-        import net
+        net = _net()
 
         net.up(ssh_port=self.shape.ssh_port, rdp_port=self.shape.rdp_port)
         self.shape.tap_ifname = self.shape.tap_ifname or net.TAP
@@ -613,7 +647,7 @@ def rdp_serving(rdp_port: int, host: str = "") -> bool:
     there. lib/net.py explains the measurement.
     """
     if not host:
-        import net
+        net = _net()
         host = net.FORWARD_HOST
     try:
         with socket.create_connection((host, rdp_port), timeout=3) as sock:
