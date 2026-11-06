@@ -221,6 +221,28 @@ def main(argv: list[str]) -> int:
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
             log(f"the Setup Assistant driver failed: {exc}")
 
+        # THE READING DRIVER, ON THE PANES THE FIXED ONE LEFT UNANSWERED.
+        #
+        # drive.py runs first and is left in place: it is the sequence that has been measured
+        # the longest, and when it works there is nothing for a second driver to do. This
+        # runs afterwards because the failure it addresses is a pane drive.py clicked at and
+        # did not change - run 42211273601's recording ends on Terms and Conditions with the
+        # licence sheet up, which is drive.py returning as though the wizard had finished.
+        #
+        # It reads each pane's title before acting, so it can pick up anywhere: if drive.py
+        # got through everything, this finds the desktop and returns at once.
+        log("=== the Setup Assistant: drive_read.py (reads each pane before acting) ===")
+        try:
+            subprocess.run(
+                [sys.executable, os.path.join(HERE, "drive_read.py"),
+                 "--qmp", guest.paths.drive, "--frames", frames,
+                 "--user", args.user, "--password", args.password,
+                 "--boot-timeout", str(args.desktop_timeout)],
+                check=False, timeout=args.assistant_timeout,
+            )
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            log(f"the reading driver failed: {exc}")
+
         log("waiting for a desktop")
         if args.inspect_after is not None:
             # LOOK AT THE RECORDING INSTEAD OF WAITING OUT THE TIMEOUT.
