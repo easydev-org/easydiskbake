@@ -101,6 +101,29 @@ class Wizard:
                  height: int = 1080, release: str = "15") -> None:
         os.makedirs(frames, exist_ok=True)
         self.release = release
+        # THE SOCKET IS WAITED FOR, NOT ASSUMED, AND THIS WAS MISSING.
+        #
+        # desktop.py starts this driver immediately after guest.start(), and guest.start()
+        # returns as soon as the process exists - qemu binds its QMP socket a moment later.
+        # Connecting straight away raises
+        #
+        #     FileNotFoundError: [Errno 2] No such file or directory
+        #       self.sock.connect(path)
+        #
+        # which is what run 42289113404's driver did, nine seconds into the stage, and then
+        # exited 1. The stage that followed was 1800 seconds of "still waiting: ..., newest
+        # frame 0s old" - a heartbeat reporting a guest nobody was driving.
+        #
+        # drive.py has always waited here (its Driver.__init__ documents the same failure from
+        # run 41775498755). This is that wait, and the omission was mine: drive_read.py was
+        # written from scratch and took ocr.Screen() directly.
+        deadline = time.time() + 120
+        while not os.path.exists(qmp_path):
+            if time.time() > deadline:
+                raise SystemExit(
+                    f"no QMP socket at {qmp_path} after 120s; qemu either failed to start "
+                    f"or was given a different work directory")
+            time.sleep(1)
         self.screen = ocr.Screen(qmp_path, frames, width=width, height=height)
         self.q = self.screen.q
         self.frames = frames
