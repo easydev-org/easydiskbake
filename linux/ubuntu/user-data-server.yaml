@@ -120,6 +120,32 @@ autoinstall:
     - mesa-utils
 
   late-commands:
+    # A NETPLAN THAT DOES NOT DEPEND ON WHAT THE INSTALLER GUESSED.
+    #
+    # There is no `network:` section above, so subiquity writes the target's netplan from
+    # its OWN view of the machine - the interface name it saw in the installer's initramfs.
+    # The installed system enumerates PCI in a different order, so that name can differ, and
+    # when it does the disk boots to a login prompt with NO network at all:
+    #
+    #     [ FAILED ] Failed to start systemd-networkd-wait-online.service
+    #     ... and not one `enp*` or `eth*` line in the whole console
+    #
+    # which is what runs 42205282393 and 42192264451 both did. The bake then failed its ssh
+    # check with "No route to host" - and because the SECOND boot had no console until
+    # 1b6fbc7, that looked like a disk that would not start.
+    #
+    # `match: {name: "en*"}` binds the config to whatever the kernel calls the virtio NIC,
+    # so the name cannot disagree with the machine. DHCP is what the installer itself used.
+    - >-
+      curtin in-target -- sh -c "printf '%s\n' 'network:' '  version: 2' '  ethernets:'
+      '    primary:' '      match:' '        name: en*' '      dhcp4: true' '      dhcp6: false'
+      '      optional: true' > /etc/netplan/50-easydiskbake.yaml;
+      chmod 0600 /etc/netplan/50-easydiskbake.yaml"
+    # THE INSTALLER'S OWN FILE, IF IT WAS WRITTEN, IS REMOVED. Two netplan files that
+    # disagree is a coin toss decided by filename order, and 50-easydiskbake must be the
+    # only one that names an interface.
+    - curtin in-target -- sh -c "rm -f /etc/netplan/00-installer-config.yaml /etc/netplan/00-installer-config.yaml.disabled || true"
+
     # SSH ON BOOT, WITH THE PORT THE REST OF THIS PIPELINE USES. Ubuntu's sshd listens
     # on 22; the host forwards 2222 to it (lib/vm.py). Nothing here changes the port -
     # this only makes sure the service is enabled, because `install-server: true`
