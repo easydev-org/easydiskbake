@@ -145,6 +145,25 @@ class Shape:
     # stages, and the guest and gateway addresses are the conventional .2 and .15 within it.
     # Empty for every system that does not need it, so their command lines do not change.
     network_args: str = ""
+    # THE NIC'S OWN ARGUMENTS, WHEN THE DEFAULT DEVICE IS NOT ENOUGH.
+    #
+    # easydev-org/dockur-macos's drive-in-container.sh, which is a macOS guest that answers
+    # ssh, declares its card as
+    #
+    #     -device virtio-net-pci,id=net0,netdev=hostnet0,romfile=,mac=00:16:CB:53:E9:8C
+    #
+    # and this repository declared a bare `virtio-net-pci,netdev=n0`. Two differences:
+    #
+    #     romfile=   no iPXE option ROM. The firmware does not probe this card for network
+    #                boot, so macOS never sees the "is this a boot device" path for it.
+    #     mac=       the MAC matches the one in OpenCore's identity, which is what macOS
+    #                builds its network service records from. A guest whose NIC address and
+    #                whose configured identity disagree is described by two records, and the
+    #                libinfo calls that fail here (si_destination_compare) are exactly the
+    #                "which address is this host" lookups.
+    #
+    # Empty by default so no other system's command line changes.
+    net_device_args: str = ""
     # A host directory to expose over SMB. Empty means no share, and the netdev is
     # exactly what it was before this field existed - see lib/share.py for why SMB
     # rather than virtiofs or 9p.
@@ -303,7 +322,7 @@ def build_args(work: str, extra: list[str] | None = None,
             "-netdev", f"user,id=n0{shape.network_args},"
                        f"hostfwd=tcp::{shape.ssh_port}-:22,"
                        f"hostfwd=tcp::{shape.rdp_port}-:3389",
-            "-device", "virtio-net-pci,netdev=n0",
+            "-device", f"virtio-net-pci,netdev=n0{shape.net_device_args}",
         ]
 
     if shape.machine:
