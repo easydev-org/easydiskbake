@@ -16,16 +16,21 @@ that the wizard finished rather than that a click landed.
 WHY THE WIZARD IS DRIVEN RATHER THAN ANSWERED
 
 macOS has no unattended format. There is no answer file, no autoinstall, nothing to hand
-it - Setup Assistant is a GUI and the only way through it is to click it. drive.py holds
-the coordinates and the reasoning for each; every one of them was measured from a frame
-this pipeline captured, and none was guessed.
+it - Setup Assistant is a GUI and the only way through it is to click it. drive_read.py
+holds the coordinates and reads each pane before acting on it; every number in it came
+from a frame this pipeline captured, and none was guessed.
+
+drive.py IS STILL HERE AND IS NO LONGER CALLED. It is the fixed sequence, and it is where
+those numbers were first measured - its comments are the record of which coordinate was
+wrong and which run showed it. It is kept as that record, not as a code path: two drivers
+for one outcome meant a stalled stage could not say which of them was responsible.
 
 WHY THE WAIT IS SPLIT FROM THE CLICKS
 
-drive.py's sequence has a fixed length and clicks on a schedule. That is right for the
-panes, and it says nothing about whether the machine afterwards is at a desktop or at the
-login window with a dialog over it. lib/desktop.py answers that, and it is the same
-wallpaper test the Windows bake uses - a light top and a busy dark bottom.
+drive_read.py's sequence has a bounded length and clicks on a schedule between checks. That
+is right for the panes, and it says nothing about whether the machine afterwards is at a
+desktop or at the login window with a dialog over it. lib/desktop.py answers that, and it is
+the same wallpaper test the Windows bake uses - a light top and a busy dark bottom.
 
 THE BOOT MUST BE THE INSTALLED SYSTEM, NOT THE RECOVERY IMAGE. So no -cdrom and no
 recovery disk: the machine is the target disk and OpenCore, exactly as it will be when
@@ -209,31 +214,21 @@ def main(argv: list[str]) -> int:
 
     arrived = False
     try:
-        log("=== the Setup Assistant: drive.py ===")
-        try:
-            subprocess.run(
-                [sys.executable, os.path.join(HERE, "drive.py"),
-                 "--qmp", guest.paths.drive, "--frames", frames,
-                 "--user", args.user, "--password", args.password,
-                 "--release", args.release],
-                check=True, timeout=args.assistant_timeout,
-            )
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
-            log(f"the Setup Assistant driver failed: {exc}")
-
-        # THE READING DRIVER, ON THE PANES THE FIXED ONE LEFT UNANSWERED.
+        # ONE DRIVER. THE READING ONE.
         #
-        # drive.py runs first and is left in place: it is the sequence that has been measured
-        # the longest, and when it works there is nothing for a second driver to do. This
-        # runs afterwards because the failure it addresses is a pane drive.py clicked at and
-        # did not change - run 42211273601's recording ends on Terms and Conditions with the
-        # licence sheet up, which is drive.py returning as though the wizard had finished.
+        # drive.py used to run here and drive_read.py after it. That is two paths to the same
+        # outcome, and it made the stage impossible to reason about: run 42280638394's
+        # `drive the Setup Assistant` step sat for half an hour without one log-stream line,
+        # and there was no way to tell which of the two drivers was responsible or which pane
+        # it was on.
         #
-        # It reads each pane's title before acting, so it can pick up anywhere: if drive.py
-        # got through everything, this finds the desktop and returns at once.
-        log("=== the Setup Assistant: drive_read.py (reads each pane before acting) ===")
+        # drive.py is still in the tree - it is the sequence that was measured the longest and
+        # its coordinate comments are where every number here came from - but it is not
+        # called. A pane that this driver cannot answer fails loudly at that pane, which is
+        # the whole reason for reading the screen instead of replaying a table.
+        log("=== the Setup Assistant: drive_read.py ===")
         try:
-            subprocess.run(
+            proc = subprocess.run(
                 [sys.executable, os.path.join(HERE, "drive_read.py"),
                  "--qmp", guest.paths.drive, "--frames", frames,
                  "--user", args.user, "--password", args.password,
@@ -241,6 +236,9 @@ def main(argv: list[str]) -> int:
                  "--boot-timeout", str(args.desktop_timeout)],
                 check=False, timeout=args.assistant_timeout,
             )
+            if proc.returncode != 0:
+                log(f"the reading driver exited {proc.returncode}; see its log for the pane "
+                    f"it could not answer")
         except (subprocess.TimeoutExpired, OSError) as exc:
             log(f"the reading driver failed: {exc}")
 
