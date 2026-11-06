@@ -214,20 +214,34 @@ jobs:
       contents: read
       checks: write
       packages: write
-    # THE TAG THIS LEG PUBLISHED, WHICH dev AND launch PULL.
+    # THE TAG PREFIX THIS JOB PUBLISHED, WHICH dev PULLS.
     #
     # A matrix job's outputs are PER JOB, and a consumer cannot address one leg's output by
-    # name - but every leg publishes `<prefix>-<desktop>` and the consumer already knows the
-    # desktop, so the useful value here is the same for all six. Run 42052186379 is what its
-    # absence costs:
+    # name. GitHub does not merge the six values: the consumer reads whichever leg finished
+    # last, and that is a race, not a value.
     #
-    #     [oci-pull] FAILED: tag is required
+    # THIS EXPRESSION USED TO END IN `format('nixos-{0}', matrix.desktop)`, WHICH MADE IT
+    # DIFFERENT IN EVERY LEG - so it was the very race it was written to avoid. Run
+    # 42209681406: every derive leg succeeded and published its own tag, the last leg to
+    # finish was hyprland at 12:04:48, and all six dev legs therefore pulled
     #
-    # on all six dev legs, because `needs.derive.outputs.tag` resolved to the empty string.
-    # `inputs.derive_from` is what makes it work for a run that starts at dev instead, so a
-    # caller that skips derive still has a way in.
+    #     [oci-pull] pulling ghcr.io/easydev-org/easydiskbake:nixos-hyprland
+    #
+    # and then looked for `out/nixos-<their own desktop>.qcow2`:
+    #
+    #     [derive 12:06:42] derive cosmic from out/nixos-cosmic.qcow2
+    #     no base disk at out/nixos-cosmic.qcow2
+    #
+    # five of six legs died that way; hyprland passed only because the value happened to be
+    # its own. The comment above this block already said the value "is the same for all six"
+    # - it is the expression that did not.
+    #
+    # SO IT IS A PREFIX, WITH NO matrix IN IT. Each consumer appends its own desktop, which
+    # is the shape `inputs.derive_from` always had. Run 42052186379 cost the empty string
+    # here (`[oci-pull] FAILED: tag is required` on all six), and that is what the fallback
+    # covers.
     outputs:
-      tag: ${{ inputs.derive_from != '' && format('{0}-{1}', inputs.derive_from, matrix.desktop) || format('nixos-{0}', matrix.desktop) }}
+      tag: ${{ inputs.derive_from || 'nixos' }}
     strategy:
       # ONE DESKTOP FAILING SAYS NOTHING ABOUT THE OTHER FIVE. Seeing all six outcomes is worth
       # more than stopping at the first.
@@ -366,7 +380,12 @@ jobs:
           # which is run 41985209488. The three Linux workflows say
           # `inputs.dev_from || needs.bake.outputs.tag`; this is the same shape, with
           # derive in place of bake because NixOS derives a desktop from its base.
-          tag: ${{ inputs.dev_from != '' && format('{0}-{1}', inputs.dev_from, matrix.desktop) || needs.derive.outputs.tag }}
+          #
+          # THE DESKTOP IS APPENDED HERE, NOT IN THE OUTPUT. `needs.derive.outputs.tag` is a
+          # prefix (`nixos`) precisely so it can be the same in all six legs - see the
+          # comment on that output. Taking it directly is what made every leg pull
+          # `nixos-hyprland` in run 42209681406.
+          tag: ${{ inputs.dev_from != '' && format('{0}-{1}', inputs.dev_from, matrix.desktop) || format('{0}-{1}', needs.derive.outputs.tag, matrix.desktop) }}
           dest: out
           token: ${{ github.token }}
 

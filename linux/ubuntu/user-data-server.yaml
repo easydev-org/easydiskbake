@@ -160,14 +160,63 @@ autoinstall:
     #
     # WHY THE INSTALLER NEVER SEES THIS. The install boots with `-kernel` and `-initrd`
     # supplied by qemu, so it runs the ISO's initramfs, which carries every module. The
-    # installed system builds its own with Ubuntu's default MODULES=dep, which includes only
-    # what the module dependency walk could see AT BUILD TIME - and building it inside the
-    # installer's chroot is not the same view as booting the disk.
+    # installed system builds its own with a hostonly dependency walk, which includes only
+    # what could be seen AT BUILD TIME - and building it inside the installer's chroot is
+    # not the same view as booting the disk.
     #
-    # `MODULES=most` puts the full set in, which is what a cloud image ships and what makes
-    # the disk bootable on a machine whose NIC is not the one it was built on. It costs about
-    # 40 MiB of initramfs and removes the whole class of failure.
-    - curtin in-target -- sh -c "printf 'MODULES=most\n' > /etc/initramfs-tools/conf.d/zz-easydiskbake.conf && update-initramfs -u -k all"
+    # IT IS DRACUT, NOT initramfs-tools. Ubuntu 26.04 made dracut the default generator,
+    # and the first fix here wrote `/etc/initramfs-tools/conf.d/... MODULES=most` anyway.
+    # That file is read by a tool that no longer builds the initrd, so the command exited 0
+    # after 32 seconds and changed nothing. The installed system says which generator it
+    # used in the first line of its own initrd:
+    #
+    #     Ubuntu 26.04.1 LTS dracut-110-11ubuntu0.1 (Initramfs)
+    #
+    # so `MODULES=most` was a no-op and the second boot still had no virtio_net. Runs
+    # 42213313665 (ubuntu) and 42213344915 (kubuntu), both on 47a8288.
+    #
+    # `add_drivers` names the three virtio drivers explicitly, which is the smallest
+    # change that removes the class: the disk's driver, the PCI transport, and the NIC.
+    # `hostonly="no"` is the wider safety net - it builds a generic initrd that boots on
+    # hardware it was not built on, at the cost of ~40 MiB - and it is what a cloud image
+    # ships. Both are set so neither alone is load-bearing.
+    #
+    # THE QUOTING IS TWO LAYERS AND WAS TESTED, NOT ASSUMED. YAML folds this to one line,
+    # curtin hands `sh -c` its argument, and `sh` runs printf. `\"` inside the outer double
+    # quotes is what delivers a real `"` to the file - written the other way (single quotes
+    # outside) the file came out with literal backslashes:
+    #
+    #     add_drivers+=\" virtio_net virtio_pci virtio_blk \"
+    #
+    # which dracut does not read as a list, so the drivers would silently not be added and
+    # the second boot would fail exactly as before.
+    - >-
+      curtin in-target -- sh -c "mkdir -p /etc/dracut.conf.d &&
+      printf '%s\n' 'add_drivers+=\" virtio_net virtio_pci virtio_blk \"' 'hostonly=\"no\"'
+      > /etc/dracut.conf.d/zz-easydiskbake.conf && dracut --force --regenerate-all"
+
+    # AND THE RESULT IS CHECKED, HERE, WHERE THE ERROR NAMES ITSELF.
+    #
+    # Without this the only symptom of a bad initrd is ten minutes of SSH timeouts on the
+    # second boot, which reads as a broken disk. `lsinitrd` answers the actual question -
+    # is the driver in the image that will be booted - and failing the install is a much
+    # cheaper way to learn it. Skipped, not failed, when lsinitrd is absent: a slimmer
+    # dracut package must not block a bake on a diagnostic.
+    #
+    # THE INNER SCRIPT IS SINGLE-QUOTED. This is `curtin in-target -- sh -c '...'` inside a
+    # YAML value, and the first draft escaped its variables as `\$f` inside double quotes.
+    # Measured: sh received a literal `\$f` and died on
+    #
+    #     sh: 1: Syntax error: "(" unexpected
+    #
+    # because `$(...)` had been mangled. Single quotes have no expansion in either layer, so
+    # `$f` and `$(...)` reach the guest exactly as written.
+    - >-
+      curtin in-target -- sh -c 'f=$(ls /boot/initrd.img-* 2>/dev/null | head -1);
+      if command -v lsinitrd >/dev/null 2>&1 && [ -n "$f" ]; then
+      lsinitrd "$f" | grep -q virtio_net || { echo "FATAL: $f carries no virtio_net"; exit 1; };
+      echo "initramfs carries virtio_net: $f";
+      else echo "lsinitrd not available; the initramfs check is skipped"; fi'
 
     # SSH ON BOOT, WITH THE PORT THE REST OF THIS PIPELINE USES. Ubuntu's sshd listens
     # on 22; the host forwards 2222 to it (lib/vm.py). Nothing here changes the port -
