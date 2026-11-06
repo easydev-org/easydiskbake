@@ -124,6 +124,37 @@ TRANSFER_ROWS = {
 FIRST_RADIO = TRANSFER_ROWS["From a Mac"]
 UNITED_STATES = (764, 615)
 
+# THE TRANSFER PANE ON 15 IS DRIVEN BY ITS LABEL, NOT BY ITS CIRCLE. Measured on
+# 2026-11-06 from a screendump of the pane: two clicks on the circle at (824,666) and
+# (823,666) left the first row selected, and (880,666) on the words "Set up as new" took it
+# at once. The label spans x 845..960 at y=666 in that frame.
+TRANSFER_LABEL_15 = (880, 666)
+
+# --- the six panes after the Apple Account, measured on 15 --------------------------------
+#
+# THE FOOTER MOVES. Most panes put Continue at x=1306,y=810; Time Zone and Analytics sit four
+# pixels higher at y=806, and Choose Your Look at y=805. Those differences are small enough to
+# be invisible in a recording and large enough to miss a 40px button, so each pane that was
+# measured gets its own constant rather than sharing one.
+TIME_ZONE_CONTINUE = (1306, 806)
+LOOK_CONTINUE = (1306, 805)
+
+# LOCATION SERVICES. Continue opens a confirmation sheet with two buttons; "Don't Use" is the
+# left one and is its DEFAULT, so a click darkens it and leaves the sheet up - Return fires it.
+LOCATION_DONT_USE = (960, 632)
+
+# ANALYTICS. The tick beside "Share Mac Analytics with Apple"; clicking it clears the box and
+# greys the second option with it.
+ANALYTICS_SHARE = (808, 513)
+
+# SCREEN TIME. "Set Up Later" is a text link in the footer, left of the two buttons.
+SCREEN_TIME_LATER = (619, 806)
+
+# THE KEYBOARD SETUP ASSISTANT's Quit, which sits on the desktop after the wizard fades out.
+# This dialog eats the next keystroke, which is why sshd could not be enabled until it was
+# dismissed; see macos/15/ssh.py's dismiss_keyboard_assistant().
+KEYBOARD_QUIT = (1222, 818)
+
 # THE TRANSFER PANE HAS NO COORDINATE HERE, DELIBERATELY.
 #
 # It is a vertical radio list - "From a Mac, Time Machine, or startup disk", "From a Windows
@@ -396,10 +427,19 @@ class Driver:
 # --- the sequence -------------------------------------------------------------------
 
 
-def pick_country(d: Driver) -> None:
+def pick_country(d: Driver, release: str = "15") -> None:
     d.wait(30, "let the country pane finish drawing")
     d.click(COUNTRY_LIST, "focus the country list")
     d.keys("united states")
+    if release == "15":
+        # TYPING THE WHOLE NAME SELECTS THE ROW. Measured on 2026-11-06: after
+        # `united states` the list jumps to the U section with "United States" already
+        # highlighted, and Continue takes the pane - no Page Down walk and no row click.
+        # The old five-Page-Down-and-Return walk is kept below for 26, which has not been
+        # measured this way.
+        d.wait(3, "the list filters down to United States")
+        d.click(CONTINUE, "country Continue", settle=12.0)
+        return
     d.key("pgdn", times=5, settle=2.0)
     d.key("pgup", settle=2.0)
     d.click(UNITED_STATES, "the United States row")
@@ -410,7 +450,7 @@ def pick_country(d: Driver) -> None:
     d.click(CONTINUE, "country Continue", settle=8.0)
 
 
-def set_up_as_new(d: Driver) -> None:
+def set_up_as_new(d: Driver, release: str = "15") -> None:
     """Focus the radio list, then THREE DOWNS. The row is never clicked directly.
 
     THE PANE, from the recording of run 41782331835 at 37s:
@@ -456,6 +496,24 @@ def set_up_as_new(d: Driver) -> None:
     """
     d.wait(8, "transfer pane settles")
 
+    if release == "15":
+        # THE LABEL IS THE TARGET ON 15, AND THE CIRCLE IS NOT.
+        #
+        # Measured on 2026-11-06 against a 1920x1080 screendump of this exact pane: clicks
+        # at (824,666) and (823,666) - the radio circle itself, twice, one pixel apart -
+        # moved the pointer onto the circle and changed NOTHING. A click at (880,666), on
+        # the words "Set up as new", selected the row immediately.
+        #
+        # That contradicts what this file argued for years (a macOS radio button is 16px
+        # and the label is not part of the control). On this pane the label IS clickable,
+        # and aiming at the circle has only ever worked when the circle happened to be
+        # where the guess said. The label's x range is wide - 845..960 in this frame - so
+        # 880 is inside it by a comfortable margin in both directions.
+        d.click(TRANSFER_LABEL_15, "the 'Set up as new' label", settle=4.0)
+        d.wait(4, "the radio selection registers")
+        d.click(CONTINUE, "transfer Continue", settle=12.0)
+        return
+
     # CLICK THE FIRST ROW FOR FOCUS, THEN THREE DOWNS. NOT A CLICK ON THE LAST ROW.
     #
     # This is what the docstring above has always described, and the code had stopped doing
@@ -498,13 +556,21 @@ def languages(d: Driver) -> None:
     d.click(CONTINUE, "languages Continue", settle=8.0)
 
 
-def accessibility(d: Driver) -> None:
+def accessibility(d: Driver, release: str = "15") -> None:
     d.wait(8)
+    if release == "15":
+        # "Not Now" IS THE FOOTER BUTTON HERE, at the same place Continue sits on the panes
+        # around it, and a click takes it in one go. The Return this used to send first was
+        # added for 26, where the same coordinate is a different control; on 15 it fires the
+        # pane early and the following click then lands on the NEXT pane's Continue, which
+        # advances a pane this sequence has not filled in yet.
+        d.click(CONTINUE, "accessibility Not Now", settle=12.0)
+        return
     d.key("ret", settle=3.0)
     d.click(CONTINUE, "accessibility Continue", settle=8.0)
 
 
-def privacy_then_not_now(d: Driver) -> None:
+def privacy_then_not_now(d: Driver, release: str = "15") -> None:
     """Data & Privacy, then the pane it opens: dismiss the alert, then Not Now.
 
     Continue on Data & Privacy leads to a pairing handshake with a Mac that does not exist.
@@ -523,9 +589,16 @@ def privacy_then_not_now(d: Driver) -> None:
     So: OK first, THEN Not Now. The OK click is a no-op when the alert did not appear,
     because that point is empty pane background, which is the same argument LICENCE_AGREE
     uses for being clicked on every pane.
+
+    FIFTEEN DOES NOT RAISE THE HANDSHAKE AT ALL, measured on 2026-11-06: Continue on Data &
+    Privacy went straight to "Create a Mac Account" on two runs, with no pairing alert and no
+    Not Now pane in between. So on 15 this is one click.
     """
     d.wait(8)
     d.click(CONTINUE, "privacy Continue", settle=2.0)
+    if release == "15":
+        d.wait(10, "the account pane opens straight away")
+        return
     d.click(PAIR_ALERT_OK, "OK on the pairing alert, if it is up", settle=2.0)
     d.click(NOT_NOW_LEFT, "Not Now on the pairing pane", settle=3.0)
     d.click(PAIR_ALERT_OK, "OK again, in case the alert came back", settle=2.0)
@@ -673,8 +746,72 @@ def apple_account(d: Driver, release: str = "15") -> None:
     d.key("ret", settle=2.0)
 
 
-def tail(d: Driver) -> None:
-    """After the account: Continue at the usual place, with a Return before each.
+def tail(d: Driver, release: str = "15") -> None:
+    """Everything after the Apple Account pane, up to the desktop.
+
+    FIFTEEN HAS A MEASURED SEQUENCE NOW, AND IT IS NOT A LOOP OF CONTINUES.
+
+    Walked by hand on 2026-11-06 and recorded pane by pane; the six panes and their controls
+    are listed below. The loop this replaces clicked Continue ten times with a Return
+    before each, which is right only while every remaining pane happens to have Continue in
+    the same place and no pane has anything else to answer. Two of these six do:
+
+        Location Services   Continue opens a confirmation with "Don't Use" / "Use Location
+                            Services", and the pane does not move until one is answered
+        Terms               the footer's Agree opens a sheet whose own Agree is a different
+                            click, at a different place
+
+    A blind Continue walked past the first and stopped dead on the second, which is how the
+    licence pane ended up looking like a wizard that had finished.
+
+    THE TWO CLICKS THAT NEED RETURN ARE NOT TIMING ACCIDENTS. The Location sheet's "Don't
+    Use" is its default button: a click at (960,632) visibly darkens it and leaves the sheet
+    up, and Return is what fires it. Same pane, same frame, measured twice.
+    """
+    if release != "15":
+        _tail_blind(d)
+        return
+
+    # --- Location Services -----------------------------------------------------------------
+    d.wait(12, "Enable Location Services settles")
+    d.click(CONTINUE, "location Continue", settle=10.0)
+    d.click(LOCATION_DONT_USE, "Don't Use on the location confirmation", settle=3.0)
+    d.key("ret", settle=12.0)
+
+    # --- Time Zone --------------------------------------------------------------------------
+    # The default is Pacific Standard Time / Cupertino, which is what a bake wants; there is
+    # nothing to choose, only to accept.
+    d.click(TIME_ZONE_CONTINUE, "time zone Continue", settle=12.0)
+
+    # --- Analytics --------------------------------------------------------------------------
+    d.click(ANALYTICS_SHARE, "untick Share Mac Analytics", settle=3.0)
+    d.click(TIME_ZONE_CONTINUE, "analytics Continue", settle=12.0)
+
+    # --- Screen Time ------------------------------------------------------------------------
+    # THIS IS THE PANE THAT WAS MISTAKEN FOR A HANG. Its "Set Up Later" spins briefly in the
+    # lower-left corner with both footer buttons grey. That was read as a dead wizard for
+    # eighteen minutes; it was the guest's MTU dropping every full-size packet, so an Apple
+    # request inside the pane could never complete. With lib/net.py reading the MTU from the
+    # uplink it passes in a few seconds.
+    d.click(SCREEN_TIME_LATER, "Screen Time: Set Up Later", settle=30.0)
+
+    # --- Choose Your Look -------------------------------------------------------------------
+    # Light is selected when the pane opens. The Continue here is four pixels higher than the
+    # wizard's usual footer, which is why it has its own constant.
+    d.wait(8, "Choose Your Look settles")
+    d.click(LOOK_CONTINUE, "look Continue", settle=10.0)
+
+    # THE WIZARD FADES TO THE DESKTOP AND THE KEYBOARD ASSISTANT ARRIVES ON TOP OF IT. Quit
+    # is clicked here rather than left to the ssh stage, because this stage's job is to hand
+    # over a disk that is already at a desktop.
+    d.wait(40, "the wizard finishes and the desktop appears")
+    d.click(KEYBOARD_QUIT, "Keyboard Setup Assistant: Quit", settle=6.0)
+
+
+def _tail_blind(d: Driver) -> None:
+    """The unmeasured loop, kept for 26 until its own panes are walked.
+
+    TEN CONTINUES, WITH A RETURN AND A LICENCE-AGREE BEFORE EACH.
 
     SIX, NOT TWELVE, AND THE TWELVE IS WHY RUN 41784951651 WENT BACKWARDS.
 
@@ -726,14 +863,14 @@ def run_sequence(qmp_path: str, frames_dir: str | None, user: str, password: str
     log("connected; fixed sequence, no reads")
     try:
         d.wait(120, "guest boots into Setup Assistant")
-        pick_country(d)
-        set_up_as_new(d)
+        pick_country(d, release)
+        set_up_as_new(d, release)
         languages(d)
-        accessibility(d)
-        privacy_then_not_now(d)
+        accessibility(d, release)
+        privacy_then_not_now(d, release)
         account(d, user, password, release)
         apple_account(d, release)
-        tail(d)
+        tail(d, release)
         log(f"sequence complete after {d.n} actions")
     finally:
         d.close()
