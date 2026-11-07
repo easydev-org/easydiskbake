@@ -90,10 +90,17 @@ ONLINE_REPOS_NO = (1004, 614)
 # SYSTEM ROLE'S FIRST RADIO BUTTON - the KDE Plasma row. Its x is the circle, not the label.
 ROLE_KDE_PLASMA = (588, 333)
 
-# THE LOCAL USER FORM.
+# THE LOCAL USER FORM - FOUR FIELDS, NOT THREE.
+#
+# `User's Full Name`, `Username`, `Password`, `Confirm Password`, measured at 1920x1080 on a
+# live Tumbleweed session. THE USERNAME FIELD IS NOT OPTIONAL AND WAS MISSING FROM THIS
+# DRIVER: the page draws it between the full name and the password, and leaving it empty
+# disables Next - the install cannot be started at all. The three-field version came from a
+# frame of an older build and was never re-measured after `Username` was added.
 USER_FULL_NAME = (1106, 418)
-USER_PASSWORD = (1106, 540)
-USER_CONFIRM = (1106, 604)
+USER_NAME = (1106, 483)
+USER_PASSWORD = (1106, 548)
+USER_CONFIRM = (1106, 614)
 
 # THE FINAL BUTTON is `Install`, at the same place Next has been all along.
 INSTALL = (1587, 859)
@@ -199,7 +206,25 @@ def wait_for_live_desktop(drv: Driver, timeout: int) -> bool:
 
 
 def walk_yast2(drv: Driver, args) -> bool:
-    """Click through YaST2, checking each pane is the one expected."""
+    """Click through YaST2: A MEASURED COORDINATE, THEN A MEASURED WAIT.
+
+    NOTHING IS READ TO DECIDE ANYTHING. Every step is a number in this file and a duration;
+    the screen is read afterwards and the reading goes into the log, where it is useful for
+    a post-mortem and dangerous as a decision. This is the rule ubuntu-gui and kubuntu-gui
+    already follow, and the reason both of them are green.
+
+    WHAT A DETECTOR COST HERE. The first version of this driver skipped the Online
+    Repositories pane and the Suggested Partitioning pane whenever its text was not read -
+    so on a slow frame it silently configured a different install. Later it tested
+    `if "installation settings" in drv.text()` after the Install click, which is TRUE with
+    the confirmation modal correctly on screen (the pane is still drawn behind it), and
+    every run "recovered" from a click that had worked by pressing Return - which on this
+    installer is BACK, dismissing the confirmation. See step 6.
+
+    YAST2'S FOOTER IS AT ONE PLACE. Measured at 1920x1080 on Welcome, System Role,
+    Suggested Partitioning, Clock and Time Zone and Local User: `Next` is (1596, 859) on
+    all of them, because YaST2 draws a window whose footer does not move with its content.
+    """
     # 1. THE ICON, THROUGH kdesu. See the module docstring: this is what makes YaST2 come up
     #    graphically, and running the same script from a shell does not.
     #
@@ -219,110 +244,83 @@ def walk_yast2(drv: Driver, args) -> bool:
         log(f"  screen: {drv.text()[:200]}")
         return False
 
-    # 2. WELCOME -> SYSTEM PROBING. YaST2 probes the machine and then asks about the online
-    #    repositories. The probing is not instant, so this waits for the question.
-    drv.click(NEXT, "Welcome: Next", settle=25.0)
+    # 2. WELCOME -> SYSTEM PROBING -> ONLINE REPOSITORIES.
+    #
+    #    The probe is not instant, so the wait after the first click is 30 s; the question
+    #    about online repositories comes up on its own and `No` is clicked at its measured
+    #    place whether or not its words were read.
+    drv.click(NEXT, "Welcome: Next", settle=30.0)
     drv.look("probing")
+    drv.click(ONLINE_REPOS_NO, "Online Repositories: No", settle=20.0)
+    drv.look("system role")
 
-    if "online repositories" in drv.text():
-        drv.click(ONLINE_REPOS_NO, "Online Repositories: No", settle=15.0)
-        drv.look("system role")
-
-    # 3. SYSTEM ROLE. THE RADIO BUTTON, NOT THE ROW - see the module docstring.
+    # 3. SYSTEM ROLE. THE RADIO BUTTON, NOT THE ROW - see the module docstring: the row is
+    #    highlighted on hover and the pane starts with nothing selected, which makes Continue
+    #    say `Select one of the available roles to continue.`
     log("selecting Desktop with KDE Plasma (its radio button, which starts empty)")
-    drv.click(ROLE_KDE_PLASMA, "role: Desktop with KDE Plasma", settle=4.0)
+    drv.click(ROLE_KDE_PLASMA, "role: Desktop with KDE Plasma", settle=6.0)
     drv.look("role selected")
-    drv.click(NEXT, "System Role: Next", settle=25.0)
+    drv.click(NEXT, "System Role: Next", settle=30.0)
     drv.look("partitioning")
 
-    if "suggested partitioning" in drv.text():
-        # THE SUGGESTED LAYOUT IS THE RIGHT ONE: GPT, a BIOS boot partition, btrfs for / and
-        # swap. Accepting it is one click and changing it is several screens.
-        drv.click(NEXT, "Suggested Partitioning: Next", settle=25.0)
-        drv.look("timezone")
+    # 4. SUGGESTED PARTITIONING. THE SUGGESTED LAYOUT IS THE RIGHT ONE: GPT, a BIOS boot
+    #    partition, btrfs for / and swap. Accepting it is one click; changing it is several
+    #    screens.
+    drv.click(NEXT, "Suggested Partitioning: Next", settle=25.0)
+    drv.look("timezone")
 
-    # 4. TIME ZONE. THE DEFAULT IS KEPT, exactly as on every other installer here: it is
+    # 5. TIME ZONE. THE DEFAULT IS KEPT, exactly as on every other installer here: it is
     #    already a US zone on this cluster and the requirement is a booting disk.
     log("time zone left at the installer's default")
-    drv.click(NEXT, "Clock and Time Zone: Next", settle=20.0)
+    drv.click(NEXT, "Clock and Time Zone: Next", settle=22.0)
     drv.look("local user")
 
-    # 5. THE LOCAL USER.
+    # 6. THE LOCAL USER - FOUR FIELDS, IN THE ORDER THE PAGE DRAWS THEM.
     drv.type_into(USER_FULL_NAME, args.user)
+    drv.type_into(USER_NAME, args.user)
     drv.type_into(USER_PASSWORD, args.password)
     drv.type_into(USER_CONFIRM, args.password)
     drv.look("user filled")
 
-    # THE WEAK-PASSWORD DIALOG TAKES THE KEYBOARD. See the module docstring: clicking Yes
-    # does nothing, Return accepts it.
-    drv.click(NEXT, "Local User: Next", settle=12.0)
+    # THE WEAK-PASSWORD DIALOG TAKES THE KEYBOARD, AND ONLY THE KEYBOARD. See the module
+    # docstring: clicking its `Yes` does nothing twice in a row, while Return accepts it,
+    # because Yes is the default button of THAT dialog. This is the one place in this driver
+    # where a key is pressed, and it is a key the dialog itself makes the accept button.
+    drv.click(NEXT, "Local User: Next", settle=18.0)
     drv.look("weak password")
-    if "too simple" in drv.text() or "really use this password" in drv.text():
-        log("the password is weak; accepting it with Return (its default button)")
-        Q.key(drv.q, "ret")
-        time.sleep(20)
-        drv.look("after weak password")
+    Q.key(drv.q, "ret")
+    time.sleep(22.0)
+    drv.look("after the password dialog")
 
-    if "installation settings" not in drv.text():
-        log("=== THE INSTALLATION SETTINGS PANE DID NOT APPEAR ===")
-        log(f"  screen: {drv.text()[:200]}")
-        return False
-
-    # 6. INSTALL, AND THEN THE CONFIRMATION DIALOG'S OWN INSTALL - WHICH IS NOT THE SAME
+    # 7. INSTALL, AND THEN THE CONFIRMATION DIALOG'S OWN INSTALL - WHICH IS NOT THE SAME
     #    BUTTON AND IS NOT WHERE THE OTHER INSTALLERS PUT IT.
     #
-    # THIS IS WHAT EVERY openSUSE RUN UP TO NOW DIED ON, AND IT LOOKED LIKE A DEAD BUTTON.
+    # THE FOOTER'S `Install` OPENS A MODAL, AND THE MODAL'S DEFAULT IS BACK.
     #
-    # The footer's `Install` at (1587, 859) does work. It opens a modal titled
-    # `Confirm Installation` - `Information required for the base installation is now
-    # complete.` - and that modal is drawn OVER the Installation Settings pane, which is
-    # still there behind it. So the check that followed the click
+    # Measured on a live Tumbleweed KDE session, frame by frame:
     #
-    #     if "installation settings" in drv.text():
+    #     click (1587, 859)   -> `Confirm Installation`, Install white at (922, 707),
+    #                            Back green - the modal's default
+    #     Return              -> modal gone, Installation Settings again
+    #     click (922, 707)    -> Performing Installation, 24%, 2273 packages remaining
     #
-    # was TRUE with the modal correctly on screen, and the driver read a waiting
-    # confirmation as a click that never landed.
-    #
-    # THE FALLBACK THEN MADE IT WORSE. It pressed Return, on the theory that the footer's
-    # forward button is the dialog's default. It is not: the modal's own default is BACK,
-    # drawn green, and Return dismissed the confirmation instead of accepting it. Measured
-    # on a live Tumbleweed KDE session - the frame after Return is the unscrolled Settings
-    # pane with no modal, and the frame after a click on the modal's Install is
-    # `Performing Installation` at 24% with 2273 packages remaining.
-    #
-    # So the modal is answered by its own button at its own measured place, and the
-    # keyboard is never used here. `Back` being the default is exactly why.
-    drv.click(INSTALL, "Install", settle=12.0)
+    # So the modal is answered by its own button at its own measured place, and the keyboard
+    # is never used near it. `Back` being the default is exactly why.
+    drv.click(INSTALL, "Install", settle=15.0)
     drv.look("after Install")
-    if "confirm installation" in drv.text():
-        drv.click(CONFIRM_INSTALL, "the Confirm Installation dialog's Install", settle=20.0)
-        drv.look("after confirm")
-    elif "installation settings" in drv.text():
-        # NO MODAL AND NO PROGRESS: the click really did miss. One more, then give up
-        # rather than press a key that means `Back` on this installer.
-        log("  no confirmation dialog appeared; clicking Install once more")
-        drv.click(INSTALL, "Install (second attempt)", settle=12.0)
-        drv.look("after Install again")
-        if "confirm installation" in drv.text():
-            drv.click(CONFIRM_INSTALL, "the Confirm Installation dialog's Install",
-                      settle=20.0)
-            drv.look("after confirm")
-    if "installation settings" in drv.text() and "performing installation" not in drv.text():
-        log("=== THE INSTALL NEVER STARTED ===")
-        log(f"  screen: {drv.text()[:200]}")
-        return False
-    # 7. UNTIL IT IS DONE. YaST2 shows a progress bar and then a `Congratulations` pane; the
-    #    disk is written when the bar finishes, and that pane is the only thing on screen
-    #    that says so.
+    drv.click(CONFIRM_INSTALL, "the Confirm Installation dialog's Install", settle=25.0)
+    drv.look("after confirm")
+
+    # 8. UNTIL IT IS DONE.
     #
-    #    THE POINTER IS NUDGED INSIDE THE LOOP, not once before it. A desktop session with no
-    #    input blanks its display, and a blanked display has no words - so "still installing"
-    #    and "finished" are the same picture, and the disk would be thrown away after a
-    #    correct install. See the Manjaro run that read a solid black frame for 912 s.
+    #    THE POINTER IS CLICKED INSIDE THE LOOP, not once before it: a desktop session with
+    #    no input raises its lock screen, and a locked screen has no installer on it at all.
+    #    See mint-gui, whose last frame was a full-window lock screen while a correct install
+    #    finished underneath.
     #
-    #    `performing installation` IS NOT IN THE COMPLETION TEST because the progress pane
-    #    keeps that headline until the very end; `installation complete` and
-    #    `congratulations` are what YaST2 puts on the pane after it.
+    #    THE COMPLETION TEST IS THE ONE PLACE A WORD MATCH IS RIGHT: it is a terminal
+    #    condition, so it cannot skip a pane, and YaST2's `Congratulations!` heading is a
+    #    large font tesseract skips - the sentences under it are what read.
     log("waiting for the installer to finish")
     started = time.time()
     while time.time() - started < args.timeout:
@@ -332,8 +330,6 @@ def walk_yast2(drv: Driver, args) -> bool:
             pass
         drv.look("installing")
         joined = drv.text()
-        # YaST2's own sentence under the heading, for the same reason as the Calamares
-        # drivers: `Congratulations!` is a large font that tesseract skips.
         if ("congratulations" in joined or "installation complete" in joined
                 or "has been installed" in joined or "installation has finished" in joined
                 or ("reboot" in joined and "into" in joined)):
