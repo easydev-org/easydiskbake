@@ -182,23 +182,29 @@ class Driver:
         after that the run is over. Failing in thirty seconds with the pane named is worth
         far more than a timeout that names nothing.
 
-        ALT+N IS THE SECOND ATTEMPT. Calamares binds it to Next on every pane, and a click
-        that misses the button by a few pixels is exactly the failure a keyboard shortcut
-        survives. It is not tried first because a click is what a person would do, and
-        because Alt+N on the Summary pane starts the install - a shortcut fired by accident
-        is worse than a click that had to be repeated.
+        ONE CLICK FIRST, NOT TWO, AND THAT IS A CHANGE OF MIND. click_twice() exists
+        because a first click on an unfocused window is sometimes taken only as focus. On
+        THIS wizard the second click is a liability: Calamares advances in one to two
+        seconds, so two clicks 0.8 s apart land the second one on the NEXT pane's own Next
+        button and skip a pane entirely - silently, having configured somewhere it did not
+        mean to. The retry below gets the same protection against the focus problem without
+        ever pressing twice blind.
         """
         before = self.screen_text(content_only=True)
-        self.click_twice(NEXT, f"{pane}: Next", settle=settle)
-        self.look(f"after {pane}")
-        if self._moved(before, marker):
-            return True
 
-        log(f"  {pane} DID NOT ADVANCE - trying Alt+N")
-        self.alt_n(f"{pane}: Next, by keyboard", settle=settle)
-        self.look(f"after {pane} (alt+n)")
-        if self._moved(before, marker):
-            return True
+        # THREE ATTEMPTS, IN THE ORDER A PERSON WOULD TRY THEM: a click, the click again in
+        # case the first only focused the window, then Alt+N - which Calamares binds to Next
+        # on every pane. Alt+N is not first because on the Summary pane it starts the
+        # installation, and a shortcut fired into the wrong pane is worse than a repeated
+        # click.
+        for attempt, how in ((1, "click"), (2, "click again"), (3, "alt+n")):
+            if how == "alt+n":
+                self.alt_n(f"{pane}: Next, by keyboard", settle=settle)
+            else:
+                self.click(NEXT, f"{pane}: Next ({how})", settle=settle)
+            self.look(f"after {pane}")
+            if self._moved(before, marker):
+                return True
 
         log(f"=== {pane.upper()} DID NOT ADVANCE, BY CLICK OR BY KEYBOARD ===")
         log(f"  before: {before[:200]}")
@@ -370,9 +376,36 @@ def walk_calamares(drv: Driver, args) -> bool:
         return False
 
     # 8. SUMMARY -> INSTALL, then the confirmation dialog's own button.
-    drv.click_twice(NEXT, "Summary: Install", settle=15.0)
-    drv.look("confirm-dialog")
-    drv.click(INSTALL_NOW, "Continue with installation", settle=25.0)
+    #
+    # ONE CLICK, AND THEN THE DIALOG IS CHECKED FOR. A second click 0.8 s later would land
+    # on whatever the dialog put under the footer - the same blind-second-press that
+    # Driver.advance's docstring describes. If the click does not open the dialog the loop
+    # tries again, which is the safe version of the same retry.
+    opened = False
+    for attempt in (1, 2):
+        drv.click(NEXT, f"Summary: Install (attempt {attempt})", settle=12.0)
+        drv.look("confirm-dialog")
+        # THE DIALOG IS A MODAL WITH ITS OWN BUTTON, so the content that appears is not the
+        # Summary pane any more. Looking for the button it puts up is the direct question.
+        if drv.find_word(("install now", "continue", "confirm")) is not None:
+            opened = True
+            break
+        if attempt == 1:
+            log("  the confirmation dialog did not appear; trying Alt+N")
+
+    if not opened:
+        log("=== THE INSTALL CONFIRMATION NEVER APPEARED ===")
+        return False
+
+    # THE DIALOG'S BUTTON IS FOUND, NOT ASSUMED. INSTALL_NOW was measured on a windowed
+    # Calamares and is kept only as the fallback: in CI the wizard fills 1920x1080, where a
+    # small window's coordinates land on the summary text behind the modal.
+    button = drv.find_word(("install now", "continue", "confirm"))
+    if button is None:
+        log("  the confirmation button was not readable; using the measured position")
+        button = INSTALL_NOW
+    log(f"confirming at {button}")
+    drv.click(button, "Continue with installation", settle=25.0)
 
     # 9. WAIT FOR THE FINISH PANE.
     #
