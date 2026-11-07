@@ -72,6 +72,11 @@ import vm           # noqa: E402
 INSTALL_ICON = (267, 34)
 DOUBLE_CLICK_GAP = 0.08
 
+# THE LIVE MEDIUM'S BOOT TIME, AS A NUMBER. Measured: about 180 s from qemu start to a
+# clickable installer icon on this image. The wait is longer than that - see
+# wait_for_live_desktop for why a reading cannot replace it.
+DESKTOP_SECONDS = 240
+
 # YAST2'S FOOTER. Back / Next (or Install) at the bottom right of its window.
 NEXT = (1596, 859)
 BACK = (1517, 859)
@@ -153,43 +158,55 @@ class Driver:
 
 
 def wait_for_live_desktop(drv: Driver, timeout: int) -> bool:
-    """Until the KDE Plasma desktop has drawn.
+    """Wait a MEASURED TIME for the KDE desktop, then stop waiting.
 
-    A DESKTOP ICON'S LABEL IS NOT A RELIABLE MARKER. The obvious check - wait for the word
-    "Installation" - was tried and does not work: on run 42364259880 and again locally the
-    frame is a complete KDE desktop, and tesseract reads its two icons as `Rome` and
-    `Uporade` with the rest cut off. Nine-pixel label text under an icon is the worst case
-    for OCR, and waiting for it means waiting forever on a desktop that is already up.
+    NO OCR DECISION, AND THIS IS THE THIRD DESIGN TRIED.
 
-    WHAT IS RELIABLE IS THE CHROME. KDE's panel is a strip along the bottom of the screen
-    with the launcher, a clock and a tray - drawn before any application, present on every
-    KDE desktop and on nothing else this repository boots. The check below asks for the
-    panel, and then clicks the icon at the position measured from a frame rather than read.
+    1. The first version waited for the word "Installation". The desktop came up and
+       tesseract read the icon labels as `Rome` and `Uporade` - nine-pixel text under an
+       icon is its worst case - so the driver waited forever on a screen that was ready.
+
+    2. The second waited for KDE's panel clock (`AM`/`PM`). Under ocr.Screen's own psm 3
+       the whole desktop reads as three words, `in | to | ome`; the clock is not among
+       them. That is what run after run logged while a complete desktop was on screen.
+
+    THE TIME IS THE MEASUREMENT. qemu starts, the live medium boots, KDE initialises and
+    the installer icon is clickable - about three minutes on this image, measured on four
+    local runs and every CI run that got this far. Three minutes is a number; "has the
+    desktop drawn" is a question OCR cannot be relied on to answer here.
+
+    THE BUDGET IS DOUBLED RATHER THAN TRUSTED. If the machine is slow the click lands early
+    and does nothing, so the wait is 240 s where the measurement says 180 s. And the double
+    click is retried once below, because a click into a desktop that is still drawing is the
+    only failure this cannot see coming.
     """
-    log("waiting for the live desktop")
-    deadline = time.time() + timeout
+    log(f"waiting {DESKTOP_SECONDS}s for the live desktop (measured: about 180s)")
+    deadline = time.time() + min(DESKTOP_SECONDS, timeout)
     while time.time() < deadline:
         drv.look("boot")
-        # A KDE PANEL IS A BAND OF PIXELS, NOT A WORD, so the marker is the clock it always
-        # carries plus any one of its labels. `Uporade` is here on purpose: it is what OCR
-        # really returned for `Upgrade`, and a marker that has been seen is worth more than
-        # one that has been hoped for.
-        joined = drv.text()
-        if "am" in joined or "pm" in joined or "uporade" in joined or "rome" in joined:
-            log("the live session is up (KDE panel and desktop icons)")
-            return True
-        time.sleep(10)
-    log("=== THE LIVE DESKTOP DID NOT APPEAR ===")
-    log(f"  last screen: {' | '.join(w[0] for w in drv.words[:24])}")
-    return False
+        time.sleep(20)
+    # THE LAST FRAME IS READ FOR THE LOG ONLY. Nothing below branches on it.
+    drv.look("desktop")
+    log(f"  screen after the wait: {' | '.join(w[0] for w in drv.words[:12])}")
+    return True
 
 
 def walk_yast2(drv: Driver, args) -> bool:
     """Click through YaST2, checking each pane is the one expected."""
     # 1. THE ICON, THROUGH kdesu. See the module docstring: this is what makes YaST2 come up
     #    graphically, and running the same script from a shell does not.
+    #
+    #    TRIED TWICE, BECAUSE A CLICK INTO A STILL-DRAWING DESKTOP DOES NOTHING AND SAYS
+    #    NOTHING. The wait before this is 240 s against a measured 180, so the first attempt
+    #    should land - but a desktop that answered the first double-click by merely selecting
+    #    the icon looks exactly like one that ignored it, and a second attempt costs 40 s.
     drv.double_click(INSTALL_ICON, "Installation desktop icon", settle=40.0)
     drv.look("yast welcome")
+    if "language" not in drv.text():
+        log("YaST2 did not open on the first double-click; trying once more")
+        drv.double_click(INSTALL_ICON, "Installation desktop icon (second attempt)",
+                         settle=45.0)
+        drv.look("yast welcome")
     if "language" not in drv.text():
         log("=== YAST2 DID NOT OPEN ===")
         log(f"  screen: {drv.text()[:200]}")
