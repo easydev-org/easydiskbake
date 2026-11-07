@@ -362,20 +362,49 @@ def walk_first_boot(drv: Driver, args) -> bool:
     drv.look("about you")
 
     # 6. THE ACCOUNT. The same user every Linux bake here creates.
-    drv.click((830, 511), "Full Name field", settle=2.0)
+    # THE FIELD IS CLEARED BEFORE TYPING, AND THE USERNAME IS NOT TOUCHED AT ALL.
+    #
+    # Run 42405729683 filled this pane twice. GNOME's initial setup copies whatever is
+    # typed into Full Name into Username as you go, so a second click on the username
+    # field and a second `docker` produced
+    #
+    #     Full Name | dockeradminadmir
+    #
+    # on the next pane - three fragments run together - and the wizard would not complete.
+    # One field is filled, it is emptied first in case the wizard pre-filled it from
+    # somewhere, and Username is left to follow.
+    Q.click(drv.q, 830, 511)
+    time.sleep(1.5)
+    Q.key_combo(drv.q, "ctrl", "a")
+    time.sleep(0.4)
+    for _ in range(40):
+        Q.key(drv.q, "backspace")
+        time.sleep(0.02)
     unsupported = keys.type_text(drv.q, args.user, per_char=0.1)
     if unsupported:
         log(f"  COULD NOT TYPE {unsupported!r}")
+    drv.look("about you filled")
     drv.click(SETUP_NEXT, "about you: Next", settle=10.0)
     drv.look("password")
 
     # 7. THE PASSWORD, TWICE, then the weak-password warning is left to stand: `admin` is
     #    what every other bake here uses and a mismatch between images would be worse than
     #    a short password.
-    drv.click((830, 486), "Password field", settle=2.0)
-    keys.type_text(drv.q, args.password, per_char=0.12)
-    drv.click((830, 629), "Confirm Password field", settle=2.0)
-    keys.type_text(drv.q, args.password, per_char=0.12)
+    # CLEARED FIRST, for the same reason as Full Name - a password field that already holds
+    # something and receives `admin` on top of it is a password nobody knows.
+    def _clear_and_type(x: int, y: int, text: str) -> None:
+        Q.click(drv.q, x, y)
+        time.sleep(1.5)
+        Q.key_combo(drv.q, "ctrl", "a")
+        time.sleep(0.4)
+        for _ in range(40):
+            Q.key(drv.q, "backspace")
+            time.sleep(0.02)
+        keys.type_text(drv.q, text, per_char=0.12)
+        time.sleep(0.6)
+
+    _clear_and_type(830, 486, args.password)
+    _clear_and_type(830, 629, args.password)
     drv.click(SETUP_NEXT, "password: Next", settle=20.0)
     drv.look("setup complete")
 
