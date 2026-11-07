@@ -112,6 +112,46 @@ def build_args(avd: str, work: str, *, api: int = 35, abi: str = "x86_64",
         "-memory", str(memory_mb),
         "-cores", str(cores),
         "-port", "5554",
+        # RefCountPipe AND VirtioVsockPipe, AND BOTH ARE LOAD-BEARING.
+        #
+        # `RefCountPipe = on` already reads on in the emulator's own
+        # lib/advancedFeatures.ini, and yet a guest built from the SDK system image
+        # cannot start its graphics stack without the option being passed explicitly.
+        # The failure is several layers away from the cause, which is why it cost so
+        # long to find:
+        #
+        #     allocator@3.0-service.ranchu: qemu_pipe_open_ns:166: Could not connect to
+        #         the 'pipe:refcount' service: Invalid argument
+        #     allocator@3.0-service.ranchu: allocateCb:346 failed with
+        #         'Error3::NO_RESOURCES'
+        #     F HwcComposer: Can't create AidlComposerClient, fallback to HIDL
+        #     init: Service 'surfaceflinger' (pid 415) received signal 6
+        #
+        # surfaceflinger then aborts every five seconds and init never completes the
+        # boot. Measured, by changing one thing at a time:
+        #
+        #     (defaults)                                   -> surfaceflinger "restarting"
+        #     -feature -VirtioVsockPipe                    -> "restarting"
+        #     -feature -VirtioVsockPipe -feature RefCountPipe
+        #                                                  -> "running", but sensors HAL
+        #                                                     aborts and sys.boot_completed
+        #                                                     never arrives
+        #     -feature RefCountPipe -feature VirtioVsockPipe
+        #                                                  -> "running" AND boot_completed=1
+        #
+        # WHY VsockPIPE CANNOT BE DROPPED. The sensors HAL in
+        # android.hardware.sensors@2.1-impl.ranchu.so is built against vsock
+        # (`open_verbose_vsock`, `vsock_ping`); without the transport it aborts with
+        # `sensors transport is not opened` every five seconds, and system_server blocks
+        # on sensorservice so sys.boot_completed is never set. The screen still draws,
+        # which is what made this one look fixed when it was not.
+        #
+        # The cost is that the host logs millions of
+        # `vqParseGuestToHostRequestLocked ... unexpected dst_port` lines while vsock is
+        # in use. They are noise from the gfxstream vsock path, not a failure, and the
+        # guest boots in about 28 s with them present.
+        "-feature", "RefCountPipe",
+        "-feature", "VirtioVsockPipe",
         # QMP REACHES QEMU THROUGH -qemu, NOT AS A TOP-LEVEL OPTION.
         #
         # The emulator is Google's qemu fork with its own argument parser in front of
