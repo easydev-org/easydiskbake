@@ -205,6 +205,42 @@ def up(*, ssh_port: int = 2222, rdp_port: int = 3389,
         f"dhcp-option=option:mtu,{MTU};"
         f"interface={BRIDGE};bind-interfaces;no-ping;filter-AAAA;"
         f"pid-file=/var/run/dnsmasq.vm.pid;log-facility=/var/log/dnsmasq.vm.log"
+        # ============================================================================
+        # GEOIP IS ANSWERED WITH NOTHING, AND THAT IS WHAT MAKES A BAKE REPRODUCIBLE.
+        # ============================================================================
+        #
+        # A graphical installer asks a geolocation service where the machine is and then
+        # chooses its language and time zone from the answer. On this cluster the guest's
+        # traffic leaves through ONE egress address - 115.190.248.85 - and the answer is
+        # always the same:
+        #
+        #     <CountryCode>CN</CountryCode>
+        #     <TimeZone>Asia/Shanghai</TimeZone>
+        #
+        # Measured against geoip.kde.org directly on 2026-11-07. So Calamares started in
+        # Simplified Chinese on CachyOS, EndeavourOS, Linux Mint and Kubuntu; Mint's
+        # `Where are you?` came up on Shanghai; and the same class of probe is why Fedora's
+        # Anaconda also came up in Chinese. None of that has anything to do with the image
+        # being installed, and all of it changes the day the cluster's egress moves.
+        #
+        # THE GUEST GETS 127.0.0.1, WHICH IS REFUSED IMMEDIATELY. Not NXDOMAIN and not a
+        # blackhole: a connection refused is a fast, unambiguous failure, and every one of
+        # these installers falls back to its OWN default - Calamares to American English,
+        # measured on CachyOS after this line was added. A timeout would stall the first
+        # pane instead, and a NXDOMAIN is not distinguishable to some resolvers from a
+        # broken DNS, which makes a network error look like an installer bug.
+        #
+        # THE LIST IS THE INSTALLERS THIS REPOSITORY DRIVES, not every geoip service that
+        # exists. Adding a distribution means adding its probe here - see linux/*/install.py
+        # for the one each of them uses.
+        "address=/geoip.kde.org/127.0.0.1;"
+        "address=/geoip.kde.org./127.0.0.1;"
+        "address=/geoip.ubuntu.com/127.0.0.1;"
+        "address=/geoip.ubuntu.com./127.0.0.1;"
+        "address=/geoip.anaconda-installer.org/127.0.0.1;"
+        "address=/geoip.anaconda-installer.org./127.0.0.1;"
+        "address=/geoip.fedoraproject.org/127.0.0.1;"
+        "address=/geoip.fedoraproject.org./127.0.0.1;"
     )
     started = _sh(f"dnsmasq --conf-file=/dev/null {''.join('--' + opt + ' ' for opt in cfg.rstrip(';').split(';'))}")
     if started.returncode != 0:
