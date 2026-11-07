@@ -57,22 +57,57 @@ import lastframe    # noqa: E402
 
 # --- measured on a live Kubuntu 26.04.1 desktop ISO, 1920x1080 ---------------------------
 WELCOME_INSTALL = (1326, 841)   # the welcome screen's own "Install Kubuntu" button
-NEXT = (1775, 1040)             # footer Next, and the green Install on Summary
-BACK = (1676, 1040)
+
+# THE FOOTER BUTTONS, MEASURED FROM A CI FRAME AND NOT FROM A LOCAL ONE.
+#
+# The first version of these was measured by clicking around a local run until the wizard
+# advanced, and it went to CI and did nothing at all: every pane's OCR still read the
+# welcome screen, the sidebar still highlighted "Acoyida", and the driver walked all nine
+# steps and then waited out the timeout. The frame CI uploaded as last-frame.png is what
+# settled it - tesseract puts the "Siguiente" label at x 1729..1785, y 1052..1065, centre
+# (1757, 1058). The old value was (1775, 1040): eighteen pixels right and eighteen up,
+# which is above the button and on its right edge. A footer button is 35 px tall and these
+# coordinates were outside all of it.
+#
+# CALAMARES RIGHT-ALIGNS THE FOOTER, so these move when the label changes width, which is
+# one more reason the UI language is pinned below.
+NEXT = (1757, 1058)             # footer "Next" / "Siguiente", and the green Install on Summary
+BACK = (1662, 1058)
+CANCEL = (1873, 1058)
 
 # The Partitions pane. "Erase disk" is the first radio; its label is not clickable, the circle is.
 ERASE_DISK_RADIO = (208, 73)
 INSTALL_NOW = (1058, 535)       # the confirmation dialog's button
 
 # The Users pane.
-ACCOUNT = {
-    "name": (294, 48),
-    "login": (294, 115),
-    "host": (294, 183),
-    "password": (294, 250),
-    "confirm": (500, 250),
-}
-LOGIN_AUTOMATICALLY = (208, 292)
+# THE ACCOUNT FORM IS FOUND BY ITS LABELS, NOT BY A FIXED RECTANGLE.
+#
+# The first version of this was a table of pixel positions - (294, 48), (294, 115) and so
+# on - measured on a Calamares window that was NOT full screen. In CI the window fills
+# 1920x1080, the form sits somewhere else entirely, and every one of those clicks would
+# have landed on blank panel. It is the same class of mistake as NEXT, with the difference
+# that a label can be looked for and a blank area cannot.
+#
+# Each entry is (label text, which side of the label the field is on). Calamares puts its
+# fields to the RIGHT of their labels on the Users pane.
+ACCOUNT_FIELDS = (
+    ("name", ("your name",)),
+    ("login", ("username", "user name")),
+    ("host", ("computer name", "hostname")),
+    ("password", ("password",)),
+    ("confirm", ("confirm",)),
+)
+
+# HOW FAR RIGHT OF A LABEL ITS FIELD IS. Measured against the pane: the label column ends
+# near x 300 and the fields start just past it.
+FIELD_OFFSET_X = 260
+
+LOGIN_AUTOMATICALLY_LABEL = ("log in automatically", "automatic login")
+
+# CALAMARES' SIDEBAR IS 190 px WIDE AND LISTS EVERY PANE AT ALL TIMES. Anything that
+# decides whether the wizard advanced has to look right of this, or it will read the name
+# of the pane it is waiting for before the pane arrives.
+SIDEBAR_WIDTH = 220
 
 
 def log(msg: str) -> None:
@@ -101,6 +136,22 @@ class Driver:
         self.words = self.screen.text(ppm) if ppm else []
         log(f"  {label}: {' | '.join(w[0] for w in self.words[:18])}")
 
+    def screen_text(self, content_only: bool = False) -> str:
+        """The words on screen, optionally without the sidebar.
+
+        THE SIDEBAR HAS TO BE EXCLUDED AND THIS IS THE WHOLE REASON. Calamares lists every
+        pane down the left at all times, so "Location", "Keyboard", "Partitions", "Summary"
+        and "Finish" are on screen from the welcome pane onwards. A marker taken from that
+        list matches before the wizard has done anything, which is exactly how the first
+        version of the finish loop would have declared success on its first poll.
+
+        The content area is everything right of the sidebar, which is 190 px wide here and
+        fixed by Calamares rather than by the window.
+        """
+        if not content_only:
+            return " ".join(w[0].lower() for w in self.words)
+        return " ".join(w[0].lower() for w in self.words if w[1] > SIDEBAR_WIDTH)
+
     def click(self, xy, why: str, settle: float = 1.0) -> None:
         log(f"click {xy} - {why}")
         Q.click(self.q, *xy)
@@ -115,6 +166,98 @@ class Driver:
         log(f"alt+n - {why}")
         Q.key_combo(self.q, "alt", "n")
         time.sleep(settle)
+
+    def advance(self, pane: str, *, settle: float = 12.0,
+                marker: str = "") -> bool:
+        """Leave `pane`, and REFUSE TO CONTINUE if the screen did not change.
+
+        THIS IS THE FIX FOR THE FIRST CI RUN, and it is the most important method here.
+        That run clicked Next nine times at a coordinate eighteen pixels outside the
+        button, and reported nothing wrong: every step logged, every pane "visited", and
+        the screen never changed once. The only thing that ended it was the overall
+        timeout - ninety minutes later, with the installer still on its welcome pane.
+
+        A step that did not move is not a slow step. Calamares repaints within a second of
+        a working click - panes in this run took 1-2 s - so a second attempt is enough, and
+        after that the run is over. Failing in thirty seconds with the pane named is worth
+        far more than a timeout that names nothing.
+
+        ALT+N IS THE SECOND ATTEMPT. Calamares binds it to Next on every pane, and a click
+        that misses the button by a few pixels is exactly the failure a keyboard shortcut
+        survives. It is not tried first because a click is what a person would do, and
+        because Alt+N on the Summary pane starts the install - a shortcut fired by accident
+        is worse than a click that had to be repeated.
+        """
+        before = self.screen_text(content_only=True)
+        self.click_twice(NEXT, f"{pane}: Next", settle=settle)
+        self.look(f"after {pane}")
+        if self._moved(before, marker):
+            return True
+
+        log(f"  {pane} DID NOT ADVANCE - trying Alt+N")
+        self.alt_n(f"{pane}: Next, by keyboard", settle=settle)
+        self.look(f"after {pane} (alt+n)")
+        if self._moved(before, marker):
+            return True
+
+        log(f"=== {pane.upper()} DID NOT ADVANCE, BY CLICK OR BY KEYBOARD ===")
+        log(f"  before: {before[:200]}")
+        log(f"  now   : {self.screen_text(content_only=True)[:200]}")
+        return False
+
+    def _moved(self, before: str, marker: str) -> bool:
+        """Whether the CONTENT moved, which is the only thing a click on Next changes.
+
+        A DIFFERENCE, NOT A MARKER, AND THE SIDEBAR IS WHY. Every pane name is permanently
+        visible in Calamares' sidebar, so a marker drawn from it is already true before the
+        click. What a working Next does is replace the whole content area, and what a click
+        that landed outside every control does is nothing at all - including, measured in
+        the first CI run, for nine clicks in a row.
+
+        `marker` is kept as an optional extra: when the caller names a word that appears in
+        the pane being REACHED, matching it in the content area is stronger evidence than a
+        difference. It is checked in the content area for the same reason.
+        """
+        now = self.screen_text(content_only=True)
+        if marker:
+            return marker.lower() in now
+        return bool(now) and now != before
+
+    def find_word(self, needles, *, content_only: bool = True):
+        """The centre of the first on-screen word matching any of `needles`.
+
+        A LABEL IS A BETTER COORDINATE THAN A NUMBER. Every fixed rectangle in this file
+        was measured on one window at one size; a label is wherever the toolkit put it this
+        time, in whatever language the UI came up in. That is what makes this driver survive
+        the change from a windowed Calamares to a full-screen one - which is precisely the
+        change the first CI run did not survive.
+        """
+        for needle in needles:
+            for word, cx, cy, _w, _h in self.words:
+                if content_only and cx <= SIDEBAR_WIDTH:
+                    continue
+                if needle in word.lower():
+                    return (cx, cy)
+        return None
+
+    def field_beside(self, label, offset_x: int = FIELD_OFFSET_X):
+        """The input box that belongs to `label`: the label's row, `offset_x` to its right.
+
+        THE Y IS THE LABEL'S OWN, because Calamares lines each field up with its label.
+        The X is the label's right edge plus a fixed offset rather than its centre plus
+        something, because labels are not all the same width - "Confirm password" is nearly
+        twice "Name" - and a centre-relative offset would put the short ones in the wrong
+        place by exactly that difference.
+        """
+        if not isinstance(label, (tuple, list)):
+            label = (label,)
+        for needle in label:
+            for word, cx, cy, width, _h in self.words:
+                if cx <= SIDEBAR_WIDTH:
+                    continue
+                if needle in word.lower():
+                    return (cx + width // 2 + offset_x, cy)
+        return None
 
     def type_into(self, xy, text: str) -> None:
         Q.click(self.q, *xy)
@@ -149,6 +292,118 @@ def wait_for_live_desktop(drv: Driver, timeout: int) -> bool:
         time.sleep(10)
     log("=== THE LIVE DESKTOP DID NOT APPEAR ===")
     log(f"  last screen: {' | '.join(w[0] for w in drv.words[:24])}")
+    return False
+
+
+def walk_calamares(drv: Driver, args) -> bool:
+    """Click through Calamares, and stop the first time the wizard does not move.
+
+    THE RETURN VALUE IS EARNED, NOT ASSUMED. The first CI run of this driver had no return
+    value from this part at all: it clicked nine measured positions, none of which advanced
+    anything, and then reported success into a timeout. Every step below either confirms
+    that the next pane arrived or ends the run.
+    """
+    # 1. THE LIVE DESKTOP'S OWN INSTALL BUTTON.
+    drv.click_twice(WELCOME_INSTALL, "Install Kubuntu on the live desktop", settle=25.0)
+    drv.look("welcome")
+
+    # 2..5. THE FOUR PANES THAT ONLY NEED Next.
+    #
+    # NO MARKERS HERE, DELIBERATELY. These four panes are only distinguished by their
+    # content, and the words that name them live in the sidebar where they are always
+    # true. Driver.advance therefore asks the stronger question: did the content area
+    # change at all?
+    for pane, marker in (
+        ("welcome", ""),
+        ("location", ""),
+        ("keyboard", ""),
+        ("customize", ""),
+    ):
+        if not drv.advance(pane, settle=12.0, marker=marker):
+            log("=== THE WIZARD STOPPED ADVANCING ===")
+            return False
+
+    # 6. ERASE THE DISK. The radio is not followed by a repaint, so it is clicked and the
+    # pane is then left by the footer; there is nothing to confirm between those two.
+    drv.click(ERASE_DISK_RADIO, "Partitions: Erase disk", settle=4.0)
+    drv.look("erase-disk")
+    if not drv.advance("partitions", settle=15.0):
+        log("=== THE PARTITIONS PANE DID NOT ADVANCE ===")
+        return False
+
+    # 7. THE ACCOUNT FORM, FOUND BY ITS LABELS.
+    log("filling the account form")
+    drv.look("account form")
+    values = {
+        "name": args.full_name,
+        "login": args.full_name,
+        "host": "kubuntu",
+        "password": args.password,
+        "confirm": args.password,
+    }
+    failed = []
+    for field, labels in ACCOUNT_FIELDS:
+        spot = drv.field_beside(labels)
+        if spot is None:
+            log(f"  COULD NOT FIND A FIELD LABELLED {labels!r}")
+            failed.append(field)
+            continue
+        log(f"  {field} at {spot}")
+        drv.type_into(spot, values[field])
+
+    # THE CHECKBOX IS FOUND THE SAME WAY. It is on the line of its own label, and the box
+    # is to the LEFT of it.
+    autologin = drv.find_word(LOGIN_AUTOMATICALLY_LABEL)
+    if autologin is None:
+        log("  COULD NOT FIND 'log in automatically'; the disk will ask for a password")
+    else:
+        log(f"  log in automatically at x<{autologin[0]}")
+        drv.click((autologin[0] - 150, autologin[1]), "log in automatically", settle=3.0)
+    drv.look("account-filled")
+
+    if failed:
+        log(f"=== THE ACCOUNT FORM WAS NOT FILLED: {failed} ===")
+        return False
+
+    if not drv.advance("users", settle=15.0):
+        log("=== THE USERS PANE DID NOT ADVANCE ===")
+        return False
+
+    # 8. SUMMARY -> INSTALL, then the confirmation dialog's own button.
+    drv.click_twice(NEXT, "Summary: Install", settle=15.0)
+    drv.look("confirm-dialog")
+    drv.click(INSTALL_NOW, "Continue with installation", settle=25.0)
+
+    # 9. WAIT FOR THE FINISH PANE.
+    #
+    # "finish" IS NOT A MARKER. Calamares' sidebar lists every pane including the last, so
+    # the word "Finish" is on screen from the welcome pane onwards - the first version of
+    # this loop would have declared success the instant the sidebar was drawn. It happened
+    # not to fire only because that run's UI was Asturian and the word was "Fin", which is
+    # luck rather than design.
+    #
+    # THE MARKER IS THE SUMMARY PANE GOING AWAY. Copying begins when Calamares leaves it,
+    # and from then on the sidebar no longer highlights it.
+    log("waiting for the installer to finish")
+    started = time.time()
+    left_summary = False
+    while time.time() - started < args.timeout:
+        drv.look("finish")
+        joined = drv.screen_text(content_only=True)
+        if "summary" not in joined:
+            left_summary = True
+        if "all done" in joined or "reboot now" in joined or "restart" in joined:
+            log("=== INSTALL COMPLETE ===")
+            return True
+        # A PANE WITH ALMOST NO WORDS AT THE END OF CALAMARES IS THE FINISH BUTTON. The
+        # last screen is one sentence and one button; the summary it replaced had dozens.
+        if left_summary and drv.words and len(drv.words) <= 6:
+            log("=== THE INSTALLER REACHED ITS LAST PANE ===")
+            return True
+        time.sleep(20)
+
+    log("=== THE INSTALLER NEVER REPORTED COMPLETION ===")
+    log(f"  last screen: {drv.screen_text(content_only=True)[:200]}")
     return False
 
 
@@ -194,7 +449,25 @@ def main(argv: list[str]) -> int:
             "-drive", f"file={args.iso},media=cdrom,readonly=on",
             "-kernel", kernel,
             "-initrd", initrd,
-            "-append", "console=ttyS0,115200n8 --- console=ttyS0,115200n8",
+            # THE UI LANGUAGE IS PINNED, AND THIS IS NOT COSMETIC.
+            #
+            # The first CI run of this driver came up in Asturian - sidebar "Acoyida",
+            # footer "Siguiente", everything. Calamares falls back to the FIRST entry of its
+            # own language list when the session's locale is not one it knows, and
+            # "asturianu" sorts first. Nothing failed: the run reported no error, and only
+            # the uploaded last frame showed what had happened.
+            #
+            # It matters twice. Every detection below reads English words, and Calamares
+            # right-aligns its footer, so a different language moves the buttons the
+            # coordinates in this file were measured at. Pinning the locale makes the frame
+            # this driver was measured against the frame it actually gets.
+            #
+            # "---" KEEPS CASPER FROM EATING THE REST. Everything before it is read by the
+            # live session's own boot scripts; the duplicate console line after it reaches
+            # the kernel, so the installer's output is on ttyS0 from the first line.
+            "-append", "console=ttyS0,115200n8 locale=en_US.UTF-8 "
+                       "keyboard-configuration/layoutcode=us "
+                       "--- console=ttyS0,115200n8",
         ],
         shape=vm.Shape(cpus=args.cpus, mem_mb=args.mem, machine="q35", vga="std",
                        vnc_bind=os.environ.get("VNC_BIND", "127.0.0.1")),
@@ -230,65 +503,10 @@ def main(argv: list[str]) -> int:
     ok = False
     try:
         drv = Driver(guest.paths.drive, work)
-        if wait_for_live_desktop(drv, args.timeout):
-            # 1. THE LIVE DESKTOP'S OWN INSTALL BUTTON.
-            drv.click_twice(WELCOME_INSTALL, "Install Kubuntu on the live desktop", settle=25.0)
-            drv.look("welcome")
-
-            # 2. WELCOME -> LOCATION
-            drv.click_twice(NEXT, "Welcome: Next", settle=12.0)
-            drv.look("location")
-
-            # 3. LOCATION -> KEYBOARD
-            drv.click_twice(NEXT, "Location: Next", settle=12.0)
-            drv.look("keyboard")
-
-            # 4. KEYBOARD -> CUSTOMIZE
-            drv.click_twice(NEXT, "Keyboard: Next", settle=12.0)
-            drv.look("customize")
-
-            # 5. CUSTOMIZE -> PARTITIONS
-            drv.click_twice(NEXT, "Customize: Next (Full installation)", settle=15.0)
-            drv.look("partitions")
-
-            # 6. ERASE THE DISK. The radio, then Next, then the confirmation dialog.
-            drv.click(ERASE_DISK_RADIO, "Partitions: Erase disk", settle=4.0)
-            drv.look("erase-disk")
-            drv.click_twice(NEXT, "Partitions: Next", settle=15.0)
-            drv.look("users")
-
-            # 7. THE ACCOUNT FORM.
-            log("filling the account form")
-            drv.type_into(ACCOUNT["name"], args.full_name)
-            drv.type_into(ACCOUNT["login"], args.full_name)
-            drv.type_into(ACCOUNT["host"], "kubuntu")
-            drv.type_into(ACCOUNT["password"], args.password)
-            drv.type_into(ACCOUNT["confirm"], args.password)
-            drv.click(LOGIN_AUTOMATICALLY, "log in automatically", settle=3.0)
-            drv.look("account-filled")
-            drv.click_twice(NEXT, "Users: Next", settle=15.0)
-            drv.look("summary")
-
-            # 8. SUMMARY -> INSTALL, and the confirmation dialog's Install Now.
-            drv.click_twice(NEXT, "Summary: Install", settle=15.0)
-            drv.look("confirm-dialog")
-            drv.click(INSTALL_NOW, "Continue with installation", settle=25.0)
-            drv.look("installing")
-
-            # 9. WAIT FOR THE FINISH PANE.
-            log("waiting for the installer to finish")
-            started = time.time()
-            while time.time() - started < args.timeout:
-                drv.look("finish")
-                joined = " ".join(w[0].lower() for w in drv.words)
-                if "all done" in joined or "restart" in joined or "finish" in joined:
-                    log("=== INSTALL COMPLETE ===")
-                    ok = True
-                    break
-                time.sleep(20)
-            if not ok:
-                log("=== THE INSTALLER NEVER REPORTED COMPLETION ===")
-                log(f"  last screen: {' | '.join(w[0] for w in drv.words[:24])}")
+        if not wait_for_live_desktop(drv, args.timeout):
+            log("=== THE LIVE DESKTOP NEVER APPEARED ===")
+        else:
+            ok = walk_calamares(drv, args)
     finally:
         try:
             ppm = os.path.join(work, "final.ppm")

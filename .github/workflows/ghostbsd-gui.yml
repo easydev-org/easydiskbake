@@ -1,0 +1,151 @@
+name: ghostbsd-gui
+
+# Install GhostBSD from its official ISO, through gbi - its GTK graphical installer.
+#
+# WHY GHOSTBSD AND NOT FREEBBSD
+#
+# FreeBSD has no graphical installer. bsdinstall draws dialog(1) menus on a text console, and
+# freebsd.yml already installs through its `script` target - which bsd/freebsd/installerconfig
+# calls the same path as the menu wizard with the prompts skipped. There is no GUI to drive
+# there, so freebsd.yml is unchanged.
+#
+# GhostBSD is FreeBSD with a desktop and its own GTK installer. It is the BSD-family entry that
+# actually has a graphical install path, which makes it the one worth having a GUI workflow for.
+#
+# THE MATE IMAGE ONLY. GhostBSD publishes two: the default (MATE) and an XFCE spin. They are
+# the same base with a different desktop, and building both would answer the same question
+# twice - so this pins GhostBSD-24.10.1.iso and never the -XFCE one.
+#
+# UEFI, AND THAT IS NOT OPTIONAL. GhostBSD's loader is built for an EFI system partition; with
+# SeaBIOS the image drops to a loader prompt instead of the installer. The frame runs on the
+# same OVMF pair the macOS stages use, which is in the bake image.
+#
+# MANUAL ONLY.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bake_run:
+        description: "Install GhostBSD through gbi"
+        type: boolean
+        default: true
+      release:
+        description: "GhostBSD release (the ISO name carries it)"
+        default: "24.10.1"
+      iso_url:
+        description: "ISO URL (empty for the pinned MATE image)"
+        default: ""
+      iso_sha256:
+        description: "ISO sha256 (empty for the pinned value)"
+        default: ""
+      disk_size:
+        description: "guest disk size"
+        default: "64G"
+      install_timeout:
+        description: "seconds the installer may take"
+        default: "5400"
+      publish_tag:
+        description: "tag to publish under; empty for bsd-ghostbsd-gui"
+        default: "bsd-ghostbsd-gui"
+      publish:
+        description: "publish the finished disk to ghcr"
+        type: boolean
+        default: true
+
+concurrency:
+  group: ghostbsd-gui-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bake:
+    if: inputs.bake_run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '40'
+          token: ${{ github.token }}
+
+      - name: prepare
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: ghostbsd-gui-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py tags --prefix bsd-
+
+      - name: fetch the ISO
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: ghostbsd-gui-iso
+          interval: "10"
+          command: |
+            set -euo pipefail
+            REL="${{ inputs.release || '24.10.1' }}"
+            ISO_NAME="GhostBSD-$REL.iso"
+            URL="${{ inputs.iso_url }}"
+            SHA="${{ inputs.iso_sha256 }}"
+            if [ -z "$URL" ]; then
+              URL="https://download.ghostbsd.org/releases/amd64/$REL/$ISO_NAME"
+              SHA="e4e969603a3edf848db8c7fc2646f76871f0d9bd12787bc6c966250938c2c283"
+            fi
+            mkdir -p out/iso
+            ISO_URL="$URL" ISO_SHA256="$SHA" DEST="out/iso/$ISO_NAME" \
+              python3 lib/fetch_vendor_iso.py --segments 8
+
+      - name: install through gbi
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: ghostbsd-gui-install
+          interval: "15"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            export SNAPSHOT_INTERVAL=2
+            ISO=$(ls out/iso/*.iso | head -1)
+            echo "iso: $ISO"
+            python3 bsd/ghostbsd/install.py \
+              --iso "$ISO" \
+              --out out/ghostbsd-gui.qcow2 \
+              --disk-size "${{ inputs.disk_size || '64G' }}" \
+              --timeout "${{ inputs.install_timeout || '5400' }}"
+
+      - name: keep the recording
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ghostbsd-gui-recording
+          path: |
+            out/install.mp4
+            out/last-frame.png
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: push the disk
+        if: success() && inputs.publish
+        id: publish
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/ghostbsd-gui.qcow2
+          kind: bsd-ghostbsd-gui
+          tag: ${{ inputs.publish_tag || 'bsd-ghostbsd-gui' }}
+          token: ${{ github.token }}
