@@ -204,17 +204,46 @@ def stop_the_screensaver(drv: Driver) -> None:
     nothing is left on screen; the driver then waits for the desktop to be itself again
     before it clicks the installer icon.
     """
-    log("disabling Cinnamon's screen saver and lock for the rest of the session")
+    log("disabling Cinnamon's screen saver, its lock and the DPMS blank")
     Q.key_combo(drv.q, "ctrl", "alt", "t")
-    time.sleep(6.0)
-    keys.type_text(drv.q,
-                   "gsettings set org.cinnamon.desktop.session idle-delay 0; "
-                   "gsettings set org.cinnamon.desktop.screensaver lock-enabled false; "
-                   "gsettings set org.cinnamon.desktop.screensaver idle-activation-enabled false; "
-                   "exit",
-                   per_char=0.02)
+    time.sleep(8.0)
+    # ONE LINE, AND EVERY MECHANISM THAT CAN BLANK THIS SCREEN IS IN IT.
+    #
+    # gsettings alone was not enough: the first attempt set all three Cinnamon keys and the
+    # session still came up locked (`16:39`, `16:41`, `16:45` on run 42418654318). Cinnamon's
+    # screen saver and the X server's own DPMS blank are SEPARATE timers here, and the second
+    # one is not in gsettings at all - `xset` is what turns it off:
+    #
+    #     s off                       disable the X screen saver
+    #     -dpms                       disable display power management
+    #
+    # `cinnamon-settings-daemon` is also restarted so the settings that were just written are
+    # read by the daemon that owns the idle timer, rather than only being in the store.
+    #
+    # A LOGIN SHELL IS NOT NEEDED AND IS NOT USED: the settings are written to the session's
+    # own dconf, which is what the running daemon reads.
+    #
+    # AND A KEEPALIVE OF LAST RESORT, BECAUSE THE SETTINGS PATH HAS FAILED ONCE ALREADY.
+    #
+    # `xdotool` moves the pointer from INSIDE the session, which is the only kind of event
+    # every idle timer on this build agrees about - QMP's synthetic clicks from outside are
+    # not it. The loop runs detached and stops itself after six hours; it is started here so
+    # that it is already ticking while Ubiquity copies files.
+    command = (
+        "gsettings set org.cinnamon.desktop.session idle-delay 0; "
+        "gsettings set org.cinnamon.desktop.screensaver lock-enabled false; "
+        "gsettings set org.cinnamon.desktop.screensaver idle-activation-enabled false; "
+        "xset s off; xset -dpms; xset s noblank; "
+        "( for i in $(seq 1 1080); do "
+        "  xdotool mousemove_relative -- 1 0 2>/dev/null; "
+        "  xdotool mousemove_relative -- -1 0 2>/dev/null; "
+        "  sleep 20; "
+        "done ) >/dev/null 2>&1 & "
+        "exit"
+    )
+    keys.type_text(drv.q, command, per_char=0.02)
     Q.key(drv.q, "ret")
-    time.sleep(6.0)
+    time.sleep(10.0)
     drv.look("screensaver disabled")
 
 
