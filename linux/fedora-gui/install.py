@@ -262,11 +262,24 @@ def walk_anaconda(drv: Driver, args) -> bool:
         ("installation method", ("storage configuration", "configuracion de almacenamiento")),
         ("storage configuration", ("review and install", "revisar e instalar")),
     ):
-        # ALT+N, NOT A CLICK. The footer button is at a different x in every language -
-        # `Next`, `Siguiente`, `Suivant`, `Weiter` - and Alt+N is the binding that does not
-        # move. This is the same conclusion the Kubuntu driver reached and for the same
-        # reason: a translated label cannot be a coordinate.
-        drv.alt_n(f"{pane}: Next", settle=12.0)
+        # A CLICK, NOT Alt+N, AND THIS IS A MEASUREMENT.
+        #
+        # Run 42404596625 pressed Alt+N on `Installation method` and nothing moved:
+        #
+        #     19:10:22  alt+n - installation method: Next
+        #     19:10:35  after installation method: (identical)
+        #
+        # Anaconda's new UI is a WEB application in a window, not a GTK dialog. Its footer
+        # buttons are page elements and the toolkit's default-button binding does not exist,
+        # so Alt+N goes nowhere. The earlier note in this file claimed the opposite - it was
+        # written when Alt+N appeared to work, on a pane where the click had already done
+        # the work.
+        #
+        # THE COORDINATE IS THE ONE MEASURED FROM A FRAME. Anaconda's window is 1280x942,
+        # CENTRED (x 318..1602, y 68..1010), so its footer is at y 1003 - not at the bottom
+        # of the screen. (729, 1002) is inside the Next button, and the click at that
+        # position is what advanced `Welcome` in the same run.
+        drv.click(NEXT, f"{pane}: Next", settle=12.0)
         drv.look(f"after {pane}")
         text = drv.text()
         if not any(expected in text for expected in expected_set):
