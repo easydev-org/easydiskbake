@@ -286,6 +286,14 @@ def walk_yast2(drv: Driver, args) -> bool:
         log("=== THE INSTALL NEVER STARTED ===")
         log(f"  screen: {drv.text()[:200]}")
         return False
+    # NUDGE THE POINTER, OR THE SCREEN BLANKS AND EVERY READING IS BLACK. A desktop
+    # session with no input blanks its display, and a blanked display has no words -
+    # so "still installing" and "finished" look identical. One pixel per poll.
+    try:
+        Q.move(drv.q, 400 + (int(time.time()) % 40), 300)
+    except Exception:                              # noqa: BLE001
+        pass
+
     drv.look("installing")
 
     # 7. UNTIL IT IS DONE. YaST2 shows a progress bar and then a `Congratulations` pane; the

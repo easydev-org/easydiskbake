@@ -293,6 +293,18 @@ def walk_calamares(drv: Driver, args) -> bool:
     stalled_since = time.time()
     previous = ""
     while time.time() - started < args.timeout:
+        # NUDGE THE POINTER, OR THE SCREEN BLANKS AND EVERY READING IS BLACK.
+        #
+        # Run 42404589611 clicked Install Now at 19:15:28 and then read a solid black frame
+        # for the next twenty-five minutes, until the stall detector ended the run at 912
+        # seconds. A desktop session with no input blanks its display; a blanked display has
+        # no words, so "the installer is still working" and "the installer finished" look
+        # identical. One pixel of movement per poll keeps the session awake - the same fix,
+        # for the same reason, as the Ubuntu verification run.
+        try:
+            Q.move(drv.q, 400 + (int(time.time()) % 40), 300)
+        except Exception:                              # noqa: BLE001
+            pass
         drv.look("installing")
         current = drv.text()
         if current != previous:

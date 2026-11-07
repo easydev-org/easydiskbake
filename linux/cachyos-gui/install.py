@@ -234,6 +234,14 @@ def walk_calamares(drv: Driver, args) -> bool:
     drv.click(NEXT, "Summary: Install", settle=15.0)
     drv.look("confirm install")
     drv.click(INSTALL_NOW, "the install confirmation's Install now", settle=25.0)
+    # NUDGE THE POINTER, OR THE SCREEN BLANKS AND EVERY READING IS BLACK. A desktop
+    # session with no input blanks its display, and a blanked display has no words -
+    # so "still installing" and "finished" look identical. One pixel per poll.
+    try:
+        Q.move(drv.q, 400 + (int(time.time()) % 40), 300)
+    except Exception:                              # noqa: BLE001
+        pass
+
     drv.look("installing")
 
     # 11. UNTIL IT SAYS SO, WITH A STALL DETECTOR. Finishing always changes the screen - a
