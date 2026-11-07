@@ -59,6 +59,41 @@ def log(message: str) -> None:
     print(f"[live {time.strftime('%H:%M:%S')}] {message}", flush=True)
 
 
+def _frame_size(path: str) -> tuple[int, int] | None:
+    """A picture's pixel dimensions, from ffprobe.
+
+    WHY PROBE RATHER THAN ASSUME: a frame can arrive as a PPM written by screendump, as a
+    JPEG converted by lib/snapshots.py, or as either one mid-transition - and the whole
+    point of the caller is that they are not all the same size. Opening the file is the
+    only answer that covers all three without a second parser in this module.
+
+    None means "could not tell", which the caller treats as "convert it and find out",
+    rather than as a size.
+    """
+    if not shutil.which("ffprobe"):
+        return None
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", path],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    text = (result.stdout or "").strip().splitlines()
+    if not text:
+        return None
+    parts = text[0].split("x")
+    if len(parts) != 2:
+        return None
+    try:
+        return (int(parts[0]), int(parts[1]))
+    except ValueError:
+        return None
+
+
 def part_path(target: str) -> str:
     """A temporary name ffmpeg will still recognise the format of.
 
@@ -299,6 +334,47 @@ class LiveArtifacts:
             # converted here, into the same `f-%05d.jpg` sequence the encoder is then given.
             # It costs one ffmpeg call per non-JPEG frame, which is only the frames written
             # before snapshots.py started converting - normally none.
+            #
+            # ==================================================================
+            # EVERY FRAME IS RESCALED TO ONE SIZE, AND THAT IS NOT COSMETIC.
+            # ==================================================================
+            #
+            # ffmpeg's image2 demuxer fixes the encoder's dimensions from the FIRST frame
+            # it reads and then scales, pads or crops everything after it to match. A guest
+            # whose firmware starts at 640x480 and whose desktop is 1920x1080 therefore
+            # produces a recording at 640x480 - the whole install, in a picture the size of
+            # the boot screen.
+            #
+            # That is exactly what ubuntu-gui's run 42359740623 uploaded: 542 frames, 542
+            # seconds, 640x480, while the last-frame.png beside it in the same artifact was
+            # 1920x1080. Nothing failed and nothing warned; the video was simply the size of
+            # frame zero, which was SeaBIOS.
+            #
+            # THE TARGET IS THE LARGEST FRAME, not a configured constant. The largest frame
+            # is the one the guest settles at, so the recording comes out at the desktop's
+            # own resolution whatever the firmware did on the way there. A constant would be
+            # a second place to update when a guest's geometry changes, and it would be wrong
+            # for any guest that does not use it.
+            sizes = {}
+            for name in sorted(os.listdir(stage)):
+                if not name.startswith("f-"):
+                    continue
+                dims = _frame_size(os.path.join(stage, name))
+                if dims:
+                    sizes[dims] = sizes.get(dims, 0) + 1
+            if not sizes:
+                return False
+            # MOST COMMON, THEN LARGEST. A guest that spends the install at 1920x1080 and
+            # shows a 640x480 firmware screen for ten seconds has one 640x480 frame and five
+            # hundred at 1920x1080; counting makes the answer that majority rather than an
+            # accident of which frame happened to be biggest.
+            target = max(sizes.items(), key=lambda kv: (kv[1], kv[0][0] * kv[0][1]))[0]
+            mixed = len(sizes) > 1
+            if mixed:
+                log(f"  frames arrive in {len(sizes)} sizes "
+                    f"({', '.join(f'{w}x{h}' for w, h in sorted(sizes))}); "
+                    f"scaling all of them to {target[0]}x{target[1]}")
+
             sequence = os.path.join(stage, "seq-%05d.jpg")
             k = 0
             for name in sorted(os.listdir(stage)):
@@ -306,14 +382,29 @@ class LiveArtifacts:
                 if not name.startswith("f-"):
                     continue
                 dst = os.path.join(stage, f"seq-{k:05d}.jpg")
-                if name.endswith(".jpg"):
+                dims = _frame_size(src)
+                # A FRAME AT THE TARGET SIZE IS ONLY RE-ENCODED WHEN IT HAS TO BE.
+                # Moving the file is lossless and instant, so it stays the fast path for the
+                # common case: a run where every frame is already the right size.
+                if name.endswith(".jpg") and dims == target:
                     os.replace(src, dst)
                 else:
-                    r = subprocess.run(
-                        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-                         "-i", src, "-q:v", "4", dst],
-                        capture_output=True, text=True,
-                    )
+                    args = [
+                        "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+                        "-i", src,
+                    ]
+                    if dims and dims != target:
+                        # force_original_aspect_ratio=decrease plus a pad keeps a 4:3
+                        # firmware screen from being stretched into 16:9. The pad is black,
+                        # which is what the letterbox around a firmware screen already is.
+                        args += [
+                            "-vf",
+                            f"scale={target[0]}:{target[1]}:"
+                            f"force_original_aspect_ratio=decrease,"
+                            f"pad={target[0]}:{target[1]}:(ow-iw)/2:(oh-ih)/2:black",
+                        ]
+                    args += ["-q:v", "4", dst]
+                    r = subprocess.run(args, capture_output=True, text=True)
                     if r.returncode != 0 or not os.path.exists(dst):
                         # A FRAME THAT WILL NOT CONVERT IS DROPPED, NOT FIXED UP. It is one
                         # of hundreds and the run continues; guessing at its format would
