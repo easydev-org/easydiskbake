@@ -91,6 +91,11 @@ ACCOUNT = {
 # THE LIVE MEDIUM'S BOOT TIME, AS A NUMBER - see wait_for_desktop.
 DESKTOP_SECONDS = 240
 
+# CALAMARES' SIDEBAR IS 250 px WIDE AND LISTS EVERY PANE AT ALL TIMES. Anything deciding
+# whether the wizard advanced has to look right of this, or it will read the name of the
+# pane it is waiting for before the pane arrives - see Driver.text().
+SIDEBAR_WIDTH = 250
+
 
 def log(msg: str) -> None:
     print(f"[manjaro-gui {time.strftime('%H:%M:%S')}] {msg}", flush=True)
@@ -118,8 +123,22 @@ class Driver:
         self.words = self.screen.text(ppm) if ppm else []
         log(f"  {label}: {' | '.join(w[0] for w in self.words[:18])}")
 
-    def text(self) -> str:
-        return " ".join(w[0].lower() for w in self.words)
+    def text(self, content_only: bool = False) -> str:
+        """Everything OCR read, optionally WITHOUT Calamares' sidebar.
+
+        THE SIDEBAR HAS TO BE EXCLUDABLE AND THIS IS THE BUG THAT MADE THIS NECESSARY.
+        Calamares lists every pane down the left at all times - `Welcome Location Keyboard
+        Partitions Users Office Suite Summary Install Finish` - so `expect="office"` was
+        TRUE ON THE USERS PANE. Run 42398673800 advanced from Users with that expectation,
+        landed on Office Suite, and the driver believed it had already arrived: it clicked
+        `No Office Suite` and then the footer, was still on Users, and sat there until the
+        stall detector ended the run 908 seconds later.
+
+        The sidebar is 250 px wide on Manjaro's build; the content starts right of it.
+        """
+        if not content_only:
+            return " ".join(w[0].lower() for w in self.words)
+        return " ".join(w[0].lower() for w in self.words if w[1] > SIDEBAR_WIDTH)
 
     def click(self, xy, why: str, settle: float = 3.0) -> None:
         log(f"click {xy} - {why}")
@@ -167,11 +186,11 @@ class Driver:
         `expect` is a phrase that only the NEXT pane shows. When it is given the check is
         exact; otherwise the test is that the content changed at all.
         """
-        before = self.text()
+        before = self.text(content_only=True)
         for attempt in range(1, max_tries + 1):
             self.click(xy, f"{name}: Next (attempt {attempt})", settle=settle)
             self.look(f"after {name}")
-            current = self.text()
+            current = self.text(content_only=True)
             if expect:
                 if expect in current:
                     return True

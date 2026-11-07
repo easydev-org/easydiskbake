@@ -229,55 +229,36 @@ def walk_anaconda(drv: Driver, args) -> bool:
     if not open_anaconda(drv):
         return False
 
-    # 2. THE LANGUAGE, AND THEN THE LIST THAT COVERS THE FOOTER.
+    # 2. THE WELCOME PANE, WHICH IS NOT COVERED BY ANYTHING.
     #
-    # TWO RUNS DIED HERE AND BOTH DID SO BY TRUSTING THE SCREEN.
+    # FOUR RUNS DIED HERE ON THE SAME ASSUMPTION, AND IT WAS WRONG.
     #
-    # 42372442386: English was already selected, so the driver never clicked the list, so
-    #   nothing ever closed it - and the list is expanded by default, covering (729, 1002).
-    #   The Next click landed on the list. `after welcome:` was empty.
+    # Every earlier version treated the `Suggested languages` list as a POPUP that had to be
+    # dismissed before the footer could be reached - Escape, then a click on the pane title,
+    # three times each. The last run's log shows all six attempts changing nothing:
     #
-    # 42373700380: the language was SPANISH. `locale=en_US.UTF-8` on the kernel command
-    #   line does not move Anaconda - it reads its locale from the live session, not from
-    #   the kernel - so this run looked for English at (860, 424) and clicked a row of a
-    #   Spanish list, missing it. The list stayed open and Next stayed covered.
+    #     18:30:33  after dismiss 1: ... Welcome. | Let's | install | Fedora | now. |
+    #               Language | Q | Suggested | languages | English (United States) | ...
+    #     18:30:54  after escape 3: (identical)
     #
-    # BOTH ARE THE SAME LESSON: the language is not part of the contract, so nothing below
-    # may depend on it. The list is closed with Escape, which is what a person does and is
-    # the same key in every language, and every advance is made with Alt+N - Anaconda binds
-    # it to the Next button under every locale it ships.
+    # IT IS NOT A POPUP. Anaconda's Web UI renders the language list as ORDINARY PAGE
+    # CONTENT - the search box, the suggestions and the footer are all in the page, and
+    # "Suggested languages" is on screen whenever the welcome pane is. So a check for that
+    # phrase can never be satisfied, and six attempts were spent proving it.
+    #
+    # WHAT THE PANE ACTUALLY NEEDS IS THE NEXT BUTTON, WHICH IS AT A FIXED PLACE. It has
+    # been clicked successfully on this pane in earlier runs before this detection was
+    # added - (729, 1002) is the footer of Anaconda's window, and the window does not move
+    # between panes.
     drv.look("anaconda welcome")
-
-    # THE LIST IS CLOSED BY CLICKING AWAY FROM IT, NOT BY ESCAPE.
-    #
-    # Two runs pressed Escape three times, a second apart, and the list stayed open:
-    #
-    #     17:17:39  alt+n - welcome: Next     ->  unchanged
-    #     17:58:11  alt+n - welcome: Next     ->  unchanged, "Suggested languages" still up
-    #
-    # Anaconda's language combo is a GTK drop-down that does not treat Escape as "close";
-    # the key goes nowhere and the popup keeps the footer covered. Clicking a part of the
-    # pane that is NOT the popup closes it, which is the second thing a person tries.
-    #
-    # THE PANE TITLE is the click target: `Welcome. Let's install Fedora now.` sits above
-    # the list, selects nothing, and is in the same place in every language.
-    WELCOME_TITLE = (700, 165)
-    for attempt in range(1, 4):
-        log(f"closing the language list by clicking the pane title (attempt {attempt})")
-        drv.click(WELCOME_TITLE, "the pane title, to dismiss the language popup", settle=3.0)
-        drv.look(f"after dismiss {attempt}")
-        if "suggested" not in drv.text():
-            break
-        # ESCAPE AS WELL, LAST: harmless when it is ignored, and it is what closes a
-        # popup on some GTK versions.
-        Q.key(drv.q, "esc")
-        time.sleep(1.5)
-        drv.look(f"after escape {attempt}")
-        if "suggested" not in drv.text():
-            break
+    drv.click(NEXT, "welcome: Next", settle=15.0)
+    drv.look("after welcome click")
+    if "installation method" not in drv.text():
+        log("  the click did not advance the welcome pane; trying Alt+N")
+        drv.alt_n("welcome: Next, by keyboard", settle=15.0)
+        drv.look("after alt+n")
 
     for pane, expected_set in (
-        ("welcome", ("installation method", "metodo de instalacion", "methode d'installation")),
         ("installation method", ("storage configuration", "configuracion de almacenamiento")),
         ("storage configuration", ("review and install", "revisar e instalar")),
     ):
