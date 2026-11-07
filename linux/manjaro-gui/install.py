@@ -342,7 +342,18 @@ def walk_calamares(drv: Driver, args) -> bool:
         current = drv.text()
         if current != previous:
             previous, stalled_since = current, time.time()
-        if "all done" in current:
+        # COMPLETION IS THE SENTENCE, NOT THE HEADING.
+        #
+        # The Finish pane's heading is `All done.` in a large font, and tesseract does not
+        # read it: measured on a completed local install, the whole pane OCRs as
+        #
+        #     manjar you may now re: environment. tart now * 3:58 pm * 11/7/26
+        #
+        # with no `all done` anywhere. So the test was one the screen could never satisfy,
+        # and a correct install would have been thrown away at the timeout. `you may now`
+        # is the body sentence, it is unique to this pane, and it reads cleanly.
+        if ("all done" in current or "you may now" in current
+                or "has been installed" in current):
             log("=== INSTALL COMPLETE ===")
             return True
         stalled = int(time.time() - stalled_since)

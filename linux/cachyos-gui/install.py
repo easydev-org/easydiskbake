@@ -332,7 +332,12 @@ def walk_calamares(drv: Driver, args) -> bool:
         current = drv.text()
         if current != previous:
             previous, stalled_since = current, time.time()
-        if "all done" in current or "reboot now" in current or "restart now" in current:
+        # THE HEADING IS NOT RELIABLE, THE SENTENCE IS. Calamares' Finish pane says
+        # `All done.` in a large font that tesseract skips, and the body sentence under it -
+        # `Your new system is ready ... you may now restart` - is what reads cleanly. See
+        # manjaro-gui's loop for the measured OCR of this same pane.
+        if ("all done" in current or "you may now" in current
+                or "reboot now" in current or "restart now" in current):
             log("=== INSTALL COMPLETE ===")
             return True
         if time.time() - stalled_since > 900:

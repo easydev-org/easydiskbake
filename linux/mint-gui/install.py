@@ -261,7 +261,10 @@ def walk_ubiquity(drv: Driver, args) -> bool:
             pass
         drv.look("installing")
         joined = drv.text()
-        if "restart now" in joined or "installation is complete" in joined:
+        # Ubiquity's own sentence as well as its button: the heading is a large font that
+        # tesseract skips, and a correct install must not be thrown away because of it.
+        if ("restart now" in joined or "installation is complete" in joined
+                or "installation is finished" in joined or "is now complete" in joined):
             log("=== INSTALL COMPLETE ===")
             return True
         time.sleep(20)

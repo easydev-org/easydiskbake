@@ -332,7 +332,11 @@ def walk_yast2(drv: Driver, args) -> bool:
             pass
         drv.look("installing")
         joined = drv.text()
-        if "congratulations" in joined or "installation complete" in joined:
+        # YaST2's own sentence under the heading, for the same reason as the Calamares
+        # drivers: `Congratulations!` is a large font that tesseract skips.
+        if ("congratulations" in joined or "installation complete" in joined
+                or "has been installed" in joined or "installation has finished" in joined
+                or ("reboot" in joined and "into" in joined)):
             log("=== INSTALL COMPLETE ===")
             return True
         time.sleep(20)
