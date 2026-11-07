@@ -295,17 +295,39 @@ def up(*, ssh_port: int = 2222, rdp_port: int = 3389,
     # service, which answers 200 without a redirect. Calamares asks https, gets a refusal,
     # and uses its own default; that path was measured and it works.
     rule = (f"-d {GEOIP_MOCK_IP} -p tcp --dport 80 "
-            f"-j REDIRECT --to-ports {geoip_mock.PORT}")
-    if _sh(f"iptables -t nat -C PREROUTING {rule}").returncode != 0:
-        # INSERTED, NOT APPENDED, AND THAT IS THE WHOLE FIX.
-        #
-        # PREROUTING already has a jump to VM_FWD for `-d 172.30.0.1` - the port-forward
-        # chain - and the geoip address IS 172.30.0.1, because that is the bridge. An
-        # appended rule never runs: VM_FWD matches first, finds no forward for port 80,
-        # and the packet carries on to the guest's normal destination. Measured on the run
-        # that added it: the mock was listening on 8977 and a `curl http://172.30.0.1/lookup`
-        # from inside the container returned nothing at all.
-        _sh(f"iptables -t nat -I PREROUTING 1 {rule}")
+            f"-j DNAT --to-destination 127.0.0.1:{geoip_mock.PORT}")
+    # THREE SEPARATE MISTAKES WERE MADE HERE, AND EACH ONE WAS MEASURED.
+
+    # 1. REDIRECT IS NOT AVAILABLE ON THIS KERNEL.
+    #
+    #     Warning: Extension REDIRECT revision 0 not supported, missing kernel module?
+    #     iptables v1.8.11 (nf_tables): RULE_INSERT failed (No such file or directory)
+    #
+    #     `insert rc=4`, and not one rule was added. DNAT reaches the same place through
+    #     nf_nat, which this kernel has - the same class of gap as xt_TCPMSS in lib/net.py's
+    #     MSS clamping note.
+    #
+    # 2. AN APPENDED RULE IS NEVER REACHED. PREROUTING already jumps to VM_FWD for
+    #    `-d 172.30.0.1`, and the geoip address IS the bridge address, so VM_FWD matches
+    #    first and finds no forward for port 80. `-I PREROUTING 1` puts this in front.
+    #
+    # 3. PREROUTING IS THE WRONG CHAIN FOR MOST OF THE TRAFFIC THAT MATTERS. PREROUTING
+    #    sees packets arriving on an interface - the guest's probes. A request from inside
+    #    this container to the bridge address goes out through OUTPUT and never touches
+    #    PREROUTING, which is why a `curl http://172.30.0.1/lookup` from the container
+    #    itself returned nothing while the mock was plainly listening.
+    #
+    # ALL THREE, AND THEN THE ANSWER ARRIVES. Verified inside the container:
+    #
+    #     $ curl -s http://172.30.0.1/lookup
+    #     <Response><CountryCode>US</CountryCode>...<TimeZone>America/New_York</TimeZone>
+    outbound = (f"-d {GEOIP_MOCK_IP} -p tcp --dport 80 "
+                f"-j DNAT --to-destination 127.0.0.1:{geoip_mock.PORT}")
+    for chain in ("PREROUTING", "OUTPUT"):
+        for _ in range(5):
+            if _sh(f"iptables -t nat -D {chain} {outbound}").returncode != 0:
+                break
+        _sh(f"iptables -t nat -I {chain} 1 {outbound}")
     if not geoip_mock.running():
         geoip_mock.serve()
         time.sleep(0.5)
