@@ -1,0 +1,165 @@
+name: ubuntu-gui
+
+# Install Ubuntu from the OFFICIAL DESKTOP ISO, through the installer's own GUI.
+#
+# WHY THIS EXISTS BESIDE ubuntu.yml, AND WHAT "BESIDE" MEANS HERE
+#
+# ubuntu.yml starts from the *server* ISO and drives subiquity with an autoinstall file. That
+# works because the server installer reads one - its own comment says the server variant is
+# "the image whose installer a file can drive". The desktop image's installer is a Flutter
+# application. There is no answer file for the interactive path, and the only way through it is
+# the GUI.
+#
+# This workflow is that path. It does NOT replace ubuntu.yml: nothing here changes the server
+# bake, its tags or its jobs. The intent is that later distros are added as more
+# `*-gui.yml` files and the server bakes retire one at a time, once each GUI flow is proven.
+#
+# THE INSTALLER IS DRIVEN THE SAME WAY THE macOS ONE IS - read the screen, click, look again -
+# because that is the only mechanism that works for a GUI with no automation interface. The
+# difference is that Ubuntu's installer labels every pane with a title tesseract reads cleanly,
+# so the driver knows where it is before it clicks.
+#
+# THE ISO COMES FROM THE VENDOR. lib/iso.py pulls an image this repository has already
+# published to ghcr; a vendor ISO is not there, so `artifacts-publish.yml`'s pattern applies:
+# fetch once, verify the vendor's own checksum, and keep it in the workspace.
+#
+# MANUAL ONLY. An installer that clicks through a GUI is not something to run on every push.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bake_run:
+        description: "Install Ubuntu through the graphical installer"
+        type: boolean
+        default: true
+      release:
+        description: "Ubuntu desktop release (the ISO name carries it)"
+        default: "26.04.1"
+      iso_url:
+        description: "ISO URL (empty for the pinned 26.04.1 desktop image)"
+        default: ""
+      iso_sha256:
+        description: "ISO sha256 (empty for the pinned value)"
+        default: ""
+      disk_size:
+        description: "guest disk size"
+        default: "64G"
+      install_timeout:
+        description: "seconds the installer may take"
+        default: "5400"
+      publish_tag:
+        description: "tag to publish under; empty for linux-ubuntu-gui"
+        default: "linux-ubuntu-gui"
+      publish:
+        description: "publish the finished disk to ghcr"
+        type: boolean
+        default: true
+
+# ONE RUN PER BRANCH. Two installers writing the same tag would race, and the disk is large
+# enough that queuing is cheaper than a lost run.
+concurrency:
+  group: ubuntu-gui-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bake:
+    if: inputs.bake_run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      # THE SAME THREE THE OTHER VM JOBS NEED. A guest here is on a tap (lib/net.py), so the
+      # kernel-side tun device and NET_ADMIN are as load-bearing as /dev/kvm.
+      options: --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+    outputs:
+      tag: ${{ steps.publish.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '40'
+          token: ${{ github.token }}
+
+      - name: prepare
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: ubuntu-gui-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py tags --prefix linux-
+
+      # THE VENDOR IMAGE, FETCHED ONCE AND CHECKED AGAINST THE VENDOR'S OWN SHASUMS.
+      #
+      # In parallel, because a single connection to releases.ubuntu.com was measured at tens
+      # of KB/s from a runner while a segmented fetch through the proxy reached 150 MiB/s.
+      # This is the same reason easyactions/oci-pull segments a blob.
+      - name: fetch the desktop ISO
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: ubuntu-gui-iso
+          interval: "10"
+          command: |
+            set -euo pipefail
+            ISO_NAME="ubuntu-${{ inputs.release || '26.04.1' }}-desktop-amd64.iso"
+            URL="${{ inputs.iso_url }}"
+            SHA="${{ inputs.iso_sha256 }}"
+            if [ -z "$URL" ]; then
+              URL="https://releases.ubuntu.com/26.04/$ISO_NAME"
+              SHA="601e30fbf5d97759367c632e2c33630665039b7e2158fd068403da3ccf1bda1f"
+            fi
+            mkdir -p out/iso
+            ISO_URL="$URL" ISO_SHA256="$SHA" DEST="out/iso/$ISO_NAME" \
+              python3 lib/fetch_vendor_iso.py --segments 8
+
+      # THE GUI, DRIVEN BY READING IT.
+      - name: install through the graphical installer
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: ubuntu-gui-install
+          interval: "15"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            export SNAPSHOT_INTERVAL=2
+            ISO=$(ls out/iso/*.iso | head -1)
+            echo "iso: $ISO"
+            python3 linux/ubuntu-gui/install.py \
+              --iso "$ISO" \
+              --out out/ubuntu-gui.qcow2 \
+              --disk-size "${{ inputs.disk_size || '64G' }}" \
+              --timeout "${{ inputs.install_timeout || '5400' }}"
+
+      - name: keep the recording
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-gui-recording
+          path: |
+            out/install.mp4
+            out/last-frame.png
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: push the disk
+        if: success() && inputs.publish
+        id: publish
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/ubuntu-gui.qcow2
+          kind: linux-ubuntu-gui
+          tag: ${{ inputs.publish_tag || 'linux-ubuntu-gui' }}
+          token: ${{ github.token }}
