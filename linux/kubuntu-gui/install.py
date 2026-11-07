@@ -359,21 +359,26 @@ def walk_calamares(drv: Driver, args) -> bool:
     # worked is safe, and is what the check below does.
     drv.click(NEXT, "Summary: Install", settle=12.0)
     drv.look("confirm-dialog")
-    # THE MODAL IS CHECKED FOR BY A PHRASE THAT IS ONLY IN THE MODAL.
-    #
-    # `Install Now` is its own button label and appears nowhere in the Summary's prose, so
-    # it is a question with one answer. The check before this one asked for "confirm" and
-    # the dialog's title is `Continue with Installation?` - so a run that had opened the
-    # modal correctly reported that it had not, and stopped. That frame is in the commit
-    # message and in the artifact: the dialog was there with `Install Now` at (1058, 535),
-    # exactly where INSTALL_NOW points.
-    if "install now" not in drv.screen_text(content_only=True):
-        log("=== THE CONFIRMATION DIALOG DID NOT APPEAR ===")
-        log(f"  screen: {drv.screen_text(content_only=True)[:200]}")
-        return False
 
-    # THE DIALOG'S OWN BUTTON. Measured on the modal, which is a small window in the centre
-    # of the screen and does not move with the pane behind it.
+    # NO CHECK HERE, AND THAT IS DELIBERATE. THE CLICK BELOW IS A COORDINATE.
+    #
+    # Three runs in a row stopped at this line because the check could not read the modal:
+    #
+    #   run 42364250527  looked for the button label, found it in the Summary's PROSE, and
+    #                    clicked a sentence at (896, 424) - the install never started
+    #   run 42371430501  looked for "confirm", which is neither the title nor the button
+    #   run 42372430467  looked for "install now" and tesseract returned only the Summary
+    #                    text BEHIND the modal - the dialog was there, at (1058, 535), on
+    #                    the frame the run uploaded
+    #
+    # The lesson is the rule this driver now follows everywhere: THE SCREEN IS READ TO
+    # DECIDE WHETHER A STEP WORKED, NEVER WHETHER TO TAKE IT. A conditional here makes the
+    # run stop on a screen that is correct; a coordinate cannot.
+    #
+    # So the dialog's button is clicked where it was measured. If the dialog did not open,
+    # the click lands on the Summary pane, nothing happens, and the finish loop's stall
+    # detector reports it in fifteen minutes with the screen named - which is the right
+    # place to notice, because that is the first point where the outcome is knowable.
     drv.click(INSTALL_NOW, "the confirmation dialog's Install now", settle=25.0)
     drv.look("installing")
 

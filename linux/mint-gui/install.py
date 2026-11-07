@@ -208,11 +208,18 @@ def walk_ubiquity(drv: Driver, args) -> bool:
     drv.click(CONTINUE, "Installation type: Install Now", settle=15.0)
     drv.look("confirm")
 
-    # 5. THE CONFIRMATION. Its wording names the disk and the partitions; Continue writes
-    #    them. This is the point of no return and the only click in the run that destroys
-    #    anything.
-    if "write the changes" in drv.text() or "continue" in drv.text():
-        drv.click(WRITE_CONTINUE, "Write the changes to disks: Continue", settle=20.0)
+    # 5. THE CONFIRMATION, CLICKED WHETHER OR NOT THE SCREEN WAS READ.
+    #
+    # Run 42372449152 stopped here: the conditional below decided from an OCR read whether
+    # the `Write the changes to disks?` dialog had appeared, did not see it, and skipped the
+    # click - then spent the rest of the run on the Installation type pane with the modal
+    # possibly open behind it.
+    #
+    # A CONDITIONAL THAT GATES A CLICK IS THE SAME MISTAKE AS A LOOKUP THAT CHOOSES ONE, and
+    # this repository has now paid for it four times (kubuntu three, mint one). The click
+    # costs nothing when the dialog is absent: (1269, 659) is blank space on the pane, so a
+    # stray click there selects nothing and types nothing.
+    drv.click(WRITE_CONTINUE, "Write the changes to disks: Continue", settle=20.0)
     drv.look("timezone")
 
     # 6. WHERE ARE YOU? THE DEFAULT IS KEPT. See the module docstring: on this cluster it is

@@ -180,12 +180,26 @@ def walk_anaconda(drv: Driver, args) -> bool:
     drv.click_twice(INSTALL_BUTTON, "Install Fedora Linux on the live desktop", settle=25.0)
     drv.look("anaconda welcome")
 
-    # 2. THE LANGUAGE. Only clicked when Anaconda did not already choose English; the
-    #    locale argument normally makes this unnecessary, and clicking a list entry that is
-    #    already selected is harmless.
-    if "welcome" in drv.text() and "english" not in drv.text():
+    # 2. THE LANGUAGE. Only chosen when Anaconda did not already pick English; the locale
+    #    argument normally makes this unnecessary.
+    drv.look("anaconda welcome")
+    if "english" not in drv.text():
         log("Anaconda came up in another language; choosing English (United States)")
         drv.click(LANGUAGE_EN_US, "English (United States)", settle=4.0)
+
+    # THE LANGUAGE DROPDOWN COVERS THE FOOTER WHILE IT IS OPEN, AND IT OPENS BY DEFAULT.
+    #
+    # Run 42372442386 clicked Next at (729, 1002) and the log says the click did nothing:
+    # `after welcome:` was empty, which is what the pane reads when its lower half is hidden.
+    # The uploaded frame shows why - the suggestion list is expanded over the content area
+    # and its bottom edge is below the footer. English was already selected, so the driver
+    # never clicked the list, and so nothing ever closed it.
+    #
+    # ONE CLICK ON THE PAGE TITLE CLOSES IT. The title is a fixed part of the pane, above
+    # the list, and clicking it selects nothing.
+    log("closing the language list (it covers the footer while open)")
+    drv.click((700, 165), "the pane title, to close the language list", settle=3.0)
+    drv.look("after closing the list")
 
     for pane, expected in (
         ("welcome", "installation method"),
