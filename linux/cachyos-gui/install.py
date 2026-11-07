@@ -309,8 +309,17 @@ def walk_calamares(drv: Driver, args) -> bool:
         current = drv.text()
         # THE HEADING IS NOT RELIABLE, THE SENTENCE IS: `All done.` is a large font that
         # tesseract skips, and the body sentence under it reads cleanly. See manjaro-gui.
+        #
+        # AND IT IS CHECKED IN BOTH LANGUAGES THE INSTALLER ACTUALLY COMES UP IN. On the CI
+        # runners the wizard is English; on a machine whose egress reports China it is
+        # Simplified Chinese, and a completed install there reads `安装成功！` with
+        # `CachyOS 已安装在您的电脑上了。` under it - measured on a local run that finished
+        # exactly as it should. A completion test that only knew English would have thrown
+        # that disk away at the timeout.
         if ("all done" in current or "you may now" in current
-                or "reboot now" in current or "restart now" in current):
+                or "reboot now" in current or "restart now" in current
+                or "安装成功" in current or "已安装在" in current
+                or "现在重启" in current):
             log("=== INSTALL COMPLETE ===")
             return True
         time.sleep(20)
