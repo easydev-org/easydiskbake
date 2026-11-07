@@ -529,10 +529,11 @@ def _update_26(w: Wizard) -> bool:
     neither is a click. An earlier version of this file clicked Continue once a minute; the
     screenshots that disproved it show a disabled button the whole time.
 
-    THREE HUNDRED SECONDS WAS THE BUDGET, and it is now 240 by instruction: the wizard's
-    work is done by then in the cases where it finishes at all, and the disk is consistent
-    either way because the write has long since finished. Checking for a desktop first costs
-    nothing and covers a release that does redraw.
+    SIX HUNDRED SECONDS IS THE BUDGET, by instruction: the pane is given ten minutes to
+    finish on its own before the guest is restarted. The wizard's work is done long before
+    that in the cases where it finishes at all, and the disk is consistent either way because
+    the write has long since finished - so the extra time costs nothing but a slower failure,
+    and it is the answer to "how long do we wait before restarting".
 
     THE RESTART IS A QMP system_reset, NOT A PANE ACTION. There is no button that leaves this
     state, so the driver has to leave it from outside the guest. The disk is what comes out:
@@ -541,7 +542,7 @@ def _update_26(w: Wizard) -> bool:
     """
     w.click(w.continue_at, "update Continue (macOS 26)", settle=10.0)
 
-    budget = int(os.environ.get("MACOS26_UPDATE_WAIT", "240"))
+    budget = int(os.environ.get("MACOS26_UPDATE_WAIT", "600"))
     log(f"  macOS 26: waiting {budget}s for the update pane to settle")
     deadline = time.time() + budget
     while time.time() < deadline:
@@ -577,16 +578,12 @@ def _update_26(w: Wizard) -> bool:
         return False
     log("  reset sent; the login window is the next stage's to handle")
 
-    # SIX HUNDRED SECONDS, BY INSTRUCTION. It was 20, which is long enough for a Mac that
-    # reboots in seconds and not for this one: after system_reset the guest sits at
-    # `HANDOFF TO XNU` with the CPU spinning and the disk untouched, and measured on this
-    # cluster that state lasted minutes, not twenty seconds. Returning while the machine is
-    # mid-boot hands the next stage a screen with no login window on it yet.
-    #
-    # The driver is not doing anything during this wait - desktop.py's wait_for_desktop owns
-    # the boot from here and has its own 1800s budget - so this is the driver declining to
-    # race it, not a second timeout.
-    time.sleep(600)
+    # TWENTY SECONDS, AND IT IS NOT A TIMEOUT. The guest reboots into its login window and
+    # desktop.py's wait_for_desktop owns that boot from here, with its own 1800s budget. This
+    # pause only stops the driver returning while qemu is still mid-reset - the 600s I tried
+    # here was the wrong knob, because the thing that needs the longer wait is the update
+    # pane BEFORE the reset, not this.
+    time.sleep(20)
     return True
 
 
