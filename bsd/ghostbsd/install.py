@@ -300,6 +300,36 @@ def set_usbhid_in_loader(drv: Driver) -> bool:
         log(f"  screen: {joined[:200]}")
         return False
 
+    # THE PROMPT HAS TO STILL BE THERE BEFORE "boot" IS TYPED INTO IT.
+    #
+    # Run 42398681489 logged `the loader prompt is up`, typed the setting, and then showed
+    # the BOOT MENU again at `after set`:
+    #
+    #     17:59:53  the loader prompt is up
+    #     17:59:53  loader: set hw.usb.usbhid.enable=1
+    #     17:59:59  after set: Boot | Multi user | [Enter] | ... | 7. | Boot Options
+    #
+    # so the four characters of "boot" went to a menu, where each letter is a hotkey, and
+    # the machine then did something the driver never asked for. Typing a command into a
+    # menu is worse than not booting at all: the keys are choices.
+    #
+    # THE FIX IS TO RE-ENTER THE PROMPT, NOT TO RETRY THE BOOT. `3` is the menu's own
+    # "escape to loader prompt" hotkey, so one press puts it back; `_clear_line` then wipes
+    # whatever the failed attempt left on the command line.
+    if not _at_loader_prompt(drv):
+        log("  the prompt disappeared after `set`; re-entering it before boot")
+        for _ in range(3):
+            Q.key(drv.q, LOADER_PROMPT_KEY)
+            time.sleep(1.5)
+            drv.look("re-entering the prompt")
+            if _at_loader_prompt(drv):
+                break
+        if not _at_loader_prompt(drv):
+            log("=== THE LOADER PROMPT COULD NOT BE RE-ENTERED ===")
+            log(f"  screen: {' | '.join(w[0] for w in drv.words[:24])}")
+            return False
+        _clear_line(drv)
+
     log("loader: boot")
     keys.type_text(drv.q, "boot", per_char=0.05)
     Q.key(drv.q, "ret")
