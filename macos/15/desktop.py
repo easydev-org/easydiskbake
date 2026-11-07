@@ -161,22 +161,26 @@ def main(argv: list[str]) -> int:
     # stage arriving with a third spelling is how a work directory ends up holding two
     # images of different releases. macos_recovery.fetch_published knows the tag, the
     # name and the error message, for every stage and every release.
-    recovery = macos_recovery.fetch_published("15", work)
+    #
+    # THE STAGE'S OWN RELEASE, NEVER A CONSTANT. This said "15", and the sign of it is in
+    # the log line of run 42353977075, a macOS 26 desktop:
+    #
+    #     [recovery]   pulling macos-recovery-sequoia
+    #
+    # The image is not decoration here. opencore.build() takes Apple's APFS driver out of
+    # it and installs that driver into boot.img, so a 26 disk was being booted through a
+    # driver taken from 15's BaseSystem. The failure it produces is the one that run
+    # recorded: the frame recorder kept writing (`newest frame 0s old`), the guest was
+    # clearly alive, and the Setup Assistant never appeared - `login window seen: False`
+    # for the whole 1800 seconds. Nothing in that log says "wrong APFS driver", which is
+    # why it was read as a coordinate problem first.
+    recovery = macos_recovery.fetch_published(args.release, work)
     log(f"  {recovery} ({os.path.getsize(recovery) >> 20} MiB)")
 
     # THE BOOT ASSETS. opencore.build() needs the recovery image only to take Apple's
     # APFS driver out of it - the driver is installed into boot.img, which travels with
     # the machine, not with the disk.
     log("=== OpenCore, firmware, APFS driver ===")
-    # THE RELEASE, NOT A CONSTANT. This said "15", so a macOS 26 desktop run built its boot
-    # assets from SEQUOIA's recovery image - the stage's own log line, run 42085569136:
-    #
-    #     [recovery]   pulling macos-recovery-sequoia
-    #
-    # opencore.build() takes Apple's APFS driver out of that image and installs it into
-    # boot.img. A 26 disk booted through a driver taken from 15 is a boot that can fail for a
-    # reason no other line in the run would name.
-    #
     # A HANDLER BEFORE THERE IS A GUEST TO STOP. This call downloads 848 MiB through
     # lib/opencore's fetch, and it is the longest stretch of a desktop stage that produces no
     # output of its own - lib/iso.py's progress lines go to stdout, but a transfer that
