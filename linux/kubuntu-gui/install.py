@@ -80,45 +80,42 @@ ERASE_DISK_RADIO = (208, 73)
 INSTALL_NOW = (1058, 535)       # the confirmation dialog's button
 
 # The Users pane.
-# THE ACCOUNT FORM, LOCATED BY ITS OWN LABELS.
+# ============================================================================
+# THE ACCOUNT FORM, AS FIVE FIXED POSITIONS MEASURED ONCE FROM A CI FRAME.
+# ============================================================================
 #
-# The first version of this was a table of pixel positions - (294, 48), (294, 115) and so
-# on - measured on a Calamares window that was NOT full screen. In CI the window fills
-# 1920x1080 and every one of those clicks would have landed on blank panel.
+# THIS FILE DOES NOT LOOK ANYTHING UP AT RUN TIME. Every coordinate below came from a
+# screenshot and is a number; the screen is read afterwards only to say in the log what
+# happened and to decide whether a step worked.
 #
-# The second version looked the labels up by name, and still did not work, because
-# find_word() matches ONE OCR word and the labels are sentences: tesseract reports
-# "What is your name?" as 'What', 'is', 'your', 'name?', so the needle "your name" could
-# never match anything. That failure was visible in the log as
-# "COULD NOT FIND A FIELD LABELLED ('your name',)" while the screen plainly showed it.
+# That rule is not stylistic. Run 42364250527 searched for the confirmation dialog's
+# button by its label and clicked whatever position the search returned - the Summary
+# pane's own prose contains the word it was looking for, so it clicked a sentence at
+# (896, 424), the install never started, and the run waited out its ninety-minute timeout.
+# A driver that reads the screen to decide WHERE to click can be talked into clicking
+# prose; a driver that reads it to decide WHETHER the click worked cannot.
 #
-# So the label is matched as a PHRASE - consecutive OCR words on one line - and the field
-# is found RELATIVE TO IT. Measured from the Users pane at 1920x1080, for all five fields
-# and the checkbox:
+# THE FIRST VERSION OF THESE WAS MEASURED ON A WINDOWED INSTALLER and every one of them
+# landed on blank panel when CI ran the same wizard full-screen. These five were read off
+# the Users pane in the frame CI uploaded, and four of them were then confirmed by a run
+# that filled the form with them:
 #
-#     label row + 31 px    the input box directly below the label
-#     label left + 100 px  its horizontal centre
+#     login     (296, 120)      password  (296, 254)
+#     host      (296, 188)      confirm   (500, 254)
 #
-# and the five labels are these, quoted from the CI frame.
-ACCOUNT_FIELDS = (
-    # (name, label phrase, dx from the label's left edge, dy from its baseline)
-    ("name", "what is your name", 100, 31),
-    ("login", "what name do you want to use to log in", 100, 31),
-    ("host", "what is the name of this computer", 100, 31),
-    # THE TWO PASSWORD BOXES SHARE ONE LABEL and sit side by side under it, which is why
-    # their dx differs: the first is centred on the label, the second one field-width right.
-    ("password", "choose a password to keep your account safe", 100, 29),
-    ("confirm", "choose a password to keep your account safe", 304, 29),
-)
+# `name` is the one above `login`, and the rows are 68 px apart.
+ACCOUNT = {
+    "name": (296, 52),
+    "login": (296, 120),
+    "host": (296, 188),
+    "password": (296, 254),
+    "confirm": (500, 254),
+}
 
-# THE CHECKBOX IS TO THE LEFT OF ITS OWN LABEL, on the same line.
-LOGIN_AUTOMATICALLY_LABEL = "log in automatically"
-CHECKBOX_LEFT_OF_LABEL = 18
-
-# THE ROW PITCH OF THE ACCOUNT FORM, measured: label baselines at y 21, 89, 157 and the
-# fields themselves 31 px below each. 68 px is the distance between consecutive fields,
-# which is what lets the first one be found from the second when OCR misses its label.
-ROW_PITCH = 68
+# THE `Log in automatically without asking for the password.` CHECKBOX. Its box is at the
+# left of that line, measured from the same frame: the label starts at x 221 and the box is
+# 18 px left of it.
+LOGIN_AUTOMATICALLY = (203, 297)
 
 # CALAMARES' SIDEBAR IS 190 px WIDE AND LISTS EVERY PANE AT ALL TIMES. Anything that
 # decides whether the wizard advanced has to look right of this, or it will read the name
@@ -251,81 +248,6 @@ class Driver:
             return marker.lower() in now
         return bool(now) and now != before
 
-    def find_word(self, needles, *, content_only: bool = True):
-        """The centre of the first on-screen word matching any of `needles`.
-
-        A LABEL IS A BETTER COORDINATE THAN A NUMBER. Every fixed rectangle in this file
-        was measured on one window at one size; a label is wherever the toolkit put it this
-        time, in whatever language the UI came up in. That is what makes this driver survive
-        the change from a windowed Calamares to a full-screen one - which is precisely the
-        change the first CI run did not survive.
-        """
-        for needle in needles:
-            for word, cx, cy, _w, _h in self.words:
-                if content_only and cx <= SIDEBAR_WIDTH:
-                    continue
-                if needle in word.lower():
-                    return (cx, cy)
-        return None
-
-    def find_phrase(self, phrase, *, content_only: bool = True):
-        """The left edge and baseline of an on-screen PHRASE, or None.
-
-        WHY A PHRASE AND NOT A WORD. tesseract reports a sentence as one entry per word:
-        "What is your name?" arrives as 'What', 'is', 'your', 'name?'. A lookup that tests
-        one word at a time therefore cannot find a label that is longer than a word - the
-        first version of this asked for "your name" and the log said
-
-            COULD NOT FIND A FIELD LABELLED ('your name',)
-
-        on a screen showing exactly that sentence. So consecutive words on the SAME LINE are
-        joined, and the phrase is matched inside that joined text.
-
-        Returns the box that matters to the caller: (left, y) of the FIRST word of the
-        phrase, because every field on this form is positioned from its label's left edge.
-        """
-        # WORDS GROUPED BY LINE, BY TOLERANCE RATHER THAN BY A FIXED BUCKET.
-        #
-        # A fixed bucket does not work and the measurement says why: tesseract reports the
-        # words of ONE line with y boxes 6 to 19 pixels apart, because each box is the ink
-        # of that word and "your" has no ascender while "What" does. Grouping on round(y/4)
-        # therefore split "What is your name?" into two lines and the phrase never matched.
-        #
-        # A tolerance of 10 px joins them, and cannot merge two real lines here: Calamares
-        # spaces this form's rows 68 px apart.
-        lines: list[list] = []
-        line_y: list[float] = []
-        for word, cx, cy, w, h in self.words:
-            if content_only and cx <= SIDEBAR_WIDTH:
-                continue
-            for i, y in enumerate(line_y):
-                if abs(cy - y) <= 10:
-                    lines[i].append((cx, cy, word, w, h))
-                    break
-            else:
-                lines.append([(cx, cy, word, w, h)])
-                line_y.append(cy)
-
-        needle = phrase.lower()
-        for i in range(len(lines)):
-            row = sorted(lines[i])
-            joined = " ".join(w[2] for w in row).lower()
-            if needle not in joined:
-                continue
-            # The first word of the phrase is the first word of the line in practice - every
-            # label here starts its own line - so the line's leftmost word is its anchor.
-            first = row[0]
-            return (first[0] - first[3] // 2, first[1])
-        return None
-
-    def field_under(self, phrase, dx: int, dy: int):
-        """The input box `dy` below a label phrase, `dx` right of that label's left edge."""
-        anchor = self.find_phrase(phrase)
-        if anchor is None:
-            return None
-        left, y = anchor
-        return (left + dx, y + dy)
-
     def type_into(self, xy, text: str) -> None:
         Q.click(self.q, *xy)
         time.sleep(1.5)
@@ -398,7 +320,10 @@ def walk_calamares(drv: Driver, args) -> bool:
         log("=== THE PARTITIONS PANE DID NOT ADVANCE ===")
         return False
 
-    # 7. THE ACCOUNT FORM, FOUND BY ITS LABELS.
+    # 7. THE ACCOUNT FORM. FIVE CLICKS AT FIVE MEASURED POSITIONS.
+    #
+    # Nothing is searched for. See the ACCOUNT table above for where the numbers came from
+    # and for what looking them up at run time cost.
     log("filling the account form")
     drv.look("account form")
     values = {
@@ -408,45 +333,12 @@ def walk_calamares(drv: Driver, args) -> bool:
         "password": args.password,
         "confirm": args.password,
     }
-    failed = []
-    spots = {}
-    for field, phrase, dx, dy in ACCOUNT_FIELDS:
-        spots[field] = drv.field_under(phrase, dx, dy)
-
-    # THE FIRST FIELD HAS A FALLBACK, BECAUSE OCR DOES NOT ALWAYS READ ITS LABEL.
-    #
-    # Measured on CI: every other label resolved and this one did not, because tesseract
-    # read the line as 'Whi | ir | name?' - the phrase "what is your name" was simply not
-    # on the screen as far as it was concerned. The form's own layout is a better answer
-    # than a second guess at the text: this field is the one directly ABOVE the username
-    # field, and Calamares places the rows at a fixed pitch.
-    if spots["name"] is None and spots["login"] is not None:
-        above = (spots["login"][0], spots["login"][1] - ROW_PITCH)
-        log(f"  name label unreadable; using the row above the username field: {above}")
-        spots["name"] = above
-
-    for field, phrase, dx, dy in ACCOUNT_FIELDS:
-        spot = spots[field]
-        if spot is None:
-            log(f"  COULD NOT FIND THE LABEL {phrase!r}")
-            failed.append(field)
-            continue
+    for field, spot in ACCOUNT.items():
         log(f"  {field} at {spot}")
         drv.type_into(spot, values[field])
 
-    # THE CHECKBOX SITS TO THE LEFT OF ITS OWN LABEL, on the same line.
-    autologin = drv.find_phrase(LOGIN_AUTOMATICALLY_LABEL)
-    if autologin is None:
-        log("  COULD NOT FIND 'log in automatically'; the disk will ask for a password")
-    else:
-        box = (autologin[0] - CHECKBOX_LEFT_OF_LABEL, autologin[1])
-        log(f"  log in automatically at {box}")
-        drv.click(box, "log in automatically", settle=3.0)
+    drv.click(LOGIN_AUTOMATICALLY, "log in automatically", settle=3.0)
     drv.look("account-filled")
-
-    if failed:
-        log(f"=== THE ACCOUNT FORM WAS NOT FILLED: {failed} ===")
-        return False
 
     if not drv.advance("users", settle=15.0):
         log("=== THE USERS PANE DID NOT ADVANCE ===")
@@ -454,35 +346,30 @@ def walk_calamares(drv: Driver, args) -> bool:
 
     # 8. SUMMARY -> INSTALL, then the confirmation dialog's own button.
     #
-    # ONE CLICK, AND THEN THE DIALOG IS CHECKED FOR. A second click 0.8 s later would land
-    # on whatever the dialog put under the footer - the same blind-second-press that
-    # Driver.advance's docstring describes. If the click does not open the dialog the loop
-    # tries again, which is the safe version of the same retry.
-    opened = False
-    for attempt in (1, 2):
-        drv.click(NEXT, f"Summary: Install (attempt {attempt})", settle=12.0)
-        drv.look("confirm-dialog")
-        # THE DIALOG IS A MODAL WITH ITS OWN BUTTON, so the content that appears is not the
-        # Summary pane any more. Looking for the button it puts up is the direct question.
-        if drv.find_word(("install now", "continue", "confirm")) is not None:
-            opened = True
-            break
-        if attempt == 1:
-            log("  the confirmation dialog did not appear; trying Alt+N")
-
-    if not opened:
-        log("=== THE INSTALL CONFIRMATION NEVER APPEARED ===")
+    # TWO CLICKS AT TWO MEASURED POSITIONS. NOTHING IS LOOKED UP.
+    #
+    # Run 42364250527 searched the screen for its button label and clicked a position the
+    # search returned: the Summary pane's own prose contains the words it searched for, so
+    # it clicked (896, 424) - a sentence - and Calamares never started installing. Three
+    # minutes of work, then eighty-seven minutes of waiting out the timeout.
+    #
+    # THE LESSON IS THE DRIVER'S WHOLE DESIGN: a coordinate is measured once, offline, and
+    # then it is a number in this file. Reading the screen to decide WHERE to click makes a
+    # driver that can be talked into clicking prose; reading it to decide WHETHER the click
+    # worked is safe, and is what the check below does.
+    drv.click(NEXT, "Summary: Install", settle=12.0)
+    drv.look("confirm-dialog")
+    # THE MODAL IS CHECKED FOR, BY ITS TITLE, AND THAT IS THE ONLY USE OF THE READING.
+    # Calamares titles it `Confirm`; the Summary it covers says `overview`.
+    if "confirm" not in drv.screen_text(content_only=True):
+        log("=== THE CONFIRMATION DIALOG DID NOT APPEAR ===")
+        log(f"  screen: {drv.screen_text(content_only=True)[:200]}")
         return False
 
-    # THE DIALOG'S BUTTON IS FOUND, NOT ASSUMED. INSTALL_NOW was measured on a windowed
-    # Calamares and is kept only as the fallback: in CI the wizard fills 1920x1080, where a
-    # small window's coordinates land on the summary text behind the modal.
-    button = drv.find_word(("install now", "continue", "confirm"))
-    if button is None:
-        log("  the confirmation button was not readable; using the measured position")
-        button = INSTALL_NOW
-    log(f"confirming at {button}")
-    drv.click(button, "Continue with installation", settle=25.0)
+    # THE DIALOG'S OWN BUTTON. Measured on the modal, which is a small window in the centre
+    # of the screen and does not move with the pane behind it.
+    drv.click(INSTALL_NOW, "the confirmation dialog's Install now", settle=25.0)
+    drv.look("installing")
 
     # 9. WAIT FOR THE FINISH PANE.
     #
@@ -497,11 +384,22 @@ def walk_calamares(drv: Driver, args) -> bool:
     log("waiting for the installer to finish")
     started = time.time()
     left_summary = False
+    # A SCREEN THAT HAS NOT CHANGED IN FIFTEEN MINUTES IS A DEAD RUN, NOT A SLOW ONE.
+    #
+    # Run 42364250527 spent eighty-seven of its ninety minutes showing the same Summary
+    # text, one identical OCR line every twenty seconds, and the only thing that ended it
+    # was the overall timeout. The install it was waiting for had never started.
+    #
+    # FINISHING A CALAMARES INSTALL ALWAYS CHANGES THE SCREEN: the progress bar moves, the
+    # package name changes, the pane changes. Fifteen minutes is several times longer than
+    # the slowest step measured here, so a plateau that long means nothing is happening.
+    stalled_since = time.time()
+    previous = ""
     while time.time() - started < args.timeout:
         drv.look("finish")
         joined = drv.screen_text(content_only=True)
-        if "summary" not in joined:
-            left_summary = True
+        if joined != previous:
+            previous, stalled_since = joined, time.time()
         if "all done" in joined or "reboot now" in joined or "restart" in joined:
             log("=== INSTALL COMPLETE ===")
             return True
@@ -510,6 +408,15 @@ def walk_calamares(drv: Driver, args) -> bool:
         if left_summary and drv.words and len(drv.words) <= 6:
             log("=== THE INSTALLER REACHED ITS LAST PANE ===")
             return True
+        if "summary" not in joined:
+            left_summary = True
+
+        stalled = int(time.time() - stalled_since)
+        if stalled > 900:
+            log(f"=== THE SCREEN HAS NOT CHANGED IN {stalled}s ===")
+            log("  the installer is not working; waiting longer will not change that")
+            log(f"  last screen: {joined[:200]}")
+            return False
         time.sleep(20)
 
     log("=== THE INSTALLER NEVER REPORTED COMPLETION ===")
