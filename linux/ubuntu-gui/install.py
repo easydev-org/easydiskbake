@@ -108,6 +108,22 @@ PANES = [
     ("ready to install", 1, 30),        # the green Install button
 ]
 
+# THE TIME ZONE PANE NEEDS A POSITION, AND NOTHING ELSE SATISFIES IT.
+#
+# Ubuntu's installer draws a world map with two empty fields above it - Location and
+# Timezone - and a disabled Next button. The obvious assumption was that it fills those
+# from a geolocation probe, the way Calamares does, and run 42388038785 disproved it: the
+# pane sat empty for eight minutes with the geoip mock answering every probe correctly.
+# Measured afterwards on the guest's own network: dnsmasq logged no geoip lookup from the
+# installer at all, and the mock saw no connection. It does not ask.
+#
+# So the pane is answered the way a person answers it: click the map. New York's position
+# was computed from the map's own bounds - x 480..1439 covers -180..180 degrees of
+# longitude, y 337..815 covers 85..-60 of latitude - and then CONFIRMED by clicking it and
+# seeing both fields fill in. London lands at x 959, which is the map's centre and 0
+# degrees, so the horizontal scale checks out.
+TIMEZONE_MAP_NEW_YORK = (762, 483)
+
 
 def log(msg: str) -> None:
     print(f"[ubuntu-gui {time.strftime('%H:%M:%S')}] {msg}", flush=True)
@@ -220,6 +236,13 @@ class Installer:
             if name == "create your account":
                 self.fill_account(self.user, self.password)
                 self.click(NEXT, "account Next", settle=12.0)
+            elif name == "time zone":
+                # THE MAP FIRST. This pane has no default and does not ask the network;
+                # see TIMEZONE_MAP_NEW_YORK. Clicking it fills Location and Timezone and
+                # enables Next, which is disabled until it is done.
+                self.click(TIMEZONE_MAP_NEW_YORK, "time zone: New York on the map",
+                           settle=4.0)
+                self.click(NEXT, f"{name} - Next", settle=float(wait))
             else:
                 target = INSTALL if wait >= 30 else NEXT
                 why = "the green Install button" if wait >= 30 else "Next"
