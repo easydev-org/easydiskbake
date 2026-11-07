@@ -478,18 +478,19 @@ def _update_26(w: Wizard) -> bool:
     neither is a click. An earlier version of this file clicked Continue once a minute; the
     screenshots that disproved it show a disabled button the whole time.
 
-    THREE HUNDRED SECONDS IS THE BUDGET, from the same run: the wizard's work is done by then
-    in the cases where it finishes at all, and the disk is consistent either way because the
-    write has long since finished. Checking for a desktop first costs nothing and covers a
-    release that does redraw.
+    THREE HUNDRED SECONDS WAS THE BUDGET, and it is now 240 by instruction: the wizard's
+    work is done by then in the cases where it finishes at all, and the disk is consistent
+    either way because the write has long since finished. Checking for a desktop first costs
+    nothing and covers a release that does redraw.
 
     THE RESTART IS A QMP system_reset, NOT A PANE ACTION. There is no button that leaves this
     state, so the driver has to leave it from outside the guest. The disk is what comes out:
     a machine that logs in and reaches its desktop, which is exactly what the stage is for.
+    It goes out on the connection the reader already holds - see the note at the call.
     """
     w.click(w.continue_at, "update Continue (macOS 26)", settle=10.0)
 
-    budget = int(os.environ.get("MACOS26_UPDATE_WAIT", "300"))
+    budget = int(os.environ.get("MACOS26_UPDATE_WAIT", "240"))
     log(f"  macOS 26: waiting {budget}s for the update pane to settle")
     deadline = time.time() + budget
     while time.time() < deadline:
@@ -503,15 +504,26 @@ def _update_26(w: Wizard) -> bool:
             return True
 
     log("  macOS 26: the pane never advanced; restarting the guest")
+    # THE RESET GOES OUT ON THE CONNECTION THAT IS ALREADY OPEN.
+    #
+    # This used to open a second QMP client on the same socket, on the theory that resetting
+    # through the reader's connection would "take the reader down with it". The theory was
+    # wrong about the mechanism: lib/vm.py gives qemu two QMP sockets precisely because
+    # `QMP serves one client per socket` (its own comment), and drive.sock.qmp is already
+    # held by self.screen.q. The second connect() therefore never completed, and the only
+    # thing the driver ever recorded was
+    #
+    #     the reset could not be sent: timed out
+    #
+    # Run 42367049439's successor saw it twice, twelve minutes apart, each followed by a
+    # fresh Continue click and another 300 s wait - an unbounded loop whose exit condition
+    # was a reset that was never delivered. The reset does not disturb the reader either:
+    # system_reset restarts the guest, not qemu, so the socket and this object stay valid.
     try:
-        client = qmpmod.QMP(w.q_path)
-        try:
-            client.execute("system_reset")
-        finally:
-            client.close()
+        w.q.execute("system_reset")
     except Exception as exc:                           # noqa: BLE001
         log(f"  the reset could not be sent: {exc}")
-        return True
+        return False
     # THE GUEST REBOOTS INTO ITS LOGIN WINDOW. wait_for_desktop in desktop.py recognises it
     # and types the password; this driver is finished.
     log("  reset sent; the login window is the next stage's to handle")
