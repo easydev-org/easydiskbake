@@ -260,7 +260,7 @@ def pane_country(w: Wizard) -> bool:
     w.click(COUNTRY_LIST, "focus the country list", settle=2.0)
     w.type_text("united states")
     time.sleep(3)
-    w.click(CONTINUE, "country Continue", settle=8.0)
+    w.click(w.continue_at, "country Continue", settle=8.0)
     return True
 
 
@@ -277,7 +277,7 @@ def pane_transfer(w: Wizard) -> bool:
         log(f"  NO TRANSFER ROW FOR macOS {w.release}; known: {sorted(TRANSFER_SET_UP_AS_NEW)}")
         return True
     w.click(row, f"the 'Set up as new' radio (macOS {w.release})", settle=4.0)
-    w.click(CONTINUE, "transfer Continue", settle=10.0)
+    w.click(w.continue_at, "transfer Continue", settle=10.0)
     return True
 
 
@@ -285,7 +285,7 @@ def pane_languages(w: Wizard) -> bool:
     if not w.says("spoken", "languages"):
         return False
     log("pane: Written and Spoken Languages")
-    w.click(CONTINUE, "languages Continue", settle=8.0)
+    w.click(w.continue_at, "languages Continue", settle=8.0)
     return True
 
 
@@ -303,7 +303,7 @@ def pane_privacy(w: Wizard) -> bool:
     if not w.says("data", "privacy"):
         return False
     log("pane: Data & Privacy")
-    w.click(CONTINUE, "privacy Continue", settle=8.0)
+    w.click(w.continue_at, "privacy Continue", settle=8.0)
     return True
 
 
@@ -323,7 +323,7 @@ def pane_account(w: Wizard, user: str, password: str) -> bool:
         w.clear_field()
         w.type_text(value, per_char=0.4)
         time.sleep(2.0)
-    w.click(CONTINUE, "account Continue", settle=15.0)
+    w.click(w.continue_at, "account Continue", settle=15.0)
     return True
 
 
@@ -370,7 +370,7 @@ def pane_location(w: Wizard) -> bool:
     if not w.says("location", "services"):
         return False
     log("pane: Enable Location Services")
-    w.click(CONTINUE, "location Continue, which opens the confirmation", settle=6.0)
+    w.click(w.continue_at, "location Continue, which opens the confirmation", settle=6.0)
     w.look("location-sheet")
     if w.says("use"):
         # THE SHEET'S "Don't Use" IS ITS DEFAULT BUTTON: a click darkens it and leaves the
@@ -396,7 +396,7 @@ def pane_analytics(w: Wizard) -> bool:
     # UNTICK FIRST. The box is on when the pane opens; clicking it clears it and greys the
     # second option with it, which is what drive.py does and what the bake wants.
     w.click(ANALYTICS_SHARE_26 if w.release == "26" else ANALYTICS_SHARE, "untick Share Mac Analytics", settle=3.0)
-    w.click(CONTINUE, "analytics Continue", settle=10.0)
+    w.click(w.continue_at, "analytics Continue", settle=10.0)
     return True
 
 
