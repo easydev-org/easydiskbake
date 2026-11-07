@@ -70,23 +70,40 @@ REQUIRE_PASSWORD = (923, 670)      # ticked by default; cleared so the guest log
 
 # --- the panes ---------------------------------------------------------------------------
 #
-# (detector words, action, label). The detector is checked against every word tesseract read;
-# all of them must be present. Two words rather than one wherever a single word could appear on
-# another pane - "account" is on the Apple pane too, "installation" on several.
+# A FIXED SEQUENCE OF CLICKS, NOT A SET OF CONDITIONS TO MATCH.
+#
+# The first version of this file decided each pane from the words tesseract read, and it failed
+# on the first CI run in exactly the way drive.py's docstring warns about:
+#
+#     A fixed sequence has one failure mode - being wrong about a position - and that is found
+#     on the first run and fixed by changing one number. A reading driver has a failure mode
+#     per pane and per wallpaper.
+#
+# What happened: the disk pane's detector was ("disk", "setup"), the pane actually reads
+# "How do you want to install Ubuntu? Erase disk and install Ubuntu", and "setup" is not on it.
+# The pane was SKIPPED - silently, because a driver that only clicks when its condition holds
+# cannot tell "this pane was skipped by the installer" from "my condition is wrong" - and the
+# run then waited out its whole timeout on a screen it was never going to leave.
+#
+# So: the sequence is positions and waits. Every step clicks where the control was measured to
+# be and then waits for the next pane to settle. OCR still runs, but only to WRITE THE SCREEN
+# INTO THE LOG - a diagnostic that is read when something goes wrong, never a branch.
+#
+# (name, clicks_before_wait, wait_seconds). The name is for the log only.
 PANES = [
-    (("welcome", "ubuntu"), "next", "welcome: language (English is preselected)"),
-    (("accessibility", "ubuntu"), "next", "accessibility: nothing to change"),
-    (("keyboard", "layout"), "next", "keyboard layout: English (US) is preselected"),
-    (("internet", "connection"), "next", "internet: wired connection is detected"),
-    (("want", "ubuntu"), "next", "try or install: Install Ubuntu"),
-    (("type", "installation"), "next", "type: Interactive installation"),
-    (("applications", "install"), "next", "applications: Default selection"),
-    (("recommended", "proprietary"), "next", "optimise: no third-party software"),
-    (("disk", "setup"), "next", "disk setup: Erase disk and install Ubuntu"),
-    (("encryption", "file"), "next", "encryption: none"),
-    (("create", "account"), "account", "create your account"),
-    (("timezone", "select"), "next", "time zone: detected"),
-    (("review", "choices"), "install", "ready to install: the green Install button"),
+    ("welcome / language", 1, 12),
+    ("accessibility", 1, 12),
+    ("keyboard layout", 1, 12),
+    ("internet connection", 1, 14),
+    ("try or install", 1, 14),
+    ("type of installation", 1, 14),
+    ("applications", 1, 14),
+    ("proprietary software", 1, 14),
+    ("disk setup", 1, 20),
+    ("encryption", 1, 14),
+    ("create your account", 0, 0),      # handled by fill_account
+    ("time zone", 1, 14),
+    ("ready to install", 1, 30),        # the green Install button
 ]
 
 
@@ -174,24 +191,32 @@ class Installer:
         return False
 
     def walk(self) -> bool:
-        """Answer each pane in order, verifying the screen changed after every action."""
-        for want, action, label in PANES:
-            if not self.says(*want):
-                # NOT AN ERROR UNTIL TWO PANES IN A ROW MISS. A pane can be skipped by the
-                # installer itself (a live session with no network drops the connection pane),
-                # and a driver that aborts on the first miss cannot tell that from a wrong
-                # coordinate.
-                log(f"skip ({' '.join(want)} not on screen)")
-                continue
-            log(f"pane: {label}")
-            if action == "account":
+        """Click through the sequence. Every step advances or the log says it did not.
+
+        THE SCREEN IS READ AFTER EACH STEP AND THE READING DECIDES NOTHING. It goes into the
+        log so a failed run can be diagnosed without a recording - which is what OCR is for
+        now. Whether a click worked is answered by the sequence reaching its end, not by
+        matching words.
+
+        A STEP THAT DID NOT MOVE IS LOUD. The word count before and after a click is compared
+        and an unchanged count is logged as a warning. The old conditional driver could skip a
+        pane (its detector did not match) and still report a clean run; this cannot.
+        """
+        for name, clicks, wait in PANES:
+            log(f"pane: {name}")
+            before = len(self.words)
+            if name == "create your account":
                 self.fill_account(self.user, self.password)
                 self.click(NEXT, "account Next", settle=12.0)
-            elif action == "install":
-                self.click(INSTALL, "the green Install button", settle=20.0)
             else:
-                self.click(NEXT, f"{label} - Next", settle=10.0)
+                target = INSTALL if wait >= 30 else NEXT
+                why = "the green Install button" if wait >= 30 else "Next"
+                for _ in range(max(1, clicks)):
+                    self.click(target, f"{name} - {why}", settle=float(wait))
             self.look("after")
+            if self.words and len(self.words) == before:
+                log(f"  WARNING: same word count as before ({before}); "
+                    f"this step may not have advanced")
         return True
 
 
@@ -288,14 +313,34 @@ def main(argv: list[str]) -> int:
             ok = drv.walk()
             # THE INSTALLER'S LAST ACT IS A REBOOT PROMPT. Waiting for it rather than for a
             # fixed time means the disk is not copied while it is still being written.
+            # THE COMPLETION TEST IS THE ONE PLACE A WORD MATCH IS RIGHT.
+            #
+            # Every other decision here is a position and a wait, because a wrong detector
+            # silently skips a pane. This one is a TERMINAL condition: the installer either
+            # eventually says it is finished or it does not, and matching the words it prints
+            # at the end cannot skip anything - there is nothing after it to skip.
+            #
+            # A TIMEOUT IS A FAILURE, NOT A SUCCESS. The old loop fell through to the publish
+            # step with ok still true, so a run that never finished would have flattened and
+            # pushed a half-installed disk.
             log("waiting for the installer to finish")
+            finished = False
             deadline = time.time() + args.timeout
             while time.time() < deadline:
                 drv.look("finish")
-                if drv.says("restart") or drv.says("complete") or drv.says("installed"):
+                if drv.says("installation", "complete") or drv.says("installed", "ready"):
                     log("=== INSTALL COMPLETE ===")
+                    finished = True
+                    break
+                if drv.says("restart", "now"):
+                    log("=== INSTALL COMPLETE (restart prompt) ===")
+                    finished = True
                     break
                 time.sleep(20)
+            if not finished:
+                log("=== THE INSTALLER NEVER REPORTED COMPLETION ===")
+                log(f"  last screen: {' | '.join(w[0] for w in drv.words[:24])}")
+                ok = False
     finally:
         try:
             shot = os.path.join(work, "final.ppm")

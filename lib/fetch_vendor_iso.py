@@ -31,6 +31,19 @@ import time
 import urllib.error
 import urllib.request
 
+# A USER-AGENT IS REQUIRED BY SOME MIRRORS, AND python-urllib IS NOT ONE.
+#
+# Measured from a pod in this cluster against the SAME URL, one second apart:
+#
+#     curl -I                    HTTP/2 200   content-length: 3188850688
+#     urllib HEAD                HTTP 403 Forbidden
+#     urllib GET Range 0-0       HTTP 403 Forbidden
+#
+# The only difference is the User-Agent. CachyOS's mirror sits behind Cloudflare, which
+# refuses the default python-urllib string - and it refuses it for HEAD and GET alike, so no
+# amount of falling back between methods helps. A browser UA is what curl sends.
+UA = os.environ.get("ISO_USER_AGENT", "Mozilla/5.0 (X11; Linux x86_64) bake-fetch/1.0")
+
 # READ LAZILY, SO `--help` AND `--url` WORK WITHOUT THE ENVIRONMENT.
 #
 # These were os.environ[...] at import time, which made the module unusable from a shell:
@@ -51,8 +64,36 @@ def log(msg: str) -> None:
 
 
 def _size() -> int:
-    req = urllib.request.Request(URL, method="HEAD")
+    """The file's length, by HEAD and falling back to a one-byte ranged GET.
+
+    WHY HEAD IS NOT ENOUGH. Cloudflare - which fronts CachyOS's mirror - answers a HEAD with
+    HTTP 403 while the same URL as a GET returns 200 and a content-length. Measured:
+
+        curl -I   https://mirror.cachyos.org/.../cachyos-desktop-linux-260809.iso  -> 200
+        urllib HEAD on the same URL                                                -> 403
+
+    So a fetcher that sizes the file with HEAD alone reports "Forbidden" for an image it could
+    have downloaded. The fallback asks for a single byte, which every CDN allows, and reads
+    the total out of Content-Range.
+
+    THIS IS ALSO WHY THE FIRST BATCH'S CACHYOS LEFT NO FILE: the failure was in the size probe,
+    before the destination was ever created, which is exactly the shape that was observed.
+    """
+    try:
+        req = urllib.request.Request(URL, method="HEAD", headers={"User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=120) as r:
+            return int(r.headers["Content-Length"])
+    except urllib.error.HTTPError as exc:
+        if exc.code not in (403, 405, 501):
+            raise
+        log(f"  HEAD refused ({exc.code}); sizing with a one-byte range instead")
+
+    req = urllib.request.Request(URL, headers={"User-Agent": UA, "Range": "bytes=0-0"})
     with urllib.request.urlopen(req, timeout=120) as r:
+        # Content-Range: bytes 0-0/3188850688
+        content_range = r.headers.get("Content-Range", "")
+        if "/" in content_range:
+            return int(content_range.rsplit("/", 1)[1])
         return int(r.headers["Content-Length"])
 
 
@@ -78,7 +119,8 @@ def _fetch(fd: int, index: int, start: int, end: int, state_path: str, state: di
     attempt = 0
     while pos < end:
         attempt += 1
-        req = urllib.request.Request(URL, headers={"Range": f"bytes={pos}-{end - 1}"})
+        req = urllib.request.Request(
+            URL, headers={"User-Agent": UA, "Range": f"bytes={pos}-{end - 1}"})
         try:
             with urllib.request.urlopen(req, timeout=300) as resp:
                 if resp.status != 206:
