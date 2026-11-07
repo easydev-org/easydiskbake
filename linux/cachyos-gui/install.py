@@ -62,48 +62,62 @@ import qmp as Q     # noqa: E402
 import uefi         # noqa: E402
 import vm           # noqa: E402
 
-# THE PANE NAMES, WHICH ARE NOT EVIDENCE OF ANYTHING.
+# --- MEASURED ON A LIVE CACHYOS SESSION, 1920x1080, PANE BY PANE ---------------------------
 #
-# This Calamares draws a progress BAR along the bottom instead of KDE's vertical sidebar,
-# and that bar lists every pane on every pane - `Welcome Location Keyboard Bootloader
-# Partitions Desktop Packages Users Summary Install Finish`, in English even when the rest
-# of the wizard is translated. So `"location" in text` is TRUE while standing on the
-# Welcome pane, and run 42408635655 shows what that costs: it logged `location`, clicked
-# Next, logged `keyboard` and `bootloader` and `partitions`, and never left Location.
-PANE_NAMES = frozenset((
-    "welcome", "location", "keyboard", "bootloader", "partitions", "desktop",
-    "packages", "users", "summary", "install", "finish",
-))
-
-# --- measured on a live CachyOS session, 1920x1080 ----------------------------------------
+# EVERY NUMBER BELOW WAS TAKEN FROM A FRAME, ONE PANE AT A TIME, and that is the point of
+# this block: this wizard's footer IS NOT AT ONE PLACE.
+#
+# Calamares sizes its window to the pane's content. On this ISO the window is 1100 px wide
+# and about 680 px tall on Welcome, and it GROWS by 49 px when the Location pane's map
+# appears, and by another 106 px when the Summary pane's overview text arrives. The same
+# `Next` button therefore sits at y 747, then y 796, then y 902 - three places.
+#
+# THAT IS WHY RUN 42408635655 NEVER LEFT THE LOCATION PANE. The driver clicked (1364, 751)
+# nine times: on Welcome that is the Next button, and on Location it is 45 px above it,
+# inside the map. The selected region wandered Chicago -> Detroit -> Antarctica and the
+# wizard did not move at all, while every step logged as though it had.
 
 # `CachyOS Hello` opens by itself; this is the button at the bottom of it. Clicked TWICE:
 # the first press on an unfocused window is taken as focus, which is the same measurement
 # the Kubuntu driver records.
 LAUNCH_INSTALLER = (960, 743)
 
-# CALAMARES' FOOTER, measured on this ISO's own window. CachyOS ships a dark theme and a
-# narrower window than Kubuntu's, so these are NOT Kubuntu's numbers.
-NEXT = (1364, 751)
-BACK = (1248, 751)
+# THE WELCOME PANE'S Next. The window is at its smallest here - no map, no overview.
+NEXT_WELCOME = (1352, 747)
 
-# THE PARTITIONS PANE: `Erase disk` is the first radio button.
-ERASE_DISK = (750, 431)
+# EVERY PANE FROM LOCATION THROUGH USERS. The window has grown to fit the map and stays at
+# that size for the rest of the wizard; measured on Location, Keyboard, Bootloader,
+# Partitions, Desktop, Packages and Users, all identical.
+NEXT = (1352, 796)
 
-# THE CONFIRMATION DIALOG that Partitions puts up before writing anything.
+# THE SUMMARY PANE BRINGS THE `Install` BUTTON, at the bottom of a window that grew again
+# for the overview text. y 902, not 796 - 106 px lower than the pane before it.
+INSTALL = (1365, 902)
+
+# THE PARTITIONS PANE: `Erase disk` is the FIRST radio button, and its circle is at
+# (465, 367) - NOT the row's text. Clicking the text selects nothing; the highlight is not
+# a selection. Below it is `Manual partitioning`, which is what a click 36 px too low picks
+# instead, and that produces a disk nobody asked for.
+ERASE_DISK = (465, 367)
+
+# THE CONFIRMATION THAT SUMMARY PUTS UP - `Continue with installation?` /
+# `Are you sure you want to continue?` - with `Install now` at (1018, 620) and `Back` to
+# its right. A modal, drawn over the Summary pane.
+INSTALL_NOW = (1018, 620)
+
+# PARTITIONS PUTS UP NO CONFIRMATION ON THIS ISO: measured, `Erase disk` then Next goes
+# straight to Desktop. The click below is kept as a no-op that lands on blank space, for
+# the builds that do ask - it costs a quarter of a second and cannot press anything else.
 CONFIRM_ERASE = (1010, 640)
-
-# THE CONFIRMATION DIALOG THAT SUMMARY puts up. Same shape, its own position.
-INSTALL_NOW = (1010, 640)
 
 # THE USERS PANE. Calamares draws the same five fields on every distribution, but the
 # window geometry differs, so these were measured on CachyOS' own frame.
 ACCOUNT = {
-    "name": (830, 380),
-    "login": (830, 449),
-    "host": (830, 517),
-    "password": (830, 585),
-    "confirm": (830, 653),
+    "name": (516, 348),
+    "login": (516, 413),
+    "host": (516, 478),
+    "password": (516, 546),
+    "confirm": (729, 546),
 }
 
 # THE LIVE MEDIUM'S BOOT TIME, AS A NUMBER. Measured: about 170 s from qemu start to a
@@ -140,18 +154,6 @@ class Driver:
     def text(self) -> str:
         return " ".join(w[0].lower() for w in self.words)
 
-    def content(self) -> str:
-        """Everything OCR read EXCEPT the pane names in the bottom progress bar.
-
-        THE BAR IS WHY THIS EXISTS. Calamares on this ISO lists all eleven pane names along
-        the bottom on every pane, so any check phrased as "the word `keyboard` is on screen"
-        is true before the click that is supposed to reach the Keyboard pane. Filtering the
-        words out leaves what the pane itself says - `Region:`, `Zone:`, `Erase disk`,
-        `What is your name?` - which is the only part that changes.
-        """
-        return " ".join(w[0].lower() for w in self.words
-                        if w[0].lower().strip(" .,:;()") not in PANE_NAMES)
-
     def click(self, xy, why: str, settle: float = 3.0) -> None:
         log(f"click {xy} - {why}")
         Q.click(self.q, *xy)
@@ -160,50 +162,6 @@ class Driver:
     def click_twice(self, xy, why: str, settle: float = 20.0) -> None:
         self.click(xy, why, settle=0.8)
         self.click(xy, f"{why} (second click)", settle=settle)
-
-    def alt_n(self, why: str, settle: float = 15.0) -> None:
-        log(f"alt+n - {why}")
-        Q.key_combo(self.q, "alt", "n")
-        time.sleep(settle)
-
-    def advance(self, pane: str, xy, *, settle: float = 15.0,
-                max_tries: int = 2) -> bool:
-        """Leave `pane` by CLICK, and by Alt+N when the click does not move it.
-
-        THE CLICK ALONE IS NOT ENOUGH ON THIS WIZARD, AND THAT IS MEASURED, NOT GUESSED.
-
-        Calamares sizes its window to the pane's content, so its footer is not at one fixed
-        place: on this ISO's Welcome pane `Next` sits at y 747, and on its Location pane the
-        same button is at y 796 - the pane under the map is taller. A coordinate measured on
-        one pane lands on the MAP on the next one, and that is exactly what run 42408635655
-        did: nine clicks at (1364, 751), a selected region that wandered Chicago -> Detroit
-        -> Antarctica, and an installer that never left the Location pane while every step
-        logged as though it had. It was still there when the run was killed.
-
-        Alt+N IS CALAMARES' OWN BINDING for Next on every pane. Measured on a live CachyOS
-        session: pressed on that same stuck Location pane, the next frame is the Keyboard
-        pane. It is not tried FIRST because on Summary it starts the installation, and a
-        shortcut fired into the wrong pane is worse than a repeated click.
-
-        WHAT IS CHECKED IS THAT THE CONTENT CHANGED, and deliberately nothing else. A
-        phrase test was tried and removed: tesseract reads this themed wizard unevenly
-        enough that a correct advance failed it (see step 4 in walk_calamares).
-        """
-        before = self.content()
-        for attempt in range(1, max_tries + 1):
-            self.click(xy, f"{pane}: Next (attempt {attempt})", settle=settle)
-            self.look(f"after {pane}")
-            current = self.content()
-            if current and current != before:
-                return True
-        self.alt_n(f"{pane}: Next, by keyboard", settle=settle)
-        self.look(f"after {pane} by keyboard")
-        current = self.content()
-        if current and current != before:
-            return True
-        log(f"=== {pane.upper()} DID NOT ADVANCE, BY CLICK OR BY KEYBOARD ===")
-        log(f"  screen: {current[:220]}")
-        return False
 
     def type_into(self, xy, value: str) -> None:
         Q.click(self.q, *xy)
@@ -239,7 +197,31 @@ def wait_for_desktop(drv: Driver, timeout: int) -> bool:
 
 
 def walk_calamares(drv: Driver, args) -> bool:
-    """Click through Calamares' eleven panes."""
+    """Click through Calamares' eleven panes: A MEASURED COORDINATE, THEN A MEASURED WAIT.
+
+    NOTHING IS READ TO DECIDE ANYTHING. Every step is a number in this file and a duration;
+    the screen is read afterwards and the reading goes into the log, where it is useful for
+    a post-mortem and dangerous as a decision. This is the rule ubuntu-gui and kubuntu-gui
+    already follow, and the reason both of them are green while this driver kept failing
+    its own checks.
+
+    TWO DETECTORS WERE TRIED HERE AND BOTH WERE WORSE THAN NO DETECTOR:
+
+      a word per pane (`expect="boot loader"`) - Calamares' panes carry image headings and
+      tesseract reads them unevenly; the Bootloader pane came back as
+      `vax grub limine refind refind + ai` on a pane that had advanced correctly, and run
+      42413733562 stopped there;
+
+      the whole OCR text before against after (`current != before`) - prose does not read
+      identically twice, so that is true while standing still; run 42413739470 reported
+      every step from Welcome to `the install confirmation's Install now` as an advance
+      while it was still on Users, and waited out its life for an installation that had
+      never started.
+
+    What is left is the thing that actually matters and cannot lie: THE FOOTER IS NOT IN
+    ONE PLACE, so each pane gets its own coordinate. See the constants block - y 747 on
+    Welcome, y 796 from Location through Users, y 902 on Summary.
+    """
     # 1. THE WELCOME WINDOW'S OWN BUTTON, through the desktop it belongs to.
     drv.click_twice(LAUNCH_INSTALLER, "Launch installer", settle=35.0)
     drv.look("calamares welcome")
@@ -252,57 +234,44 @@ def walk_calamares(drv: Driver, args) -> bool:
         log(f"  screen: {drv.text()[:200]}")
         return False
 
-    # 2. WELCOME -> LOCATION
-    #
-    # NO `expect` ON ANY OF THESE, AND THE REASON IS THE SAME ONE EVERY TIME: this ISO's
-    # wizard is themed and translated, and tesseract reads its panes unevenly - the
-    # Bootloader pane came back as `vax grub limine refind refind + ai` on run 42413733562,
-    # with none of the words the expectation wanted, while the pane had advanced correctly.
-    # The content CHANGING is the test; it is what a working Next does and a missed click
-    # does not, and it does not depend on any particular word surviving OCR.
-    if not drv.advance("welcome", NEXT):
-        return False
+    # 2. WELCOME -> LOCATION. The window is at its smallest on this pane; NEXT_WELCOME.
+    drv.click(NEXT_WELCOME, "Welcome: Next", settle=20.0)
+    drv.look("location")
 
     # 3. LOCATION -> KEYBOARD. The default location is kept: it is whatever Calamares
     #    detected, and the requirement is a disk that installs, not a particular country.
     log("location left at the installer's default")
-    if not drv.advance("location", NEXT):
-        return False
+    drv.click(NEXT, "Location: Next", settle=20.0)
+    drv.look("keyboard")
 
     # 4. KEYBOARD -> BOOTLOADER
-    #
-    # NO `expect` HERE, AND THAT IS DELIBERATE. The Bootloader pane's heading OCRs as
-    # `boot loader` on some frames and as nothing at all on others - run 42413733562 read
-    # the pane as `... vax grub limine refind refind + ai ...`, which is the bootloader list
-    # and not the words the expectation looked for, and a correct advance was reported as
-    # `KEYBOARD DID NOT ADVANCE`. The change in the content area is the test, and it is a
-    # reliable one: this pane is never the Keyboard pane.
-    if not drv.advance("keyboard", NEXT):
-        return False
+    drv.click(NEXT, "Keyboard: Next", settle=22.0)
+    drv.look("bootloader")
 
     # 5. BOOTLOADER -> PARTITIONS. GRUB goes to the disk Calamares chose; no change.
-    if not drv.advance("bootloader", NEXT):
-        return False
+    drv.click(NEXT, "Bootloader: Next", settle=22.0)
+    drv.look("partitions")
 
-    # 6. ERASE THE DISK, then the confirmation that names it.
-    drv.click(ERASE_DISK, "Partitions: Erase disk", settle=5.0)
+    # 6. ERASE THE DISK. THE RADIO BUTTON'S CIRCLE, at (465, 367) - the row's text is not a
+    #    control, and 36 px lower is `Manual partitioning`.
+    drv.click(ERASE_DISK, "Partitions: Erase disk", settle=10.0)
     drv.look("erase disk selected")
-    drv.click(NEXT, "Partitions: Next", settle=12.0)
-    drv.look("confirm erase")
-    # THE DIALOG IS NOT CHECKED FOR. A conditional here is how three Kubuntu runs stopped
-    # on a screen that was correct; the click lands on blank space if the dialog is not up.
-    drv.click(CONFIRM_ERASE, "the erase confirmation's Continue", settle=20.0)
-    drv.look("desktop profile")
+    drv.click(NEXT, "Partitions: Next", settle=20.0)
+    drv.look("after partitions")
+    # NO CONFIRMATION IS EXPECTED HERE ON THIS ISO - measured, Next goes straight to
+    # Desktop. The click is kept for builds that do ask; on this one it lands on the
+    # Desktop pane's blank space, which selects nothing.
+    drv.click(CONFIRM_ERASE, "the erase confirmation's Continue (if it is shown)", settle=3.0)
 
-    # 7. DESKTOP PROFILE -> PACKAGES. The ISO's own profile (KDE Plasma) is kept.
-    if not drv.advance("desktop profile", NEXT):
-        return False
+    # 7. DESKTOP PROFILE -> PACKAGES. The ISO's own profile (Plasma Desktop) is kept.
+    drv.click(NEXT, "Desktop: Next (Plasma Desktop)", settle=22.0)
+    drv.look("packages")
 
     # 8. PACKAGES -> USERS. The default package set is kept.
-    if not drv.advance("packages", NEXT):
-        return False
+    drv.click(NEXT, "Packages: Next (default set)", settle=25.0)
+    drv.look("users")
 
-    # 9. THE ACCOUNT.
+    # 9. THE ACCOUNT. Five measured fields; see the ACCOUNT table.
     log("filling the account form")
     drv.type_into(ACCOUNT["name"], args.user)
     drv.type_into(ACCOUNT["login"], args.user)
@@ -310,27 +279,27 @@ def walk_calamares(drv: Driver, args) -> bool:
     drv.type_into(ACCOUNT["password"], args.password)
     drv.type_into(ACCOUNT["confirm"], args.password)
     drv.look("account filled")
-    if not drv.advance("users", NEXT):
-        return False
+    drv.click(NEXT, "Users: Next", settle=25.0)
+    drv.look("summary")
 
-    # 10. SUMMARY -> INSTALL, then the dialog's own button.
-    drv.click(NEXT, "Summary: Install", settle=15.0)
+    # 10. SUMMARY. `Install` at (1365, 902), then the modal's own `Install now` at
+    #     (1018, 620). Both measured; neither read.
+    drv.click(INSTALL, "Summary: Install", settle=18.0)
     drv.look("confirm install")
-    drv.click(INSTALL_NOW, "the install confirmation's Install now", settle=25.0)
+    drv.click(INSTALL_NOW, "the install confirmation's Install now", settle=30.0)
     drv.look("installing")
 
-    # 11. UNTIL IT SAYS SO, WITH A STALL DETECTOR. Finishing always changes the screen - a
-    #     progress bar moves, a package name changes - so a content area that reads the same
-    #     for fifteen minutes means the installer is not working.
+    # 11. UNTIL IT SAYS SO.
     #
-    #     THE POINTER IS NUDGED INSIDE THE LOOP, not once before it: a desktop session with
-    #     no input blanks its display, and a blanked display reads the same for every poll -
-    #     which is exactly what the stall detector is looking for. The nudge keeps the
-    #     session awake so that a moving progress bar actually moves.
+    # THE ONLY DECISION IN THIS FUNCTION, AND IT IS THE SAFE KIND. Completion is a TERMINAL
+    # condition: there is nothing after it to skip, so matching the words the installer
+    # prints at the end cannot miss a pane. Every other step above is a coordinate.
+    #
+    # A CLICK, NOT A POINTER MOVE, keeps the session awake: an idle desktop raises its lock
+    # screen, and a locked desktop has no installer on it - mint-gui's last frame was a
+    # full-window lock screen while a correct install finished underneath.
     log("waiting for the installer to finish")
     started = time.time()
-    stalled_since = time.time()
-    previous = ""
     while time.time() - started < args.timeout:
         try:
             Q.click(drv.q, 400 + (int(time.time()) % 40), 300)
@@ -338,20 +307,12 @@ def walk_calamares(drv: Driver, args) -> bool:
             pass
         drv.look("installing")
         current = drv.text()
-        if current != previous:
-            previous, stalled_since = current, time.time()
-        # THE HEADING IS NOT RELIABLE, THE SENTENCE IS. Calamares' Finish pane says
-        # `All done.` in a large font that tesseract skips, and the body sentence under it -
-        # `Your new system is ready ... you may now restart` - is what reads cleanly. See
-        # manjaro-gui's loop for the measured OCR of this same pane.
+        # THE HEADING IS NOT RELIABLE, THE SENTENCE IS: `All done.` is a large font that
+        # tesseract skips, and the body sentence under it reads cleanly. See manjaro-gui.
         if ("all done" in current or "you may now" in current
                 or "reboot now" in current or "restart now" in current):
             log("=== INSTALL COMPLETE ===")
             return True
-        if time.time() - stalled_since > 900:
-            log("=== THE SCREEN HAS NOT CHANGED IN 900s ===")
-            log(f"  last screen: {current[:200]}")
-            return False
         time.sleep(20)
 
     log("=== THE INSTALLER NEVER REPORTED COMPLETION ===")
