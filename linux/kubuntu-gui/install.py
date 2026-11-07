@@ -80,34 +80,51 @@ ERASE_DISK_RADIO = (208, 73)
 INSTALL_NOW = (1058, 535)       # the confirmation dialog's button
 
 # The Users pane.
-# THE ACCOUNT FORM IS FOUND BY ITS LABELS, NOT BY A FIXED RECTANGLE.
+# THE ACCOUNT FORM, LOCATED BY ITS OWN LABELS.
 #
 # The first version of this was a table of pixel positions - (294, 48), (294, 115) and so
 # on - measured on a Calamares window that was NOT full screen. In CI the window fills
-# 1920x1080, the form sits somewhere else entirely, and every one of those clicks would
-# have landed on blank panel. It is the same class of mistake as NEXT, with the difference
-# that a label can be looked for and a blank area cannot.
+# 1920x1080 and every one of those clicks would have landed on blank panel.
 #
-# Each entry is (label text, which side of the label the field is on). Calamares puts its
-# fields to the RIGHT of their labels on the Users pane.
+# The second version looked the labels up by name, and still did not work, because
+# find_word() matches ONE OCR word and the labels are sentences: tesseract reports
+# "What is your name?" as 'What', 'is', 'your', 'name?', so the needle "your name" could
+# never match anything. That failure was visible in the log as
+# "COULD NOT FIND A FIELD LABELLED ('your name',)" while the screen plainly showed it.
+#
+# So the label is matched as a PHRASE - consecutive OCR words on one line - and the field
+# is found RELATIVE TO IT. Measured from the Users pane at 1920x1080, for all five fields
+# and the checkbox:
+#
+#     label row + 31 px    the input box directly below the label
+#     label left + 100 px  its horizontal centre
+#
+# and the five labels are these, quoted from the CI frame.
 ACCOUNT_FIELDS = (
-    ("name", ("your name",)),
-    ("login", ("username", "user name")),
-    ("host", ("computer name", "hostname")),
-    ("password", ("password",)),
-    ("confirm", ("confirm",)),
+    # (name, label phrase, dx from the label's left edge, dy from its baseline)
+    ("name", "what is your name", 100, 31),
+    ("login", "what name do you want to use to log in", 100, 31),
+    ("host", "what is the name of this computer", 100, 31),
+    # THE TWO PASSWORD BOXES SHARE ONE LABEL and sit side by side under it, which is why
+    # their dx differs: the first is centred on the label, the second one field-width right.
+    ("password", "choose a password to keep your account safe", 100, 29),
+    ("confirm", "choose a password to keep your account safe", 304, 29),
 )
 
-# HOW FAR RIGHT OF A LABEL ITS FIELD IS. Measured against the pane: the label column ends
-# near x 300 and the fields start just past it.
-FIELD_OFFSET_X = 260
-
-LOGIN_AUTOMATICALLY_LABEL = ("log in automatically", "automatic login")
+# THE CHECKBOX IS TO THE LEFT OF ITS OWN LABEL, on the same line.
+LOGIN_AUTOMATICALLY_LABEL = "log in automatically"
+CHECKBOX_LEFT_OF_LABEL = 18
 
 # CALAMARES' SIDEBAR IS 190 px WIDE AND LISTS EVERY PANE AT ALL TIMES. Anything that
 # decides whether the wizard advanced has to look right of this, or it will read the name
 # of the pane it is waiting for before the pane arrives.
-SIDEBAR_WIDTH = 220
+#
+# 190 IS MEASURED, NOT GUESSED, AND IT MATTERS THAT IT IS EXACT. The sidebar is x 0..189
+# (checked against a CI frame: the dark panel ends at x=189 and the page background starts
+# at 190). A looser value is not a harmless safety margin here - at 220 it swallowed the
+# first word of every form label, because the labels begin at x=196. The phrase matcher
+# then read "is your name?" instead of "What is your name?" and found nothing.
+SIDEBAR_WIDTH = 190
 
 
 def log(msg: str) -> None:
@@ -246,24 +263,63 @@ class Driver:
                     return (cx, cy)
         return None
 
-    def field_beside(self, label, offset_x: int = FIELD_OFFSET_X):
-        """The input box that belongs to `label`: the label's row, `offset_x` to its right.
+    def find_phrase(self, phrase, *, content_only: bool = True):
+        """The left edge and baseline of an on-screen PHRASE, or None.
 
-        THE Y IS THE LABEL'S OWN, because Calamares lines each field up with its label.
-        The X is the label's right edge plus a fixed offset rather than its centre plus
-        something, because labels are not all the same width - "Confirm password" is nearly
-        twice "Name" - and a centre-relative offset would put the short ones in the wrong
-        place by exactly that difference.
+        WHY A PHRASE AND NOT A WORD. tesseract reports a sentence as one entry per word:
+        "What is your name?" arrives as 'What', 'is', 'your', 'name?'. A lookup that tests
+        one word at a time therefore cannot find a label that is longer than a word - the
+        first version of this asked for "your name" and the log said
+
+            COULD NOT FIND A FIELD LABELLED ('your name',)
+
+        on a screen showing exactly that sentence. So consecutive words on the SAME LINE are
+        joined, and the phrase is matched inside that joined text.
+
+        Returns the box that matters to the caller: (left, y) of the FIRST word of the
+        phrase, because every field on this form is positioned from its label's left edge.
         """
-        if not isinstance(label, (tuple, list)):
-            label = (label,)
-        for needle in label:
-            for word, cx, cy, width, _h in self.words:
-                if cx <= SIDEBAR_WIDTH:
-                    continue
-                if needle in word.lower():
-                    return (cx + width // 2 + offset_x, cy)
+        # WORDS GROUPED BY LINE, BY TOLERANCE RATHER THAN BY A FIXED BUCKET.
+        #
+        # A fixed bucket does not work and the measurement says why: tesseract reports the
+        # words of ONE line with y boxes 6 to 19 pixels apart, because each box is the ink
+        # of that word and "your" has no ascender while "What" does. Grouping on round(y/4)
+        # therefore split "What is your name?" into two lines and the phrase never matched.
+        #
+        # A tolerance of 10 px joins them, and cannot merge two real lines here: Calamares
+        # spaces this form's rows 68 px apart.
+        lines: list[list] = []
+        line_y: list[float] = []
+        for word, cx, cy, w, h in self.words:
+            if content_only and cx <= SIDEBAR_WIDTH:
+                continue
+            for i, y in enumerate(line_y):
+                if abs(cy - y) <= 10:
+                    lines[i].append((cx, cy, word, w, h))
+                    break
+            else:
+                lines.append([(cx, cy, word, w, h)])
+                line_y.append(cy)
+
+        needle = phrase.lower()
+        for i in range(len(lines)):
+            row = sorted(lines[i])
+            joined = " ".join(w[2] for w in row).lower()
+            if needle not in joined:
+                continue
+            # The first word of the phrase is the first word of the line in practice - every
+            # label here starts its own line - so the line's leftmost word is its anchor.
+            first = row[0]
+            return (first[0] - first[3] // 2, first[1])
         return None
+
+    def field_under(self, phrase, dx: int, dy: int):
+        """The input box `dy` below a label phrase, `dx` right of that label's left edge."""
+        anchor = self.find_phrase(phrase)
+        if anchor is None:
+            return None
+        left, y = anchor
+        return (left + dx, y + dy)
 
     def type_into(self, xy, text: str) -> None:
         Q.click(self.q, *xy)
@@ -348,23 +404,23 @@ def walk_calamares(drv: Driver, args) -> bool:
         "confirm": args.password,
     }
     failed = []
-    for field, labels in ACCOUNT_FIELDS:
-        spot = drv.field_beside(labels)
+    for field, phrase, dx, dy in ACCOUNT_FIELDS:
+        spot = drv.field_under(phrase, dx, dy)
         if spot is None:
-            log(f"  COULD NOT FIND A FIELD LABELLED {labels!r}")
+            log(f"  COULD NOT FIND THE LABEL {phrase!r}")
             failed.append(field)
             continue
         log(f"  {field} at {spot}")
         drv.type_into(spot, values[field])
 
-    # THE CHECKBOX IS FOUND THE SAME WAY. It is on the line of its own label, and the box
-    # is to the LEFT of it.
-    autologin = drv.find_word(LOGIN_AUTOMATICALLY_LABEL)
+    # THE CHECKBOX SITS TO THE LEFT OF ITS OWN LABEL, on the same line.
+    autologin = drv.find_phrase(LOGIN_AUTOMATICALLY_LABEL)
     if autologin is None:
         log("  COULD NOT FIND 'log in automatically'; the disk will ask for a password")
     else:
-        log(f"  log in automatically at x<{autologin[0]}")
-        drv.click((autologin[0] - 150, autologin[1]), "log in automatically", settle=3.0)
+        box = (autologin[0] - CHECKBOX_LEFT_OF_LABEL, autologin[1])
+        log(f"  log in automatically at {box}")
+        drv.click(box, "log in automatically", settle=3.0)
     drv.look("account-filled")
 
     if failed:
