@@ -44,6 +44,7 @@ REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, REPO)
 sys.path.insert(0, os.path.join(REPO, "lib"))
 
+import compress     # noqa: E402
 import iso          # noqa: E402
 import live         # noqa: E402
 import ocr          # noqa: E402
@@ -241,7 +242,12 @@ def main(argv: list[str]) -> int:
     os.makedirs(work, exist_ok=True)
 
     disk = os.path.join(work, "ubuntu-gui.qcow2")
-    subprocess.run(["qemu-img", "create", "-f", "qcow2", disk, args.disk_size], check=True)
+    # compress.run(), NOT A BARE qemu-img, for the reason lib/compress.py's docstring gives:
+    # the bake image puts the Android SDK's emulator directory ahead of /usr/bin, and its
+    # qemu-img is 2.12.0, which cannot create or read what the rest of this repository
+    # writes. This call and the flatten at the end were the last two bare ones in the
+    # repository, and the flatten failed on CI at exactly that step.
+    compress.run("create", "-f", "qcow2", disk, args.disk_size)
     log(f"disk created: {args.disk_size}")
 
     # THE ISO'S OWN KERNEL AND INITRD, as every Linux bake here does: qemu hands them to the
@@ -357,9 +363,10 @@ def main(argv: list[str]) -> int:
         art.stop()
 
     if ok and os.path.exists(disk):
-        log(f"flattening {disk} -> {args.out}")
-        subprocess.run(["qemu-img", "convert", "-O", "qcow2", "-c",
-                        "-o", "compression_type=zstd", disk, args.out], check=True)
+        # compress.compress() resolves the binary AND refuses to fall back to zlib, which
+        # is why it is used here rather than a copy of its command line.
+        log(f"compressing {disk} -> {args.out}")
+        compress.compress(disk, args.out)
         log(f"{args.out}: {os.path.getsize(args.out) >> 20} MiB")
     return 0 if ok else 1
 

@@ -1,0 +1,158 @@
+name: kubuntu-gui
+
+# Install Kubuntu from the official desktop ISO, through Calamares, its own graphical
+# installer.
+#
+# WHY THIS IS NOT kubuntu.yml
+#
+# kubuntu.yml installs from Ubuntu's *server* ISO and drives subiquity with an autoinstall
+# document - the same answer-file path ubuntu.yml uses, only with KDE selected. This workflow
+# starts from Kubuntu's own desktop image, whose installer is Calamares. Calamares has no
+# answer file on the interactive path, and its flow is not Ubuntu's:
+#
+#     Welcome -> Location -> Keyboard -> Customize -> Partitions -> Users -> Summary -> Install
+#
+# nine panes in a sidebar layout, versus Ubuntu's thirteen in a floating card. Nothing about
+# the two installers is shared, which is the reason for a second workflow rather than a flag.
+#
+# THE MEASUREMENTS ARE FROM A REAL RUN. Every coordinate in linux/kubuntu-gui/install.py was
+# taken by clicking it on a live ISO and looking at the next frame, including the two that are
+# not where the obvious default would put them:
+#
+#     Install Kubuntu       (1326, 841)   the welcome screen's own button, not a footer
+#     Next / Install        (1775, 1040)  bottom right, 21 px higher than Ubuntu's
+#
+# MANUAL ONLY, like ubuntu-gui: an installer driven by synthetic clicks is not something to run
+# on every push.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bake_run:
+        description: "Install Kubuntu through Calamares"
+        type: boolean
+        default: true
+      release:
+        description: "Kubuntu desktop release (the ISO name carries it)"
+        default: "26.04.1"
+      iso_url:
+        description: "ISO URL (empty for the pinned 26.04.1 desktop image)"
+        default: ""
+      iso_sha256:
+        description: "ISO sha256 (empty for the pinned value)"
+        default: ""
+      disk_size:
+        description: "guest disk size"
+        default: "64G"
+      install_timeout:
+        description: "seconds the installer may take"
+        default: "5400"
+      publish_tag:
+        description: "tag to publish under; empty for linux-kubuntu-gui"
+        default: "linux-kubuntu-gui"
+      publish:
+        description: "publish the finished disk to ghcr"
+        type: boolean
+        default: true
+
+concurrency:
+  group: kubuntu-gui-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bake:
+    if: inputs.bake_run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '40'
+          token: ${{ github.token }}
+
+      - name: prepare
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: kubuntu-gui-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py tags --prefix linux-
+
+      - name: fetch the desktop ISO
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: kubuntu-gui-iso
+          interval: "10"
+          command: |
+            set -euo pipefail
+            ISO_NAME="kubuntu-${{ inputs.release || '26.04.1' }}-desktop-amd64.iso"
+            URL="${{ inputs.iso_url }}"
+            SHA="${{ inputs.iso_sha256 }}"
+            if [ -z "$URL" ]; then
+              URL="https://cdimage.ubuntu.com/kubuntu/releases/26.04/release/$ISO_NAME"
+              SHA="831e4d4bb85098339ba43d3502cd6619b27e76daf37246a084cd68a6413090b8"
+            fi
+            mkdir -p out/iso
+            ISO_URL="$URL" ISO_SHA256="$SHA" DEST="out/iso/$ISO_NAME" \
+              python3 lib/fetch_vendor_iso.py --segments 8
+
+      # CALAMARES, DRIVEN BY POSITION.
+      #
+      # No detector per pane: kubuntu-gui's first draft of ubuntu-gui skipped five panes in a
+      # second because the disk pane's title did not contain the word its detector looked for.
+      # A fixed sequence has one failure mode and this one is a measured position.
+      - name: install through Calamares
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: kubuntu-gui-install
+          interval: "15"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            export SNAPSHOT_INTERVAL=2
+            ISO=$(ls out/iso/*.iso | head -1)
+            echo "iso: $ISO"
+            python3 linux/kubuntu-gui/install.py \
+              --iso "$ISO" \
+              --out out/kubuntu-gui.qcow2 \
+              --disk-size "${{ inputs.disk_size || '64G' }}" \
+              --timeout "${{ inputs.install_timeout || '5400' }}"
+
+      - name: keep the recording
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kubuntu-gui-recording
+          path: |
+            out/install.mp4
+            out/last-frame.png
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: push the disk
+        if: success() && inputs.publish
+        id: publish
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/kubuntu-gui.qcow2
+          kind: linux-kubuntu-gui
+          tag: ${{ inputs.publish_tag || 'linux-kubuntu-gui' }}
+          token: ${{ github.token }}
