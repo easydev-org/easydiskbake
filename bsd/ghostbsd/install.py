@@ -110,9 +110,12 @@ SCFB_DOWNS = 4
 GBI_NEXT = (1297, 783)
 
 # --- the loader ---------------------------------------------------------------
-
-LOADER_PAUSE_KEY = "spc"     # "[Space] to pause", stated on the boot menu itself
-LOADER_PROMPT_KEY = "3"      # "3. Escape to loader prompt"
+#
+# "3. Escape to loader prompt" IS THE KEY THAT IS USED, and the space key that the menu
+# itself advertises ("[Space] to pause") is NOT - see _press_until_prompt for the CI run
+# that settled it. Space pauses a countdown that has usually already expired by the time
+# this driver has a QMP connection, and it means something else once the menu is up.
+LOADER_PROMPT_KEY = "3"
 USBHID_SETTING = "set hw.usb.usbhid.enable=1"
 
 
@@ -184,59 +187,98 @@ class Driver:
         Q.key(self.q, "ret")
 
 
-def _hold_boot_menu(drv: Driver, seconds: float = 15.0) -> bool:
-    """Pause the autoboot countdown, by pressing space across the window it can appear in.
+def _at_loader_prompt(drv: Driver) -> bool:
+    """Whether the screen is the loader's own OK prompt.
 
-    PRESS FIRST, ASK LATER, AND THAT IS NOT SLOPPINESS.
+    THE MARKER IS THE PROMPT'S HELP LINE, which is two sentences that appear nowhere else:
 
-    The menu is drawn about 1.5 s after qemu starts and autoboots four seconds later,
-    which is stated on the menu itself ("Autoboot in 4 seconds. [Space] to pause"). One
-    OCR pass costs a screendump, a 1.5 s settle and tesseract - comfortably longer than
-    the whole countdown. A driver that looks and then decides is therefore always late,
-    every time, on every machine. This one was, until the press moved in front of the look.
+        Type '?' for a list of commands, 'help' for more detailed help.
+        OK _
 
-    Spamming the key is safe in both directions: space arriving while OVMF is still
-    drawing is ignored, and space arriving after the pause is ignored by a menu that is
-    no longer counting. Measured - one space left the menu sitting with the countdown
-    line gone, which is what "paused" looks like.
+    Matching "OK" alone would be unsafe - it is two letters and turns up inside other words
+    after OCR - so the test is on "detailed help" or "list of commands".
     """
-    started = time.time()
-    while time.time() - started < seconds:
-        Q.key(drv.q, LOADER_PAUSE_KEY)
-        time.sleep(0.5)
-    drv.look("boot menu")
     joined = " ".join(w[0].lower() for w in drv.words)
-    return "boot" in joined and ("options" in joined or "loader" in joined)
+    return "detailed help" in joined or "list of commands" in joined
+
+
+def _clear_line(drv: Driver) -> None:
+    """Empty whatever is on the loader's command line.
+
+    KEYS PRESSED TO REACH THE PROMPT CAN LAND ON IT. "3" is what escapes the menu, and once
+    the prompt is up every further "3" is typed as text - so the line can hold a few of them
+    by the time the screen is read. Ctrl-U is the loader's kill-line, and sending it before
+    the real command is cheaper than parsing what might be there.
+    """
+    Q.key_combo(drv.q, "ctrl", "u")
+    time.sleep(0.4)
+
+
+def _press_until_prompt(drv: Driver, seconds: float = 90.0) -> bool:
+    """Reach the loader's OK prompt from the boot menu, by pressing the menu's own hotkey.
+
+    WHY "3" AND NOT SPACE FIRST.
+
+    The first version of this paused the countdown with space and then pressed "3". It
+    failed on CI, and the log says why: qemu started at 10:27:19 and the space keys were
+    sent from 10:27:19 to 10:27:34, at 0.5 s intervals - which is OVMF's own initialisation,
+    where no menu exists yet. The menu first appeared at 10:27:37, by which time the keys
+    were spent, the countdown was never paused, and the "3" that followed did nothing.
+
+    Space also has a meaning in this menu, so pressing it blind is not the neutral act the
+    first version assumed. "3" selects "Escape to loader prompt" directly, and on the OVMF
+    screen it means nothing at all - so the same key is safe before the menu and correct
+    at it.
+
+    THE PROMPT IS VERIFIED BEFORE ANYTHING IS TYPED. Typing "set hw.usb.usbhid.enable=1"
+    into the MENU instead of the prompt would be read as hotkeys - the string contains
+    "1", which selects "Boot Multi user" - so the check is not a formality.
+    """
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        drv.look("boot")
+        if _at_loader_prompt(drv):
+            log("the loader prompt is up")
+            return True
+
+        joined = " ".join(w[0].lower() for w in drv.words)
+        # THE MENU NAMES THE ENTRY THIS PRESSES. If these words are on screen the countdown
+        # is running (or paused) and "3" is the right key. If they are not, the boot has
+        # either not reached the menu yet or has already started - so the key is held back
+        # until the menu is actually there.
+        if "multi user" in joined and "escape to loader" in joined:
+            Q.key(drv.q, LOADER_PROMPT_KEY)
+            time.sleep(1.2)
+        else:
+            time.sleep(1.5)
+    return False
 
 
 def set_usbhid_in_loader(drv: Driver) -> bool:
-    """Pause the boot menu, drop to the loader prompt, and enable absolute pointing.
+    """Reach the loader prompt and set the one variable that makes absolute pointing work.
 
     WHY THIS IS NOT IN lib/qmp.py. The variable is GhostBSD's problem, not QEMU's: the
     tablet is a correct absolute-positioning device and every Linux guest here uses it
     unchanged. Only this one kernel declines it, so only this driver works around it.
 
-    A MISSED MENU IS RETRIED ONCE. The window is four seconds wide and the first attempt
-    has to construct the driver and its QMP connection first, so a slow start is a real
-    possibility rather than a hypothetical. A reset costs a second; a bake that failed
-    because a key arrived late costs ninety minutes.
+    A MISSED MENU IS RETRIED ONCE, WITH A RESET. If the countdown won the race the guest
+    boots without the variable, and the only way back to the loader is a reset.
     """
     for attempt in (1, 2):
         if attempt == 2:
-            log("the menu was missed; resetting and trying the loader once more")
+            log("the loader prompt was missed; resetting and trying once more")
             drv.q.execute("system_reset")
-            time.sleep(1.0)
-        if _hold_boot_menu(drv):
+            time.sleep(2.0)
+        if _press_until_prompt(drv):
             break
         if attempt == 2:
-            log("=== THE BOOT MENU NEVER APPEARED ===")
+            log("=== THE LOADER PROMPT NEVER APPEARED ===")
             log(f"  last screen: {' | '.join(w[0] for w in drv.words[:20])}")
             return False
 
-    log("the boot menu is paused; escaping to the loader prompt")
-    Q.key(drv.q, LOADER_PROMPT_KEY)
-    time.sleep(2.5)
-    drv.look("loader prompt")
+    # ANY "3" THAT ARRIVED AFTER THE PROMPT IS ON THE LINE. Clear it before the command,
+    # or the loader sees "33set hw.usb..." and rejects it.
+    _clear_line(drv)
 
     # THE SETTING IS THE POINT OF THIS FUNCTION: without it every click below lands on the
     # top-left corner of the screen and the run looks like a driver bug.
@@ -248,6 +290,15 @@ def set_usbhid_in_loader(drv: Driver) -> bool:
     Q.key(drv.q, "ret")
     time.sleep(1.5)
     drv.look("after set")
+
+    # THE SET IS CONFIRMED BY ITS OWN SILENCE. A loader `set` prints nothing on success and
+    # an error line on failure, so a screen that is still the prompt - with no "no such
+    # command" or "unknown" on it - is the confirmation.
+    joined = " ".join(w[0].lower() for w in drv.words)
+    if "no such" in joined or "unknown" in joined:
+        log("=== THE LOADER REJECTED THE SETTING ===")
+        log(f"  screen: {joined[:200]}")
+        return False
 
     log("loader: boot")
     keys.type_text(drv.q, "boot", per_char=0.05)

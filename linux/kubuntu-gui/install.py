@@ -115,6 +115,11 @@ ACCOUNT_FIELDS = (
 LOGIN_AUTOMATICALLY_LABEL = "log in automatically"
 CHECKBOX_LEFT_OF_LABEL = 18
 
+# THE ROW PITCH OF THE ACCOUNT FORM, measured: label baselines at y 21, 89, 157 and the
+# fields themselves 31 px below each. 68 px is the distance between consecutive fields,
+# which is what lets the first one be found from the second when OCR misses its label.
+ROW_PITCH = 68
+
 # CALAMARES' SIDEBAR IS 190 px WIDE AND LISTS EVERY PANE AT ALL TIMES. Anything that
 # decides whether the wizard advanced has to look right of this, or it will read the name
 # of the pane it is waiting for before the pane arrives.
@@ -404,8 +409,24 @@ def walk_calamares(drv: Driver, args) -> bool:
         "confirm": args.password,
     }
     failed = []
+    spots = {}
     for field, phrase, dx, dy in ACCOUNT_FIELDS:
-        spot = drv.field_under(phrase, dx, dy)
+        spots[field] = drv.field_under(phrase, dx, dy)
+
+    # THE FIRST FIELD HAS A FALLBACK, BECAUSE OCR DOES NOT ALWAYS READ ITS LABEL.
+    #
+    # Measured on CI: every other label resolved and this one did not, because tesseract
+    # read the line as 'Whi | ir | name?' - the phrase "what is your name" was simply not
+    # on the screen as far as it was concerned. The form's own layout is a better answer
+    # than a second guess at the text: this field is the one directly ABOVE the username
+    # field, and Calamares places the rows at a fixed pitch.
+    if spots["name"] is None and spots["login"] is not None:
+        above = (spots["login"][0], spots["login"][1] - ROW_PITCH)
+        log(f"  name label unreadable; using the row above the username field: {above}")
+        spots["name"] = above
+
+    for field, phrase, dx, dy in ACCOUNT_FIELDS:
+        spot = spots[field]
         if spot is None:
             log(f"  COULD NOT FIND THE LABEL {phrase!r}")
             failed.append(field)
