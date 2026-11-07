@@ -1,0 +1,101 @@
+name: endeavour-probe
+
+# Answer ONE question about EndeavourOS, on the machine the bakes actually run on:
+# what language does its Calamares open in, and why?
+#
+# This is a probe, not an installer. Every explanation was tried locally and disproved by a
+# measurement - the system locale is en_US.UTF-8 and `locale -a` has no zh_CN at all; the
+# container and guest clocks are both Etc/UTC; the geoip mock was never contacted; no
+# Shanghai string exists under /usr/share/calamares - and one claim was made on bad
+# evidence, because `ls` through `sudo -n` failed silently and looked like an empty
+# directory.
+#
+# So this boots the medium, opens the installer, and RECORDS what is on screen plus the raw
+# answers to the config questions, without sudo. The artifact is the evidence.
+#
+# MANUAL ONLY.
+
+on:
+  workflow_dispatch:
+    inputs:
+      iso_url:
+        description: "ISO URL (empty for the pinned image)"
+        default: ""
+      iso_sha256:
+        description: "ISO sha256 (empty for the pinned value)"
+        default: ""
+
+concurrency:
+  group: endeavour-probe-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '30'
+          token: ${{ github.token }}
+
+      - name: fetch the ISO
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: endeavour-probe-iso
+          interval: "10"
+          command: |
+            set -euo pipefail
+            URL="${{ inputs.iso_url }}"
+            SHA="${{ inputs.iso_sha256 }}"
+            if [ -z "$URL" ]; then
+              URL="https://mirror.alpix.eu/endeavouros/iso/EndeavourOS_Titan-Nova-2026.08.15.iso"
+              SHA="0487f46fe29e0ab2ed153ba874568cc542a0507fb6029f29ad552b36ba447393"
+            fi
+            mkdir -p out/iso
+            ISO_URL="$URL" ISO_SHA256="$SHA" \
+              DEST="out/iso/EndeavourOS_Titan-Nova-2026.08.15.iso" \
+              python3 lib/fetch_vendor_iso.py --segments 8
+
+      - name: boot it and record what the installer says
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: endeavour-probe
+          interval: "15"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            export SNAPSHOT_INTERVAL=5
+            ISO=$(ls out/iso/*.iso | head -1)
+            echo "iso: $ISO"
+            python3 linux/endeavour-gui/probe.py \
+              --iso "$ISO" \
+              --out out/probe
+
+      - name: keep the evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: endeavour-probe
+          path: |
+            out/probe/language.txt
+            out/probe/welcome.png
+            out/probe/last-frame.png
+            out/probe/install.mp4
+          if-no-files-found: warn
+          retention-days: 14
