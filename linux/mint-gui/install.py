@@ -183,8 +183,46 @@ def wait_for_live_desktop(drv: Driver, timeout: int) -> bool:
     return False
 
 
+def stop_the_screensaver(drv: Driver) -> None:
+    """Turn Cinnamon's screen saver and its lock off, once, before the install starts.
+
+    A CLICK PER POLL DID NOT KEEP THIS SESSION AWAKE. Measured twice: run 42408624906 read
+    `14:25`, `14:26`, `14:34` for ten minutes and run 42414965231 read `15:58`, `15:59`,
+    `16:00` - both times a full-window Mint LOCK SCREEN with a large clock and the Mint
+    logo, no installer anywhere, while a correct install finished underneath it. The screen
+    saver engages on this live session within about two minutes of the last real input, and
+    synthetic clicks from QMP are evidently not what its idle timer counts.
+
+    So it is disabled rather than raced. `gsettings` is the Cinnamon session's own
+    configuration store and these are its own keys:
+
+        org.cinnamon.desktop.session idle-delay 0              never blank
+        org.cinnamon.desktop.screensaver lock-enabled false    never lock
+        org.cinnamon.desktop.screensaver idle-activation-enabled false
+
+    ONE TERMINAL, ONE LINE, ONCE. The terminal is opened and closed by the shell itself, so
+    nothing is left on screen; the driver then waits for the desktop to be itself again
+    before it clicks the installer icon.
+    """
+    log("disabling Cinnamon's screen saver and lock for the rest of the session")
+    Q.key_combo(drv.q, "ctrl", "alt", "t")
+    time.sleep(6.0)
+    keys.type_text(drv.q,
+                   "gsettings set org.cinnamon.desktop.session idle-delay 0; "
+                   "gsettings set org.cinnamon.desktop.screensaver lock-enabled false; "
+                   "gsettings set org.cinnamon.desktop.screensaver idle-activation-enabled false; "
+                   "exit",
+                   per_char=0.02)
+    Q.key(drv.q, "ret")
+    time.sleep(6.0)
+    drv.look("screensaver disabled")
+
+
 def walk_ubiquity(drv: Driver, args) -> bool:
     """Click through Ubiquity's seven panes, checking each one arrives."""
+    # 0. THE SESSION MUST NOT LOCK ITSELF WHILE THE INSTALL RUNS - see stop_the_screensaver.
+    stop_the_screensaver(drv)
+
     # 1. WELCOME. `English` is selected; Continue.
     drv.double_click(INSTALL_ICON, "Install Linux Mint", settle=25.0)
     drv.look("welcome")
