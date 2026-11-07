@@ -297,7 +297,15 @@ def up(*, ssh_port: int = 2222, rdp_port: int = 3389,
     rule = (f"-d {GEOIP_MOCK_IP} -p tcp --dport 80 "
             f"-j REDIRECT --to-ports {geoip_mock.PORT}")
     if _sh(f"iptables -t nat -C PREROUTING {rule}").returncode != 0:
-        _sh(f"iptables -t nat -A PREROUTING {rule}")
+        # INSERTED, NOT APPENDED, AND THAT IS THE WHOLE FIX.
+        #
+        # PREROUTING already has a jump to VM_FWD for `-d 172.30.0.1` - the port-forward
+        # chain - and the geoip address IS 172.30.0.1, because that is the bridge. An
+        # appended rule never runs: VM_FWD matches first, finds no forward for port 80,
+        # and the packet carries on to the guest's normal destination. Measured on the run
+        # that added it: the mock was listening on 8977 and a `curl http://172.30.0.1/lookup`
+        # from inside the container returned nothing at all.
+        _sh(f"iptables -t nat -I PREROUTING 1 {rule}")
     if not geoip_mock.running():
         geoip_mock.serve()
         time.sleep(0.5)
