@@ -70,6 +70,13 @@ GUEST_IP = os.environ.get("VM_GUEST_IP", "172.30.0.2")
 HOST_IP = os.environ.get("VM_HOST_IP", "172.30.0.254")
 MASK = "255.255.255.0"
 
+# THE GEOIP MOCK'S ADDRESS, AS THE GUEST SEES IT. It is the bridge address because the
+# service listens on the host in this container and the guest reaches the host there - the
+# same address dnsmasq uses for the DHCP router and resolver, so nothing new has to be
+# routed. See lib/geoip_mock.py for what it answers and why one probe gets an answer while
+# the others are refused.
+GEOIP_MOCK_IP = BRIDGE_IP
+
 # THE GUEST'S MTU HAS TO FIT INSIDE THE CONTAINER'S, AND IT DID NOT.
 #
 # This was a constant 1500 while the container's own eth0 is 1450 - Kubernetes and the CNI
@@ -235,8 +242,22 @@ def up(*, ssh_port: int = 2222, rdp_port: int = 3389,
         # for the one each of them uses.
         "address=/geoip.kde.org/127.0.0.1;"
         "address=/geoip.kde.org./127.0.0.1;"
-        "address=/geoip.ubuntu.com/127.0.0.1;"
-        "address=/geoip.ubuntu.com./127.0.0.1;"
+        # UBUNTU'S PROBE GETS AN ANSWER, NOT A REFUSAL - see lib/geoip_mock.py.
+        #
+        # Calamares falls back to American English when its probe is refused; Ubuntu's
+        # Flutter installer does not. It uses the answer to preselect the time zone pane,
+        # and a refusal leaves that pane with nothing selected and Next disabled:
+        #
+        #     look finish: 7 words :: Select | your | timezone       <- for eight minutes
+        #
+        # which is run 42388038785. The mock answers in the shape the service documents,
+        # for New York, so every installer takes the path it would on a real machine in
+        # the United States instead of the path this cluster's egress happens to allow.
+        f"address=/geoip.ubuntu.com/{GEOIP_MOCK_IP};"
+        f"address=/geoip.ubuntu.com./{GEOIP_MOCK_IP};"
+        # THE OTHER TWO STAY REFUSED. Calamares handles a refusal correctly and the
+        # refusal is what proved the mechanism; mocking them would add a service to trust
+        # for a case that already works.
         "address=/geoip.anaconda-installer.org/127.0.0.1;"
         "address=/geoip.anaconda-installer.org./127.0.0.1;"
         "address=/geoip.fedoraproject.org/127.0.0.1;"
@@ -245,6 +266,33 @@ def up(*, ssh_port: int = 2222, rdp_port: int = 3389,
     started = _sh(f"dnsmasq --conf-file=/dev/null {''.join('--' + opt + ' ' for opt in cfg.rstrip(';').split(';'))}")
     if started.returncode != 0:
         raise SystemExit(f"=== dnsmasq DID NOT START ===\n  {started.stderr.strip()[:300]}")
+
+    # THE GEOIP MOCK, AND THE DNAT THAT MAKES PORT 80 REACH IT.
+    #
+    # geoip.ubuntu.com is answered with the bridge address, so the guest connects to the
+    # host on port 80 - the port the probe uses. Nothing listens there, and nothing should:
+    # the mock runs on its own high port, and a DNAT rewrites only the traffic addressed to
+    # that one address, so the container's own port 80 (if any) is untouched.
+    #
+    # FIREWALL FIRST, THEN THE SERVICE: if the rule is added after the guest's first probe
+    # the first answer is a refusal, and Ubuntu's installer caches "no answer" for the rest
+    # of the run - which is the failure this whole arrangement exists to prevent.
+    import geoip_mock
+    _sh(f"iptables -t nat -C PREROUTING -d {GEOIP_MOCK_IP} -p tcp --dport 80 "
+        f"-j REDIRECT --to-ports {geoip_mock.PORT}")
+    if _sh(f"iptables -t nat -C PREROUTING -d {GEOIP_MOCK_IP} -p tcp --dport 80 "
+           f"-j REDIRECT --to-ports {geoip_mock.PORT}").returncode != 0:
+        _sh(f"iptables -t nat -A PREROUTING -d {GEOIP_MOCK_IP} -p tcp --dport 80 "
+            f"-j REDIRECT --to-ports {geoip_mock.PORT}")
+    if not geoip_mock.running():
+        geoip_mock.serve()
+        time.sleep(0.5)
+    if geoip_mock.running():
+        log(f"geoip mock: {geoip_mock.COUNTRY_NAME} ({geoip_mock.TIMEZONE}) "
+            f"on {GEOIP_MOCK_IP}:80 -> :{geoip_mock.PORT}")
+    else:
+        log("=== THE GEOIP MOCK DID NOT START ===")
+        log("  Ubuntu's installer will stall on its time zone pane")
 
     # OUTBOUND: the guest's traffic leaves as this container does.
     #
