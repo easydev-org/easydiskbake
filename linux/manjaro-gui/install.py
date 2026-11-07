@@ -91,10 +91,18 @@ ACCOUNT = {
 # THE LIVE MEDIUM'S BOOT TIME, AS A NUMBER - see wait_for_desktop.
 DESKTOP_SECONDS = 240
 
-# CALAMARES' SIDEBAR IS 250 px WIDE AND LISTS EVERY PANE AT ALL TIMES. Anything deciding
-# whether the wizard advanced has to look right of this, or it will read the name of the
-# pane it is waiting for before the pane arrives - see Driver.text().
-SIDEBAR_WIDTH = 250
+# CALAMARES' SIDEBAR LISTS EVERY PANE AT ALL TIMES, AND IT IS NOT AT THE LEFT EDGE.
+#
+# The panel spans x 447..630 on this ISO - it is a CENTRED window, not a full-screen one -
+# so a cutoff of 250 filtered almost nothing: `Office` read at x=482 and `Suite` at x=528
+# were kept as CONTENT. `expect="office"` was therefore TRUE ON THE USERS PANE, and run
+# 42408641011 sat on Users for half an hour logging `installing: ... What is your name?`
+# because every advance reported success without moving.
+#
+# Measured on run 42408641011's own frame: sidebar words at x 482-626, content words from
+# x 1139. 700 is past the panel's right edge and well short of the content's, so the
+# filter keeps only what the pane itself says.
+SIDEBAR_WIDTH = 700
 
 
 def log(msg: str) -> None:
@@ -134,7 +142,8 @@ class Driver:
         `No Office Suite` and then the footer, was still on Users, and sat there until the
         stall detector ended the run 908 seconds later.
 
-        The sidebar is 250 px wide on Manjaro's build; the content starts right of it.
+        The cutoff is SIDEBAR_WIDTH, and it has to be past the panel's right edge rather
+        than at the window's left border - see the constant.
         """
         if not content_only:
             return " ".join(w[0].lower() for w in self.words)
@@ -183,20 +192,44 @@ class Driver:
         Suite is the one that matters here - and a greyed button swallows clicks without
         any feedback. Retrying costs seconds; assuming the click landed costs the run.
 
-        `expect` is a phrase that only the NEXT pane shows. When it is given the check is
-        exact; otherwise the test is that the content changed at all.
+        `expect` is a phrase that only the NEXT pane shows - but it is NEVER THE WHOLE TEST.
+        The content area has to have moved as well, and that is the second fix for a bug
+        that cost half an hour.
+
+        Run 42408641011 sat on Users with `expect="office"` reporting success every poll.
+        The pane's own words include a LibreOffice line that OCR reads as `Office`, so the
+        phrase was true on Users, on Office Suite and everywhere in between, and the driver
+        never noticed it had not moved. A phrase is evidence only in combination with a
+        change: `office` ON a pane that no longer says `What is your name?` is the Office
+        Suite pane; `office` on the same pane is the pane it started on.
+
+        WITHOUT `expect` THE CHANGE ALONE IS THE TEST, which is what a click on Next does
+        when it works and does nothing when it does not.
         """
         before = self.text(content_only=True)
         for attempt in range(1, max_tries + 1):
             self.click(xy, f"{name}: Next (attempt {attempt})", settle=settle)
             self.look(f"after {name}")
             current = self.text(content_only=True)
-            if expect:
-                if expect in current:
-                    return True
-            elif current and current != before:
+            if current and current != before and (not expect or expect in current):
                 return True
-        log(f"=== {name.upper()} DID NOT ADVANCE ===")
+        # ALT+N IS CALAMARES' OWN BINDING FOR NEXT, AND IT IS THE FALLBACK THAT WAS MISSING.
+        #
+        # Calamares sizes its window to the pane's content, so the footer moves: on one ISO
+        # the same `Next` was 49 px lower on the Location pane than on Welcome, and a
+        # coordinate measured on one pane landed on the map of the next. CachyOS' run
+        # 42408635655 clicked nine times at a fixed point and never left Location.
+        #
+        # Manjaro has not shown that failure yet, but it is the same wizard on the same
+        # kind of pane, and the fallback costs one keystroke. It is tried LAST because on
+        # the Summary pane Alt+N starts the installation.
+        Q.key_combo(self.q, "alt", "n")
+        time.sleep(settle)
+        self.look(f"after {name} by keyboard")
+        current = self.text(content_only=True)
+        if current and current != before and (not expect or expect in current):
+            return True
+        log(f"=== {name.upper()} DID NOT ADVANCE, BY CLICK OR BY KEYBOARD ===")
         log(f"  expected: {expect!r}")
         log(f"  screen: {current[:220]}")
         return False
@@ -236,18 +269,18 @@ def walk_calamares(drv: Driver, args) -> bool:
 
     # 2. WELCOME -> LOCATION. The pane names are stable in English, which the installer's
     #    own default (American English) gives us.
-    if not drv.advance("welcome", NEXT_DEFAULT, settle=15.0, expect="location"):
+    if not drv.advance("welcome", NEXT_DEFAULT, settle=15.0):
         return False
 
     # 3. LOCATION -> KEYBOARD. The default zone is kept: whatever the installer read from
     #    the network at startup stays. Changing it is one more field that can go wrong for
     #    no gain, and the bake's job is a disk that installs, not a particular region.
     log("location left at the installer's default")
-    if not drv.advance("location", NEXT_DEFAULT, settle=15.0, expect="keyboard"):
+    if not drv.advance("location", NEXT_DEFAULT, settle=15.0):
         return False
 
     # 4. KEYBOARD -> PARTITIONS.
-    if not drv.advance("keyboard", NEXT_DEFAULT, settle=15.0, expect="partition"):
+    if not drv.advance("keyboard", NEXT_DEFAULT, settle=15.0):
         return False
 
     # 5. PARTITIONS. On UEFI `Erase disk` is already selected and the layout already has
@@ -255,7 +288,7 @@ def walk_calamares(drv: Driver, args) -> bool:
     #    is already set, and fixes it when it is not.
     drv.click(ERASE_DISK, "Partitions: Erase disk", settle=5.0)
     drv.look("erase disk selected")
-    if not drv.advance("partitions", NEXT_DEFAULT, settle=20.0, expect="user"):
+    if not drv.advance("partitions", NEXT_DEFAULT, settle=20.0):
         return False
 
     # 6. THE ACCOUNT. Two password pairs - see the module docstring.
@@ -268,7 +301,7 @@ def walk_calamares(drv: Driver, args) -> bool:
     drv.clear_and_type(ACCOUNT["root password"], args.password)
     drv.clear_and_type(ACCOUNT["root confirm"], args.password)
     drv.look("account filled")
-    if not drv.advance("users", NEXT_DEFAULT, settle=20.0, expect="office"):
+    if not drv.advance("users", NEXT_DEFAULT, settle=20.0):
         return False
 
     # 7. OFFICE SUITE. THE ROW, NOT THE HIGHLIGHT - see the module docstring. Without this
@@ -276,7 +309,7 @@ def walk_calamares(drv: Driver, args) -> bool:
     log("selecting No Office Suite (the row itself; the highlight is not a selection)")
     drv.click(NO_OFFICE_SUITE, "Office Suite: No Office Suite", settle=5.0)
     drv.look("office suite selected")
-    if not drv.advance("office suite", NEXT_OFFICE, settle=20.0, expect="summary"):
+    if not drv.advance("office suite", NEXT_OFFICE, settle=20.0):
         return False
 
     # 8. SUMMARY -> INSTALL, then the modal's own button.

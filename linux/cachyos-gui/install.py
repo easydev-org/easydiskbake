@@ -62,6 +62,19 @@ import qmp as Q     # noqa: E402
 import uefi         # noqa: E402
 import vm           # noqa: E402
 
+# THE PANE NAMES, WHICH ARE NOT EVIDENCE OF ANYTHING.
+#
+# This Calamares draws a progress BAR along the bottom instead of KDE's vertical sidebar,
+# and that bar lists every pane on every pane - `Welcome Location Keyboard Bootloader
+# Partitions Desktop Packages Users Summary Install Finish`, in English even when the rest
+# of the wizard is translated. So `"location" in text` is TRUE while standing on the
+# Welcome pane, and run 42408635655 shows what that costs: it logged `location`, clicked
+# Next, logged `keyboard` and `bootloader` and `partitions`, and never left Location.
+PANE_NAMES = frozenset((
+    "welcome", "location", "keyboard", "bootloader", "partitions", "desktop",
+    "packages", "users", "summary", "install", "finish",
+))
+
 # --- measured on a live CachyOS session, 1920x1080 ----------------------------------------
 
 # `CachyOS Hello` opens by itself; this is the button at the bottom of it. Clicked TWICE:
@@ -127,6 +140,18 @@ class Driver:
     def text(self) -> str:
         return " ".join(w[0].lower() for w in self.words)
 
+    def content(self) -> str:
+        """Everything OCR read EXCEPT the pane names in the bottom progress bar.
+
+        THE BAR IS WHY THIS EXISTS. Calamares on this ISO lists all eleven pane names along
+        the bottom on every pane, so any check phrased as "the word `keyboard` is on screen"
+        is true before the click that is supposed to reach the Keyboard pane. Filtering the
+        words out leaves what the pane itself says - `Region:`, `Zone:`, `Erase disk`,
+        `What is your name?` - which is the only part that changes.
+        """
+        return " ".join(w[0].lower() for w in self.words
+                        if w[0].lower().strip(" .,:;()") not in PANE_NAMES)
+
     def click(self, xy, why: str, settle: float = 3.0) -> None:
         log(f"click {xy} - {why}")
         Q.click(self.q, *xy)
@@ -135,6 +160,51 @@ class Driver:
     def click_twice(self, xy, why: str, settle: float = 20.0) -> None:
         self.click(xy, why, settle=0.8)
         self.click(xy, f"{why} (second click)", settle=settle)
+
+    def alt_n(self, why: str, settle: float = 15.0) -> None:
+        log(f"alt+n - {why}")
+        Q.key_combo(self.q, "alt", "n")
+        time.sleep(settle)
+
+    def advance(self, pane: str, xy, *, settle: float = 15.0,
+                expect: str = "", max_tries: int = 2) -> bool:
+        """Leave `pane` by CLICK, and by Alt+N when the click does not move it.
+
+        THE CLICK ALONE IS NOT ENOUGH ON THIS WIZARD, AND THAT IS MEASURED, NOT GUESSED.
+
+        Calamares sizes its window to the pane's content, so its footer is not at one fixed
+        place: on this ISO's Welcome pane `Next` sits at y 747, and on its Location pane the
+        same button is at y 796 - the pane under the map is taller. A coordinate measured on
+        one pane lands on the MAP on the next one, and that is exactly what run 42408635655
+        did: nine clicks at (1364, 751), a selected region that wandered Chicago -> Detroit
+        -> Antarctica, and an installer that never left the Location pane while every step
+        logged as though it had. It was still there when the run was killed.
+
+        Alt+N IS CALAMARES' OWN BINDING for Next on every pane. Measured on a live CachyOS
+        session: pressed on that same stuck Location pane, the next frame is the Keyboard
+        pane. It is not tried FIRST because on Summary it starts the installation, and a
+        shortcut fired into the wrong pane is worse than a repeated click.
+
+        `expect` is a phrase only the REACHED pane shows, matched against the content area;
+        the sidebar lists every pane name permanently, so a marker taken from it is always
+        true and proves nothing.
+        """
+        before = self.content()
+        for attempt in range(1, max_tries + 1):
+            self.click(xy, f"{pane}: Next (attempt {attempt})", settle=settle)
+            self.look(f"after {pane}")
+            current = self.content()
+            if current and current != before and (not expect or expect in current):
+                return True
+        self.alt_n(f"{pane}: Next, by keyboard", settle=settle)
+        self.look(f"after {pane} by keyboard")
+        current = self.content()
+        if current and current != before and (not expect or expect in current):
+            return True
+        log(f"=== {pane.upper()} DID NOT ADVANCE, BY CLICK OR BY KEYBOARD ===")
+        log(f"  expected: {expect!r}")
+        log(f"  screen: {current[:220]}")
+        return False
 
     def type_into(self, xy, value: str) -> None:
         Q.click(self.q, *xy)
@@ -184,22 +254,26 @@ def walk_calamares(drv: Driver, args) -> bool:
         return False
 
     # 2. WELCOME -> LOCATION
-    drv.click(NEXT, "Welcome: Next", settle=15.0)
-    drv.look("location")
+    # The Location pane is the one that says `Region:` and `Zone:`.
+    if not drv.advance("welcome", NEXT, expect="region"):
+        return False
 
     # 3. LOCATION -> KEYBOARD. The default location is kept: it is whatever Calamares
     #    detected, and the requirement is a disk that installs, not a particular country.
     log("location left at the installer's default")
-    drv.click(NEXT, "Location: Next", settle=15.0)
-    drv.look("keyboard")
+    # The Keyboard pane asks for a keyboard model.
+    if not drv.advance("location", NEXT, expect="model"):
+        return False
 
     # 4. KEYBOARD -> BOOTLOADER
-    drv.click(NEXT, "Keyboard: Next", settle=15.0)
-    drv.look("bootloader")
+    # The Bootloader pane is the one that says `boot loader`.
+    if not drv.advance("keyboard", NEXT, expect="boot loader"):
+        return False
 
     # 5. BOOTLOADER -> PARTITIONS. GRUB goes to the disk Calamares chose; no change.
-    drv.click(NEXT, "Bootloader: Next", settle=15.0)
-    drv.look("partitions")
+    # The Partitions pane offers `Erase disk`.
+    if not drv.advance("bootloader", NEXT, expect="erase disk"):
+        return False
 
     # 6. ERASE THE DISK, then the confirmation that names it.
     drv.click(ERASE_DISK, "Partitions: Erase disk", settle=5.0)
@@ -212,12 +286,13 @@ def walk_calamares(drv: Driver, args) -> bool:
     drv.look("desktop profile")
 
     # 7. DESKTOP PROFILE -> PACKAGES. The ISO's own profile (KDE Plasma) is kept.
-    drv.click(NEXT, "Desktop: Next (KDE Plasma)", settle=15.0)
-    drv.look("packages")
+    # The Desktop pane names its profile, `KDE Plasma`.
+    if not drv.advance("desktop profile", NEXT, expect="plasma"):
+        return False
 
     # 8. PACKAGES -> USERS. The default package set is kept.
-    drv.click(NEXT, "Packages: Next (default set)", settle=20.0)
-    drv.look("users")
+    if not drv.advance("packages", NEXT):
+        return False
 
     # 9. THE ACCOUNT.
     log("filling the account form")
@@ -227,8 +302,8 @@ def walk_calamares(drv: Driver, args) -> bool:
     drv.type_into(ACCOUNT["password"], args.password)
     drv.type_into(ACCOUNT["confirm"], args.password)
     drv.look("account filled")
-    drv.click(NEXT, "Users: Next", settle=20.0)
-    drv.look("summary")
+    if not drv.advance("users", NEXT):
+        return False
 
     # 10. SUMMARY -> INSTALL, then the dialog's own button.
     drv.click(NEXT, "Summary: Install", settle=15.0)
