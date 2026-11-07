@@ -204,7 +204,7 @@ def up(*, ssh_port: int = 2222, rdp_port: int = 3389,
         f"dhcp-option=option:dns-server,{BRIDGE_IP};"
         f"dhcp-option=option:mtu,{MTU};"
         f"interface={BRIDGE};bind-interfaces;no-ping;filter-AAAA;"
-        f"pid-file=/var/run/dnsmasq.vm.pid;log-facility=/var/log/dnsmasq.vm.log"
+        f"pid-file=/var/run/dnsmasq.vm.pid;log-facility=/var/log/dnsmasq.vm.log;"
         # ============================================================================
         # GEOIP IS ANSWERED WITH NOTHING, AND THAT IS WHAT MAKES A BAKE REPRODUCIBLE.
         # ============================================================================
