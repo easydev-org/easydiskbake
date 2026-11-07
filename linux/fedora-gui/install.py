@@ -248,20 +248,31 @@ def walk_anaconda(drv: Driver, args) -> bool:
     # it to the Next button under every locale it ships.
     drv.look("anaconda welcome")
 
-    # ESCAPE, REPEATEDLY, AND AFTER ANACONDA HAS SETTLED.
+    # THE LIST IS CLOSED BY CLICKING AWAY FROM IT, NOT BY ESCAPE.
     #
-    # The comment above says the list is closed with Escape; what it did not say is WHEN.
-    # Run at 17:17:39 pressed Escape two seconds after `Anaconda is up`, and the list was
-    # still on screen afterwards - the window had only just mapped and the key went to a
-    # widget that was not ready. Three presses, a second apart, is what a person does when
-    # the first one appears to do nothing, and it costs three seconds.
+    # Two runs pressed Escape three times, a second apart, and the list stayed open:
+    #
+    #     17:17:39  alt+n - welcome: Next     ->  unchanged
+    #     17:58:11  alt+n - welcome: Next     ->  unchanged, "Suggested languages" still up
+    #
+    # Anaconda's language combo is a GTK drop-down that does not treat Escape as "close";
+    # the key goes nowhere and the popup keeps the footer covered. Clicking a part of the
+    # pane that is NOT the popup closes it, which is the second thing a person tries.
+    #
+    # THE PANE TITLE is the click target: `Welcome. Let's install Fedora now.` sits above
+    # the list, selects nothing, and is in the same place in every language.
+    WELCOME_TITLE = (700, 165)
     for attempt in range(1, 4):
-        log(f"closing the language list with Escape (attempt {attempt})")
+        log(f"closing the language list by clicking the pane title (attempt {attempt})")
+        drv.click(WELCOME_TITLE, "the pane title, to dismiss the language popup", settle=3.0)
+        drv.look(f"after dismiss {attempt}")
+        if "suggested" not in drv.text():
+            break
+        # ESCAPE AS WELL, LAST: harmless when it is ignored, and it is what closes a
+        # popup on some GTK versions.
         Q.key(drv.q, "esc")
         time.sleep(1.5)
         drv.look(f"after escape {attempt}")
-        # THE LIST HAS A SEARCH BOX AT ITS TOP; the pane does not. That is the phrase to
-        # look for, and it is the only use of the reading here.
         if "suggested" not in drv.text():
             break
 

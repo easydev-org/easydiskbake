@@ -97,7 +97,7 @@ jobs:
             SHA="${{ inputs.iso_sha256 }}"
             if [ -z "$URL" ]; then
               URL="https://mirror.cachyos.org/ISO/kde/260809/cachyos-desktop-linux-260809.iso"
-              SHA=""
+              SHA="959f6577f45e25ee9fd8c220fd221b08e4ea79412c7315c0f922dd6d86d5e33c"
             fi
             mkdir -p out/iso
             ISO_URL="$URL" ISO_SHA256="$SHA" DEST="out/iso/cachyos-desktop-linux-260809.iso" \
