@@ -98,6 +98,12 @@ USER_CONFIRM = (1106, 604)
 # THE FINAL BUTTON is `Install`, at the same place Next has been all along.
 INSTALL = (1587, 859)
 
+# THE CONFIRMATION DIALOG'S OWN `Install`. Clicking the footer's Install opens a modal
+# centred on the YaST2 window - `Confirm Installation`, about 550 px wide - whose buttons
+# are `Install` and `Back`, with BACK as the dialog's default (it is drawn green). Measured
+# on a live Tumbleweed KDE session at 1920x1080: the modal's Install sits at (922, 707).
+CONFIRM_INSTALL = (922, 707)
+
 
 def log(msg: str) -> None:
     print(f"[opensuse-gui {time.strftime('%H:%M:%S')}] {msg}", flush=True)
@@ -262,46 +268,68 @@ def walk_yast2(drv: Driver, args) -> bool:
         log(f"  screen: {drv.text()[:200]}")
         return False
 
-    # 6. INSTALL. A CLICK, THEN THE KEYBOARD IF THE CLICK DID NOT TAKE.
+    # 6. INSTALL, AND THEN THE CONFIRMATION DIALOG'S OWN INSTALL - WHICH IS NOT THE SAME
+    #    BUTTON AND IS NOT WHERE THE OTHER INSTALLERS PUT IT.
     #
-    # The measured button was at (1587, 859) and the CI run clicked it and stayed on
-    # `Installation Settings` - the pane's own headline was still what OCR read twenty
-    # seconds later, and for the rest of the run. YaST2 draws its wizard in a CENTRED window
-    # whose size follows the content, so the footer is not at a fixed screen position the
-    # way Calamares' is; a coordinate measured on one Settings pane is not a coordinate for
-    # the next distribution's.
+    # THIS IS WHAT EVERY openSUSE RUN UP TO NOW DIED ON, AND IT LOOKED LIKE A DEAD BUTTON.
     #
-    # THE KEYBOARD DOES NOT MOVE. `Install` and `Next` are the window's default button on
-    # every pane, so Return fires whichever one is there - and on the panes before this one
-    # Return and the measured click agree, which is what makes this a fallback rather than
-    # a replacement.
+    # The footer's `Install` at (1587, 859) does work. It opens a modal titled
+    # `Confirm Installation` - `Information required for the base installation is now
+    # complete.` - and that modal is drawn OVER the Installation Settings pane, which is
+    # still there behind it. So the check that followed the click
+    #
+    #     if "installation settings" in drv.text():
+    #
+    # was TRUE with the modal correctly on screen, and the driver read a waiting
+    # confirmation as a click that never landed.
+    #
+    # THE FALLBACK THEN MADE IT WORSE. It pressed Return, on the theory that the footer's
+    # forward button is the dialog's default. It is not: the modal's own default is BACK,
+    # drawn green, and Return dismissed the confirmation instead of accepting it. Measured
+    # on a live Tumbleweed KDE session - the frame after Return is the unscrolled Settings
+    # pane with no modal, and the frame after a click on the modal's Install is
+    # `Performing Installation` at 24% with 2273 packages remaining.
+    #
+    # So the modal is answered by its own button at its own measured place, and the
+    # keyboard is never used here. `Back` being the default is exactly why.
     drv.click(INSTALL, "Install", settle=12.0)
     drv.look("after Install")
-    if "installation settings" in drv.text():
-        log("  the click did not start the install; pressing Return (the default button)")
-        Q.key(drv.q, "ret")
-        time.sleep(20.0)
-        drv.look("after Return")
-    if "installation settings" in drv.text():
+    if "confirm installation" in drv.text():
+        drv.click(CONFIRM_INSTALL, "the Confirm Installation dialog's Install", settle=20.0)
+        drv.look("after confirm")
+    elif "installation settings" in drv.text():
+        # NO MODAL AND NO PROGRESS: the click really did miss. One more, then give up
+        # rather than press a key that means `Back` on this installer.
+        log("  no confirmation dialog appeared; clicking Install once more")
+        drv.click(INSTALL, "Install (second attempt)", settle=12.0)
+        drv.look("after Install again")
+        if "confirm installation" in drv.text():
+            drv.click(CONFIRM_INSTALL, "the Confirm Installation dialog's Install",
+                      settle=20.0)
+            drv.look("after confirm")
+    if "installation settings" in drv.text() and "performing installation" not in drv.text():
         log("=== THE INSTALL NEVER STARTED ===")
         log(f"  screen: {drv.text()[:200]}")
         return False
-    # NUDGE THE POINTER, OR THE SCREEN BLANKS AND EVERY READING IS BLACK. A desktop
-    # session with no input blanks its display, and a blanked display has no words -
-    # so "still installing" and "finished" look identical. One pixel per poll.
-    try:
-        Q.move(drv.q, 400 + (int(time.time()) % 40), 300)
-    except Exception:                              # noqa: BLE001
-        pass
-
-    drv.look("installing")
-
     # 7. UNTIL IT IS DONE. YaST2 shows a progress bar and then a `Congratulations` pane; the
     #    disk is written when the bar finishes, and that pane is the only thing on screen
     #    that says so.
+    #
+    #    THE POINTER IS NUDGED INSIDE THE LOOP, not once before it. A desktop session with no
+    #    input blanks its display, and a blanked display has no words - so "still installing"
+    #    and "finished" are the same picture, and the disk would be thrown away after a
+    #    correct install. See the Manjaro run that read a solid black frame for 912 s.
+    #
+    #    `performing installation` IS NOT IN THE COMPLETION TEST because the progress pane
+    #    keeps that headline until the very end; `installation complete` and
+    #    `congratulations` are what YaST2 puts on the pane after it.
     log("waiting for the installer to finish")
     started = time.time()
     while time.time() - started < args.timeout:
+        try:
+            Q.move(drv.q, 400 + (int(time.time()) % 40), 300)
+        except Exception:                          # noqa: BLE001
+            pass
         drv.look("installing")
         joined = drv.text()
         if "congratulations" in joined or "installation complete" in joined:

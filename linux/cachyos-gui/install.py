@@ -234,24 +234,25 @@ def walk_calamares(drv: Driver, args) -> bool:
     drv.click(NEXT, "Summary: Install", settle=15.0)
     drv.look("confirm install")
     drv.click(INSTALL_NOW, "the install confirmation's Install now", settle=25.0)
-    # NUDGE THE POINTER, OR THE SCREEN BLANKS AND EVERY READING IS BLACK. A desktop
-    # session with no input blanks its display, and a blanked display has no words -
-    # so "still installing" and "finished" look identical. One pixel per poll.
-    try:
-        Q.move(drv.q, 400 + (int(time.time()) % 40), 300)
-    except Exception:                              # noqa: BLE001
-        pass
-
     drv.look("installing")
 
     # 11. UNTIL IT SAYS SO, WITH A STALL DETECTOR. Finishing always changes the screen - a
     #     progress bar moves, a package name changes - so a content area that reads the same
     #     for fifteen minutes means the installer is not working.
+    #
+    #     THE POINTER IS NUDGED INSIDE THE LOOP, not once before it: a desktop session with
+    #     no input blanks its display, and a blanked display reads the same for every poll -
+    #     which is exactly what the stall detector is looking for. The nudge keeps the
+    #     session awake so that a moving progress bar actually moves.
     log("waiting for the installer to finish")
     started = time.time()
     stalled_since = time.time()
     previous = ""
     while time.time() - started < args.timeout:
+        try:
+            Q.move(drv.q, 400 + (int(time.time()) % 40), 300)
+        except Exception:                          # noqa: BLE001
+            pass
         drv.look("installing")
         current = drv.text()
         if current != previous:

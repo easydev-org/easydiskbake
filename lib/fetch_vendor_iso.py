@@ -82,7 +82,21 @@ def _size() -> int:
     try:
         req = urllib.request.Request(URL, method="HEAD", headers={"User-Agent": UA})
         with urllib.request.urlopen(req, timeout=120) as r:
-            return int(r.headers["Content-Length"])
+            length = r.headers.get("Content-Length")
+            # A 200 WITH NO CONTENT-LENGTH IS NOT A SIZE, AND CACHYOS'S MIRROR DOES IT.
+            #
+            #     File "lib/fetch_vendor_iso.py", line 85, in _size
+            #       return int(r.headers["Content-Length"])
+            #     TypeError: int() argument must be a string ... not 'NoneType'
+            #
+            # which killed cachyos-gui twice before it downloaded a byte. The HEAD answers
+            # 200 and simply omits the header - a chunked or dynamically-fronted origin is
+            # entitled to - so the branch below falls through to the one-byte probe, which
+            # reads the total out of Content-Range and does not depend on this header at
+            # all.
+            if length is not None:
+                return int(length)
+            log("  HEAD gave no Content-Length; sizing with a one-byte range instead")
     except urllib.error.HTTPError as exc:
         if exc.code not in (403, 405, 501):
             raise
@@ -94,7 +108,14 @@ def _size() -> int:
         content_range = r.headers.get("Content-Range", "")
         if "/" in content_range:
             return int(content_range.rsplit("/", 1)[1])
-        return int(r.headers["Content-Length"])
+        length = r.headers.get("Content-Length")
+        if length is None:
+            raise SystemExit(
+                "=== THE SERVER WILL NOT SAY HOW LARGE THE IMAGE IS ===\n"
+                f"  {URL}\n"
+                "  neither HEAD nor a one-byte range returned a size, so there is nothing\n"
+                "  to verify the download against.")
+        return int(length)
 
 
 def _save(path: str, state: dict) -> None:

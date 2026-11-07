@@ -245,9 +245,20 @@ def walk_ubiquity(drv: Driver, args) -> bool:
 
     # 8. UNTIL THE INSTALLER SAYS SO. Ubiquity ends on a dialog whose button is
     #    `Restart Now`; the progress page before it carries the package name it is on.
+    #
+    #    THE POINTER IS NUDGED EVERY POLL, AND THAT IS NOT COSMETIC. Run 42408624906 read
+    #    the string `14:25` and then `14:26` and `14:34` - the session's own clock in the
+    #    corner - for ten minutes, because Mint's lock screen had come down and its large
+    #    clock was the only text on it. An idle desktop locks itself; a locked desktop
+    #    shows no installer at all, and the run would have been thrown away after a
+    #    successful install. One pixel of pointer movement per poll keeps it unlocked.
     log("waiting for the installer to finish")
     started = time.time()
     while time.time() - started < args.timeout:
+        try:
+            Q.move(drv.q, 400 + (int(time.time()) % 40), 300)
+        except Exception:                          # noqa: BLE001
+            pass
         drv.look("installing")
         joined = drv.text()
         if "restart now" in joined or "installation is complete" in joined:
