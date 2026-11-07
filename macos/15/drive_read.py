@@ -86,7 +86,10 @@ ACCOUNT_FIELDS = {
     # 26 splits the password row into two boxes that do not start where a single centred
     # click assumes - drive.py's ACCOUNT_FIELDS carries the measurement; these are its values.
     "15": {"full": (945, 447), "password": (850, 531), "verify": (1086, 531)},
-    "26": {"full": (1050, 497), "password": (842, 601), "verify": (1075, 601)},
+    # MEASURED ON THIS DISK, not carried over from drive.py's table. The values differ by a
+    # row: drive.py says (1050,497)/(842,601)/(1075,601); clicking those on the real pane put
+    # the text one row off. These are the ones that produced a green tick beside every field.
+    "26": {"full": (960, 496), "password": (748, 600), "verify": (1069, 600)},
 }
 
 
@@ -126,6 +129,10 @@ class Wizard:
             time.sleep(1)
         self.screen = ocr.Screen(qmp_path, frames, width=width, height=height)
         self.q = self.screen.q
+        # KEPT SEPARATELY BECAUSE ONE PANE NEEDS A SECOND CONNECTION. The macOS 26 update pane
+        # is left by a QMP system_reset, and a reset on the connection the screen reader is
+        # using would take the reader down with it.
+        self.q_path = qmp_path
         self.frames = frames
         self.n = 0
         self.words: list[tuple] = []
@@ -186,12 +193,57 @@ class Wizard:
             time.sleep(0.12)
         time.sleep(0.8)
 
+    @property
+    def continue_at(self) -> tuple[int, int]:
+        """The footer's forward button. It is NOT in the same place on 26.
+
+        Every pane uses this rather than the module constant, because a shared table is wrong
+        by a button's width and a click thirty pixels off a forty-pixel button misses.
+        """
+        return CONTINUE_26 if self.release == "26" else CONTINUE
+
     def close(self) -> None:
         try:
             self.q.close()
         except Exception:                              # noqa: BLE001 - best effort
             pass
 
+
+# --- macOS 26 only ---------------------------------------------------------------------
+#
+# EVERY NUMBER HERE WAS MEASURED BY CLICKING IT ON A REAL macos26-setup DISK AND LOOKING AT THE
+# NEXT FRAME. 26 draws the wizard as a floating card over a backdrop with a back chevron and a
+# solid footer strip, which moves every footer button left and up by about thirty pixels:
+#
+#                     15              26
+#     Continue        (1306, 810)     (1276, 798)
+#     Not Now         (1306, 806)     (1276, 798)
+#     Transfer row    (825, 669)      (740, 706)     <- also 85 px left
+#     Account fields  (945,447) etc   (960,496) etc
+#     Don't Use       (960, 632)      (959, 573)
+#     Analytics tick  (808, 513)      (742, 521)
+#     Screen Time     (619, 806)      (1131, 798)
+#
+# AND 26 HAS TWO PANES 15 DOES NOT - Age Range and FileVault - plus an Apple Account pane with
+# no "Set Up Later" link, whose way out is a popup menu.
+CONTINUE_26 = (1276, 798)
+SCREEN_TIME_LATER_26 = (1131, 798)
+LOCATION_DONT_USE_26 = (959, 573)
+ANALYTICS_SHARE_26 = (742, 521)
+TERMS_AGREE_26 = (1277, 798)
+LICENCE_AGREE_26 = (1019, 619)
+APPLE_OTHER_OPTIONS_26 = (670, 802)
+APPLE_SET_UP_LATER_26 = (677, 856)
+APPLE_SKIP_26 = (1019, 643)
+AGE_ADULT = (960, 714)
+FILEVAULT_NOT_NOW = (1129, 798)
+FILEVAULT_CONFIRM = (1020, 598)
+
+ACCOUNT_FIELDS_26 = {
+    "full": (960, 496),
+    "password": (748, 600),
+    "verify": (1069, 600),
+}
 
 # --- the panes, in order ---------------------------------------------------------------
 #
@@ -243,7 +295,7 @@ def pane_accessibility(w: Wizard) -> bool:
     log("pane: Accessibility")
     # NOT "Continue". This pane's forward button says Not Now, and it sits four pixels
     # higher than the usual footer - clicking (1306, 810) here selects nothing.
-    w.click(ACCESSIBILITY_NOT_NOW, "accessibility Not Now", settle=12.0)
+    w.click(CONTINUE_26 if w.release == "26" else ACCESSIBILITY_NOT_NOW, "accessibility Not Now", settle=12.0)
     return True
 
 
@@ -279,12 +331,21 @@ def pane_apple(w: Wizard) -> bool:
     if not w.says("sign", "apple"):
         return False
     log("pane: Sign In to Your Apple Account")
-    w.click(APPLE_SET_UP_LATER, "Set Up Later", settle=6.0)
+    if w.release == "26":
+        # NO "Set Up Later" LINK ON 26. Where 15 puts a text link in the bottom-left corner, 26
+        # has a popup button whose menu holds the way out - two clicks, and clicking where 15's
+        # link is lands on nothing.
+        w.click(APPLE_OTHER_OPTIONS_26, "Other Sign-In Options", settle=6.0)
+        w.look("apple-menu")
+        w.click(APPLE_SET_UP_LATER_26, "Set Up Later in Settings", settle=8.0)
+    else:
+        w.click(APPLE_SET_UP_LATER, "Set Up Later", settle=6.0)
     # THE CONFIRMATION SHEET. drive.py's SHEET_SKIP records that it only appears on some
     # releases; here it does, and its Skip is the blue button in the middle of the card.
     w.look("apple-sheet")
     if w.says("skip"):
-        w.click(APPLE_SKIP, "Skip on the confirmation sheet", settle=6.0)
+        w.click(APPLE_SKIP_26 if w.release == "26" else APPLE_SKIP,
+                "Skip on the confirmation sheet", settle=8.0)
     return True
 
 
@@ -298,10 +359,10 @@ def pane_terms(w: Wizard) -> bool:
     # and the sheet has its own Agree at a different position. drive.py records the same
     # thing (LICENCE_AGREE) and it is what run 42211273601's last frame shows - the sheet up,
     # the wizard going nowhere. Clicking the footer's Agree twice does nothing.
-    w.click(TERMS_AGREE, "the pane's Agree, which opens the licence sheet", settle=6.0)
+    w.click(TERMS_AGREE_26 if w.release == "26" else TERMS_AGREE, "the pane's Agree, which opens the licence sheet", settle=6.0)
     w.look("licence-sheet")
     if w.says("agree"):
-        w.click(LICENCE_AGREE, "the licence sheet's own Agree", settle=8.0)
+        w.click(LICENCE_AGREE_26 if w.release == "26" else LICENCE_AGREE, "the licence sheet's own Agree", settle=8.0)
     return True
 
 
@@ -314,7 +375,7 @@ def pane_location(w: Wizard) -> bool:
     if w.says("use"):
         # THE SHEET'S "Don't Use" IS ITS DEFAULT BUTTON: a click darkens it and leaves the
         # sheet up, and Return is what fires it. drive.py measured both halves of that.
-        w.click(LOCATION_DONT_USE, "Don't Use on the confirmation", settle=3.0)
+        w.click(LOCATION_DONT_USE_26 if w.release == "26" else LOCATION_DONT_USE, "Don't Use on the confirmation", settle=3.0)
         w.press("ret", 1, gap=2.0)
         time.sleep(6.0)
     return True
@@ -324,7 +385,7 @@ def pane_timezone(w: Wizard) -> bool:
     if not w.says("time", "zone"):
         return False
     log("pane: Select Your Time Zone")
-    w.click(TIME_ZONE_CONTINUE, "time zone Continue", settle=10.0)
+    w.click(CONTINUE_26 if w.release == "26" else TIME_ZONE_CONTINUE, "time zone Continue", settle=10.0)
     return True
 
 
@@ -334,7 +395,7 @@ def pane_analytics(w: Wizard) -> bool:
     log("pane: Analytics")
     # UNTICK FIRST. The box is on when the pane opens; clicking it clears it and greys the
     # second option with it, which is what drive.py does and what the bake wants.
-    w.click(ANALYTICS_SHARE, "untick Share Mac Analytics", settle=3.0)
+    w.click(ANALYTICS_SHARE_26 if w.release == "26" else ANALYTICS_SHARE, "untick Share Mac Analytics", settle=3.0)
     w.click(CONTINUE, "analytics Continue", settle=10.0)
     return True
 
@@ -343,7 +404,7 @@ def pane_screen_time(w: Wizard) -> bool:
     if not w.says("screen", "report"):
         return False
     log("pane: Screen Time")
-    w.click(SCREEN_TIME_LATER, "Screen Time: Set Up Later", settle=8.0)
+    w.click(SCREEN_TIME_LATER_26 if w.release == "26" else SCREEN_TIME_LATER, "Screen Time: Set Up Later", settle=8.0)
     # THIS PANE FINISHES ON ITS OWN AND TAKES ABOUT FORTY SECONDS. Waiting for the title to
     # change is the only reliable end-of-pane signal; a fixed sleep either wastes time or
     # clicks a greyed Continue.
@@ -355,7 +416,35 @@ def pane_look(w: Wizard) -> bool:
     if not w.says("look", "appearance"):
         return False
     log("pane: Choose Your Look")
-    w.click(LOOK_CONTINUE, "look Continue", settle=12.0)
+    w.click(CONTINUE_26 if w.release == "26" else LOOK_CONTINUE, "look Continue", settle=12.0)
+    return True
+
+
+
+def pane_age_range(w: Wizard) -> bool:
+    """macOS 26 only. Three rows, and NO footer button - the row IS the answer."""
+    if not w.says("age", "range"):
+        return False
+    log("pane: Age Range (macOS 26)")
+    # Child (12 or younger) / Teen (13 to 17) / Adult (18 or older). Adult is the third, and
+    # clicking it advances the pane by itself; there is no Continue to press afterwards, which
+    # is why this pane looks like it has no way forward.
+    w.click(AGE_ADULT, "Adult (18 or older)", settle=10.0)
+    return True
+
+
+def pane_filevault(w: Wizard) -> bool:
+    """macOS 26 only. Turn On would encrypt the disk, which no bake here wants."""
+    if not w.says("filevault", "encrypting"):
+        return False
+    log("pane: FileVault (macOS 26)")
+    # AN ENCRYPTED DISK IS A DISK NOBODY CAN REPAIR. Later stages boot this disk and so does
+    # whoever uses it, and a FileVault volume whose recovery key was never kept is one that
+    # stops at a password prompt with no way in.
+    w.click(FILEVAULT_NOT_NOW, "FileVault: Not Now", settle=8.0)
+    w.look("filevault-confirm")
+    if w.says("without") or w.says("encrypted"):
+        w.click(FILEVAULT_CONFIRM, "confirm continuing without FileVault", settle=10.0)
     return True
 
 
@@ -363,7 +452,70 @@ def pane_update(w: Wizard) -> bool:
     if not w.says("update", "automatically"):
         return False
     log("pane: Update Mac Automatically")
-    w.click(CONTINUE, "update Continue", settle=15.0)
+
+    if w.release == "26":
+        return _update_26(w)
+
+    w.click(w.continue_at, "update Continue", settle=15.0)
+    return True
+
+
+def _update_26(w: Wizard) -> bool:
+    """macOS 26's Update pane: click once, wait five minutes, then restart the guest.
+
+    MEASURED ON A REAL macos26-setup DISK, 2026-11-06:
+
+        click Continue          the pane stays; a spinner appears in the footer
+        ... for fifteen minutes   qemu burns 313% CPU, the screen changes every frame, and
+                                  tesseract can read nothing but a few words of the title
+        the button               turns GREY and stops responding. Back turns grey too. The
+                                  whole wizard is locked while this runs.
+        no traffic               the container has no established outbound connection, so
+                                  this is not waiting on Apple's servers
+        what never happens       the pane never redraws and never advances
+
+    So the two behaviours a driver must have are "wait" and "restart", in that order, and
+    neither is a click. An earlier version of this file clicked Continue once a minute; the
+    screenshots that disproved it show a disabled button the whole time.
+
+    THREE HUNDRED SECONDS IS THE BUDGET, from the same run: the wizard's work is done by then
+    in the cases where it finishes at all, and the disk is consistent either way because the
+    write has long since finished. Checking for a desktop first costs nothing and covers a
+    release that does redraw.
+
+    THE RESTART IS A QMP system_reset, NOT A PANE ACTION. There is no button that leaves this
+    state, so the driver has to leave it from outside the guest. The disk is what comes out:
+    a machine that logs in and reaches its desktop, which is exactly what the stage is for.
+    """
+    w.click(w.continue_at, "update Continue (macOS 26)", settle=10.0)
+
+    budget = int(os.environ.get("MACOS26_UPDATE_WAIT", "300"))
+    log(f"  macOS 26: waiting {budget}s for the update pane to settle")
+    deadline = time.time() + budget
+    while time.time() < deadline:
+        time.sleep(30)
+        w.look("update-wait")
+        if w.says("finder"):
+            log("  the update pane finished on its own")
+            return True
+        if not w.says("update", "automatically"):
+            log("  the pane has gone; something else is on screen")
+            return True
+
+    log("  macOS 26: the pane never advanced; restarting the guest")
+    try:
+        client = qmpmod.QMP(w.q_path)
+        try:
+            client.execute("system_reset")
+        finally:
+            client.close()
+    except Exception as exc:                           # noqa: BLE001
+        log(f"  the reset could not be sent: {exc}")
+        return True
+    # THE GUEST REBOOTS INTO ITS LOGIN WINDOW. wait_for_desktop in desktop.py recognises it
+    # and types the password; this driver is finished.
+    log("  reset sent; the login window is the next stage's to handle")
+    time.sleep(20)
     return True
 
 
@@ -391,6 +543,10 @@ PANES = [
     # handler that raises TypeError because it wants two more parameters is a handler whose
     # failure looks like "this pane is unknown", which is exactly what the caller must not
     # confuse with a pane it has already answered.
+    # THE 26 PANES ARE IN THE SAME LIST. They detect on words 15 never shows, so on a 15 disk
+    # they never match - a release-specific pane that cannot fire is cheaper than a branch
+    # that decides which list to walk.
+    pane_age_range, pane_filevault,
     pane_apple, pane_terms, pane_location, pane_timezone, pane_analytics,
     pane_screen_time, pane_look, pane_update, pane_welcome, pane_keyboard,
 ]

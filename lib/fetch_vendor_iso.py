@@ -136,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
     # is the one place a cached file is trusted - and only after the hash matches.
     if os.path.exists(DEST) and os.path.getsize(DEST) > 0:
         log(f"{DEST} exists; verifying against {SHA[:16]}...")
-        if _sha256(DEST) == SHA:
+        if _digest(DEST, _algorithm(SHA)) == SHA:
             log("already complete and verified")
             return 0
         log("cached file does not match the pin; fetching again")
@@ -179,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
         os.close(fd)
 
     log("verifying sha256")
-    actual = _sha256(DEST)
+    actual = _digest(DEST, _algorithm(SHA))
     if actual != SHA:
         raise SystemExit(f"checksum mismatch:\n  expected {SHA}\n  actual   {actual}")
     log(f"checksum ok: {actual}")
@@ -188,8 +188,24 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _sha256(path: str) -> str:
-    h = hashlib.sha256()
+def _algorithm(pin: str) -> str:
+    """Which hash a pin of this length is: 128 hex chars is sha512, 64 is sha256."""
+    return {128: "sha512", 64: "sha256", 32: "md5"}.get(len(pin.strip()), "sha256")
+
+
+def _digest(path: str, algorithm: str = "sha256") -> str:
+    """Hash a file with the named algorithm. The name is the pin, not a guess.
+
+    WHY THE LENGTH DECIDES. Vendors publish sha256, sha512 and occasionally md5, and the
+    checksum file says which by the length of the hex it contains - 64 characters is sha256,
+    128 is sha512. EndeavourOS publishes only sha512sum, so a fetcher that assumed sha256
+    would reject every EndeavourOS ISO as corrupt.
+
+    The algorithm is passed in rather than detected from the file because the caller already
+    has the pin: taking the length of THAT string is unambiguous, while sniffing the file is a
+    second decision that can disagree with the first.
+    """
+    h = hashlib.new(algorithm)
     with open(path, "rb") as fh:
         for chunk in iter(lambda: fh.read(8 << 20), b""):
             h.update(chunk)

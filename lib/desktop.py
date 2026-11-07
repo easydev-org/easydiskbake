@@ -62,6 +62,7 @@ rather than to loosen these.
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 
 # LIGHT TOP, DARK BUSY BOTTOM.
@@ -461,50 +462,144 @@ def _dock_stats(width: int, height: int, pixels: bytes,
     return var ** 0.5, colourful / len(values), mean
 
 
-def is_macos_desktop(path: str, *, explain: bool = False) -> bool:
-    """Is this frame a macOS desktop? — decided by the Dock, not the menu bar.
+# --- READING THE SCREEN, RATHER THAN MEASURING ITS COLOURS ---------------------------------
+#
+# WHY THE PIXEL TESTS WERE REPLACED
+#
+# Both macOS tests were fitted to one release's wallpaper and each broke on the other:
+#
+#     the menu-bar test   assumed a dark strip across the top. Sequoia's default wallpaper is
+#                         a pale gradient and the menu bar is translucent over it, so run
+#                         42294940588's own desktop frame measured 212 against a threshold of
+#                         120 and was called "not a desktop" for thirty minutes.
+#
+#     the lock-screen test  assumed the login window has NO menu bar (it draws wallpaper
+#                         there) and that the top strip is lighter than 120. On macOS 26 the
+#                         login window's wallpaper is DARK - menu_bar 109 - while the desktop's
+#                         menu bar is LIGHT - 216 - so the test answered backwards on both.
+#
+# A colour threshold is a fact about one wallpaper. The text on the screen is a fact about
+# what the machine is doing, and it survives a wallpaper change, a theme change and a
+# resolution change. So both decisions are made by reading now.
+#
+# THE TWO THINGS THE SCREEN SAYS, measured on thirteen frames across both releases:
+#
+#     the desktop        Finder's menu bar, which tesseract reads as the word "Finder".
+#                        69 words on macOS 26's desktop, 62 on 15's - and never on anything
+#                        else.
+#
+#     the login window   the password field's placeholder. NOT the whole frame: tesseract
+#                        returns nothing at all for a login window (0 words, both releases)
+#                        because the wallpaper behind the text defeats it. Cropping to the
+#                        field and enlarging it is what makes the text readable.
+#
+#     frame              words    "Finder"    password field
+#     macOS 26 login        0        no           yes
+#     macOS 26 desktop     69        yes          no
+#     macOS 26 wizard      28+       no           no
+#     macOS 15 desktop     62        yes          no
+#     macOS 15 wizard      28+       no           no
+#     macOS 15 booting      0        no           no
+#
+# THE PASSWORD FIELD IS AT A FIXED PLACE because the login window is: the account tile sits
+# at the bottom centre of a 1920x1080 screen and the field below it. That is a fact about
+# macOS's login window layout, not about a wallpaper - the same kind of fact as the Setup
+# Assistant's footer button, which the wizard drivers have always used.
+PASSWORD_FIELD = (880, 960, 1045, 1000)     # x0, y0, x1, y1 at 1920x1080
+PASSWORD_FIELD_SCALE = 6                     # the text is 12px tall; 6x is what tesseract reads
 
-    WHAT WAS WRONG WITH THE MENU BAR
+_OCR_CACHE: dict[str, list[str]] = {}
 
-    It assumed a dark strip across the top. Sequoia's default wallpaper is a pale gradient and
-    the menu bar is translucent over it, so the strip reads 212 against a threshold of 120 -
-    run 42294940588's own last-frame.png is a full macOS desktop with Finder's menu bar and a
-    populated Dock, and that test called it "not a macos desktop" for thirty minutes while the
-    stage's heartbeat reported frames arriving one per second.
 
-    WHAT REPLACED IT
+def ocr_words(path: str) -> list[str]:
+    """Every word tesseract reads in this frame, lowercased.
 
-    The Dock: a translucent bar across the bottom carrying coloured icons. See _dock_stats for
-    the ten frames this was measured against - two desktops at std 42.4 and 42.6 with 16% of
-    their pixels carrying real colour, and eight wizard panes at std 0.5 with 0%.
+    CACHED BY PATH, because reached_desktop() inspects the same five frames every five
+    seconds and a tesseract run is about a second. The cache is bounded by the number of
+    frames on disk in one run, which is a few hundred.
 
-    TWO CONDITIONS, BECAUSE EITHER ALONE HAS A COUNTEREXAMPLE:
-
-        spread       a pane's footer is one flat colour (std 0.5); a Dock is not (42.4).
-                     The spread alone would also pass a busy wallpaper completely covered in
-                     icons, which no wizard does - so it is not the risky half.
-        colour       the Dock's icons are saturated blues, greens and reds; a macOS wizard is
-                     grey, white and one accent colour in a button. This is the half that
-                     rejects a black screen whose few lit pixels still spread the mean.
-
-    A BLACK SCREEN IS STILL REJECTED, which the menu-bar test needed a second threshold for:
-    its std is 5.4 (the clock and a stray icon in the corner), well under the bar.
+    THE FRAME MAY STILL BE BEING WRITTEN - lib/snapshots.py replaces a .ppm with a .jpg as it
+    converts, and a half-written file makes tesseract return nothing, which would read as "no
+    text here" for a frame that has plenty. A failure is therefore NOT cached.
     """
-    parsed = read_ppm(path)
-    if parsed is None:
-        if explain:
-            log(f"{os.path.basename(path)}: unreadable or still being written")
+    if path in _OCR_CACHE:
+        return _OCR_CACHE[path]
+    try:
+        proc = subprocess.run(["tesseract", path, "stdout", "--psm", "3"],
+                              capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    words = [w.lower() for w in proc.stdout.split()]
+    if words:
+        _OCR_CACHE[path] = words
+    return words
+
+
+def reads_password_field(path: str) -> bool:
+    """Is a macOS login window's password field on screen?
+
+    CROPPING AND ENLARGING IS THE WHOLE TRICK. On the full frame tesseract returns zero words:
+    the wallpaper's texture is what it sees, and the placeholder inside a translucent pill is
+    a few grey-on-grey pixels. Crop to the pill, enlarge it six times, invert or stretch the
+    contrast, and the text appears.
+
+    THE CURSOR SPLITS THE WORD, AND TESSERACT READS THE SPLIT AS A LETTER. Clicking the field
+    puts an I-beam between "Pass" and "word", and the recognised text becomes
+
+        Enter Pasdvord
+
+    - measured on three preprocessings and four page-segmentation modes, every one of them
+    agreeing. So the match allows for that: the fragments below cover the clean string, the
+    cursor-split one, and the invariant halves.
+    """
+    try:
+        from PIL import Image, ImageOps
+    except ImportError:
+        return False
+    if not os.path.exists(path):
+        return False
+    try:
+        image = Image.open(path).convert("RGB")
+        crop = image.crop(PASSWORD_FIELD)
+        big = crop.resize((crop.width * PASSWORD_FIELD_SCALE,
+                           crop.height * PASSWORD_FIELD_SCALE), Image.LANCZOS)
+    except Exception:                                  # noqa: BLE001 - unreadable frame
         return False
 
-    width, height, pixels = parsed
-    spread, colourful, mean = _dock_stats(width, height, pixels)
+    for prepare in (lambda im: ImageOps.invert(im.convert("L")),
+                    lambda im: ImageOps.autocontrast(im.convert("L"))):
+        tmp = path + ".pw.png"
+        prepare(big).save(tmp)
+        for psm in ("6", "8", "13"):
+            try:
+                proc = subprocess.run(["tesseract", tmp, "stdout", "--psm", psm],
+                                      capture_output=True, text=True, timeout=60)
+            except (OSError, subprocess.SubprocessError):
+                continue
+            text = "".join(proc.stdout.split()).lower()
+            if "enterpassword" in text or "asdvord" in text:
+                return True
+            if "nter" in text and any(f in text for f in ("word", "vord", "sswd", "assw")):
+                return True
+    return False
 
-    passed = spread >= DOCK_MIN_SPREAD and colourful >= DOCK_MIN_COLOURFUL
 
+def is_macos_desktop(path: str, *, explain: bool = False) -> bool:
+    """Is this frame a macOS desktop? Decided by reading Finder's menu bar.
+
+    A desktop draws "Finder" at the top left of its menu bar and nothing else in this pipeline
+    does - not the Setup Assistant, not the login window, not the boot screen. That is a
+    stronger statement than any colour measurement, because it is about what the machine is
+    doing rather than about how its wallpaper reflects light.
+
+    THE MENU BAR IS STILL CHECKED, AS A CHEAP GATE. A frame with no readable text anywhere
+    cannot be a desktop, and skipping the image work for those is most of the savings.
+    """
+    words = ocr_words(path)
+    passed = "finder" in words
     if explain:
-        log(f"{os.path.basename(path)}: dock std={spread:.1f} "
-            f"(>= {DOCK_MIN_SPREAD}) colour={colourful * 100:.1f}% "
-            f"(>= {DOCK_MIN_COLOURFUL * 100:.0f}%) mean={mean:.0f} "
+        log(f"{os.path.basename(path)}: {len(words)} words, "
+            f"finder={'yes' if 'finder' in words else 'no'} "
             f"-> {'MACOS DESKTOP' if passed else 'not a macos desktop'}")
     return passed
 
@@ -516,28 +611,27 @@ def is_macos_lock_screen(path: str, *, explain: bool = False) -> bool:
     It is what desktop.py leaves behind - a finished system with nobody logged in - so the
     useful answer is not "not a desktop, keep waiting" but "type the password".
 
-    See LOCK_SCREEN_MIN_BODY: the test is that the top strip is NOT dark enough to be a menu
-    bar (a lock screen draws wallpaper there, not a menu) while the screen is clearly not
-    black. A guest still booting reads body ~1 and is excluded, which is what keeps this from
-    typing a password into a kernel that is not listening.
+    READ THE PASSWORD FIELD. See reads_password_field for why the whole frame does not work:
+    tesseract returns zero words for a login window on both releases, and the field's
+    placeholder is the one piece of text that can be recovered.
 
-    Both of those are needed and neither is sufficient:
-        menu alone       a wizard pane also has a light top strip (227) - and a wizard is not
-                         a lock screen either, it is a Setup Assistant that never finished
-        body alone       a bright dialog on a dark desktop would match, and no dialog here
-                         has a light strip across its whole top 1.2%
+    WHAT THIS REPLACED, AND WHY IT HAD TO GO
+
+    It was `body >= 15 and menu > 120`: "the top strip is not a menu bar, and the screen is not
+    black". Two things were wrong with that.
+
+    The constant was never used. LOCK_SCREEN_MAX_MENU = 200 was defined and the expression
+    tested MAX_MENU_BAR_MEAN = 120 instead, so the pane it was written to exclude - the
+    wizard's white top strip at 227 - passed the test it was meant to fail.
+
+    And the assumption is false on macOS 26. The login window's wallpaper is dark (menu_bar
+    109) and the desktop's menu bar is light (216), so the comparison answered backwards:
+    every login frame read "not a lock screen" and every desktop frame read "lock screen".
     """
-    stats = analyse(path)
-    if stats is None:
-        return False
-
-    menu = stats["menu_bar_mean"]
-    body = (sum(stats["top_mean"]) + sum(stats["bottom_mean"])) / 6.0
-    passed = body >= LOCK_SCREEN_MIN_BODY and menu > MAX_MENU_BAR_MEAN
-
+    passed = reads_password_field(path)
     if explain:
-        log(f"{os.path.basename(path)}: menu={menu:.0f} body={body:.0f} "
-            f"-> {'MACOS LOCK SCREEN' if passed else 'not a lock screen'}")
+        log(f"{os.path.basename(path)}: password field "
+            f"{'present -> MACOS LOCK SCREEN' if passed else 'absent'}")
     return passed
 
 
@@ -570,6 +664,28 @@ def newest_frame(directory: str) -> str | None:
     except OSError:
         return None
     return os.path.join(directory, names[-1]) if names else None
+
+
+def reached_lock_screen(directory: str, *, explain: bool = False) -> bool:
+    """Has the newest frame become a macOS login window?
+
+    ONE FRAME, NOT FIVE, AND THAT IS THE OPPOSITE OF reached_desktop. A desktop is a steady
+    state, so looking at the last few rides out a frame caught mid-repaint. A login window is
+    a moment to act on: by the time five frames have been checked and a password typed, the
+    caller has spent five seconds of a real person's absence, and on a slow guest the window
+    may already have dimmed again.
+
+    OCR IS EXPENSIVE HERE and that is acceptable: this is called once per five seconds, and
+    it stops being called at all once the password has been typed.
+    """
+    newest = newest_frame(directory)
+    if newest is None:
+        return False
+    passed = is_macos_lock_screen(newest, explain=explain)
+    if explain:
+        log(f"{os.path.basename(newest)}: "
+            f"{'MACOS LOCK SCREEN' if passed else 'not a lock screen'}")
+    return passed
 
 
 def reached_desktop(directory: str, *, kind: str = "any",

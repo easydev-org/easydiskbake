@@ -323,7 +323,8 @@ def main(argv: list[str]) -> int:
             log("=== STOPPED FOR INSPECTION; the disk is not published ===")
             log("  the recording is the evidence: look at the last frame it kept")
             return 3
-        arrived = wait_for_desktop(guest, frames, args.desktop_timeout)
+        arrived = wait_for_desktop(guest, frames, args.desktop_timeout,
+                                   user=args.user, password=args.password)
     finally:
         guest.stop(acpi_first=arrived)
         snap.terminate()
@@ -380,7 +381,48 @@ def _frame_age(directory: str) -> str:
         return "unreadable"
 
 
-def wait_for_desktop(guest: vm.Guest, frames: str, timeout: int) -> bool:
+def _lock_screen_test():
+    """The same module as _wallpaper_test - one loader, two decisions from it."""
+    return _wallpaper_test()
+
+
+def _type_login_password(guest: vm.Guest, user: str, password: str) -> None:
+    """Type into a login window and submit.
+
+    NO CLICK FIRST. A macOS login window puts the caret in the password field when it
+    appears, and clicking it is not only unnecessary but risky: the field is inside a
+    translucent pill whose exact position varies with the account tile's width, and a click
+    a few pixels high lands on the wallpaper and dismisses the field.
+
+    ENTER, NOT A BUTTON. The field submits on Return. There is no visible button until a
+    wrong password is typed.
+    """
+    import qmp as qmpmod
+    try:
+        q = qmpmod.QMP(guest.paths.drive)
+    except Exception as exc:                           # noqa: BLE001 - best effort
+        log(f"  could not open QMP to type the password: {exc}")
+        return
+    try:
+        time.sleep(2.0)
+        for ch in password:
+            qmpmod.key(q, "spc" if ch == " " else ch)
+            time.sleep(0.25)
+        time.sleep(1.0)
+        # TWO RETURNS. The first wakes the window if the display had dimmed; the second
+        # submits. A password already typed is not consumed by a wake.
+        qmpmod.key(q, "ret")
+        time.sleep(2.0)
+        qmpmod.key(q, "ret")
+    finally:
+        try:
+            q.close()
+        except Exception:                              # noqa: BLE001
+            pass
+
+
+def wait_for_desktop(guest: vm.Guest, frames: str, timeout: int, *,
+                     user: str = "docker", password: str = "admin") -> bool:
     """Wait until the wallpaper test passes, then let the guest settle.
 
     THE SAME TEST AS THE WINDOWS BAKE, deliberately. lib/desktop.py explains its three
@@ -426,10 +468,28 @@ def wait_for_desktop(guest: vm.Guest, frames: str, timeout: int) -> bool:
     # cheaper than reading it out of a video afterwards.
     beat = int(os.environ.get("DESKTOP_HEARTBEAT_SECONDS", "60"))
     last_beat = 0.0
+    unlocked = False
     while time.time() < deadline:
         if not guest.alive():
             log("qemu exited before a desktop appeared")
             return False
+
+        # A LOGIN WINDOW IS A FINISHED SYSTEM, NOT A HANG.
+        #
+        # macOS 26's Setup Assistant ends by putting the machine at its login window, and the
+        # screen then never changes on its own. Waiting for a desktop in that state waits out
+        # the whole budget and reports "the wizard did not reach a desktop" about a disk that
+        # is complete - run 42280638394 sat like that for 1800 seconds after answering
+        # nineteen panes correctly.
+        #
+        # The password is typed once, when the window is first recognised. The field is
+        # already focused on a login window, so no click is needed; Enter submits it.
+        if not unlocked and _lock_screen_test().reached_lock_screen(shots):
+            log(f"a macOS login window is on screen ({(time.time() - started):.0f}s); "
+                f"typing the password")
+            _type_login_password(guest, user, password)
+            unlocked = True
+
         if _wallpaper_test().reached_desktop(shots, kind="macos"):
             log(f"a macOS desktop is on screen ({(time.time() - started):.0f}s)")
             settle = int(os.environ.get("DESKTOP_SETTLE_SECONDS", "30"))
@@ -443,7 +503,7 @@ def wait_for_desktop(guest: vm.Guest, frames: str, timeout: int) -> bool:
         if elapsed - last_beat >= beat:
             last_beat = elapsed
             log(f"  still waiting: {elapsed:.0f}s of {timeout}s, "
-                f"newest frame {_frame_age(shots)}")
+                f"newest frame {_frame_age(shots)}, login window seen: {unlocked}")
         time.sleep(5)
     log(f"timed out after {timeout}s")
     return False
