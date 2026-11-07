@@ -335,7 +335,7 @@ def walk_calamares(drv: Driver, args) -> bool:
         # identical. One pixel of movement per poll keeps the session awake - the same fix,
         # for the same reason, as the Ubuntu verification run.
         try:
-            Q.move(drv.q, 400 + (int(time.time()) % 40), 300)
+            Q.click(drv.q, 400 + (int(time.time()) % 40), 300)
         except Exception:                              # noqa: BLE001
             pass
         drv.look("installing")

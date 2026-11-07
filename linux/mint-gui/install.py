@@ -246,17 +246,22 @@ def walk_ubiquity(drv: Driver, args) -> bool:
     # 8. UNTIL THE INSTALLER SAYS SO. Ubiquity ends on a dialog whose button is
     #    `Restart Now`; the progress page before it carries the package name it is on.
     #
-    #    THE POINTER IS NUDGED EVERY POLL, AND THAT IS NOT COSMETIC. Run 42408624906 read
-    #    the string `14:25` and then `14:26` and `14:34` - the session's own clock in the
-    #    corner - for ten minutes, because Mint's lock screen had come down and its large
-    #    clock was the only text on it. An idle desktop locks itself; a locked desktop
-    #    shows no installer at all, and the run would have been thrown away after a
-    #    successful install. One pixel of pointer movement per poll keeps it unlocked.
+    #    THE SESSION LOCKS ITSELF, AND A POINTER MOVEMENT IS NOT ENOUGH TO STOP IT.
+    #
+    #    Run 42408624906 read `14:25`, `14:26`, `14:34` for ten minutes and its last frame
+    #    is a full-window Mint lock screen with a large clock and the Mint logo - no
+    #    installer anywhere. That is the screen saver, and it engages on IDLE, where idle
+    #    means no input the session counts. Moving the pointer alone did not stop it on a
+    #    second run either: run 42413720444 read `15:12` and `15:23` the same way.
+    #
+    #    So the activity is a real one - a left click, once per poll. Clicking on a
+    #    progress page does nothing to the install (there is no control under the point),
+    #    and it is the kind of event the session's idle timer resets for.
     log("waiting for the installer to finish")
     started = time.time()
     while time.time() - started < args.timeout:
         try:
-            Q.move(drv.q, 400 + (int(time.time()) % 40), 300)
+            Q.click(drv.q, 400 + (int(time.time()) % 40), 300)
         except Exception:                          # noqa: BLE001
             pass
         drv.look("installing")

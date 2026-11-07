@@ -327,7 +327,7 @@ def walk_yast2(drv: Driver, args) -> bool:
     started = time.time()
     while time.time() - started < args.timeout:
         try:
-            Q.move(drv.q, 400 + (int(time.time()) % 40), 300)
+            Q.click(drv.q, 400 + (int(time.time()) % 40), 300)
         except Exception:                          # noqa: BLE001
             pass
         drv.look("installing")

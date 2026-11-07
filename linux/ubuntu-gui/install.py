@@ -383,6 +383,14 @@ def main(argv: list[str]) -> int:
             stalled_since = time.time()
             previous = ""
             while time.time() < deadline:
+                # A REAL EVENT, NOT A POINTER MOVE: the session's idle timer is what puts
+                # the lock screen up, and it does not count a pointer move on a build
+                # whose screen saver ignores synthetic motion. The click lands on the
+                # progress page, where there is no control to disturb.
+                try:
+                    qmpmod.click(drv.q, 400 + (int(time.time()) % 40), 300)
+                except Exception:                  # noqa: BLE001
+                    pass
                 drv.look("finish")
                 current = drv.screen_text()
                 if current != previous:
