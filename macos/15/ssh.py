@@ -290,51 +290,30 @@ def main(argv: list[str]) -> int:
         ok = True
         log("Remote Login is answering")
 
-        # THE CLEAN RUNS HERE, IN THIS SESSION, AND NOT IN A STEP OF ITS OWN.
+        # WHAT THIS STAGE OWES THE NEXT ONE IS A DISK THAT ANSWERS SSH.
         #
-        # 6d57bc3 moved it out, into `clean the disk` steps, for a good reason: macOS was the
-        # only system whose clean was invisible in the run's step list. But a separate step
-        # CANNOT INHERIT THIS MACHINE. lib/clean_disk.clean_running's docstring is explicit -
-        # "the caller owns the machine: this does not start or stop anything" - so a step
-        # must boot the disk from cold and reach sshd AGAIN. That is a different question
-        # from "is Remote Login on", and on macOS the answer is no:
+        # The check that a later stage can reach it is macos15-dev's: that job pulls the
+        # published tag and connects. This stage's job is to turn Remote Login on, prove the
+        # account is admitted, and hand the disk back.
         #
-        #     [clean-step] waiting for ssh
-        #     [clean-step] === SSH DID NOT ANSWER IN 900s ===
-        #     [clean-step]   last output: kex_exchange_identification: read: Connection
-        #                    reset by peer
+        # THERE IS NO CLEAN ANY MORE, BY INSTRUCTION - AND IT WAS NEVER DOING ANYTHING HERE.
+        # macclean called `diskutil apfs trim`, which is not a macOS verb; measured on a real
+        # 15.8.2 guest, `rm` of 2 GB left the qcow2 at 8,899,136 blocks before and after,
+        # because APFS does not forward a discard to virtio-blk. So the step could not shrink
+        # the image even when it ran, and it had been failing the whole stage instead:
         #
-        # CONNECTION RESET BY PEER IS NOT THE ACCESS GROUP. The recording of run 42062472207's
-        # enable-stage shows the group already complete while the machine was up -
+        #     === cleaning the guest, over ssh ===
+        #     sudo: a password is required
+        #     === diskutil apfs trim WAS REFUSED (exit 1) ===
+        #     === THE CLEAN DID NOT FINISH ===
+        #     nothing is published: the disk is not what this stage claims to produce
         #
-        #     GroupMembers: 0 501
-        #     NestedGroups: 80 20 401
-        #     tcp4  0  0  *.22   *.*   LISTEN
-        #
-        # - and that stage's wait_for_ssh passed with SSH-2.0-OpenSSH_9.9. The ten dscl lines
-        # were added on the theory that a half-built group caused it; the evidence now says
-        # the group was never the problem, and they are kept because a complete group is
-        # still the correct state.
-        #
-        # The check that a LATER stage can reach this disk is macos15-dev's, which pulls the
-        # published tag and connects to it. This stage's job is to turn Remote Login on and
-        # hand back its free space while it has the machine - which is what it had before
-        # 6d57bc3, and what every other system still does inside its own stage.
-        log("=== cleaning the disk before it is exported ===")
-        import clean_disk
-
-        if not clean_disk.clean_running("macos", port=args.ssh_port, note=log, disk=disk):
-            # A CLEAN THAT DID NOT RUN IS A FAILURE, NOT A WARNING - the same rule the other
-            # three systems follow, for the same reason: publishing a disk whose free blocks
-            # were never handed back means every later pull of that tag carries the bloat.
-            log("=== THE CLEAN DID NOT FINISH ===")
-            log("  nothing is published: the disk is not what this stage claims to produce")
-            return 1
-
+        # lib/macclean.py is kept: it still deletes what the guest can delete, and macos15-dev
+        # may want it. Nothing in this stage calls it now.
         return 0
     finally:
-        # ACPI FIRST, SO THE DISK IS CLOSED RATHER THAN KILLED. The clean has just written to
-        # it over ssh and the publish step compresses and pushes what this leaves behind.
+        # ACPI FIRST, SO THE DISK IS CLOSED RATHER THAN KILLED. Logging in and turning Remote
+        # Login on both wrote to it, and the publish step compresses what this leaves behind.
         guest.stop(acpi_first=ok)
         snap.terminate()
         try:

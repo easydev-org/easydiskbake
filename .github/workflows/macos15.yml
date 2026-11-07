@@ -512,10 +512,16 @@ jobs:
         # writing reached. The cleaning existed only inside macos/15/ssh.py, where it was
         # invisible in the run's step list and never ran for desktop or dev.
         #
-        # lib/macclean.py is the cleaner - `diskutil apfs trim`, which is DISCARD and writes
-        # nothing. The zero-writing versions (secureErase, zeroDisk, and the dd that used to
-        # be in macos/15/dev.py) are the mechanism this repository abandoned: on a
-        # copy-on-write filesystem they allocate new blocks before releasing the old ones.
+        # lib/macclean.py is the cleaner. It DELETES, and that is all it can do: macOS has no
+        # trim verb (`diskutil apfs trim` does not exist - `diskutil apfs` lists 21 and trim
+        # is not among them), and APFS does not forward a discard to virtio-blk when a file is
+        # unlinked, so the qcow2 keeps every cluster it ever allocated either way. Measured:
+        # `rm` of 2 GB left the image at 8,899,136 blocks before and after.
+        #
+        # The zero-writing versions (secureErase, zeroDisk, and the dd that used to be in
+        # macos/15/dev.py) are still the right thing to avoid: on a copy-on-write filesystem
+        # they allocate new blocks before releasing the old ones, which makes the image larger
+        # rather than smaller.
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
