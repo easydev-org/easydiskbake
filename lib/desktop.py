@@ -118,6 +118,21 @@ MIN_SATURATION_RISE = 0.10     # bottom saturation - top saturation
 # brightness drop was reaching for, on the region where it is actually reliable.
 MENU_BAR = (0.000, 0.012)
 MAX_MENU_BAR_MEAN = 120.0      # a dark strip; the lightest macOS menu bar is well under
+
+# THE DOCK, WHICH IS WHAT THE macOS TEST ACTUALLY DECIDES ON NOW.
+#
+# The menu bar above is kept for is_macos_lock_screen, which uses its being ABSENT: a booted
+# mac with nobody logged in draws wallpaper and a clock and no menu bar. It is no longer what
+# decides "desktop", because on a pale wallpaper it measures 212 and reads as neither.
+#
+# The numbers are from _dock_stats' docstring: two desktops at std 42.4/42.6 and 16% coloured
+# pixels, eight wizard panes at std 0.5 and 0%. The thresholds sit between with room on both
+# sides - a Dock that has not finished animating in is still above 30, and a pane's flat
+# footer is below 1.
+DOCK_BAND = (0.885, 0.985)     # where the Dock sits on a 1920x1080 guest
+DOCK_MIN_SPREAD = 20.0         # standard deviation of luminance across the band
+DOCK_MIN_COLOURFUL = 0.03      # proportion of pixels whose channels differ by >40
+DOCK_COLOUR_SPREAD = 40        # per-pixel "this is an icon, not grey UI" threshold
 # AND THE SCREEN UNDER IT HAS TO BE LIT. A menu bar is dark and so is an unlit framebuffer,
 # and the first version of this test passed every black frame in the recording for exactly
 # that reason - 274 of 349, including the boot. The desktop's own body is bright (231 and 207
@@ -383,31 +398,113 @@ def is_windows_desktop(path: str, *, explain: bool = False) -> bool:
     return passed
 
 
-def is_macos_desktop(path: str, *, explain: bool = False) -> bool:
-    """Is this frame a macOS desktop?
+def _dock_stats(width: int, height: int, pixels: bytes,
+                step: int = 3) -> tuple[float, float, float]:
+    """Brightness spread and colourfulness of the strip the Dock sits in.
 
-    A dark menu bar across the top of an otherwise light screen. See MENU_BAR for the
-    measurements: on macOS 15 the wizard's top strip reads 227 and the desktop's reads 40,
-    while the Windows test's variance ratio runs backwards there - every frame that passed it
-    was a setup pane.
+    Returns (standard deviation of luminance, proportion of colourful pixels, mean).
 
-    THE SCREEN UNDER THE BAR HAS TO BE LIT as well, because a menu bar is dark and so is an
-    unlit framebuffer. The first version of this check passed 274 of 349 frames of a recording
-    that began with the guest's boot - all of them black.
+    WHY THE DOCK AND NOT THE MENU BAR
+
+    The menu bar was the test here for a long time and it does not survive a light wallpaper.
+    Measured on the frame that made this function necessary - run 42294940588's own
+    last-frame.png, which IS a desktop:
+
+        menu_bar_mean = 212.0      threshold: <= 120.0
+
+    Sequoia's default wallpaper is a pale gradient, the menu bar is translucent over it, and
+    the strip reads 212 - a desktop failing a test whose comment says "the lightest macOS menu
+    bar is well under 120". The same frame passes every visual check a person would apply:
+    Finder's menu bar, the Dock, the wallpaper.
+
+    WHAT ACTUALLY DIFFERS, measured across ten frames (two desktops, eight wizard panes):
+
+        frame          dock std   dock range   coloured pixels
+        CI desktop        42.4        245            15.8%
+        local desktop     42.6        245            16.2%
+        Terms              0.5          1             0.0%
+        Transfer           0.5          1             0.0%
+        Accessibility 26   0.5          1             0.0%
+        Languages 26       0.5          1             0.0%
+        Apple 26           0.5          1             0.0%
+        FileVault 26       0.5          1             0.0%
+        Age Range 26       0.5          1             0.0%
+        Welcome (black)    5.4        105             0.0%
+
+    Eight-five times apart in spread, and colourfulness is binary: a wizard's footer is one
+    flat colour, and the Dock is ten coloured icons on a translucent bar. That is a much
+    stronger separation than the menu bar ever had (212 vs 227, a factor of 1.07).
+
+    THE BAND IS 88.5% TO 98.5% OF THE HEIGHT. On a 1080-high guest the Dock occupies roughly
+    y=1000..1063; the band covers it and stops short of the very bottom edge, where the
+    rounded corners of some panes draw a border.
     """
-    stats = analyse(path)
-    if stats is None:
+    y0 = int(height * DOCK_BAND[0])
+    y1 = max(y0 + 1, int(height * DOCK_BAND[1]))
+    x_step = max(1, width // 320)      # ~320 samples across, enough for a standard deviation
+
+    values: list[float] = []
+    colourful = 0
+    for y in range(y0, y1, max(1, (y1 - y0) // 12 or 1)):
+        base = y * width * 3
+        for x in range(0, width, x_step):
+            off = base + x * 3
+            r, g, b = pixels[off], pixels[off + 1], pixels[off + 2]
+            values.append((r + g + b) / 3.0)
+            if max(r, g, b) - min(r, g, b) > DOCK_COLOUR_SPREAD:
+                colourful += 1
+
+    if not values:
+        return 0.0, 0.0, 0.0
+    mean = sum(values) / len(values)
+    var = sum((v - mean) ** 2 for v in values) / len(values)
+    return var ** 0.5, colourful / len(values), mean
+
+
+def is_macos_desktop(path: str, *, explain: bool = False) -> bool:
+    """Is this frame a macOS desktop? — decided by the Dock, not the menu bar.
+
+    WHAT WAS WRONG WITH THE MENU BAR
+
+    It assumed a dark strip across the top. Sequoia's default wallpaper is a pale gradient and
+    the menu bar is translucent over it, so the strip reads 212 against a threshold of 120 -
+    run 42294940588's own last-frame.png is a full macOS desktop with Finder's menu bar and a
+    populated Dock, and that test called it "not a macos desktop" for thirty minutes while the
+    stage's heartbeat reported frames arriving one per second.
+
+    WHAT REPLACED IT
+
+    The Dock: a translucent bar across the bottom carrying coloured icons. See _dock_stats for
+    the ten frames this was measured against - two desktops at std 42.4 and 42.6 with 16% of
+    their pixels carrying real colour, and eight wizard panes at std 0.5 with 0%.
+
+    TWO CONDITIONS, BECAUSE EITHER ALONE HAS A COUNTEREXAMPLE:
+
+        spread       a pane's footer is one flat colour (std 0.5); a Dock is not (42.4).
+                     The spread alone would also pass a busy wallpaper completely covered in
+                     icons, which no wizard does - so it is not the risky half.
+        colour       the Dock's icons are saturated blues, greens and reds; a macOS wizard is
+                     grey, white and one accent colour in a button. This is the half that
+                     rejects a black screen whose few lit pixels still spread the mean.
+
+    A BLACK SCREEN IS STILL REJECTED, which the menu-bar test needed a second threshold for:
+    its std is 5.4 (the clock and a stray icon in the corner), well under the bar.
+    """
+    parsed = read_ppm(path)
+    if parsed is None:
         if explain:
             log(f"{os.path.basename(path)}: unreadable or still being written")
         return False
 
-    menu = stats["menu_bar_mean"]
-    body = (sum(stats["top_mean"]) + sum(stats["bottom_mean"])) / 6.0
+    width, height, pixels = parsed
+    spread, colourful, mean = _dock_stats(width, height, pixels)
 
-    passed = menu <= MAX_MENU_BAR_MEAN and body >= MIN_DESKTOP_BRIGHTNESS
+    passed = spread >= DOCK_MIN_SPREAD and colourful >= DOCK_MIN_COLOURFUL
 
     if explain:
-        log(f"{os.path.basename(path)}: menu={menu:.0f} body={body:.0f} "
+        log(f"{os.path.basename(path)}: dock std={spread:.1f} "
+            f"(>= {DOCK_MIN_SPREAD}) colour={colourful * 100:.1f}% "
+            f"(>= {DOCK_MIN_COLOURFUL * 100:.0f}%) mean={mean:.0f} "
             f"-> {'MACOS DESKTOP' if passed else 'not a macos desktop'}")
     return passed
 
