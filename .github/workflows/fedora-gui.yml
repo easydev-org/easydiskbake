@@ -1,0 +1,144 @@
+name: fedora-gui
+
+# Install Fedora Workstation 43 from its official Live ISO, through Anaconda, its graphical installer.
+#
+# WHY THIS IS A LIVE ISO AND NOT AN INSTALLER IMAGE
+#
+# Fedora publishes no separate installer image: Workstation IS a live desktop
+# with Anaconda on it. The installer is started from a Welcome dialog that the
+# live session opens by itself.
+#
+# SO THE MACHINE REACHES A DESKTOP FIRST, and the installer is started from it - an icon on
+# the desktop, or a window the session opens by itself. Everything after that is a measured
+# sequence of positions in linux/fedora-gui/install.py, which is where the coordinates and the
+# reasons for them live.
+#
+# THE ISO'S OWN KERNEL IS BOOTED DIRECTLY, as every Linux bake here does. The alternative is
+# the medium's boot menu, which is a screen, and a screen is something a driver would have to
+# read. `root=live:CDLABEL=Fedora-WS-Live-43 rd.live.image` is copied from the ISO's own boot entry so qemu passes it instead of a
+# person pressing Enter.
+#
+# MANUAL ONLY: an installer driven by synthetic clicks is not something to run on every push.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bake_run:
+        description: "Install Fedora Workstation 43 through Anaconda"
+        type: boolean
+        default: true
+      iso_url:
+        description: "ISO URL (empty for the pinned image)"
+        default: ""
+      iso_sha256:
+        description: "ISO sha256 (empty for the pinned value)"
+        default: ""
+      disk_size:
+        description: "guest disk size"
+        default: "64G"
+      install_timeout:
+        description: "seconds the installer may take"
+        default: "5400"
+      publish_tag:
+        description: "tag to publish under; empty for linux-fedora-gui"
+        default: "linux-fedora-gui"
+      publish:
+        description: "publish the finished disk to ghcr"
+        type: boolean
+        default: true
+
+concurrency:
+  group: fedora-gui-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bake:
+    if: inputs.bake_run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '40'
+          token: ${{ github.token }}
+
+      - name: prepare
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: fedora-gui-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py tags --prefix linux-
+
+      - name: fetch the Live ISO
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: fedora-gui-iso
+          interval: "10"
+          command: |
+            set -euo pipefail
+            URL="${{ inputs.iso_url }}"
+            SHA="${{ inputs.iso_sha256 }}"
+            if [ -z "$URL" ]; then
+              URL="https://download.fedoraproject.org/pub/fedora/linux/releases/43/Workstation/x86_64/iso/Fedora-Workstation-Live-43-1.6.x86_64.iso"
+              SHA="2a4a16c009244eb5ab2198700eb04103793b62407e8596f30a3e0cc8ac294d77"
+            fi
+            mkdir -p out/iso
+            ISO_URL="$URL" ISO_SHA256="$SHA" DEST="out/iso/Fedora-Workstation-Live-43-1.6.x86_64.iso" \
+              python3 lib/fetch_vendor_iso.py --segments 8
+
+      - name: install through Anaconda
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: fedora-gui-install
+          interval: "15"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            export SNAPSHOT_INTERVAL=2
+            ISO=$(ls out/iso/*.iso | head -1)
+            echo "iso: $ISO"
+            python3 linux/fedora-gui/install.py \
+              --iso "$ISO" \
+              --out out/fedora-gui.qcow2 \
+              --disk-size "${{ inputs.disk_size || '64G' }}" \
+              --timeout "${{ inputs.install_timeout || '5400' }}"
+
+      - name: keep the recording
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fedora-gui-recording
+          path: |
+            out/install.mp4
+            out/last-frame.png
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: push the disk
+        if: success() && inputs.publish
+        id: publish
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/fedora-gui.qcow2
+          kind: linux-fedora-gui
+          tag: ${{ inputs.publish_tag || 'linux-fedora-gui' }}
+          token: ${{ github.token }}

@@ -1,0 +1,145 @@
+name: opensuse-gui
+
+# Install openSUSE Tumbleweed KDE from its official Live ISO, through YaST2, its graphical installer.
+#
+# WHY THIS IS A LIVE ISO AND NOT AN INSTALLER IMAGE
+#
+# openSUSE's live media boots KDE Plasma, and its installer is YaST2 - which is
+# started by a desktop icon and runs as root through kdesu. Running the same
+# script from a shell makes YaST2 fall back to its TEXT front end, which is not
+# the graphical path this workflow exists for.
+#
+# SO THE MACHINE REACHES A DESKTOP FIRST, and the installer is started from it - an icon on
+# the desktop, or a window the session opens by itself. Everything after that is a measured
+# sequence of positions in linux/opensuse-gui/install.py, which is where the coordinates and the
+# reasons for them live.
+#
+# THE ISO'S OWN KERNEL IS BOOTED DIRECTLY, as every Linux bake here does. The alternative is
+# the medium's boot menu, which is a screen, and a screen is something a driver would have to
+# read. `root=live:CDLABEL=openSUSE_Tumbleweed_KDE_Live rd.live.image` is copied from the ISO's own boot entry so qemu passes it instead of a
+# person pressing Enter.
+#
+# MANUAL ONLY: an installer driven by synthetic clicks is not something to run on every push.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bake_run:
+        description: "Install openSUSE Tumbleweed KDE through YaST2"
+        type: boolean
+        default: true
+      iso_url:
+        description: "ISO URL (empty for the pinned image)"
+        default: ""
+      iso_sha256:
+        description: "ISO sha256 (empty for the pinned value)"
+        default: ""
+      disk_size:
+        description: "guest disk size"
+        default: "64G"
+      install_timeout:
+        description: "seconds the installer may take"
+        default: "5400"
+      publish_tag:
+        description: "tag to publish under; empty for linux-opensuse-gui"
+        default: "linux-opensuse-gui"
+      publish:
+        description: "publish the finished disk to ghcr"
+        type: boolean
+        default: true
+
+concurrency:
+  group: opensuse-gui-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bake:
+    if: inputs.bake_run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '40'
+          token: ${{ github.token }}
+
+      - name: prepare
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: opensuse-gui-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py tags --prefix linux-
+
+      - name: fetch the Live ISO
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: opensuse-gui-iso
+          interval: "10"
+          command: |
+            set -euo pipefail
+            URL="${{ inputs.iso_url }}"
+            SHA="${{ inputs.iso_sha256 }}"
+            if [ -z "$URL" ]; then
+              URL="https://download.opensuse.org/tumbleweed/iso/openSUSE-Tumbleweed-KDE-Live-x86_64-Snapshot20261105-Media.iso"
+              SHA="cc71dd199e2160c62e235dd723f438455c8586f034e2617b4ad53e555af517d2"
+            fi
+            mkdir -p out/iso
+            ISO_URL="$URL" ISO_SHA256="$SHA" DEST="out/iso/openSUSE-Tumbleweed-KDE-Live-x86_64-Snapshot20261105-Media.iso" \
+              python3 lib/fetch_vendor_iso.py --segments 8
+
+      - name: install through YaST2
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: opensuse-gui-install
+          interval: "15"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            export SNAPSHOT_INTERVAL=2
+            ISO=$(ls out/iso/*.iso | head -1)
+            echo "iso: $ISO"
+            python3 linux/opensuse-gui/install.py \
+              --iso "$ISO" \
+              --out out/opensuse-gui.qcow2 \
+              --disk-size "${{ inputs.disk_size || '64G' }}" \
+              --timeout "${{ inputs.install_timeout || '5400' }}"
+
+      - name: keep the recording
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: opensuse-gui-recording
+          path: |
+            out/install.mp4
+            out/last-frame.png
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: push the disk
+        if: success() && inputs.publish
+        id: publish
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/opensuse-gui.qcow2
+          kind: linux-opensuse-gui
+          tag: ${{ inputs.publish_tag || 'linux-opensuse-gui' }}
+          token: ${{ github.token }}

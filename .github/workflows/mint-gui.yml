@@ -1,0 +1,143 @@
+name: mint-gui
+
+# Install Linux Mint 22.3 Cinnamon from its official Live ISO, through Ubiquity, its graphical installer.
+#
+# WHY THIS IS A LIVE ISO AND NOT AN INSTALLER IMAGE
+#
+# Mint is an Ubuntu derivative built by its own team, and its medium boots
+# Cinnamon. The installer is an icon on the desktop.
+#
+# SO THE MACHINE REACHES A DESKTOP FIRST, and the installer is started from it - an icon on
+# the desktop, or a window the session opens by itself. Everything after that is a measured
+# sequence of positions in linux/mint-gui/install.py, which is where the coordinates and the
+# reasons for them live.
+#
+# THE ISO'S OWN KERNEL IS BOOTED DIRECTLY, as every Linux bake here does. The alternative is
+# the medium's boot menu, which is a screen, and a screen is something a driver would have to
+# read. `boot=casper` is copied from the ISO's own boot entry so qemu passes it instead of a
+# person pressing Enter.
+#
+# MANUAL ONLY: an installer driven by synthetic clicks is not something to run on every push.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bake_run:
+        description: "Install Linux Mint 22.3 Cinnamon through Ubiquity"
+        type: boolean
+        default: true
+      iso_url:
+        description: "ISO URL (empty for the pinned image)"
+        default: ""
+      iso_sha256:
+        description: "ISO sha256 (empty for the pinned value)"
+        default: ""
+      disk_size:
+        description: "guest disk size"
+        default: "64G"
+      install_timeout:
+        description: "seconds the installer may take"
+        default: "5400"
+      publish_tag:
+        description: "tag to publish under; empty for linux-mint-gui"
+        default: "linux-mint-gui"
+      publish:
+        description: "publish the finished disk to ghcr"
+        type: boolean
+        default: true
+
+concurrency:
+  group: mint-gui-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bake:
+    if: inputs.bake_run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '40'
+          token: ${{ github.token }}
+
+      - name: prepare
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: mint-gui-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py tags --prefix linux-
+
+      - name: fetch the Live ISO
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: mint-gui-iso
+          interval: "10"
+          command: |
+            set -euo pipefail
+            URL="${{ inputs.iso_url }}"
+            SHA="${{ inputs.iso_sha256 }}"
+            if [ -z "$URL" ]; then
+              URL="https://mirrors.kernel.org/linuxmint/stable/22.3/linuxmint-22.3-cinnamon-64bit.iso"
+              SHA="a081ab202cfda17f6924128dbd2de8b63518ac0531bcfe3f1a1b88097c459bd4"
+            fi
+            mkdir -p out/iso
+            ISO_URL="$URL" ISO_SHA256="$SHA" DEST="out/iso/linuxmint-22.3-cinnamon-64bit.iso" \
+              python3 lib/fetch_vendor_iso.py --segments 8
+
+      - name: install through Ubiquity
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: mint-gui-install
+          interval: "15"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            export SNAPSHOT_INTERVAL=2
+            ISO=$(ls out/iso/*.iso | head -1)
+            echo "iso: $ISO"
+            python3 linux/mint-gui/install.py \
+              --iso "$ISO" \
+              --out out/mint-gui.qcow2 \
+              --disk-size "${{ inputs.disk_size || '64G' }}" \
+              --timeout "${{ inputs.install_timeout || '5400' }}"
+
+      - name: keep the recording
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mint-gui-recording
+          path: |
+            out/install.mp4
+            out/last-frame.png
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: push the disk
+        if: success() && inputs.publish
+        id: publish
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/mint-gui.qcow2
+          kind: linux-mint-gui
+          tag: ${{ inputs.publish_tag || 'linux-mint-gui' }}
+          token: ${{ github.token }}
