@@ -67,9 +67,24 @@ NEXT_DEFAULT = (1325, 801)
 NEXT_OFFICE = (1334, 794)
 INSTALL_BUTTON = (1318, 799)
 
-# Partitions: `Erase disk` is already selected on UEFI, so this is only a confirmation
-# click - it costs nothing when the radio is already filled.
-ERASE_DISK = (1043, 298)
+# PARTITIONS: `Erase disk` IS THE RADIO BUTTON'S CIRCLE, AT (653, 340).
+#
+# THE OLD NUMBER WAS (1043, 298) AND IT IS THE `Swap` DROPDOWN. Measured on this ISO's own
+# frame: that point is inside the combo box labelled `Swap (no Hibernate)`, so the click
+# OPENED A LIST instead of selecting a partitioning scheme. The list then sat over the
+# footer, the following click at (1325, 801) went into it, and the wizard never left
+# Partitions - which is what every Manjaro run since e08b233 did, logging
+#
+#     click (1043, 298) - Partitions: Erase disk
+#     click (1325, 801) - Partitions: Next
+#     filling the account form          <- on the Partitions pane
+#
+# The layout it left behind is visible in the frame: `Swap (no Hibernate)` selected and an
+# extra 6.37 GiB swap partition in the "After" bar, which is the dropdown's doing.
+#
+# On UEFI the radio is already filled, so the click is a confirmation - but it has to be a
+# confirmation of the RIGHT control.
+ERASE_DISK = (653, 340)
 
 # The two modals.
 CONFIRM_INSTALL_NOW = (1055, 537)
