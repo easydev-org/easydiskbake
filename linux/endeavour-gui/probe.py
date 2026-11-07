@@ -178,6 +178,21 @@ def main(argv: list[str]) -> int:
     try:
         drv_shots = os.path.join(work, "shots")
         os.makedirs(drv_shots, exist_ok=True)
+        # THE SOCKET IS NOT THERE YET WHEN QEMU HAS JUST STARTED, AND ocr.Screen DOES NOT
+        # WAIT FOR IT. Every driver in this repository has its own wait loop for exactly
+        # this reason - `Driver.__init__` in linux/kubuntu-gui/install.py is the reference -
+        # and the first version of this probe skipped it:
+        #
+        #     File "lib/ocr.py", line 57, in __init__
+        #       self.q = qmpmod.QMP(qmp_path)
+        #     FileNotFoundError: [Errno 2] No such file or directory
+        #
+        # which is the probe failing before it photographed anything.
+        deadline = time.time() + 180
+        while not os.path.exists(guest.paths.drive):
+            if time.time() > deadline:
+                raise SystemExit(f"no QMP socket at {guest.paths.drive} after 180s")
+            time.sleep(1)
         screen = ocr.Screen(guest.paths.drive, drv_shots, width=1920, height=1080)
         q = screen.q
 
