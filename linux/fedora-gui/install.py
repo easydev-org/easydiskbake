@@ -62,6 +62,7 @@ import lastframe    # noqa: E402
 import live         # noqa: E402
 import ocr          # noqa: E402
 import qmp as Q     # noqa: E402
+import uefi         # noqa: E402
 import vm           # noqa: E402
 
 # --- measured on a live Fedora 43 Workstation session, 1920x1080 ---------------------------
@@ -433,8 +434,14 @@ def main(argv: list[str]) -> int:
             "-append", "root=live:CDLABEL=Fedora-WS-Live-43 rd.live.image "
                        "locale=en_US.UTF-8 quiet rhgb",
         ],
-        shape=vm.Shape(cpus=args.cpus, mem_mb=args.mem, machine="q35", vga="std",
+        # UEFI, NOT SeaBIOS. See lib/uefi.py for why every guest here boots on
+        # OVMF: Garuda refuses Legacy mode outright, and the disks that the other
+        # installers produce on the BIOS path are MBR/GPT with a BIOS boot
+        # partition instead of the ESP their own images expect.
+        shape=uefi.shape_with_uefi(
+            vm.Shape(cpus=args.cpus, mem_mb=args.mem, machine="q35", vga="std",
                        vnc_bind=os.environ.get("VNC_BIND", "127.0.0.1")),
+            work, "fedora-gui"),
         stdout=os.path.join(work, "console.log"),
     )
 
@@ -496,8 +503,14 @@ def main(argv: list[str]) -> int:
         disk_guest = vm.Guest(
             work,
             extra=["-drive", f"file={disk},if=virtio,format=qcow2,discard=unmap"],
-            shape=vm.Shape(cpus=args.cpus, mem_mb=args.mem, machine="q35", vga="std",
-                           vnc_bind=os.environ.get("VNC_BIND", "127.0.0.1")),
+            # UEFI AGAIN, AND WITH ITS OWN NVRAM. The disk was installed on the EFI path, so
+            # its bootloader is on an ESP and a BIOS boot of it finds nothing to chain to.
+            # The vars file is separate from the installer's (`fedora-gui` above) because the
+            # installer's NVRAM holds the live medium's boot entry, not this disk's.
+            shape=uefi.shape_with_uefi(
+                vm.Shape(cpus=args.cpus, mem_mb=args.mem, machine="q35", vga="std",
+                         vnc_bind=os.environ.get("VNC_BIND", "127.0.0.1")),
+                work, "fedora-disk"),
             stdout=os.path.join(work, "console-disk.log"),
         )
         frames2 = os.path.join(work, "frames-disk")

@@ -49,6 +49,7 @@ import iso          # noqa: E402
 import live         # noqa: E402
 import ocr          # noqa: E402
 import qmp as qmpmod  # noqa: E402
+import uefi         # noqa: E402
 import vm           # noqa: E402
 import lastframe    # noqa: E402
 
@@ -286,12 +287,19 @@ def main(argv: list[str]) -> int:
             # and the same line twice, which is what casper expects.
             "-append", "console=ttyS0,115200n8 --- console=ttyS0,115200n8",
         ],
-        shape=vm.Shape(
-            cpus=args.cpus,
-            mem_mb=args.mem,
-            machine="q35",
-            vga="std",
-            vnc_bind=os.environ.get("VNC_BIND", "127.0.0.1"),
+        # UEFI, NOT SeaBIOS. See lib/uefi.py for why every guest here boots on
+        # OVMF: Garuda refuses Legacy mode outright, and the disks that the other
+        # installers produce on the BIOS path are MBR/GPT with a BIOS boot
+        # partition instead of the ESP their own images expect.
+        shape=uefi.shape_with_uefi(
+            vm.Shape(
+                cpus=args.cpus,
+                mem_mb=args.mem,
+                machine="q35",
+                vga="std",
+                vnc_bind=os.environ.get("VNC_BIND", "127.0.0.1"),
+            ),
+            work, "ubuntu-gui",
         ),
         stdout=os.path.join(work, "console.log"),
     )

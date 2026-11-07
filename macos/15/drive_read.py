@@ -232,11 +232,13 @@ LOCATION_DONT_USE_26 = (959, 573)
 ANALYTICS_SHARE_26 = (742, 521)
 TERMS_AGREE_26 = (1277, 798)
 LICENCE_AGREE_26 = (1019, 619)
-APPLE_OTHER_OPTIONS_26 = (670, 802)
-# THE MENU'S FIRST ROW IS NOT A COORDINATE. drive.py measured that a click at this row lands
-# on an undrawn menu and does nothing (run 42124271946); the item is taken with Return after
-# the animation, which is what pane_apple() does.
-APPLE_SKIP_26 = (1019, 643)
+APPLE_OTHER_OPTIONS_26 = (668, 799)
+# THE MENU'S SECOND ROW, MEASURED ON A LIVE 26 GUEST. It opens DOWNWARD from the button:
+# "Use Multiple Accounts" at y=833, "Sign In Later in Settings" at y=856.
+APPLE_SET_UP_LATER_26 = (700, 856)
+# The confirmation sheet's blue button, centred at (1020, 640) - confirmed against a frame of
+# the sheet itself. Its title line reads at y=516, which is NOT the button.
+APPLE_SKIP_26 = (1020, 640)
 AGE_ADULT = (960, 714)
 FILEVAULT_NOT_NOW = (1129, 798)
 FILEVAULT_CONFIRM = (1020, 598)
@@ -337,26 +339,39 @@ def pane_apple(w: Wizard) -> bool:
         # NO "Set Up Later" LINK ON 26. Where 15 puts a text link in the bottom-left corner, 26
         # has a popup button whose menu holds the way out.
         #
-        # THE MENU IS TAKEN WITH RETURN, NOT WITH A SECOND COORDINATE.
+        # THE MENU OPENS DOWNWARD, AND ITS SECOND ROW IS THE WAY OUT. Measured on a live 26
+        # guest (macos26-probe, 2026-11-07) by opening the menu and reading it:
         #
-        # This clicked (677,856) for the menu's first row, and that row is not drawn when the
-        # click arrives: macOS animates a popup out of its button, and the menu covers the
-        # pane's lower half while it does. drive.py has the same failure and its comment is
-        # the measurement - run 42124271946 clicked inside the button (whose own pill spans
-        # guest x 555..759 at y 802) and "the menu NEVER APPEARED: the frame one second later
-        # is the same pane, and the frame ninety seconds later is still the same pane. 62
-        # actions completed and the wizard never moved."
+        #     Other Sign-In Options     button centre (668, 799)
+        #     Use Multiple Accounts     menu row, y=833
+        #     Sign In Later in Settings menu row, y=856      <- the one this needs
         #
-        # So: click to open, wait for the animation, then Return, which takes the highlighted
-        # first item - "Set Up Later…" on this pane. A Return sent DURING the animation closes
-        # the menu instead of choosing from it, which is why the wait is not optional.
+        # Return DOES NOT TAKE AN ITEM HERE. drive.py's 26 branch sends Return after the click
+        # and its comment says a macOS popup "highlights its first item when it opens".
+        # Measured on this pane, it does not: the menu opened (28 -> 31 readable words, with
+        # "Use Multiple Accounts" and "Sign In Later in Settings" in them) and Return closed it
+        # again and left the pane exactly where it was. So this clicks the row itself.
         #
-        # Run 42381998405 is what the fixed coordinate did on 26: five passes through this
-        # pane, each one 'click (670,802)' then 'click (677,856)', with the word count stuck
-        # at 57 - the pane's own text, unchanged, because no menu ever opened over it.
-        w.click(APPLE_OTHER_OPTIONS_26, "Other Sign-In Options", settle=4.0)
-        w.look("apple-menu")
-        w.press("ret", gap=6.0)
+        # BOTH STEPS ARE RETRIED, because the failure this pane actually has is a click that
+        # arrives while the popup is still animating: the menu is then not drawn, the second
+        # click lands on the pane, and the wizard does not move. Run 42383663645 spent five
+        # passes doing exactly that - 'click (670,802)', 'look apple-menu: 58 words' (the pane
+        # unchanged, so no menu), 'click (677,856)', repeat. Each attempt re-opens and
+        # re-reads, and the loop ends as soon as the pane changes.
+        for attempt in range(3):
+            w.click(APPLE_OTHER_OPTIONS_26, f"Other Sign-In Options (attempt {attempt + 1})",
+                    settle=4.0)
+            w.look("apple-menu")
+            if not w.says("later", "settings"):
+                log("  no sign-in menu; the popup had not drawn yet")
+                continue
+            w.click(APPLE_SET_UP_LATER_26, f"Sign In Later in Settings (attempt {attempt + 1})",
+                    settle=8.0)
+            w.look("apple-after")
+            if not w.says("sign", "apple"):
+                log("  the sign-in pane is gone")
+                return True
+        return True
     else:
         w.click(APPLE_SET_UP_LATER, "Set Up Later", settle=6.0)
         w.press("ret", gap=3.0)
