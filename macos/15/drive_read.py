@@ -370,7 +370,23 @@ def pane_apple(w: Wizard) -> bool:
             w.look("apple-after")
             if not w.says("sign", "apple"):
                 log("  the sign-in pane is gone")
-                return True
+                break
+        # NO `return True` ON THE LINE ABOVE, AND THAT IS THE WHOLE POINT. It used to return
+        # as soon as the pane changed, which skipped the confirmation sheet below - and 26
+        # DOES raise one: "Are you sure you want to skip signing in with an Apple Account?".
+        # Run 42388520326 shows the cost exactly:
+        #
+        #     16:20:03  click (700,856) - Sign In Later in Settings (attempt 1)
+        #     16:20:18    the sign-in pane is gone
+        #     16:20:47  === STUCK: no handler matched the pane that is up ===
+        #               the reading driver exited 2
+        #
+        # The sheet has no words any pane test matches, so the driver gave up forty seconds
+        # before it would have reached Terms and Conditions.
+        w.look("apple-sheet")
+        if w.says("skip"):
+            w.click(APPLE_SKIP_26 if w.release == "26" else APPLE_SKIP,
+                    "Skip on the confirmation sheet", settle=8.0)
         return True
     else:
         w.click(APPLE_SET_UP_LATER, "Set Up Later", settle=6.0)
