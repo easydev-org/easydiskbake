@@ -262,8 +262,30 @@ def walk_yast2(drv: Driver, args) -> bool:
         log(f"  screen: {drv.text()[:200]}")
         return False
 
-    # 6. INSTALL.
-    drv.click(INSTALL, "Install", settle=30.0)
+    # 6. INSTALL. A CLICK, THEN THE KEYBOARD IF THE CLICK DID NOT TAKE.
+    #
+    # The measured button was at (1587, 859) and the CI run clicked it and stayed on
+    # `Installation Settings` - the pane's own headline was still what OCR read twenty
+    # seconds later, and for the rest of the run. YaST2 draws its wizard in a CENTRED window
+    # whose size follows the content, so the footer is not at a fixed screen position the
+    # way Calamares' is; a coordinate measured on one Settings pane is not a coordinate for
+    # the next distribution's.
+    #
+    # THE KEYBOARD DOES NOT MOVE. `Install` and `Next` are the window's default button on
+    # every pane, so Return fires whichever one is there - and on the panes before this one
+    # Return and the measured click agree, which is what makes this a fallback rather than
+    # a replacement.
+    drv.click(INSTALL, "Install", settle=12.0)
+    drv.look("after Install")
+    if "installation settings" in drv.text():
+        log("  the click did not start the install; pressing Return (the default button)")
+        Q.key(drv.q, "ret")
+        time.sleep(20.0)
+        drv.look("after Return")
+    if "installation settings" in drv.text():
+        log("=== THE INSTALL NEVER STARTED ===")
+        log(f"  screen: {drv.text()[:200]}")
+        return False
     drv.look("installing")
 
     # 7. UNTIL IT IS DONE. YaST2 shows a progress bar and then a `Congratulations` pane; the
