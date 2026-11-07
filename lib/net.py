@@ -213,7 +213,7 @@ def up(*, ssh_port: int = 2222, rdp_port: int = 3389,
         f"interface={BRIDGE};bind-interfaces;no-ping;filter-AAAA;"
         f"pid-file=/var/run/dnsmasq.vm.pid;log-facility=/var/log/dnsmasq.vm.log;"
         # ============================================================================
-        # GEOIP IS ANSWERED WITH NOTHING, AND THAT IS WHAT MAKES A BAKE REPRODUCIBLE.
+        # GEOIP IS ANSWERED WITH NEW YORK, AND THAT IS WHAT MAKES A BAKE REPRODUCIBLE.
         # ============================================================================
         #
         # A graphical installer asks a geolocation service where the machine is and then
@@ -230,38 +230,42 @@ def up(*, ssh_port: int = 2222, rdp_port: int = 3389,
         # Anaconda also came up in Chinese. None of that has anything to do with the image
         # being installed, and all of it changes the day the cluster's egress moves.
         #
-        # THE GUEST GETS 127.0.0.1, WHICH IS REFUSED IMMEDIATELY. Not NXDOMAIN and not a
-        # blackhole: a connection refused is a fast, unambiguous failure, and every one of
-        # these installers falls back to its OWN default - Calamares to American English,
-        # measured on CachyOS after this line was added. A timeout would stall the first
-        # pane instead, and a NXDOMAIN is not distinguishable to some resolvers from a
-        # broken DNS, which makes a network error look like an installer bug.
+        # TWO DEVICES WERE TRIED, AND THE FIRST WAS ONLY HALF RIGHT. Answering 127.0.0.1
+        # is a fast refusal, and Calamares treats that as "use my default" - it started in
+        # American English on CachyOS, which is what a refusal is good for. Ubuntu's
+        # Flutter installer does not fall back: it reads the answer to preselect its time
+        # zone pane, so a refusal left the pane empty and Next disabled, and run
+        # 42388038785 logged
         #
-        # THE LIST IS THE INSTALLERS THIS REPOSITORY DRIVES, not every geoip service that
-        # exists. Adding a distribution means adding its probe here - see linux/*/install.py
-        # for the one each of them uses.
-        "address=/geoip.kde.org/127.0.0.1;"
-        "address=/geoip.kde.org./127.0.0.1;"
-        # UBUNTU'S PROBE GETS AN ANSWER, NOT A REFUSAL - see lib/geoip_mock.py.
+        #     look finish: 7 words :: Select | your | timezone
         #
-        # Calamares falls back to American English when its probe is refused; Ubuntu's
-        # Flutter installer does not. It uses the answer to preselect the time zone pane,
-        # and a refusal leaves that pane with nothing selected and Next disabled:
+        # for eight minutes. A refusal that stalls one installer is not a fix.
         #
-        #     look finish: 7 words :: Select | your | timezone       <- for eight minutes
+        # SO THE ANSWER IS THE SAME FOR EVERY NAME, and it is New York. lib/geoip_mock.py
+        # serves the XML each service documents - the shapes differ - and this points every
+        # probe this repository knows at it. One place decides where the bakes think they
+        # are; the language, the keymap and the time zone agree by construction; and a new
+        # distribution's probe does not have to be discovered by watching a run stall.
+        # EVERY GEOIP NAME IS ANSWERED, BY THE MOCK - see lib/geoip_mock.py.
         #
-        # which is run 42388038785. The mock answers in the shape the service documents,
-        # for New York, so every installer takes the path it would on a real machine in
-        # the United States instead of the path this cluster's egress happens to allow.
+        # A REFUSAL WAS THE FIRST DESIGN AND IT WAS HALF RIGHT. Calamares takes "no
+        # answer" as "use my default" and starts in American English; Ubuntu's Flutter
+        # installer does not, and left its time zone pane with nothing selected and Next
+        # disabled - run 42388038785 logged `Select | your | timezone` for eight minutes.
+        #
+        # ANSWERING ALL OF THEM IS SIMPLER THAN ARGUING ABOUT WHICH ONES NEED IT. Every
+        # installer here takes the same path it would on a machine in New York, the
+        # language and the time zone agree by construction, and a new distribution's probe
+        # does not have to be discovered by watching a run stall. The shapes differ per
+        # service and lib/geoip_mock.py serves the one each asks for.
+        f"address=/geoip.kde.org/{GEOIP_MOCK_IP};"
+        f"address=/geoip.kde.org./{GEOIP_MOCK_IP};"
         f"address=/geoip.ubuntu.com/{GEOIP_MOCK_IP};"
         f"address=/geoip.ubuntu.com./{GEOIP_MOCK_IP};"
-        # THE OTHER TWO STAY REFUSED. Calamares handles a refusal correctly and the
-        # refusal is what proved the mechanism; mocking them would add a service to trust
-        # for a case that already works.
-        "address=/geoip.anaconda-installer.org/127.0.0.1;"
-        "address=/geoip.anaconda-installer.org./127.0.0.1;"
-        "address=/geoip.fedoraproject.org/127.0.0.1;"
-        "address=/geoip.fedoraproject.org./127.0.0.1;"
+        f"address=/geoip.anaconda-installer.org/{GEOIP_MOCK_IP};"
+        f"address=/geoip.anaconda-installer.org./{GEOIP_MOCK_IP};"
+        f"address=/geoip.fedoraproject.org/{GEOIP_MOCK_IP};"
+        f"address=/geoip.fedoraproject.org./{GEOIP_MOCK_IP};"
     )
     started = _sh(f"dnsmasq --conf-file=/dev/null {''.join('--' + opt + ' ' for opt in cfg.rstrip(';').split(';'))}")
     if started.returncode != 0:
@@ -278,12 +282,22 @@ def up(*, ssh_port: int = 2222, rdp_port: int = 3389,
     # the first answer is a refusal, and Ubuntu's installer caches "no answer" for the rest
     # of the run - which is the failure this whole arrangement exists to prevent.
     import geoip_mock
-    _sh(f"iptables -t nat -C PREROUTING -d {GEOIP_MOCK_IP} -p tcp --dport 80 "
-        f"-j REDIRECT --to-ports {geoip_mock.PORT}")
-    if _sh(f"iptables -t nat -C PREROUTING -d {GEOIP_MOCK_IP} -p tcp --dport 80 "
-           f"-j REDIRECT --to-ports {geoip_mock.PORT}").returncode != 0:
-        _sh(f"iptables -t nat -A PREROUTING -d {GEOIP_MOCK_IP} -p tcp --dport 80 "
+    # PORT 80 ONLY, AND THE REASON 443 IS DELIBERATELY LEFT ALONE.
+    #
+    # The mock speaks plain HTTP. Redirecting 443 into it would make every TLS handshake
+    # fail in the middle rather than at the start, which is slower and less legible than a
+    # refusal - and an installer that follows geoip.kde.org's http->https redirect lands
+    # exactly there. What it needs is a fast, unambiguous "no TLS here", which is what an
+    # unanswered 443 is.
+    #
+    # THE PROBES THAT MATTER ON PORT 80 ARE THE ONES THAT MATTER. Ubuntu's installer GETs
+    # http://geoip.ubuntu.com/lookup and reads the XML from it - checked against the live
+    # service, which answers 200 without a redirect. Calamares asks https, gets a refusal,
+    # and uses its own default; that path was measured and it works.
+    rule = (f"-d {GEOIP_MOCK_IP} -p tcp --dport 80 "
             f"-j REDIRECT --to-ports {geoip_mock.PORT}")
+    if _sh(f"iptables -t nat -C PREROUTING {rule}").returncode != 0:
+        _sh(f"iptables -t nat -A PREROUTING {rule}")
     if not geoip_mock.running():
         geoip_mock.serve()
         time.sleep(0.5)
