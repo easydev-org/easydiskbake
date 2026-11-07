@@ -239,9 +239,9 @@ def walk_calamares(drv: Driver, args) -> bool:
     if not drv.advance("welcome", NEXT_DEFAULT, settle=15.0, expect="location"):
         return False
 
-    # 3. LOCATION -> KEYBOARD. The default zone is kept: on this cluster the installer
-    #    lands on America/New_York because geoip is answered with a refusal - see
-    #    lib/net.py. Changing it is one more field that can go wrong for no gain.
+    # 3. LOCATION -> KEYBOARD. The default zone is kept: whatever the installer read from
+    #    the network at startup stays. Changing it is one more field that can go wrong for
+    #    no gain, and the bake's job is a disk that installs, not a particular region.
     log("location left at the installer's default")
     if not drv.advance("location", NEXT_DEFAULT, settle=15.0, expect="keyboard"):
         return False

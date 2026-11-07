@@ -111,11 +111,9 @@ PANES = [
 # THE TIME ZONE PANE NEEDS A POSITION, AND NOTHING ELSE SATISFIES IT.
 #
 # Ubuntu's installer draws a world map with two empty fields above it - Location and
-# Timezone - and a disabled Next button. The obvious assumption was that it fills those
-# from a geolocation probe, the way Calamares does, and run 42388038785 disproved it: the
-# pane sat empty for eight minutes with the geoip mock answering every probe correctly.
-# Measured afterwards on the guest's own network: dnsmasq logged no geoip lookup from the
-# installer at all, and the mock saw no connection. It does not ask.
+# Timezone - and a disabled Next button. It does not fill them from a geolocation probe:
+# run 42388038785 sat on that pane for eight minutes while nothing on the network was
+# asked, so the pane is answered the way a person answers it - by clicking the map.
 #
 # So the pane is answered the way a person answers it: click the map. New York's position
 # was computed from the map's own bounds - x 480..1439 covers -180..180 degrees of

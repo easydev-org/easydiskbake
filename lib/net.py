@@ -70,12 +70,6 @@ GUEST_IP = os.environ.get("VM_GUEST_IP", "172.30.0.2")
 HOST_IP = os.environ.get("VM_HOST_IP", "172.30.0.254")
 MASK = "255.255.255.0"
 
-# THE GEOIP MOCK'S ADDRESS, AS THE GUEST SEES IT. It is the bridge address because the
-# service listens on the host in this container and the guest reaches the host there - the
-# same address dnsmasq uses for the DHCP router and resolver, so nothing new has to be
-# routed. See lib/geoip_mock.py for what it answers and why one probe gets an answer while
-# the others are refused.
-GEOIP_MOCK_IP = BRIDGE_IP
 
 # THE GUEST'S MTU HAS TO FIT INSIDE THE CONTAINER'S, AND IT DID NOT.
 #
@@ -212,169 +206,22 @@ def up(*, ssh_port: int = 2222, rdp_port: int = 3389,
         f"dhcp-option=option:mtu,{MTU};"
         f"interface={BRIDGE};bind-interfaces;no-ping;filter-AAAA;"
         f"pid-file=/var/run/dnsmasq.vm.pid;log-facility=/var/log/dnsmasq.vm.log;"
-        # ============================================================================
-        # GEOIP IS ANSWERED WITH NEW YORK, AND THAT IS WHAT MAKES A BAKE REPRODUCIBLE.
-        # ============================================================================
-        #
-        # A graphical installer asks a geolocation service where the machine is and then
-        # chooses its language and time zone from the answer. On this cluster the guest's
-        # traffic leaves through ONE egress address - 115.190.248.85 - and the answer is
-        # always the same:
-        #
-        #     <CountryCode>CN</CountryCode>
-        #     <TimeZone>Asia/Shanghai</TimeZone>
-        #
-        # Measured against geoip.kde.org directly on 2026-11-07. So Calamares started in
-        # Simplified Chinese on CachyOS, EndeavourOS, Linux Mint and Kubuntu; Mint's
-        # `Where are you?` came up on Shanghai; and the same class of probe is why Fedora's
-        # Anaconda also came up in Chinese. None of that has anything to do with the image
-        # being installed, and all of it changes the day the cluster's egress moves.
-        #
-        # TWO DEVICES WERE TRIED, AND THE FIRST WAS ONLY HALF RIGHT. Answering 127.0.0.1
-        # is a fast refusal, and Calamares treats that as "use my default" - it started in
-        # American English on CachyOS, which is what a refusal is good for. Ubuntu's
-        # Flutter installer does not fall back: it reads the answer to preselect its time
-        # zone pane, so a refusal left the pane empty and Next disabled, and run
-        # 42388038785 logged
-        #
-        #     look finish: 7 words :: Select | your | timezone
-        #
-        # for eight minutes. A refusal that stalls one installer is not a fix.
-        #
-        # SO THE ANSWER IS THE SAME FOR EVERY NAME, and it is New York. lib/geoip_mock.py
-        # serves the XML each service documents - the shapes differ - and this points every
-        # probe this repository knows at it. One place decides where the bakes think they
-        # are; the language, the keymap and the time zone agree by construction; and a new
-        # distribution's probe does not have to be discovered by watching a run stall.
-        # EVERY GEOIP NAME IS ANSWERED, BY THE MOCK - see lib/geoip_mock.py.
-        #
-        # A REFUSAL WAS THE FIRST DESIGN AND IT WAS HALF RIGHT. Calamares takes "no
-        # answer" as "use my default" and starts in American English; Ubuntu's Flutter
-        # installer does not, and left its time zone pane with nothing selected and Next
-        # disabled - run 42388038785 logged `Select | your | timezone` for eight minutes.
-        #
-        # ANSWERING ALL OF THEM IS SIMPLER THAN ARGUING ABOUT WHICH ONES NEED IT. Every
-        # installer here takes the same path it would on a machine in New York, the
-        # language and the time zone agree by construction, and a new distribution's probe
-        # does not have to be discovered by watching a run stall. The shapes differ per
-        # service and lib/geoip_mock.py serves the one each asks for.
-        f"address=/geoip.kde.org/{GEOIP_MOCK_IP};"
-        f"address=/geoip.kde.org./{GEOIP_MOCK_IP};"
-        f"address=/geoip.ubuntu.com/{GEOIP_MOCK_IP};"
-        f"address=/geoip.ubuntu.com./{GEOIP_MOCK_IP};"
-        f"address=/geoip.anaconda-installer.org/{GEOIP_MOCK_IP};"
-        f"address=/geoip.anaconda-installer.org./{GEOIP_MOCK_IP};"
-        f"address=/geoip.fedoraproject.org/{GEOIP_MOCK_IP};"
-        f"address=/geoip.fedoraproject.org./{GEOIP_MOCK_IP};"
     )
     started = _sh(f"dnsmasq --conf-file=/dev/null {''.join('--' + opt + ' ' for opt in cfg.rstrip(';').split(';'))}")
     if started.returncode != 0:
         raise SystemExit(f"=== dnsmasq DID NOT START ===\n  {started.stderr.strip()[:300]}")
 
-    # THE GEOIP MOCK, AND THE DNAT THAT MAKES PORT 80 REACH IT.
+    # NO GEOIP HANDLING. The guest resolves and reaches whatever the network gives it.
     #
-    # geoip.ubuntu.com is answered with the bridge address, so the guest connects to the
-    # host on port 80 - the port the probe uses. Nothing listens there, and nothing should:
-    # the mock runs on its own high port, and a DNAT rewrites only the traffic addressed to
-    # that one address, so the container's own port 80 (if any) is untouched.
+    # This repository used to answer every geolocation probe itself - first with a refusal,
+    # then with a mock that said New York - because this cluster's egress address reports
+    # China and every graphical installer reads it to choose a language and a time zone.
+    # Both designs worked only for the installers that ask over plain HTTP, and chasing the
+    # rest (a systemd-resolved guest bypassing /etc/resolv.conf, a Calamares that asks
+    # https) produced more moving parts than the problem is worth.
     #
-    # FIREWALL FIRST, THEN THE SERVICE: if the rule is added after the guest's first probe
-    # the first answer is a refusal, and Ubuntu's installer caches "no answer" for the rest
-    # of the run - which is the failure this whole arrangement exists to prevent.
-    import geoip_mock
-    # PORT 80 ONLY, AND THE REASON 443 IS DELIBERATELY LEFT ALONE.
-    #
-    # The mock speaks plain HTTP. Redirecting 443 into it would make every TLS handshake
-    # fail in the middle rather than at the start, which is slower and less legible than a
-    # refusal - and an installer that follows geoip.kde.org's http->https redirect lands
-    # exactly there. What it needs is a fast, unambiguous "no TLS here", which is what an
-    # unanswered 443 is.
-    #
-    # THE PROBES THAT MATTER ON PORT 80 ARE THE ONES THAT MATTER. Ubuntu's installer GETs
-    # http://geoip.ubuntu.com/lookup and reads the XML from it - checked against the live
-    # service, which answers 200 without a redirect. Calamares asks https, gets a refusal,
-    # and uses its own default; that path was measured and it works.
-    rule = (f"-d {GEOIP_MOCK_IP} -p tcp --dport 80 "
-            f"-j DNAT --to-destination 127.0.0.1:{geoip_mock.PORT}")
-    # THREE SEPARATE MISTAKES WERE MADE HERE, AND EACH ONE WAS MEASURED.
-
-    # 1. REDIRECT IS NOT AVAILABLE ON THIS KERNEL.
-    #
-    #     Warning: Extension REDIRECT revision 0 not supported, missing kernel module?
-    #     iptables v1.8.11 (nf_tables): RULE_INSERT failed (No such file or directory)
-    #
-    #     `insert rc=4`, and not one rule was added. DNAT reaches the same place through
-    #     nf_nat, which this kernel has - the same class of gap as xt_TCPMSS in lib/net.py's
-    #     MSS clamping note.
-    #
-    # 2. AN APPENDED RULE IS NEVER REACHED. PREROUTING already jumps to VM_FWD for
-    #    `-d 172.30.0.1`, and the geoip address IS the bridge address, so VM_FWD matches
-    #    first and finds no forward for port 80. `-I PREROUTING 1` puts this in front.
-    #
-    # 3. PREROUTING IS THE WRONG CHAIN FOR MOST OF THE TRAFFIC THAT MATTERS. PREROUTING
-    #    sees packets arriving on an interface - the guest's probes. A request from inside
-    #    this container to the bridge address goes out through OUTPUT and never touches
-    #    PREROUTING, which is why a `curl http://172.30.0.1/lookup` from the container
-    #    itself returned nothing while the mock was plainly listening.
-    #
-    # ALL THREE, AND THEN THE ANSWER ARRIVES. Verified inside the container:
-    #
-    #     $ curl -s http://172.30.0.1/lookup
-    #     <Response><CountryCode>US</CountryCode>...<TimeZone>America/New_York</TimeZone>
-    outbound = (f"-d {GEOIP_MOCK_IP} -p tcp --dport 80 "
-                f"-j DNAT --to-destination 127.0.0.1:{geoip_mock.PORT}")
-    for chain in ("PREROUTING", "OUTPUT"):
-        for _ in range(5):
-            if _sh(f"iptables -t nat -D {chain} {outbound}").returncode != 0:
-                break
-        _sh(f"iptables -t nat -I {chain} 1 {outbound}")
-
-    # EVERY DNS QUERY THE GUEST MAKES GOES TO OUR dnsmasq, WHATEVER IT THINKS ITS RESOLVER
-    # IS - AND THIS IS THE FIX FOR A BUG THAT MADE THE WHOLE GEOIP MOCK USELESS ON ONE
-    # DISTRIBUTION.
-    #
-    # The mock answered correctly and EndeavourOS still came up in Simplified Chinese with
-    # Asia/Shanghai. Measured inside that guest:
-    #
-    #     $ cat /etc/resolv.conf
-    #     # Generated by NetworkManager
-    #     nameserver 172.30.0.1            <- OUR dnsmasq, as intended
-    #
-    #     $ dig +short geoip.kde.org @172.30.0.1
-    #     172.30.0.1                       <- dnsmasq DOES answer with the mock address
-    #
-    #     $ getent hosts geoip.kde.org
-    #     85.10.198.44  phoeni.kde.org     <- but the installer saw the REAL address
-    #
-    # because `systemd-resolved` is active in that session and nss-resolve answers from its
-    # OWN upstream and cache, bypassing /etc/resolv.conf entirely. Calamares then reached
-    # the real geoip.kde.org, which reports this cluster's Chinese egress, and chose the
-    # language and time zone that go with it.
-    #
-    # So the resolver is no longer trusted to be the one that was configured. Every packet
-    # addressed to port 53 leaving the guest is redirected to this bridge, which is where
-    # dnsmasq actually listens. A guest with systemd-resolved, with nscd, with a hardcoded
-    # upstream, or with nothing at all ends up in the same place.
-    #
-    # IT IS ADDED BEFORE THE DHCP LEASE IS HANDED OUT, so the first lookup a guest makes -
-    # the one an installer does before its window is even drawn - already takes this path.
-    for proto in ("udp", "tcp"):
-        dns_rule = (f"-i {BRIDGE} -p {proto} --dport 53 "
-                    f"-j DNAT --to-destination {GEOIP_MOCK_IP}:53")
-        for _ in range(5):
-            if _sh(f"iptables -t nat -D PREROUTING {dns_rule}").returncode != 0:
-                break
-        _sh(f"iptables -t nat -I PREROUTING 1 {dns_rule}")
-    log(f"dns: every query from {BRIDGE} is redirected to dnsmasq at {GEOIP_MOCK_IP}:53")
-    if not geoip_mock.running():
-        geoip_mock.serve()
-        time.sleep(0.5)
-    if geoip_mock.running():
-        log(f"geoip mock: {geoip_mock.COUNTRY_NAME} ({geoip_mock.TIMEZONE}) "
-            f"on {GEOIP_MOCK_IP}:80 -> :{geoip_mock.PORT}")
-    else:
-        log("=== THE GEOIP MOCK DID NOT START ===")
-        log("  Ubuntu's installer will stall on its time zone pane")
+    # So it is gone. The installers see the same network they would on any other machine,
+    # and the drivers that need a particular language or time zone set it themselves.
 
     # OUTBOUND: the guest's traffic leaves as this container does.
     #
