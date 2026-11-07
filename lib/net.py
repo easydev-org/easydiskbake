@@ -220,18 +220,30 @@ def up(*, ssh_port: int = 2222, rdp_port: int = 3389,
     #
     # FORWARD covers the guest; OUTPUT covers this container's own connections, which share
     # the same uplink and were measured dropping 1500-byte packets too.
-    _sh(f"iptables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN "
-        f"-j TCPMSS --clamp-mss-to-pmtu")
-    if _sh(f"iptables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN "
-           f"-j TCPMSS --clamp-mss-to-pmtu").returncode != 0:
-        _sh(f"iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN "
-            f"-j TCPMSS --clamp-mss-to-pmtu")
-    _sh("iptables -t mangle -C OUTPUT -p tcp --tcp-flags SYN,RST SYN "
-        "-j TCPMSS --clamp-mss-to-pmtu")
-    if _sh("iptables -t mangle -C OUTPUT -p tcp --tcp-flags SYN,RST SYN "
-           "-j TCPMSS --clamp-mss-to-pmtu").returncode != 0:
-        _sh("iptables -t mangle -A OUTPUT -p tcp --tcp-flags SYN,RST SYN "
-            "-j TCPMSS --clamp-mss-to-pmtu")
+    #
+    # THE INSTALL IS CHECKED, AND ITS FAILURE IS LOUD. It used to be a `-C` then `-A` with
+    # both return codes discarded, which made a kernel without xt_TCPMSS look exactly like a
+    # kernel with the rule installed. It was not: on this cluster
+    #
+    #     Warning: Extension TCPMSS revision 0 not supported, missing kernel module?
+    #     iptables v1.8.11 (nf_tables): RULE_APPEND failed (No such file or directory)
+    #
+    # and `iptables -t mangle -L FORWARD` stayed empty for the whole life of the guest. A
+    # macOS guest on a 1450-byte uplink then offered an MSS of 1460, every full segment was
+    # dropped, and the Tahoe installer failed with "Failed to download required installer
+    # asset" - a network error with no network error message. The guest-side MTU (net.MTU,
+    # applied through virtio-net's host_mtu) is now the real fix; this clamp is the belt for
+    # any guest that ignores it, and saying so out loud is how the next person finds out
+    # which of the two is doing the work.
+    for chain in ("FORWARD", "OUTPUT"):
+        check = _sh(f"iptables -t mangle -C {chain} -p tcp --tcp-flags SYN,RST SYN "
+                    f"-j TCPMSS --clamp-mss-to-pmtu")
+        if check.returncode != 0:
+            add = _sh(f"iptables -t mangle -A {chain} -p tcp --tcp-flags SYN,RST SYN "
+                      f"-j TCPMSS --clamp-mss-to-pmtu")
+            if add.returncode != 0:
+                log(f"  ! no MSS clamp on {chain}: {add.stderr.strip()[:160]}")
+                log("    (the guest's own MTU is still applied through virtio-net host_mtu)")
 
     _sh(f"iptables -t nat -C POSTROUTING -s {BRIDGE_IP}/{PREFIX} -j MASQUERADE")
     if _sh(f"iptables -t nat -C POSTROUTING -s {BRIDGE_IP}/{PREFIX} -j MASQUERADE").returncode != 0:

@@ -244,6 +244,11 @@ class Shape:
     # the port forwards - so this field only says WHICH tap. Empty means the default.
     tap_ifname: str = ""
     tap_mac: str = ""
+    # THE MTU THE GUEST'S NIC IS TOLD, through virtio-net's MTU feature rather than DHCP
+    # or ICMP. Zero means "do not set it", which is what every non-macOS guest did before
+    # this field existed. Guest.start() fills it from the tap when left empty - see the
+    # long note in build_args() for why a guest larger than its tap is the broken case.
+    net_mtu: int = 0
     # A host directory to expose over SMB. Empty means no share, and the netdev is
     # exactly what it was before this field existed - see lib/share.py for why SMB
     # rather than virtiofs or 9p.
@@ -394,9 +399,39 @@ def build_args(work: str, extra: list[str] | None = None,
     # fails loudly, after the guest has been created.
     tap = shape.tap_ifname or "qemutap0"
     mac = shape.tap_mac or "52:54:00:56:4d:01"
+    # host_mtu IS THE ONLY WAY THIS GUEST LEARNS THE LINK'S MTU.
+    #
+    # The bridge and the tap are created at the uplink's MTU (lib/net.py, `MTU`), and the
+    # guest's default is 1500 because virtio-net advertises nothing. A guest at 1500 on a
+    # 1450 link emits full-size 1500-byte frames that the host silently drops, and macOS
+    # ignores both the DHCP `option:mtu` and the ICMP fragmentation-needed that would fix
+    # it: measured on this cluster, `en0` stayed at 1500 through a lease from a dnsmasq
+    # that was handing out mtu 1450, and gdmf.apple.com timed out at 000 while the same
+    # request from the container returned 200.
+    #
+    # The failure it causes is "Failed to download required installer asset
+    # (com_apple_MobileAsset_MacSoftwareUpdate.plist)". The TLS handshake is what breaks:
+    # the server's certificate is 3443 bytes, so its first segment is a full 1448-byte
+    # payload, and every retransmission is dropped the same way - the handshake never
+    # completes, so the installer reports a failed download with no network error.
+    #
+    # host_mtu sets the virtio-net MTU feature, which the guest driver reads into the
+    # interface at probe time. It bypasses DHCP and ICMP entirely, which is why it is the
+    # fix rather than MSS clamping: the kernel here has no xt_TCPMSS, so lib/net.py's
+    # clamp rules are rejected (`RULE_APPEND failed: No such file or directory`) and the
+    # guest would keep offering an MSS of 1460 down a 1450-byte path.
+    #
+    # The value is the tap's MTU, and the ordering matters: a guest LARGER than its tap is
+    # the broken case. Measured here, guest 1500 / tap 1450 drops every full segment, and
+    # guest 1450 / tap 1450 works.
+    net_mtu = shape.net_mtu or 0
+    # `romfile=` MUST BE EMPTY. The empty value is what suppresses the iPXE option ROM;
+    # a value there would be read as a path to a firmware image. `mtu_arg` begins with a
+    # comma so it appends as another device property (`romfile=,host_mtu=1450`).
+    mtu_arg = f",host_mtu={net_mtu}" if net_mtu else ""
     args += [
         "-netdev", f"tap,id=n0,ifname={tap},script=no,downscript=no",
-        "-device", f"virtio-net-pci,netdev=n0,mac={mac},romfile=",
+        "-device", f"virtio-net-pci,netdev=n0,mac={mac},romfile={mtu_arg}",
     ]
 
     if shape.machine:
@@ -495,6 +530,14 @@ class Guest:
         net.up(ssh_port=self.shape.ssh_port, rdp_port=self.shape.rdp_port)
         self.shape.tap_ifname = self.shape.tap_ifname or net.TAP
         self.shape.tap_mac = self.shape.tap_mac or net.GUEST_MAC
+        # THE GUEST'S MTU IS THE TAP'S, ALWAYS, UNLESS A CALLER ASKED OTHERWISE.
+        #
+        # Filling it here rather than in each of the twenty-odd callers is the same
+        # argument the tap itself is filled here for: the one caller that forgets produces
+        # a guest that boots, gets a lease, resolves names, and then cannot complete a TLS
+        # handshake - a failure a long way from its cause. See build_args() for the
+        # measurement.
+        self.shape.net_mtu = self.shape.net_mtu or net.MTU
 
         args = build_args(self.work, self.extra, self.shape)
 
