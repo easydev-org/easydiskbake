@@ -575,10 +575,18 @@ def _update_26(w: Wizard) -> bool:
     except Exception as exc:                           # noqa: BLE001
         log(f"  the reset could not be sent: {exc}")
         return False
-    # THE GUEST REBOOTS INTO ITS LOGIN WINDOW. wait_for_desktop in desktop.py recognises it
-    # and types the password; this driver is finished.
     log("  reset sent; the login window is the next stage's to handle")
-    time.sleep(20)
+
+    # SIX HUNDRED SECONDS, BY INSTRUCTION. It was 20, which is long enough for a Mac that
+    # reboots in seconds and not for this one: after system_reset the guest sits at
+    # `HANDOFF TO XNU` with the CPU spinning and the disk untouched, and measured on this
+    # cluster that state lasted minutes, not twenty seconds. Returning while the machine is
+    # mid-boot hands the next stage a screen with no login window on it yet.
+    #
+    # The driver is not doing anything during this wait - desktop.py's wait_for_desktop owns
+    # the boot from here and has its own 1800s budget - so this is the driver declining to
+    # race it, not a second timeout.
+    time.sleep(600)
     return True
 
 
