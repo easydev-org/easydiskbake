@@ -1,0 +1,146 @@
+name: manjaro-gui
+
+# Install Manjaro Linux 26.1.0 KDE from its official Live ISO, through Calamares, its graphical installer.
+#
+# Manjaro's live session opens `Manjaro Hello`, whose `Launch installer`
+# button starts its own build of Calamares. Three of its panes differ from
+# every other Calamares here: the footer is 7 px higher on Office Suite, that
+# pane's list has a highlight that is NOT a selection, and the Users pane has
+# two separate password pairs because `use the same password for the
+# administrator account` ships unchecked.
+#
+# THE MEDIUM IS BOOTED AS ITS OWN BOOTLOADER INTENDS - no -kernel, no -initrd, no
+# hand-copied command line. Those were tried and cost two runs: an added `copytoram`
+# filled the guest's memory from the ISO's own squashfs, and a guessed
+# `archisobasedir=garuda` sent Garuda to an emergency shell because its medium is miso,
+# not archiso. The ISO's own grub.cfg has both right, and the firmware finds it through
+# the El Torito catalog.
+#
+# THE MACHINE IS UEFI. On the BIOS path Garuda refuses outright ("not booted in UEFI
+# mode ... unsupported") and produced disks with an MBR and no ESP. Booting the medium on
+# OVMF is what its own images expect, and it is what lib/uefi.py attaches.
+#
+# MANUAL ONLY: an installer driven by synthetic clicks is not something to run on every push.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bake_run:
+        description: "Install Manjaro Linux 26.1.0 KDE through Calamares"
+        type: boolean
+        default: true
+      iso_url:
+        description: "ISO URL (empty for the pinned image)"
+        default: ""
+      iso_sha256:
+        description: "ISO sha256 (empty for the pinned value)"
+        default: ""
+      disk_size:
+        description: "guest disk size"
+        default: "64G"
+      install_timeout:
+        description: "seconds the installer may take"
+        default: "5400"
+      publish_tag:
+        description: "tag to publish under; empty for linux-manjaro-gui"
+        default: "linux-manjaro-gui"
+      publish:
+        description: "publish the finished disk to ghcr"
+        type: boolean
+        default: true
+
+concurrency:
+  group: manjaro-gui-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bake:
+    if: inputs.bake_run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '40'
+          token: ${{ github.token }}
+
+      - name: prepare
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: manjaro-gui-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py tags --prefix linux-
+
+      - name: fetch the Live ISO
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: manjaro-gui-iso
+          interval: "10"
+          command: |
+            set -euo pipefail
+            URL="${{ inputs.iso_url }}"
+            SHA="${{ inputs.iso_sha256 }}"
+            if [ -z "$URL" ]; then
+              URL="https://download.manjaro.org/kde/26.1.0/manjaro-kde-26.1.0-260812-linux71.iso"
+              SHA="711b64362abe0b45348dc33bd4a2c654641e069b50ae9ae37c01771da880aa99"
+            fi
+            mkdir -p out/iso
+            ISO_URL="$URL" ISO_SHA256="$SHA" DEST="out/iso/manjaro-kde-26.1.0-260812-linux71.iso" \
+              python3 lib/fetch_vendor_iso.py --segments 8
+
+      - name: install through Calamares
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: manjaro-gui-install
+          interval: "15"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            export SNAPSHOT_INTERVAL=2
+            ISO=$(ls out/iso/*.iso | head -1)
+            echo "iso: $ISO"
+            python3 linux/manjaro-gui/install.py \
+              --iso "$ISO" \
+              --out out/manjaro-gui.qcow2 \
+              --disk-size "${{ inputs.disk_size || '64G' }}" \
+              --timeout "${{ inputs.install_timeout || '5400' }}"
+
+      - name: keep the recording
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: manjaro-gui-recording
+          path: |
+            out/install.mp4
+            out/last-frame.png
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: push the disk
+        if: success() && inputs.publish
+        id: publish
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/manjaro-gui.qcow2
+          kind: linux-manjaro-gui
+          tag: ${{ inputs.publish_tag || 'linux-manjaro-gui' }}
+          token: ${{ github.token }}

@@ -2,21 +2,22 @@ name: fedora-gui
 
 # Install Fedora Workstation 43 from its official Live ISO, through Anaconda, its graphical installer.
 #
-# WHY THIS IS A LIVE ISO AND NOT AN INSTALLER IMAGE
-#
 # Fedora publishes no separate installer image: Workstation IS a live desktop
-# with Anaconda on it. The installer is started from a Welcome dialog that the
-# live session opens by itself.
+# with Anaconda on it. The installer starts from a Welcome dialog that the
+# live session opens by itself - and that dialog is NOT the installer, which
+# cost one run: the driver clicked Anaconda's Next while the dialog was still
+# on screen, and every later click aimed at a window that had never opened.
 #
-# SO THE MACHINE REACHES A DESKTOP FIRST, and the installer is started from it - an icon on
-# the desktop, or a window the session opens by itself. Everything after that is a measured
-# sequence of positions in linux/fedora-gui/install.py, which is where the coordinates and the
-# reasons for them live.
+# THE MEDIUM IS BOOTED AS ITS OWN BOOTLOADER INTENDS - no -kernel, no -initrd, no
+# hand-copied command line. Those were tried and cost two runs: an added `copytoram`
+# filled the guest's memory from the ISO's own squashfs, and a guessed
+# `archisobasedir=garuda` sent Garuda to an emergency shell because its medium is miso,
+# not archiso. The ISO's own grub.cfg has both right, and the firmware finds it through
+# the El Torito catalog.
 #
-# THE ISO'S OWN KERNEL IS BOOTED DIRECTLY, as every Linux bake here does. The alternative is
-# the medium's boot menu, which is a screen, and a screen is something a driver would have to
-# read. `root=live:CDLABEL=Fedora-WS-Live-43 rd.live.image` is copied from the ISO's own boot entry so qemu passes it instead of a
-# person pressing Enter.
+# THE MACHINE IS UEFI. On the BIOS path Garuda refuses outright ("not booted in UEFI
+# mode ... unsupported") and produced disks with an MBR and no ESP. Booting the medium on
+# OVMF is what its own images expect, and it is what lib/uefi.py attaches.
 #
 # MANUAL ONLY: an installer driven by synthetic clicks is not something to run on every push.
 
