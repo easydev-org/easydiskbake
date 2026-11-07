@@ -247,10 +247,23 @@ def walk_anaconda(drv: Driver, args) -> bool:
     # the same key in every language, and every advance is made with Alt+N - Anaconda binds
     # it to the Next button under every locale it ships.
     drv.look("anaconda welcome")
-    log("closing the language list with Escape (it is open by default and covers the footer)")
-    Q.key(drv.q, "esc")
-    time.sleep(3.0)
-    drv.look("after closing the list")
+
+    # ESCAPE, REPEATEDLY, AND AFTER ANACONDA HAS SETTLED.
+    #
+    # The comment above says the list is closed with Escape; what it did not say is WHEN.
+    # Run at 17:17:39 pressed Escape two seconds after `Anaconda is up`, and the list was
+    # still on screen afterwards - the window had only just mapped and the key went to a
+    # widget that was not ready. Three presses, a second apart, is what a person does when
+    # the first one appears to do nothing, and it costs three seconds.
+    for attempt in range(1, 4):
+        log(f"closing the language list with Escape (attempt {attempt})")
+        Q.key(drv.q, "esc")
+        time.sleep(1.5)
+        drv.look(f"after escape {attempt}")
+        # THE LIST HAS A SEARCH BOX AT ITS TOP; the pane does not. That is the phrase to
+        # look for, and it is the only use of the reading here.
+        if "suggested" not in drv.text():
+            break
 
     for pane, expected_set in (
         ("welcome", ("installation method", "metodo de instalacion", "methode d'installation")),
