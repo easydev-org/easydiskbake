@@ -27,8 +27,8 @@ Everything below was measured on a UEFI machine on 2026-11-07, driving Manjaro L
 
    This is the fourth instance of the same trap in this repository - CachyOS's Bootloader
    and Partitions, Garuda's System Role, and now this - and the tell is always the same:
-   the footer button is greyed out. See `advance()` below for what the driver does instead
-   of trusting the highlight.
+   the footer button is greyed out. The click below is made on the ROW, at a measured
+   coordinate, and nothing is read to decide whether it took.
 
 4. THE USERS PANE HAS TWO PASSWORD PAIRS. `Use the same password for the administrator
    account` is UNCHECKED by default here, unlike Garuda and CachyOS, so the root password
@@ -91,20 +91,6 @@ ACCOUNT = {
 # THE LIVE MEDIUM'S BOOT TIME, AS A NUMBER - see wait_for_desktop.
 DESKTOP_SECONDS = 240
 
-# CALAMARES' SIDEBAR LISTS EVERY PANE AT ALL TIMES, AND IT IS NOT AT THE LEFT EDGE.
-#
-# The panel spans x 447..630 on this ISO - it is a CENTRED window, not a full-screen one -
-# so a cutoff of 250 filtered almost nothing: `Office` read at x=482 and `Suite` at x=528
-# were kept as CONTENT. `expect="office"` was therefore TRUE ON THE USERS PANE, and run
-# 42408641011 sat on Users for half an hour logging `installing: ... What is your name?`
-# because every advance reported success without moving.
-#
-# Measured on run 42408641011's own frame: sidebar words at x 482-626, content words from
-# x 1139. 700 is past the panel's right edge and well short of the content's, so the
-# filter keeps only what the pane itself says.
-SIDEBAR_WIDTH = 700
-
-
 def log(msg: str) -> None:
     print(f"[manjaro-gui {time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
@@ -131,23 +117,15 @@ class Driver:
         self.words = self.screen.text(ppm) if ppm else []
         log(f"  {label}: {' | '.join(w[0] for w in self.words[:18])}")
 
-    def text(self, content_only: bool = False) -> str:
-        """Everything OCR read, optionally WITHOUT Calamares' sidebar.
+    def text(self) -> str:
+        """Everything OCR read, for the LOG ONLY.
 
-        THE SIDEBAR HAS TO BE EXCLUDABLE AND THIS IS THE BUG THAT MADE THIS NECESSARY.
-        Calamares lists every pane down the left at all times - `Welcome Location Keyboard
-        Partitions Users Office Suite Summary Install Finish` - so `expect="office"` was
-        TRUE ON THE USERS PANE. Run 42398673800 advanced from Users with that expectation,
-        landed on Office Suite, and the driver believed it had already arrived: it clicked
-        `No Office Suite` and then the footer, was still on Users, and sat there until the
-        stall detector ended the run 908 seconds later.
-
-        The cutoff is SIDEBAR_WIDTH, and it has to be past the panel's right edge rather
-        than at the window's left border - see the constant.
+        IT DECIDES NOTHING. This driver - like ubuntu-gui and kubuntu-gui - advances on a
+        measured coordinate and a measured wait; the reading exists so that a failed run
+        can be diagnosed from its log without the recording. See walk_calamares for the two
+        detectors that were tried here and both made the run worse.
         """
-        if not content_only:
-            return " ".join(w[0].lower() for w in self.words)
-        return " ".join(w[0].lower() for w in self.words if w[1] > SIDEBAR_WIDTH)
+        return " ".join(w[0].lower() for w in self.words)
 
     def click(self, xy, why: str, settle: float = 3.0) -> None:
         log(f"click {xy} - {why}")
@@ -183,58 +161,6 @@ class Driver:
             log(f"  COULD NOT TYPE {unsupported!r}")
         time.sleep(0.7)
 
-    def advance(self, name: str, xy, *, settle: float = 18.0,
-                expect: str = "", max_tries: int = 3) -> bool:
-        """Click a footer button until the pane changes, and give up saying where.
-
-        THE THIRD TRY IS FOR A DISABLED BUTTON, NOT FOR A MISSED CLICK. Manjaro's
-        Calamares greys out its footer when a pane's own selection is missing - Office
-        Suite is the one that matters here - and a greyed button swallows clicks without
-        any feedback. Retrying costs seconds; assuming the click landed costs the run.
-
-        `expect` is a phrase that only the NEXT pane shows - but it is NEVER THE WHOLE TEST.
-        The content area has to have moved as well, and that is the second fix for a bug
-        that cost half an hour.
-
-        Run 42408641011 sat on Users with `expect="office"` reporting success every poll.
-        The pane's own words include a LibreOffice line that OCR reads as `Office`, so the
-        phrase was true on Users, on Office Suite and everywhere in between, and the driver
-        never noticed it had not moved. A phrase is evidence only in combination with a
-        change: `office` ON a pane that no longer says `What is your name?` is the Office
-        Suite pane; `office` on the same pane is the pane it started on.
-
-        WITHOUT `expect` THE CHANGE ALONE IS THE TEST, which is what a click on Next does
-        when it works and does nothing when it does not.
-        """
-        before = self.text(content_only=True)
-        for attempt in range(1, max_tries + 1):
-            self.click(xy, f"{name}: Next (attempt {attempt})", settle=settle)
-            self.look(f"after {name}")
-            current = self.text(content_only=True)
-            if current and current != before and (not expect or expect in current):
-                return True
-        # ALT+N IS CALAMARES' OWN BINDING FOR NEXT, AND IT IS THE FALLBACK THAT WAS MISSING.
-        #
-        # Calamares sizes its window to the pane's content, so the footer moves: on one ISO
-        # the same `Next` was 49 px lower on the Location pane than on Welcome, and a
-        # coordinate measured on one pane landed on the map of the next. CachyOS' run
-        # 42408635655 clicked nine times at a fixed point and never left Location.
-        #
-        # Manjaro has not shown that failure yet, but it is the same wizard on the same
-        # kind of pane, and the fallback costs one keystroke. It is tried LAST because on
-        # the Summary pane Alt+N starts the installation.
-        Q.key_combo(self.q, "alt", "n")
-        time.sleep(settle)
-        self.look(f"after {name} by keyboard")
-        current = self.text(content_only=True)
-        if current and current != before and (not expect or expect in current):
-            return True
-        log(f"=== {name.upper()} DID NOT ADVANCE, BY CLICK OR BY KEYBOARD ===")
-        log(f"  expected: {expect!r}")
-        log(f"  screen: {current[:220]}")
-        return False
-
-
 def wait_for_desktop(drv: Driver, timeout: int) -> bool:
     """Wait a MEASURED TIME, then stop.
 
@@ -253,43 +179,66 @@ def wait_for_desktop(drv: Driver, timeout: int) -> bool:
 
 
 def walk_calamares(drv: Driver, args) -> bool:
-    """Click through Manjaro's nine panes."""
-    # 1. THE WELCOME WINDOW'S BUTTON. Retried: the live session draws that window while
-    #    this driver is arriving from a fixed wait, so the first press can land on a window
-    #    still opening.
-    for attempt in (1, 2):
-        drv.double_click(LAUNCH_INSTALLER, "Launch installer", settle=35.0)
+    """Click through Manjaro's nine panes: A MEASURED COORDINATE, THEN A MEASURED WAIT.
+
+    NOTHING IS READ TO DECIDE ANYTHING. Each step is a number in this file and a duration;
+    the screen is read afterwards and the reading goes into the log, where it is useful for
+    a post-mortem and dangerous as a decision. This is the rule ubuntu-gui and kubuntu-gui
+    already follow, and the reason both of them are green.
+
+    WHAT WENT WRONG WHEN THIS DRIVER DID DECIDE, TWICE:
+
+      a word per pane - `expect="office"` was TRUE ON THE USERS PANE, because its own
+      content mentions LibreOffice, so run 42398673800 "advanced" to Office Suite while
+      standing on Users and sat there for 908 seconds;
+
+      the whole OCR text before against after - prose does not read identically twice, so
+      that is true while standing still, and run 42413739470 reported every step from
+      Welcome to `the install confirmation's Install Now` as an advance while it had never
+      left Users.
+
+    A NUMBER AND A WAIT CANNOT MAKE EITHER MISTAKE. Every coordinate below was taken from a
+    frame of this ISO, and this window keeps ONE size - measured on Welcome, Location,
+    Keyboard, Partitions, Users, Office Suite and Summary, the footer button is at the same
+    place on all of them. Manjaro's Calamares does not resize per pane the way CachyOS'
+    does, so one Next coordinate is right for the whole wizard.
+    """
+    # 1. THE WELCOME WINDOW'S BUTTON. Clicked twice: the live session draws that window
+    #    while this driver is arriving from a fixed wait, and the first press on an
+    #    unfocused window is taken as focus.
+    drv.double_click(LAUNCH_INSTALLER, "Launch installer", settle=35.0)
+    drv.look("calamares welcome")
+    if "welcome" not in drv.text():
+        log("the installer did not open on the first double-click; trying once more")
+        drv.double_click(LAUNCH_INSTALLER, "Launch installer (second attempt)", settle=40.0)
         drv.look("calamares welcome")
-        if "welcome" in drv.text() and "installer" in drv.text():
-            break
     if "welcome" not in drv.text():
         log("=== THE INSTALLER DID NOT OPEN ===")
         log(f"  screen: {drv.text()[:200]}")
         return False
 
-    # 2. WELCOME -> LOCATION. The pane names are stable in English, which the installer's
-    #    own default (American English) gives us.
-    if not drv.advance("welcome", NEXT_DEFAULT, settle=15.0):
-        return False
+    # 2. WELCOME -> LOCATION.
+    drv.click(NEXT_DEFAULT, "Welcome: Next", settle=18.0)
+    drv.look("location")
 
     # 3. LOCATION -> KEYBOARD. The default zone is kept: whatever the installer read from
     #    the network at startup stays. Changing it is one more field that can go wrong for
     #    no gain, and the bake's job is a disk that installs, not a particular region.
     log("location left at the installer's default")
-    if not drv.advance("location", NEXT_DEFAULT, settle=15.0):
-        return False
+    drv.click(NEXT_DEFAULT, "Location: Next", settle=18.0)
+    drv.look("keyboard")
 
     # 4. KEYBOARD -> PARTITIONS.
-    if not drv.advance("keyboard", NEXT_DEFAULT, settle=15.0):
-        return False
+    drv.click(NEXT_DEFAULT, "Keyboard: Next", settle=18.0)
+    drv.look("partitions")
 
     # 5. PARTITIONS. On UEFI `Erase disk` is already selected and the layout already has
     #    its 300 MiB EFI partition; the click is a confirmation that costs nothing when it
     #    is already set, and fixes it when it is not.
-    drv.click(ERASE_DISK, "Partitions: Erase disk", settle=5.0)
+    drv.click(ERASE_DISK, "Partitions: Erase disk", settle=6.0)
     drv.look("erase disk selected")
-    if not drv.advance("partitions", NEXT_DEFAULT, settle=20.0):
-        return False
+    drv.click(NEXT_DEFAULT, "Partitions: Next", settle=20.0)
+    drv.look("users")
 
     # 6. THE ACCOUNT. Two password pairs - see the module docstring.
     log("filling the account form")
@@ -301,16 +250,16 @@ def walk_calamares(drv: Driver, args) -> bool:
     drv.clear_and_type(ACCOUNT["root password"], args.password)
     drv.clear_and_type(ACCOUNT["root confirm"], args.password)
     drv.look("account filled")
-    if not drv.advance("users", NEXT_DEFAULT, settle=20.0):
-        return False
+    drv.click(NEXT_DEFAULT, "Users: Next", settle=20.0)
+    drv.look("office suite")
 
     # 7. OFFICE SUITE. THE ROW, NOT THE HIGHLIGHT - see the module docstring. Without this
     #    click Next is disabled and every retry is swallowed.
     log("selecting No Office Suite (the row itself; the highlight is not a selection)")
-    drv.click(NO_OFFICE_SUITE, "Office Suite: No Office Suite", settle=5.0)
+    drv.click(NO_OFFICE_SUITE, "Office Suite: No Office Suite", settle=6.0)
     drv.look("office suite selected")
-    if not drv.advance("office suite", NEXT_OFFICE, settle=20.0):
-        return False
+    drv.click(NEXT_OFFICE, "Office Suite: Next", settle=20.0)
+    drv.look("summary")
 
     # 8. SUMMARY -> INSTALL, then the modal's own button.
     drv.click(INSTALL_BUTTON, "Summary: Install", settle=18.0)
@@ -320,28 +269,24 @@ def walk_calamares(drv: Driver, args) -> bool:
     drv.click(CONFIRM_INSTALL_NOW, "the install confirmation's Install Now", settle=30.0)
     drv.look("installing")
 
-    # 9. UNTIL IT SAYS SO, WITH A STALL DETECTOR.
+    # 9. UNTIL IT SAYS SO.
+    #
+    # THE ONLY DECISION IN THIS FUNCTION, AND IT IS THE SAFE KIND. Completion is a TERMINAL
+    # condition: there is nothing after it to skip, so matching the words the installer
+    # prints at the end cannot miss a pane.
+    #
+    # A CLICK, NOT A POINTER MOVE, keeps the session awake: an idle desktop raises its lock
+    # screen, and a locked desktop has no installer on it - mint-gui's last frame was a
+    # full-window lock screen while a correct install finished underneath.
     log("waiting for the installer to finish")
     started = time.time()
-    stalled_since = time.time()
-    previous = ""
     while time.time() - started < args.timeout:
-        # NUDGE THE POINTER, OR THE SCREEN BLANKS AND EVERY READING IS BLACK.
-        #
-        # Run 42404589611 clicked Install Now at 19:15:28 and then read a solid black frame
-        # for the next twenty-five minutes, until the stall detector ended the run at 912
-        # seconds. A desktop session with no input blanks its display; a blanked display has
-        # no words, so "the installer is still working" and "the installer finished" look
-        # identical. One pixel of movement per poll keeps the session awake - the same fix,
-        # for the same reason, as the Ubuntu verification run.
         try:
             Q.click(drv.q, 400 + (int(time.time()) % 40), 300)
         except Exception:                              # noqa: BLE001
             pass
         drv.look("installing")
         current = drv.text()
-        if current != previous:
-            previous, stalled_since = current, time.time()
         # COMPLETION IS THE SENTENCE, NOT THE HEADING.
         #
         # The Finish pane's heading is `All done.` in a large font, and tesseract does not
@@ -349,18 +294,12 @@ def walk_calamares(drv: Driver, args) -> bool:
         #
         #     manjar you may now re: environment. tart now * 3:58 pm * 11/7/26
         #
-        # with no `all done` anywhere. So the test was one the screen could never satisfy,
-        # and a correct install would have been thrown away at the timeout. `you may now`
-        # is the body sentence, it is unique to this pane, and it reads cleanly.
+        # with no `all done` anywhere. `you may now` is the body sentence, it is unique to
+        # this pane, and it reads cleanly.
         if ("all done" in current or "you may now" in current
                 or "has been installed" in current):
             log("=== INSTALL COMPLETE ===")
             return True
-        stalled = int(time.time() - stalled_since)
-        if stalled > 900:
-            log(f"=== THE SCREEN HAS NOT CHANGED IN {stalled}s ===")
-            log(f"  last screen: {current[:200]}")
-            return False
         time.sleep(20)
 
     log("=== THE INSTALLER NEVER REPORTED COMPLETION ===")
