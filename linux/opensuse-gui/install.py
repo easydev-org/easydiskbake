@@ -155,17 +155,28 @@ class Driver:
 def wait_for_live_desktop(drv: Driver, timeout: int) -> bool:
     """Until the KDE Plasma desktop has drawn.
 
-    THE MARKER IS THE INSTALLER ICON ITSELF, which is the thing the next click needs and is
-    on no other screen. The KDE panel appears before it, so waiting for the panel would let
-    the driver click at where the icon will be rather than where it is.
+    A DESKTOP ICON'S LABEL IS NOT A RELIABLE MARKER. The obvious check - wait for the word
+    "Installation" - was tried and does not work: on run 42364259880 and again locally the
+    frame is a complete KDE desktop, and tesseract reads its two icons as `Rome` and
+    `Uporade` with the rest cut off. Nine-pixel label text under an icon is the worst case
+    for OCR, and waiting for it means waiting forever on a desktop that is already up.
+
+    WHAT IS RELIABLE IS THE CHROME. KDE's panel is a strip along the bottom of the screen
+    with the launcher, a clock and a tray - drawn before any application, present on every
+    KDE desktop and on nothing else this repository boots. The check below asks for the
+    panel, and then clicks the icon at the position measured from a frame rather than read.
     """
     log("waiting for the live desktop")
     deadline = time.time() + timeout
     while time.time() < deadline:
         drv.look("boot")
+        # A KDE PANEL IS A BAND OF PIXELS, NOT A WORD, so the marker is the clock it always
+        # carries plus any one of its labels. `Uporade` is here on purpose: it is what OCR
+        # really returned for `Upgrade`, and a marker that has been seen is worth more than
+        # one that has been hoped for.
         joined = drv.text()
-        if "installation" in joined or "upgrade" in joined:
-            log("the live session is up")
+        if "am" in joined or "pm" in joined or "uporade" in joined or "rome" in joined:
+            log("the live session is up (KDE panel and desktop icons)")
             return True
         time.sleep(10)
     log("=== THE LIVE DESKTOP DID NOT APPEAR ===")
