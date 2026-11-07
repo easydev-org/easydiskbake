@@ -359,9 +359,15 @@ def walk_calamares(drv: Driver, args) -> bool:
     # worked is safe, and is what the check below does.
     drv.click(NEXT, "Summary: Install", settle=12.0)
     drv.look("confirm-dialog")
-    # THE MODAL IS CHECKED FOR, BY ITS TITLE, AND THAT IS THE ONLY USE OF THE READING.
-    # Calamares titles it `Confirm`; the Summary it covers says `overview`.
-    if "confirm" not in drv.screen_text(content_only=True):
+    # THE MODAL IS CHECKED FOR BY A PHRASE THAT IS ONLY IN THE MODAL.
+    #
+    # `Install Now` is its own button label and appears nowhere in the Summary's prose, so
+    # it is a question with one answer. The check before this one asked for "confirm" and
+    # the dialog's title is `Continue with Installation?` - so a run that had opened the
+    # modal correctly reported that it had not, and stopped. That frame is in the commit
+    # message and in the artifact: the dialog was there with `Install Now` at (1058, 535),
+    # exactly where INSTALL_NOW points.
+    if "install now" not in drv.screen_text(content_only=True):
         log("=== THE CONFIRMATION DIALOG DID NOT APPEAR ===")
         log(f"  screen: {drv.screen_text(content_only=True)[:200]}")
         return False

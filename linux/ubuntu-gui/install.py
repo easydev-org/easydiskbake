@@ -145,6 +145,16 @@ class Installer:
         have = {"".join(c for c in w[0].lower() if c.isalnum()) for w in self.words}
         return all("".join(c for c in x.lower() if c.isalnum()) in have for x in want)
 
+    def screen_text(self) -> str:
+        """Everything OCR read, as one lowercased string.
+
+        USED ONLY TO NOTICE THAT THE SCREEN STOPPED CHANGING - never to decide where to
+        click. Those are different questions and only one of them is safe: a lookup can be
+        talked into clicking a word in a paragraph, which is exactly what stalled the
+        sibling kubuntu-gui driver for eighty-seven minutes.
+        """
+        return " ".join(w[0].lower() for w in self.words)
+
     def click(self, xy, why: str, settle: float = 8.0) -> None:
         log(f"  click {xy} - {why}")
         qmpmod.click(self.q, *xy)
@@ -332,8 +342,22 @@ def main(argv: list[str]) -> int:
             log("waiting for the installer to finish")
             finished = False
             deadline = time.time() + args.timeout
+            # A SCREEN THAT HAS NOT CHANGED IN FIFTEEN MINUTES IS A DEAD RUN, NOT A SLOW ONE.
+            #
+            # ubuntu-gui has never stalled - this loop is the one part of it that has not
+            # been proved by a failure. The sibling driver, kubuntu-gui, stalled on run
+            # 42364250527 and spent eighty-seven of its ninety minutes logging one identical
+            # OCR line every twenty seconds; the timeout was the only thing that ended it.
+            # Finishing an install always changes the screen - a progress bar moves, a
+            # package name changes, a pane changes - so a plateau that long means the
+            # installer is not working and waiting longer cannot help.
+            stalled_since = time.time()
+            previous = ""
             while time.time() < deadline:
                 drv.look("finish")
+                current = drv.screen_text()
+                if current != previous:
+                    previous, stalled_since = current, time.time()
                 if drv.says("installation", "complete") or drv.says("installed", "ready"):
                     log("=== INSTALL COMPLETE ===")
                     finished = True
@@ -341,6 +365,12 @@ def main(argv: list[str]) -> int:
                 if drv.says("restart", "now"):
                     log("=== INSTALL COMPLETE (restart prompt) ===")
                     finished = True
+                    break
+                stalled = int(time.time() - stalled_since)
+                if stalled > 900:
+                    log(f"=== THE SCREEN HAS NOT CHANGED IN {stalled}s ===")
+                    log("  the installer is not working; waiting longer will not change that")
+                    log(f"  last screen: {current[:200]}")
                     break
                 time.sleep(20)
             if not finished:

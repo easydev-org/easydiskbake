@@ -323,12 +323,15 @@ def choose_scfb(drv: Driver, timeout: int) -> bool:
             log("the MATE desktop is up")
             return True
 
-        # THE MENU NAMES ITS OWN ENTRIES, which is a far better signal than the title above
-        # them: "scfb" appears once, as "Start Desktop with SCFB driver", and does not appear
-        # on the desktop or anywhere else in the boot. Matching "failed" instead would also
-        # match the title it sits under, and a boot that merely printed an error would be
-        # answered with four Down keys meant for a list that was never drawn.
-        if "scfb" in joined:
+        # THE MENU IS RECOGNISED BY ITS TITLE, NOT BY ONE OF ITS ENTRIES.
+        #
+        # Run 42364259880 looked for the word "scfb" and failed while the menu was on
+        # screen: the selected row is drawn inverted and OCR read only that one, as
+        # `Start Desktop with Legacy Intel dri`. The bottom four of the five entries were
+        # invisible to it. Matching the title - which is present whatever row is selected -
+        # is the question that actually has one answer.
+        if "failed to auto" in joined or ("start desktop with" in joined
+                                          and ("driver" in joined or "dri" in joined)):
             log("the X driver menu is up; choosing scfb (the UEFI framebuffer)")
             for _ in range(SCFB_DOWNS):
                 Q.key(drv.q, "down")
