@@ -69,7 +69,7 @@ import vm           # noqa: E402
 # THE WELCOME DIALOG THE LIVE SESSION OPENS ON ITS OWN. It has two buttons; the left one
 # starts Anaconda. Measured from the frame, and clicked TWICE because the first press on an
 # unfocused window is taken as focus - which is the same failure the Kubuntu driver hit.
-INSTALL_BUTTON = (838, 707)
+INSTALL_BUTTON = (838, 708)
 
 # THE ANACONDA FOOTER. Back / Next / Quit, right-aligned, and the same three positions on
 # every pane because Anaconda keeps the footer fixed.
@@ -144,6 +144,18 @@ class Driver:
         self.click(xy, why, settle=0.8)
         self.click(xy, f"{why} (second click)", settle=settle)
 
+    def alt_n(self, why: str, settle: float = 12.0) -> None:
+        """Alt+N, which Anaconda binds to its forward button in every language.
+
+        A CLICK ON A TRANSLATED LABEL IS A COORDINATE THAT MOVES. The footer is laid out
+        from its labels, so `Next` at x 729 is `Siguiente` at 744 and `Suivant` somewhere
+        else again - and run 42373700380 lost a whole run to exactly that, having been
+        measured in English and then handed a Spanish installer.
+        """
+        log(f"alt+n - {why}")
+        Q.key_combo(self.q, "alt", "n")
+        time.sleep(settle)
+
 
 def wait_for_live_desktop(drv: Driver, timeout: int) -> bool:
     """Until the live session has drawn a GNOME desktop.
@@ -167,6 +179,40 @@ def wait_for_live_desktop(drv: Driver, timeout: int) -> bool:
     return False
 
 
+def open_anaconda(drv: Driver, attempts: int = 4) -> bool:
+    """Open Anaconda from the live session's welcome dialog, and prove it opened.
+
+    THE DIALOG IS NOT ANACONDA AND DOES NOT OPEN BY ITSELF.
+
+    Run 42382690048 clicked `Install Fedora Linux...` at its measured centre (838, 708) and
+    the uploaded frame shows that dialog still on screen with everything after it pointed at
+    an installer that had never started: the driver's next click was Anaconda's `Next` at
+    (729, 1002), which on the welcome dialog is blank background, and the run then waited for
+    a pane that could not appear.
+
+    WHY THE CLICK DID NOT TAKE is timing: the live session draws the dialog and the driver
+    arrives from a fixed 230 s wait, so the first press can land on a window that is still
+    opening. The click is therefore repeated, and each attempt asks the only question that
+    matters - is Anaconda's own sidebar on screen - instead of assuming it.
+
+    THE MARKER IS THE SIDEBAR, NOT THE DIALOG. `Installation method` is one of Anaconda's
+    four panes and appears nowhere on the live desktop. `Welcome to Fedora Linux` is the
+    DIALOG's title, which is why matching it would answer the wrong question.
+    """
+    for attempt in range(1, attempts + 1):
+        log(f"opening Anaconda (attempt {attempt})")
+        drv.click(INSTALL_BUTTON, "Install Fedora Linux...", settle=3.0)
+        drv.click(INSTALL_BUTTON, "Install Fedora Linux... (second click)", settle=20.0)
+        drv.look("after Install Fedora Linux")
+        if "installation method" in drv.text() or "let's install" in drv.text():
+            log("Anaconda is up")
+            return True
+        log("  Anaconda is not up yet")
+    log("=== ANACONDA NEVER OPENED ===")
+    log(f"  screen: {drv.text()[:200]}")
+    return False
+
+
 def walk_anaconda(drv: Driver, args) -> bool:
     """Click through Anaconda, checking that each pane is the one expected.
 
@@ -176,41 +222,50 @@ def walk_anaconda(drv: Driver, args) -> bool:
     only found from the uploaded last frame, so each step here says what it expects to see
     afterwards.
     """
-    # 1. THE LIVE SESSION'S OWN WELCOME DIALOG.
-    drv.click_twice(INSTALL_BUTTON, "Install Fedora Linux on the live desktop", settle=25.0)
-    drv.look("anaconda welcome")
+    # 1. THE LIVE SESSION'S WELCOME DIALOG, and the installer behind it. See open_anaconda:
+    #    the dialog is not the installer, and a run that assumes otherwise points every
+    #    later click at a window that does not exist.
+    if not open_anaconda(drv):
+        return False
 
-    # 2. THE LANGUAGE. Only chosen when Anaconda did not already pick English; the locale
-    #    argument normally makes this unnecessary.
+    # 2. THE LANGUAGE, AND THEN THE LIST THAT COVERS THE FOOTER.
+    #
+    # TWO RUNS DIED HERE AND BOTH DID SO BY TRUSTING THE SCREEN.
+    #
+    # 42372442386: English was already selected, so the driver never clicked the list, so
+    #   nothing ever closed it - and the list is expanded by default, covering (729, 1002).
+    #   The Next click landed on the list. `after welcome:` was empty.
+    #
+    # 42373700380: the language was SPANISH. `locale=en_US.UTF-8` on the kernel command
+    #   line does not move Anaconda - it reads its locale from the live session, not from
+    #   the kernel - so this run looked for English at (860, 424) and clicked a row of a
+    #   Spanish list, missing it. The list stayed open and Next stayed covered.
+    #
+    # BOTH ARE THE SAME LESSON: the language is not part of the contract, so nothing below
+    # may depend on it. The list is closed with Escape, which is what a person does and is
+    # the same key in every language, and every advance is made with Alt+N - Anaconda binds
+    # it to the Next button under every locale it ships.
     drv.look("anaconda welcome")
-    if "english" not in drv.text():
-        log("Anaconda came up in another language; choosing English (United States)")
-        drv.click(LANGUAGE_EN_US, "English (United States)", settle=4.0)
-
-    # THE LANGUAGE DROPDOWN COVERS THE FOOTER WHILE IT IS OPEN, AND IT OPENS BY DEFAULT.
-    #
-    # Run 42372442386 clicked Next at (729, 1002) and the log says the click did nothing:
-    # `after welcome:` was empty, which is what the pane reads when its lower half is hidden.
-    # The uploaded frame shows why - the suggestion list is expanded over the content area
-    # and its bottom edge is below the footer. English was already selected, so the driver
-    # never clicked the list, and so nothing ever closed it.
-    #
-    # ONE CLICK ON THE PAGE TITLE CLOSES IT. The title is a fixed part of the pane, above
-    # the list, and clicking it selects nothing.
-    log("closing the language list (it covers the footer while open)")
-    drv.click((700, 165), "the pane title, to close the language list", settle=3.0)
+    log("closing the language list with Escape (it is open by default and covers the footer)")
+    Q.key(drv.q, "esc")
+    time.sleep(3.0)
     drv.look("after closing the list")
 
-    for pane, expected in (
-        ("welcome", "installation method"),
-        ("installation method", "storage configuration"),
-        ("storage configuration", "review and install"),
+    for pane, expected_set in (
+        ("welcome", ("installation method", "metodo de instalacion", "methode d'installation")),
+        ("installation method", ("storage configuration", "configuracion de almacenamiento")),
+        ("storage configuration", ("review and install", "revisar e instalar")),
     ):
-        drv.click(NEXT, f"{pane}: Next", settle=12.0)
+        # ALT+N, NOT A CLICK. The footer button is at a different x in every language -
+        # `Next`, `Siguiente`, `Suivant`, `Weiter` - and Alt+N is the binding that does not
+        # move. This is the same conclusion the Kubuntu driver reached and for the same
+        # reason: a translated label cannot be a coordinate.
+        drv.alt_n(f"{pane}: Next", settle=12.0)
         drv.look(f"after {pane}")
-        if expected not in drv.text():
-            log(f"=== {pane.upper()} DID NOT ADVANCE (expected {expected!r}) ===")
-            log(f"  screen: {drv.text()[:200]}")
+        text = drv.text()
+        if not any(expected in text for expected in expected_set):
+            log(f"=== {pane.upper()} DID NOT ADVANCE (expected one of {expected_set}) ===")
+            log(f"  screen: {text[:200]}")
             return False
 
     # 5. THE POINT OF NO RETURN. Its label is not "Next" and its position is not Next's.
