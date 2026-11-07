@@ -20,15 +20,24 @@ The bridge is discard. With `discard=unmap` on the target drive (macos/15/machin
 every trim the guest issues reaches qemu, and qemu drops the cluster from the qcow2. Without
 it, `diskutil` can trim all day and the image will not lose a byte.
 
-THE COMMAND IS `diskutil apfs trim`, AND IT TAKES A MOMENT TO EXPLAIN.
+THERE IS NO TRIM COMMAND ON macOS, AND THIS FILE USED TO INVENT ONE.
 
-    diskutil apfs trim /            tell APFS the free extents on / may be discarded
-    diskutil apfs trim status       report how far the trim has got; it runs in the background
+It called `diskutil apfs trim /` and polled `diskutil apfs trim status`. Neither verb
+exists - on a real 15.8.2 guest `diskutil apfs` lists its 21 verbs and trim is not among
+them. macOS has never shipped a user-facing trim: on a real Mac the storage driver issues it
+on a weekly timer, and `trimforce` only toggles third-party-SSD TRIM on and off.
 
-macOS issues trims on a weekly timer by default, so a bake that ran for an hour has never
-run one. `diskutil apfs trim` forces it now. `status` is polled because the work is
-asynchronous and the first version of this file would have reported success on the strength
-of the request rather than the result.
+Worse, the bridge has nothing to carry. Measured on that same guest with discard=unmap on
+the drive:
+
+    before                    4,802,776 blocks
+    after writing 2000 MiB    8,899,136 blocks
+    after rm + sync           8,899,136 blocks   <- not one cluster released
+
+APFS does not forward a discard to virtio-blk when a file is unlinked. So the guest cannot
+ask and the image cannot shrink, and the honest thing this cleaner can do is delete the bytes
+it can delete and report both numbers - what the guest freed and what the image lost - so the
+gap is measured instead of assumed.
 
 WHY NOT `diskutil secureErase` OR `diskutil zeroDisk`. Those write. lib/linclean.py measured
 what writing costs on a 128 GB disk - one second of `fstrim` released 116 GiB, then
@@ -37,10 +46,10 @@ about "copy-on-write allocates new blocks before the old ones are released" is a
 against exactly that. DISCARD writes nothing, which is the only kind of cleaning a
 copy-on-write filesystem can do safely.
 
-WHAT IT CANNOT DO. The recovery volume and the Preboot/VM volumes are APFS volumes in the
-same container and `diskutil apfs trim /` targets one mount point. Trimming the container
-would need `diskutil apfs trim <device>`, which this does not do yet - see the note in
-clean().
+WHAT IT CANNOT DO. It cannot shrink the image. The deletion frees space inside the guest,
+and `df` reports that; the qcow2 keeps every cluster it ever allocated. Anything that could
+shrink it would have to write - `secureErase freespace` refuses on a read-only system volume
+anyway, and writing is what the copy-on-write argument above rules out.
 """
 
 from __future__ import annotations
@@ -105,9 +114,9 @@ def _allocated_mib(disk: str | None) -> int:
 #   the log archive                 unified logging keeps its own store, and a VM that has
 #                                   booted four times has one
 STEPS = [
-    ("installer leftovers", "sudo rm -rf '/macOS Install Data' 2>/dev/null; true"),
-    ("software update cache", "sudo rm -rf /Library/Updates/* 2>/dev/null; true"),
-    ("log archive", "sudo log erase --all 2>/dev/null; sudo rm -rf "
+    ("installer leftovers", "SUDO_DO rm -rf '/macOS Install Data' 2>/dev/null; true"),
+    ("software update cache", "SUDO_DO rm -rf /Library/Updates/* 2>/dev/null; true"),
+    ("log archive", "SUDO_DO log erase --all 2>/dev/null; SUDO_DO rm -rf "
                     "/var/db/diagnostics/* /var/db/uuidtext/* 2>/dev/null; true"),
     ("user caches", "rm -rf ~/Library/Caches/* 2>/dev/null; true"),
     ("trash", "rm -rf ~/.Trash/* 2>/dev/null; true"),
@@ -115,18 +124,97 @@ STEPS = [
 
 # ASK, DO NOT WAIT FOREVER. The trim runs in the background and `status` reports a percentage;
 # 300s is generous for a 128 GB volume (the Linux trim of the same size took one second).
-TRIM_REQUEST = "sudo diskutil apfs trim / 2>&1"
-TRIM_STATUS = "sudo diskutil apfs trim status 2>&1"
+#
+# THERE IS NO `diskutil apfs trim`, AND THAT IS A FACT ABOUT macOS, NOT A TYPO.
+# This file was written against a command that does not exist. On a real 15.8.2 guest:
+#
+#     $ diskutil apfs trim status
+#     diskutil: did not recognize APFS verb "trim"; type "diskutil apfs" for a list
+#     $ diskutil apfs            # the verbs it does have, all 21 of them
+#     list listUsers listSnapshots listVolumeGroups convert create createContainer
+#     deleteContainer resizeContainer addVolume deleteVolume deleteVolumeGroup
+#     eraseVolume changeVolumeRole unlockVolume lockVolume changePassphrase
+#     setPassphraseHint encryptVolume decryptVolume deleteSnapshot defragment
+#     updatePreboot syncPatchUsers
+#
+# truncate IS NOT AMONG THEM, and nothing else in the list discards free extents. macOS has
+# never shipped a user-facing trim verb: TRIM on a real Mac is issued by the storage driver
+# on a weekly timer, and there is no `fstrim`, no `trimforce` that forces one now
+# (`trimforce enable` only toggles third-party-SSD TRIM on and off).
+#
+# SO THE TRIM IS NOT PART OF THIS CLEANER ANY MORE, AND THE MEASUREMENT SAYS WHY IT CANNOT BE.
+# Measured on that same guest with the drive carrying discard=unmap:
+#
+#     before                   4,802,776 blocks
+#     after writing 2000 MiB   8,899,136 blocks
+#     after rm + sync          8,899,136 blocks     <- not one cluster released
+#
+# APFS does not forward a discard to a virtio-blk device when a file is unlinked, so there is
+# nothing for qemu's discard=unmap to receive. The two alternatives were tried and both are
+# refused by the same guest:
+#
+#     diskutil secureErase freespace 0 /
+#       Erasing freespace only works on mounted and writable volumes
+#
+# - and it is the wrong tool anyway: it WRITES, which is what lib/linclean.py's measurement
+# says not to do on a copy-on-write image (one second of fstrim released 116 GiB; forty-nine
+# seconds of zeroing allocated 9 GB back).
+#
+# WHAT THIS MEANS FOR THE IMAGE SIZE. Deleting files still frees space INSIDE the guest, and
+# `df` reports it, but the qcow2 does not shrink. The report below prints both numbers so the
+# difference is visible rather than assumed - "freed by deleting" and "image allocated" are
+# different facts, and only the first one is something this cleaner can cause.
+
+# SUDO HAS NO TTY OVER SSH, SO IT HAS TO BE HANDED THE PASSWORD ON STDIN.
+#
+# Every command above runs through session.ssh(), which is `sshpass ... ssh host command` -
+# no terminal is allocated, so sudo cannot prompt, and it does not fall back to anything:
+#
+#     sudo: no tty present and no askpass program specified
+#     sudo: a password is required
+#
+# That is exactly what run 42390179102 hit at the last step of an otherwise green stage:
+#
+#     16:23:09  sshd admitted docker on port 2222
+#     16:23:09  === cleaning the guest, over ssh ===
+#     16:23:20  sudo: a password is required
+#     16:23:20  === diskutil apfs trim WAS REFUSED (exit 1) ===
+#     16:23:20  === THE CLEAN DID NOT FINISH ===
+#               nothing is published: the disk is not what this stage claims to produce
+#
+# The three rm/log steps before it looked like "no change" rather than failing, because each
+# ends in `2>/dev/null; true` - so the surface only showed up at the trim, which reports.
+#
+# `sudo -S` reads the password from stdin and `-p ''` suppresses the prompt text. The password
+# is the account's own, the same one sshpass just used to log in. macclean owns this
+# substitution rather than session.ssh, because sudo is a macOS detail and session is shared
+# with Linux and Windows.
+SUDO_TEMPLATE = "printf '%s\\n' {password} | sudo -S -p '' "
+
+
+def _sudo_password() -> str:
+    """The account's password, quoted for the shell it is about to be echoed into."""
+    import shlex
+    return shlex.quote(os.environ.get("MACOS_PASSWORD", "admin"))
+
+
+def _with_sudo(command: str) -> str:
+    """Replace the SUDO_DO placeholder with a sudo that can actually authenticate."""
+    return command.replace("SUDO_DO", SUDO_TEMPLATE.format(password=_sudo_password()))
 
 
 def clean(*, port: int, note=print, ssh_seconds: int = 900,
           disk: str | None = None) -> bool:
-    """Release what the guest can release. True when the trim reported itself complete.
+    """Delete what the guest can delete, and report what happened.
 
-    `disk` is the qcow2 on the host. It is used for one thing: reporting how much the IMAGE
-    shrank, which is a different number from what the guest freed. A trim can report 100 GiB
-    released and leave a qcow2 that holds every cluster it ever allocated, if `discard=unmap`
-    is missing from the drive - and that is the failure this whole file would otherwise hide.
+    TRUE MEANS THE DELETIONS RAN, NOT THAT THE IMAGE SHRANK. The guest can free space and the
+    qcow2 can keep every cluster it ever allocated - measured, see TRIM_IS_NOT_A_THING - so
+    the return value is about whether the cleaner did its work, and the two size numbers it
+    prints are the evidence for what that work was worth.
+
+    `disk` is the qcow2 on the host, used only to report what the IMAGE lost as well as what
+    the guest freed. Those are different numbers and only the second is something this
+    cleaner can cause.
     """
     from session import ssh
 
@@ -146,7 +234,7 @@ def clean(*, port: int, note=print, ssh_seconds: int = 900,
 
     previous = start
     for what, command in STEPS:
-        status, out = ssh(port, command, timeout=ssh_seconds)
+        status, out = ssh(port, _with_sudo(command), timeout=ssh_seconds)
         now = _used(port)
         if now is None:
             note(f"  {what}: the guest stopped answering")
@@ -156,50 +244,10 @@ def clean(*, port: int, note=print, ssh_seconds: int = 900,
              f"  {what}: no change (now {now} MB)")
         previous = now
 
-    # THE TRIM ITSELF, AND THE POLLING THAT MAKES IT EVIDENCE.
-    #
-    # `diskutil apfs trim` RETURNS WHEN THE REQUEST IS ACCEPTED, NOT WHEN THE WORK IS DONE.
-    # Treating exit 0 as success would report a trim that had not started, which is the same
-    # shape of mistake as the FreeBSD cleaner making a ZFS trim look like a failed fsck.
-    note("  discarding the free blocks (diskutil apfs trim)")
-    status, out = ssh(port, TRIM_REQUEST, timeout=600)
-    for line in (out or "").strip().splitlines():
-        if line.strip():
-            note(f"    {line.strip()[:170]}")
-    if status != 0:
-        note(f"=== diskutil apfs trim WAS REFUSED (exit {status}) ===")
-        note("  the lines above say why; a volume that cannot trim (an HFS+ root, or a")
-        note("  guest that is not the installed system) reports it here")
-        if disk:
-            note(f"  the image was NOT shrunk: {disk}")
-        return False
-
-    # POLL `status` UNTIL IT STOPS REPORTING PROGRESS.
-    #
-    # The text varies by release - "Percent complete: 42%", "Trim is complete", "There is no
-    # trim in progress" - so the test is not a phrase match. A trim is finished when two
-    # consecutive samples, five seconds apart, say the same thing.
-    deadline = time.time() + 300
-    last = None
-    stable = 0
-    while time.time() < deadline:
-        status, out = ssh(port, TRIM_STATUS, timeout=120)
-        text = " ".join((out or "").split())[:170]
-        if status != 0:
-            note(f"  trim status failed (exit {status}): {text}")
-            break
-        if text == last:
-            stable += 1
-            if stable >= 2:
-                note(f"    {text}")
-                break
-        else:
-            stable = 0
-            note(f"    {text}")
-        last = text
-        time.sleep(5)
-    else:
-        note("  the trim was still reporting progress after 300s; continuing")
+    # NO TRIM STEP. See the note above TRIM_IS_NOT_A_THING: macOS has no verb for it, and
+    # APFS does not forward a discard to virtio when a file is unlinked, so there is nothing
+    # to invoke and nothing to wait for. The deletion above is the whole of what this cleaner
+    # can do; the image size is reported below so the difference is a number, not a promise.
 
     # AND THE NUMBER THAT PROVES IT REACHED THE QCOW2.
     #
