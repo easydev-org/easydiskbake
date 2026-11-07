@@ -257,7 +257,21 @@ def main(argv: list[str]) -> int:
         # AND NOW THE DESKTOP IS REACHABLE. The wallpaper test is kept, with a short budget,
         # because it is the only thing that can confirm the password was accepted - and if it
         # was not, the ssh check below would fail for a reason that reads like a broken sshd.
-        if not wait_for_desktop(guest, frames, 180):
+        #
+        # 180 SECONDS WAS NOT ENOUGH, AND THE PROOF IS THIS RUN'S OWN LAST FRAME.
+        # Run 42383829203 typed the password at 15:01:35, spent twelve seconds on the
+        # keyboard-assistant clicks, and gave up at 15:05:07 - and `macos15-ssh-last-frame`
+        # from that same run is a clean Sequoia desktop: the menu bar reads
+        # "Finder File Edit View Go Window Help", the clock says 7:05 AM, and there is no
+        # dialog over it. The machine had arrived; the window had closed first.
+        #
+        # It is not a slow login in the usual sense. This is a first session on a disk that
+        # has never had one: the Dock is built, Spotlight starts indexing fourteen gigabytes,
+        # and the window server composites a wallpaper it has not cached. Five minutes is the
+        # budget desktop.py already gives the same transition, and waiting is free - the next
+        # thing this stage does is type at a machine that is already sitting there.
+        desktop_timeout = int(os.environ.get("MACOS_DESKTOP_TIMEOUT", "300"))
+        if not wait_for_desktop(guest, frames, desktop_timeout):
             log("=== THE DISK DID NOT REACH A DESKTOP AFTER LOGGING IN ===")
             log("  the password was typed and the screen still is not a desktop; check the")
             log("  recording - the login window shakes its field when the password is wrong")

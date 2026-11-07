@@ -508,6 +508,12 @@ def _dock_stats(width: int, height: int, pixels: bytes,
 PASSWORD_FIELD = (880, 960, 1045, 1000)     # x0, y0, x1, y1 at 1920x1080
 PASSWORD_FIELD_SCALE = 6                     # the text is 12px tall; 6x is what tesseract reads
 
+# THE MENU BAR, BY THE SAME ARGUMENT. A desktop's menu bar is a 22-pixel strip; tesseract's
+# page segmenter reads the whole 1920x1080 frame as empty (see is_macos_desktop). Crop the
+# strip and enlarge it, and the line reads cleanly.
+MENU_BAR = (0, 0, 700, 34)                   # x0, y0, x1, y1 - Apple menu through Help
+MENU_BAR_SCALE = 3                           # 12px text at 3x is what tesseract needs
+
 _OCR_CACHE: dict[str, list[str]] = {}
 
 
@@ -592,14 +598,72 @@ def is_macos_desktop(path: str, *, explain: bool = False) -> bool:
     stronger statement than any colour measurement, because it is about what the machine is
     doing rather than about how its wallpaper reflects light.
 
-    THE MENU BAR IS STILL CHECKED, AS A CHEAP GATE. A frame with no readable text anywhere
-    cannot be a desktop, and skipping the image work for those is most of the savings.
+    THE MENU BAR IS CROPPED AND ENLARGED FIRST, AND THAT IS THE WHOLE FIX.
+
+    Reading the whole frame does not work. tesseract is asked for `--psm 3`, which segments
+    the image into pages on its own; on a 1920x1080 macOS desktop the menu bar is a 22-pixel
+    strip at the very top with 12-pixel text, and that segmenter decides there is no page:
+
+        $ tesseract last-frame.png stdout --psm 3
+        Estimating resolution as 238
+        Empty page!!
+
+    Zero words, so `finder` is never in them, so this said "not a macos desktop" for a frame
+    whose own menu bar plainly reads "Finder File Edit View Go Window Help". Run 42383829203
+    is the cost: its last-frame.png IS that desktop, and the stage waited out its whole budget
+    on a machine that had arrived and then failed with "THE DISK DID NOT REACH A DESKTOP".
+
+    The same crop-then-enlarge trick reads_password_field already documents for the login
+    window, applied to the one strip of the screen this test is about: crop to the menu bar,
+    enlarge 3x, then `--psm 6` (a uniform block of text), which returns
+
+        @ Finder File Edit View Go Window Help
+
+    THE CROP IS WIDER THAN THE WORD. "Finder" is the first item after the Apple menu, around
+    x=38..95, but tesseract reads a small crop better when the line has context - and the rest
+    of the bar is what makes it a line rather than an isolated token.
     """
-    words = ocr_words(path)
+    try:
+        from PIL import Image
+    except ImportError:
+        return False
+    if not os.path.exists(path):
+        return False
+    try:
+        image = Image.open(path).convert("RGB")
+        crop = image.crop(MENU_BAR)
+        big = crop.resize((crop.width * MENU_BAR_SCALE,
+                           crop.height * MENU_BAR_SCALE), Image.LANCZOS)
+    except Exception:                                  # noqa: BLE001 - unreadable frame
+        return False
+
+    tmp = path + ".menubar.png"
+    try:
+        big.save(tmp)
+    except Exception:                                  # noqa: BLE001
+        return False
+
+    words: list[str] = []
+    for psm in ("6", "7"):
+        try:
+            proc = subprocess.run(["tesseract", tmp, "stdout", "--psm", psm],
+                                  capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        found = [w.lower() for w in proc.stdout.split()]
+        if "finder" in found:
+            words = found
+            break
+        words = words or found
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+
     passed = "finder" in words
     if explain:
-        log(f"{os.path.basename(path)}: {len(words)} words, "
-            f"finder={'yes' if 'finder' in words else 'no'} "
+        log(f"{os.path.basename(path)}: menu bar reads {words[:8]}, "
+            f"finder={'yes' if passed else 'no'} "
             f"-> {'MACOS DESKTOP' if passed else 'not a macos desktop'}")
     return passed
 
