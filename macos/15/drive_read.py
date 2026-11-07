@@ -233,7 +233,9 @@ ANALYTICS_SHARE_26 = (742, 521)
 TERMS_AGREE_26 = (1277, 798)
 LICENCE_AGREE_26 = (1019, 619)
 APPLE_OTHER_OPTIONS_26 = (670, 802)
-APPLE_SET_UP_LATER_26 = (677, 856)
+# THE MENU'S FIRST ROW IS NOT A COORDINATE. drive.py measured that a click at this row lands
+# on an undrawn menu and does nothing (run 42124271946); the item is taken with Return after
+# the animation, which is what pane_apple() does.
 APPLE_SKIP_26 = (1019, 643)
 AGE_ADULT = (960, 714)
 FILEVAULT_NOT_NOW = (1129, 798)
@@ -333,13 +335,31 @@ def pane_apple(w: Wizard) -> bool:
     log("pane: Sign In to Your Apple Account")
     if w.release == "26":
         # NO "Set Up Later" LINK ON 26. Where 15 puts a text link in the bottom-left corner, 26
-        # has a popup button whose menu holds the way out - two clicks, and clicking where 15's
-        # link is lands on nothing.
-        w.click(APPLE_OTHER_OPTIONS_26, "Other Sign-In Options", settle=6.0)
+        # has a popup button whose menu holds the way out.
+        #
+        # THE MENU IS TAKEN WITH RETURN, NOT WITH A SECOND COORDINATE.
+        #
+        # This clicked (677,856) for the menu's first row, and that row is not drawn when the
+        # click arrives: macOS animates a popup out of its button, and the menu covers the
+        # pane's lower half while it does. drive.py has the same failure and its comment is
+        # the measurement - run 42124271946 clicked inside the button (whose own pill spans
+        # guest x 555..759 at y 802) and "the menu NEVER APPEARED: the frame one second later
+        # is the same pane, and the frame ninety seconds later is still the same pane. 62
+        # actions completed and the wizard never moved."
+        #
+        # So: click to open, wait for the animation, then Return, which takes the highlighted
+        # first item - "Set Up Later…" on this pane. A Return sent DURING the animation closes
+        # the menu instead of choosing from it, which is why the wait is not optional.
+        #
+        # Run 42381998405 is what the fixed coordinate did on 26: five passes through this
+        # pane, each one 'click (670,802)' then 'click (677,856)', with the word count stuck
+        # at 57 - the pane's own text, unchanged, because no menu ever opened over it.
+        w.click(APPLE_OTHER_OPTIONS_26, "Other Sign-In Options", settle=4.0)
         w.look("apple-menu")
-        w.click(APPLE_SET_UP_LATER_26, "Set Up Later in Settings", settle=8.0)
+        w.press("ret", gap=6.0)
     else:
         w.click(APPLE_SET_UP_LATER, "Set Up Later", settle=6.0)
+        w.press("ret", gap=3.0)
     # THE CONFIRMATION SHEET. drive.py's SHEET_SKIP records that it only appears on some
     # releases; here it does, and its Skip is the blue button in the middle of the card.
     w.look("apple-sheet")
