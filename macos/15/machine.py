@@ -130,8 +130,28 @@ def shape(assets: dict, *, cpus: int = 4, mem_mb: int = 8192) -> vm.Shape:
             # 1280x800 default is what put every coordinate off the edge of the screen
             # for four runs. The numbers come from lib/opencore so the plist's
             # Resolution and this cannot disagree.
-            "-device", f"virtio-vga,xres={opencore.GUEST_WIDTH},"
-                       f"yres={opencore.GUEST_HEIGHT}",
+            #
+            # VGA_DEVICE EXISTS TO SETTLE WHICH DEVICE macOS CAN ACTUALLY DRIVE.
+            #
+            # On virtio-vga this guest reports, through system_profiler:
+            #
+            #     Device ID: 0x1050          (VMware SVGA - a compatibility fallback)
+            #     VRAM (Total): 7 MB
+            #     Kernel Extension Info: No Kext Loaded
+            #
+            # Seven megabytes cannot hold a frame at 1920x1080 (1920*1080*4 = 8.3 MB), and
+            # the wallpaper it ships with is 6016x6016, which needs 145 MB. The desktop
+            # therefore draws every window and the Dock correctly and leaves the wallpaper
+            # PURE WHITE - measured at (255,255,255) across the whole frame while the same
+            # screen's System Settings rendered normally.
+            #
+            # vmware-svga is the device Apple ships a driver for (VMwareGfx) and its
+            # vgamem_mb is settable. VGA_DEVICE lets one guest boot with it without a code
+            # change, so the two can be compared on the same disk.
+            "-device", os.environ.get(
+                "VGA_DEVICE",
+                f"virtio-vga,xres={opencore.GUEST_WIDTH},"
+                f"yres={opencore.GUEST_HEIGHT}"),
         ],
     )
 
