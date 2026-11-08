@@ -319,7 +319,10 @@ def walk_calamares(drv: Driver, args) -> bool:
         if ("all done" in current or "you may now" in current
                 or "reboot now" in current or "restart now" in current
                 or "安装成功" in current or "已安装在" in current
-                or "现在重启" in current):
+                or "现在重启" in current
+                or "todo listo" in current or "ya puede" in current
+                or "reiniciar" in current or "instalación completada" in current
+                or "instalacion completada" in current):
             log("=== INSTALL COMPLETE ===")
             return True
         time.sleep(20)

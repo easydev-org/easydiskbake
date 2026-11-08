@@ -284,8 +284,17 @@ def walk_calamares(drv: Driver, args) -> bool:
         current = drv.text()
         # THE HEADING IS NOT RELIABLE, THE SENTENCE IS: `All done.` is a large font that
         # tesseract skips, and the body sentence under it reads cleanly. See manjaro-gui.
+        # AND IN THE LANGUAGE THE INSTALLER COMES UP IN. Calamares' language comes from its
+        # own geoip answer, so a runner whose egress geolocates to a Spanish-speaking
+        # country gets `¡Todo listo!` / `Ya puede reiniciar`, and one in China gets
+        # `安装成功！`. A completion test that knew only English would throw a correct disk
+        # away - measured on this repository's own runs, both of those happened.
         if ("all done" in current or "you may now" in current
-                or "reboot now" in current or "restart now" in current):
+                or "reboot now" in current or "restart now" in current
+                or "安装成功" in current or "已安装在" in current or "现在重启" in current
+                or "todo listo" in current or "ya puede" in current
+                or "reiniciar" in current or "instalación completada" in current
+                or "instalacion completada" in current):
             log("=== INSTALL COMPLETE ===")
             return True
         time.sleep(20)

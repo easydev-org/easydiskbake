@@ -250,8 +250,16 @@ def walk_calamares(drv: Driver, args) -> bool:
             pass
         drv.look("installing")
         current = drv.text()
+        # AND IN THE LANGUAGE THE INSTALLER ACTUALLY COMES UP IN. It is not always English:
+        # run 42445140647 came up in SPANISH - `Instalador de EndeavourOS` - because the
+        # runner's egress geolocates to a Spanish-speaking country, and a completed install
+        # there reads `¡Todo listo!` / `Ya puede reiniciar`. Matching only English would
+        # have thrown a good disk away at the timeout.
         if ("all done" in current or "you may now" in current
-                or "reboot now" in current or "restart now" in current):
+                or "reboot now" in current or "restart now" in current
+                or "todo listo" in current or "ya puede" in current
+                or "reiniciar" in current or "instalación completada" in current
+                or "instalacion completada" in current):
             log("=== INSTALL COMPLETE ===")
             return True
         time.sleep(20)
