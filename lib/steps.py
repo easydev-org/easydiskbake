@@ -104,6 +104,7 @@ STEP_KEYS = {    "name",        # required: what the log calls this step
     "change_timeout",   # seconds wait_for_change may take
     "change_settle",    # seconds between fingerprints in wait_for_change
     "when",        # this step is a PANE: it runs only if these words are on screen
+    "unless",      # a sequence step that runs only if these words are NOT on screen
     "do",          # a list of actions for one pane - the pane is answered in one pass
     "end",         # a pane that means the run is over (the desktop)
     "stuck_after", # seconds of no pane matching before the walk is declared stuck
@@ -1064,6 +1065,23 @@ def walk(driver: Driver, steps: Walk, *, overrides: dict[str, str] | None = None
 
         log(f"=== {here.name}")
 
+        # --- a step that only runs when something is ABSENT -----------------------------
+        #
+        # `when` makes a pane, and is refused inside a sequence because a sequence is not
+        # matched against the screen. `unless` is the other shape and belongs here: it says
+        # "do this ONLY IF the screen does not already show X", which is how a retry is
+        # written without a conditional-that-gates-a-click in Python. Measured need:
+        # opensuse's installer retry must not press the desktop icon while YaST2 is already
+        # open, because a second double-click there lands on the wizard.
+        if here["unless"]:
+            _read(driver, here, f"{here.name} - unless")
+            absent = here["unless"]
+            absent = absent if isinstance(absent, list) else [absent]
+            if all(driver.says(w) for w in absent):
+                log(f"  {here.name}: skipped, the screen already shows {' '.join(absent)}")
+                ran.append(here.name)
+                continue
+
         # --- waits ---------------------------------------------------------------------
         if here["until_dark"]:
             if not _run_until_dark(driver, here):
@@ -1177,6 +1195,7 @@ def run_file(walkthrough: str, qmp_path: str, *, work: str = "",
     needs_screen = bool(steps.panes) or any(
         s["at"] or s["double"] or s["expect"] or s["expect_any"] or s["until"]
         or s["until_any"] or s["until_dark"] or s["wait_for_change"] or s["sweep"] or s["when"]
+        or s["unless"]
         for s in steps.steps)
 
     if needs_screen:
@@ -1243,7 +1262,7 @@ def main(argv: list[str]) -> int:
     # half of a walkthrough untestable anywhere but a running guest. See HeadlessDriver.
     needs_screen = bool(steps.panes) or any(
         s["at"] or s["double"] or s["expect"] or s["expect_any"] or s["until"]
-        or s["until_any"] or s["when"] for s in steps.steps)
+        or s["until_any"] or s["when"] or s["unless"] for s in steps.steps)
     if needs_screen and not args.qmp:
         log("FAILED: this walkthrough has GUI steps; --qmp is required")
         return 1
