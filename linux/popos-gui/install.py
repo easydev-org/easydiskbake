@@ -252,29 +252,47 @@ def walk_installer(drv: Driver, args) -> bool:
     drv.clear_and_type(ACCOUNT_PASSWORD["password"], args.password)
     drv.clear_and_type(ACCOUNT_PASSWORD["confirm"], args.password)
     drv.look("password filled")
-    drv.click(SELECT, "Create User Account: Next", settle=22.0)
+    drv.click(SELECT, "Create User Account: Next", settle=25.0)
     drv.look("drive encryption")
 
-    # 9. DRIVE ENCRYPTION. THE PANE DEFAULTS TO `Encrypt`; this clicks `Don't Encrypt`: an
-    #    encrypted disk needs a passphrase at boot, one more thing that can fail on a machine
-    #    nobody is watching.
-    # CHOSEN BY KEYBOARD, BECAUSE THE BUTTON'S POSITION FOLLOWS THE PANE'S WARNING TEXT.
+    # TWO PRESSES OF `Next`, BECAUSE THE FIRST CAN LAND WHILE THE PANE IS STILL SETTLING.
     #
-    # Measured on a live session: `Don't Encrypt` sits at (1091,817) on a pane with no
-    # warning, and typing a short password adds `The password is shorter than 8 characters`
-    # ABOVE the buttons - which moves them. A press measured on the first layout landed 40 px
-    # high on the second and the installer closed instead of starting.
+    # Measured: the encryption pane is the ONLY pane whose footer is not `Next` - it carries
+    # `Don't Encrypt` / `Set Password` / `Encrypt`. So on the pane before it, `Next` is at
+    # (1367,817); on it, that coordinate is inside `Encrypt`... which is exactly the default
+    # the driver does not want either.
     #
-    # The key sequence is stable where the coordinate is not: the pane focuses `Encrypt` (its
-    # default, drawn green), so Shift+Tab moves to `Don't Encrypt` and Return presses it.
-    log("choosing `Don't Encrypt` by keyboard (the pane defaults to Encrypt)")
-    Q.key(drv.q, "tab")
-    time.sleep(0.8)
-    Q.key_combo(drv.q, "shift", "tab")
-    time.sleep(0.8)
-    drv.look("encryption focused")
-    Q.key(drv.q, "ret")
-    time.sleep(35.0)
+    # THE SECOND PRESS IS THEREFORE SAFE EITHER WAY, and that is the point: if the first did
+    # not take, the second advances from `Create User Account`; if it did take, the second
+    # lands on `Encrypt`, which would encrypt the disk - NOT acceptable.
+    #
+    # So the second press is exchanged for WAITING instead: one long settle, and then the
+    # encryption buttons are pressed, with `Don't Encrypt` chosen in the middle of its own
+    # button rather than at its edge (measured: the three buttons span x 1020..1420 and
+    # `Don't Encrypt` is the 1020..1165 one, so 1091 is its centre).
+    # 9. DRIVE ENCRYPTION. THE PANE DEFAULTS TO `Encrypt`, and this chooses `Don't Encrypt`:
+    #    an encrypted disk needs a passphrase at boot, one more thing that can fail on a
+    #    machine nobody is watching.
+    #
+    # THE COORDINATE IS THE ONE A LIVE SESSION PROVED. (1091, 817) is the centre of the
+    # left-hand button of the three - measured across the row at x 1020..1420 in a window at
+    # (485,155)..(1435,860) - and pressing it there started `Extracting Files (18%)` and grew
+    # the disk to 3.58 GiB.
+    #
+    # WHAT DID NOT WORK, AND WHY THIS NOW WAITS FIRST: run 42483315092 pressed the same
+    # coordinate 40 s after the password pane and the installer closed; run 42484716882 tried
+    # Tab / Shift+Tab / Return and it closed too. Both times the pane had only just been
+    # asked for, and this pane's rows are drawn after its content - the `The password is
+    # shorter than 8 characters` note from the page before is drawn ABOVE the button row and
+    # moves it while the window is still settling. A live session that took a frame first and
+    # then pressed worked on the first try.
+    #
+    # So one long settle, then the press. `encrypt` in the reading is only logged: if the pane
+    # is not up the press misses and the run will say so at the empty-disk check.
+    log("letting the encryption pane settle, then choosing `Don't Encrypt`")
+    time.sleep(10.0)
+    drv.look("encryption pane")
+    drv.click(DONT_ENCRYPT, "Drive Encryption: Don't Encrypt", settle=35.0)
     drv.look("installing")
 
     # 10. A MEASURED WAIT. The progress pane shows `Extracting Files (N%)`; the percentage is
