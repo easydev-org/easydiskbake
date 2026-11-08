@@ -46,21 +46,33 @@ steps:
   # 1. THE FOUR PRESELECTED PANES. ONE FOOTER POSITION, MEASURED ON ALL OF THEM.
   # =======================================================================================
   #
-  #     Select a Language      English preselected                  Select (1367,817)
+  #     Select a Language      English preselected                  Select (1367,790)
   #     Languages (variants)   United States preselected            Select
   #     Keyboard Layout        English (US) preselected             Select
   #     Keyboard (variants)    Default preselected - NOT Dvorak     Select
+  #
+  # y=790, NOT 817, AND THE 27 PIXELS COST A RUN. Measured from run 42526614298's frame at
+  # 21:49:03: the language pane's Select fill spans x=1326..1408, y=775..806, so its centre is
+  # (1367,790). The walk pressed (1367,817) - 27 px BELOW the button - four times, and since
+  # nothing advanced, the next step's `Clean Install` click at (1180,456) landed on the
+  # `German` row of the still-open language list. That opened the German VARIANT submenu, and
+  # the installer then sat on it for the rest of the run: every later click, including the
+  # account and password steps, was aimed at a pane that was never showing.
+  #
+  # THE LATER PANES ARE TALLER. The window grows once a list is not the whole page, so
+  # `Erase and Install` and the account panes really are at y=817 - see the steps below. This
+  # is the same lesson as cachyos' three footer heights, and the numbers are per pane.
   - name: select a language
-    at: [1367, 817]
+    at: [1367, 790]
     settle: 21
   - name: language variants
-    at: [1367, 817]
+    at: [1367, 790]
     settle: 21
   - name: keyboard layout
-    at: [1367, 817]
+    at: [1367, 790]
     settle: 21
   - name: keyboard variants
-    at: [1367, 817]
+    at: [1367, 790]
     settle: 21
 
   # =======================================================================================
