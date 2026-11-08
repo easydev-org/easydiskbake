@@ -1,0 +1,135 @@
+name: popos-gui
+
+# Install Pop!_OS from its official Live ISO, through `pop-os-installer`, its GTK installer.
+#
+# POP!_OS HAS ITS OWN INSTALLER - not Calamares, not Ubiquity, not Anaconda. It opens by
+# itself on the live desktop as a fixed-size GTK card, and linux/popos-gui/install.py drives it
+# pane by pane: four selection panes whose defaults are right, `Clean Install`, the drive row,
+# the two account panes, and `Don't Encrypt`.
+#
+# THE ISO COMES FROM ghcr, like every other GUI image here: `iso-popos-desktop` is published
+# once by artifacts-publish.yml (`-f group=iso`) and pulled back by lib/fetch_iso.py, which
+# checks the byte count and sha256 of the file this driver was measured against.
+#
+# THE MEDIUM BOOTS WHOLE - no -kernel, no -initrd, no -append, `-boot d`. OVMF is attached by
+# lib/uefi.py, as for every GUI driver here.
+#
+# MANUAL ONLY: an installer driven by synthetic clicks is not something to run on every push.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bake_run:
+        description: "Install Linux Mint 22.3 Cinnamon through Ubiquity"
+        type: boolean
+        default: true
+      iso_url:
+        description: "ISO URL (empty for the pinned image)"
+        default: ""
+      iso_sha256:
+        description: "ISO sha256 (empty for the pinned value)"
+        default: ""
+      disk_size:
+        description: "guest disk size"
+        default: "64G"
+      install_timeout:
+        description: "seconds the installer may take"
+        default: "5400"
+      publish_tag:
+        description: "tag to publish under; empty for linux-mint-gui"
+        default: "linux-popos-gui"
+      publish:
+        description: "publish the finished disk to ghcr"
+        type: boolean
+        default: true
+
+concurrency:
+  group: popos-gui-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bake:
+    if: inputs.bake_run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '40'
+          token: ${{ github.token }}
+
+      - name: prepare
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: popos-gui-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py tags --prefix linux-
+
+      - name: fetch the Live ISO
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: popos-gui-iso
+          interval: "10"
+          command: |
+            set -euo pipefail
+            mkdir -p out/iso
+            # FROM ghcr, which is what artifacts-publish exists for: the image was fetched
+            # once, verified three ways, and pushed as `iso-mx-xfce`. This is a CDN pull.
+            python3 lib/fetch_iso.py popos-desktop "out/iso/pop-os_24.04_amd64_intel_9.iso"
+
+      - name: install through Ubiquity
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: popos-gui-install
+          interval: "15"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            export SNAPSHOT_INTERVAL=2
+            ISO=$(ls out/iso/*.iso | head -1)
+            echo "iso: $ISO"
+            python3 linux/popos-gui/install.py \
+              --iso "$ISO" \
+              --out out/popos-gui.qcow2 \
+              --disk-size "${{ inputs.disk_size || '64G' }}" \
+              --timeout "${{ inputs.install_timeout || '5400' }}"
+
+      - name: keep the recording
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: popos-gui-recording
+          path: |
+            out/install.mp4
+            out/last-frame.png
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: push the disk
+        if: success() && inputs.publish
+        id: publish
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/popos-gui.qcow2
+          kind: linux-popos-gui
+          tag: ${{ inputs.publish_tag || 'linux-popos-gui' }}
+          token: ${{ github.token }}

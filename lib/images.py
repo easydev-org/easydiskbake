@@ -244,6 +244,14 @@ DESKTOP = {
         "sha256": "25b5ce20caeee1b0e50507291df5ac8a8211b1b9999d8dd7416da9b66ed9fbf9",
         "size": 2927624192,
     },
+    "popos-desktop": {
+        # Pop!_OS 24.04 with COSMIC. Its installer is `pop-os-installer`, a GTK application
+        # started from the desktop - not Calamares and not Ubiquity - so it has a driver of
+        # its own: linux/popos-gui/install.py.
+        "url": "https://iso.pop-os.org/24.04/amd64/intel/9/pop-os_24.04_amd64_intel_9.iso",
+        "sha256": "894bc15abcad05839b226655121a113ad16cfbc4ada98e93e3ffb74a853fdcd4",
+        "size": 2693218304,
+    },
     "ghostbsd-mate": {
         "url": "https://download.ghostbsd.org/releases/amd64/24.10.1/GhostBSD-24.10.1.iso",
         "sha256": "e4e969603a3edf848db8c7fc2646f76871f0d9bd12787bc6c966250938c2c283",
