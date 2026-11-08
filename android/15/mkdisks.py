@@ -95,6 +95,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -432,13 +433,136 @@ def cpio(name: str, body: bytes, mode: int) -> bytes:
     return out
 
 
-def patch_ramdisk(src: str, dest: str) -> None:
-    """Append one more legacy-LZ4 stream carrying the fstab.
+CPIO_MAGIC = b"070701"
+
+# THE FLAGS THAT TURN /data ENCRYPTION ON.
+#
+# fs_mgr decides with two fstab fields, not a build option:
+#
+#     static bool should_use_metadata_encryption(const FstabEntry& entry) {
+#         return !entry.metadata_key_dir.empty() && entry.fs_mgr_flags.file_encryption;
+#     }
+#
+# so `fileencryption=` AND `keydirectory=` both have to be gone; `reservedsize=` and
+# `fsverity` belong to the encryption setup and go with them.
+ENCRYPT_FLAGS = ("fileencryption=", "keydirectory=", "reservedsize=", "fsverity")
+
+
+def cpio_entries(raw: bytes) -> list[dict]:
+    """Every entry in a newc cpio: header offset, name, size, body offset."""
+    out = []
+    off = 0
+    while True:
+        at = raw.find(CPIO_MAGIC, off)
+        if at < 0 or at + 110 > len(raw):
+            break
+        header = raw[at:at + 110]
+        try:
+            fields = [int(header[6 + i * 8:14 + i * 8], 16) for i in range(13)]
+        except ValueError:
+            off = at + 6
+            continue
+        filesize, namesize = fields[6], fields[11]
+        name_start = at + 110
+        name = raw[name_start:name_start + namesize - 1]
+        body = name_start + namesize
+        body += (-body) % 4
+        if name == b"TRAILER!!!":
+            break
+        out.append({"at": at, "size": filesize, "body": body, "name": name})
+        off = body + filesize + ((-(body + filesize)) % 4)
+    return out
+
+
+def strip_encryption(raw: bytes) -> bytes:
+    """Remove the /data encryption flags from any fstab inside a decompressed cpio.
+
+    THE HEADER HAS TO BE REWRITTEN WITH THE BODY. A newc header carries `filesize` as eight
+    ASCII hex digits and init trusts it; editing the text without updating that field makes
+    init read the old length into the next entry:
+
+        init: [libfstab] Error parsing fstab: expected 5 fields, got 1
+        init: ReadDefaultFstab(): failed to find device default fstab
+        init: FirstStageMount not available -> InitFatalReboot
+
+    ONLY THE FLAG FIELD IS REPLACED, not the whole line. Rebuilding a line from split()
+    collapses the tabs and runs of spaces fstab uses, and libfstab then refuses the file for
+    the same "expected 5 fields" reason.
+    """
+    entries = [e for e in cpio_entries(raw) if b"fstab" in e["name"]]
+    if not entries:
+        return raw
+
+    rebuilt = bytearray()
+    cursor = 0
+    changed = False
+    for entry in entries:
+        body = raw[entry["body"]:entry["body"] + entry["size"]]
+        if b"fileencryption=" not in body:
+            continue
+        lines = []
+        for line in body.split(b"\n"):
+            if b"/data" in line and b"fileencryption=" in line:
+                start = line.rfind(b"fileencryption=")
+                stop = line.find(b"#", start)
+                if stop < 0:
+                    stop = len(line)
+                field_start = line.rfind(b" ", 0, start) + 1
+                flags = [f for f in line[field_start:stop].split(b",")
+                         if f and not any(f.startswith(d.encode()) for d in ENCRYPT_FLAGS)]
+                line = line[:field_start] + b",".join(flags) + line[stop:]
+            lines.append(line)
+        new_body = b"\n".join(lines)
+        if new_body == body:
+            continue
+        header = bytearray(raw[entry["at"]:entry["at"] + 110])
+        header[6 + 6 * 8:14 + 6 * 8] = f"{len(new_body):08x}".encode()
+        rebuilt += raw[cursor:entry["at"]]
+        rebuilt += bytes(header)
+        rebuilt += raw[entry["at"] + 110:entry["body"]]
+        rebuilt += new_body
+        rebuilt += b"\x00" * ((-len(new_body)) % 4)
+        cursor = entry["body"] + entry["size"] + ((-entry["size"]) % 4)
+        changed = True
+
+    if not changed:
+        return raw
+    rebuilt += raw[cursor:]
+    return bytes(rebuilt)
+
+
+def strip_stream(blob: bytes) -> bytes:
+    """Decompress one legacy stream, strip the flags, recompress it on its own."""
+    raw = subprocess.run(["lz4", "-d", "-c", "-"], input=blob, capture_output=True).stdout
+    patched = strip_encryption(raw)
+    if patched is raw:
+        return blob
+    packed = subprocess.run(["lz4", "-l", "-c", "-"], input=patched, capture_output=True)
+    if packed.returncode != 0:
+        raise SystemExit(f"=== lz4 failed recompressing: {packed.stderr[:200]!r} ===")
+    return packed.stdout
+
+
+def patch_ramdisk(src: str, dest: str, noencrypt: bool = False) -> None:
+    """Append one more legacy-LZ4 stream carrying the fstab, optionally un-encrypting /data.
 
     THE SDK RAMDISK IS A CHAIN OF TWO LZ4 LEGACY STREAMS, not one. Android's initrd
     reader consumes streams until the input ends, so appending a complete stream is
     exactly what the format already does. Rebuilding the cpio and recompressing it as a
     SINGLE stream makes init never run at all: 340 kernel restarts, no `init:` line.
+
+    WHY --noencrypt PATCHES STREAMS 1 AND 2 INSTEAD OF APPENDING A THIRD
+
+    The appended stream only covers the earliest mounts (system, metadata, super). /data is
+    `latemount`, and by then init has taken its entry from the SDK's own
+    `first_stage_ramdisk/fstab.ranchu` inside stream 1:
+
+        2.43s  init: Mount point /dev/block/vdc @ /data uses metadata encryption
+        5.25s  init: Userdata mounted using /vendor/etc/fstab.ranchu result : 6
+
+    The decision at 2.4 s is made from the ramdisk copy, which is why editing only the
+    vendor partition changes nothing. Both are edited: this function for the ramdisk,
+    and the vendor fstab separately.
     """
     data = open(src, "rb").read()
     if data[:4] != LZ4_LEGACY_MAGIC:
@@ -460,14 +584,45 @@ def patch_ramdisk(src: str, dest: str) -> None:
     if packed.returncode != 0:
         raise SystemExit(f"=== lz4 FAILED: {packed.stderr[:200]!r} ===")
 
+    body = data
+    if noencrypt:
+        # EVERY STREAM THAT CARRIES AN fstab IS PATCHED, one at a time, so the chain keeps
+        # its structure. Stream 0 holds /init and the kernel modules; the fstab is in 1.
+        rebuilt = bytearray()
+        offset = 0
+        patched = 0
+        while offset + 4 <= len(body) and body[offset:offset + 4] == LZ4_LEGACY_MAGIC:
+            start = offset
+            offset += 4
+            while offset + 4 <= len(body):
+                size = struct.unpack("<I", body[offset:offset + 4])[0] & 0x7FFFFFFF
+                if size == 0 or offset + 4 + size > len(body):
+                    offset += 4
+                    break
+                offset += 4 + size
+                if offset + 4 <= len(body) and body[offset:offset + 4] == LZ4_LEGACY_MAGIC:
+                    break
+            stream = strip_stream(body[start:offset])
+            if stream is not body[start:offset]:
+                patched += 1
+            rebuilt += stream
+        rebuilt += body[offset:]
+        body = bytes(rebuilt)
+        log(f"noencrypt: patched {patched} ramdisk stream(s)")
+
     with open(dest, "wb") as fh:
-        fh.write(data + packed.stdout)
+        fh.write(body + packed.stdout)
 
     # VERIFY THE CONTENT SURVIVED, in the file that was just written.
     check = subprocess.run(["lz4", "-d", "-c", dest], capture_output=True).stdout
     if b"/dev/block/by-name/system" not in check:
         raise SystemExit("=== the fstab did not survive the round trip ===")
-    log(f"ramdisk {dest}: {len(data)} + {len(packed.stdout)} B, fstab present")
+    if noencrypt:
+        for line in check.split(b"\n"):
+            if b"/data" in line and b"fileencryption=" in line:
+                raise SystemExit(f"=== /data is still encrypted: {line[:160]!r} ===")
+    log(f"ramdisk {dest}: {len(data)} + {len(packed.stdout)} B, fstab present"
+        + (", /data encryption OFF" if noencrypt else ""))
 
 
 # --- cache -----------------------------------------------------------------
@@ -609,6 +764,88 @@ def copy(src, dst, total: int, name: str) -> None:
     log(f"{name}: copied {(total - remaining) / 2 ** 20:.0f} MiB")
 
 
+def patch_vendor(vendor: str) -> None:
+    """Strip the /data encryption flags from /vendor/etc/fstab.ranchu, in place.
+
+    THE VENDOR PARTITION IS WHERE THE LATE MOUNT READS ITS FSTAB. The ramdisk's copy decides
+    early (see patch_ramdisk), and this one decides the late mount:
+
+        init: Userdata mounted using /vendor/etc/fstab.ranchu result : 6
+
+    Editing only one of the two leaves the guest encrypted by whichever it read, which is
+    what made a half-fix look like no fix at all.
+
+    THE IMAGE IS A GPT. debugfs wants the filesystem, not the disk, so the `vendor` partition
+    is carved out, edited, and written back at the same offset - the GPT around it, including
+    its checksums, is untouched.
+    """
+    parts = read_gpt(vendor)
+    if "vendor" not in parts:
+        raise SystemExit(f"=== {vendor} has no `vendor` GPT partition ===")
+    first, last = parts["vendor"]
+    carved = vendor + ".part"
+    try:
+        with open(vendor, "rb") as fh, open(carved, "wb") as out:
+            fh.seek(first * SECTOR)
+            remaining = (last - first + 1) * SECTOR
+            while remaining > 0:
+                chunk = fh.read(min(8 * 2 ** 20, remaining))
+                if not chunk:
+                    break
+                out.write(chunk)
+                remaining -= len(chunk)
+
+        result = subprocess.run(["debugfs", "-R", "cat /etc/fstab.ranchu", carved],
+                                capture_output=True, text=True)
+        text = result.stdout
+        if "/data" not in text:
+            raise SystemExit("=== /vendor/etc/fstab.ranchu has no /data line ===")
+        lines = []
+        for line in text.splitlines():
+            if line.lstrip().startswith("#") or not line.strip():
+                lines.append(line)
+                continue
+            fields = line.split("	")
+            if len(fields) < 5:
+                fields = line.split()
+            if len(fields) >= 5 and fields[1] == "/data":
+                flags = [f for f in fields[4].split(",")
+                         if f and not any(f.startswith(d) for d in ENCRYPT_FLAGS)]
+                line = line.replace(fields[4], ",".join(flags), 1)
+            lines.append(line)
+        staged = carved + ".fstab"
+        with open(staged, "w") as fh:
+            fh.write("\n".join(lines) + "\n")
+        for command in ("rm /etc/fstab.ranchu",
+                        f"write {staged} /etc/fstab.ranchu"):
+            done = subprocess.run(["debugfs", "-w", "-R", command, carved],
+                                  capture_output=True, text=True)
+            if done.returncode != 0:
+                raise SystemExit(f"=== debugfs '{command}' failed: "
+                                 f"{(done.stderr or done.stdout)[:300]} ===")
+        os.unlink(staged)
+
+        check = subprocess.run(["debugfs", "-R", "cat /etc/fstab.ranchu", carved],
+                               capture_output=True, text=True).stdout
+        for line in check.splitlines():
+            if line.split()[1:2] == ["/data"] and "fileencryption=" in line:
+                raise SystemExit(f"=== /data still encrypting: {line[:160]} ===")
+
+        with open(vendor, "r+b") as out, open(carved, "rb") as src:
+            out.seek(first * SECTOR)
+            remaining = (last - first + 1) * SECTOR
+            while remaining > 0:
+                chunk = src.read(min(8 * 2 ** 20, remaining))
+                if not chunk:
+                    break
+                out.write(chunk)
+                remaining -= len(chunk)
+        log(f"vendor {vendor}: /data encryption flags removed")
+    finally:
+        if os.path.exists(carved):
+            os.unlink(carved)
+
+
 def stage(work: str, sdk: str) -> None:
     """Put the system image's own files where run_qemu.py expects them.
 
@@ -687,6 +924,8 @@ def main(argv: list[str]) -> int:
     p.add_argument("--out", default="/a/android", help="where the disks are written")
     p.add_argument("--force-userdata", action="store_true",
                    help="throw away an existing /data instead of keeping its applications")
+    p.add_argument("--noencrypt", action="store_true",
+                   help="do not encrypt /data, so the disk is readable from any host")
     a = p.parse_args(argv)
 
     sdk = a.sdk or sdk_from_environment()
@@ -734,8 +973,38 @@ def main(argv: list[str]) -> int:
         log("  to carry this /data to another machine: python3 android/15/persist.py "
             "--save")
 
+    # ENCRYPTION IS DECIDED IN TWO PLACES AND BOTH ARE PATCHED HERE.
+    #
+    # The ramdisk's own fstab.ranchu decides the early, first-stage mount (2.4 s in a boot);
+    # the vendor partition's decides the late one (`Userdata mounted using
+    # /vendor/etc/fstab.ranchu`). Editing one leaves the other, and a half-fix looks exactly
+    # like no fix.
+    if a.noencrypt:
+        # BOTH COPIES, AND THE SECOND ONE IS THE ONE THE GUEST ACTUALLY MOUNTS.
+        #
+        # mkdisks stages the vendor image TWICE - `vendor-patched.img` for `-vendor`, and
+        # `vendor.img` because the emulator looks for that name inside `-sysdir`. Only the
+        # first was patched, and the guest still encrypted /data:
+        #
+        #     vendor.img          wait,check,quota,fileencryption=...  <- mounted at /vendor
+        #     vendor-patched.img  wait,check,quota,latemount            <- patched, unused
+        #
+        # `init: Userdata mounted using /vendor/etc/fstab.ranchu` names /vendor, and that is
+        # the first file. Both are patched here.
+        #
+        # stage() HARDLINKS vendor.img WHEN IT CAN, so either file may be the SDK's own
+        # inode. Patching in place would edit /opt/android-sdk - the next run, and every
+        # other image built on this machine, would inherit the change.
+        sdk_vendor = os.path.join(sdk, "vendor.img")
+        for name in ("vendor-patched.img", "vendor.img"):
+            vendor = os.path.join(work, name)
+            if os.stat(vendor).st_nlink > 1:
+                os.unlink(vendor)
+                shutil.copyfile(sdk_vendor, vendor)
+            patch_vendor(vendor)
+
     patch_ramdisk(os.path.join(sdk, "ramdisk.img"),
-                  os.path.join(work, "ramdisk.img"))
+                  os.path.join(work, "ramdisk.img"), noencrypt=a.noencrypt)
     log(f"\nDISKS_READY {work}")
     return 0
 

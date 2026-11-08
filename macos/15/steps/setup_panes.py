@@ -69,12 +69,22 @@ for path in (REPO, os.path.join(REPO, "lib"), os.path.join(REPO, "macos", "15"))
 
 
 def _recovery(driver):
-    """install.py's Recovery, built on the driver's own QMP socket.
+    """install.py's Recovery, sharing the driver's own QMP connection.
 
-    `disk_path` MATTERS. install.py's installer_panes() watches the target qcow2 grow, because
-    that is the only thing that can tell "copying 12 GB" from "hung" while the screen is black.
-    A driver without a disk path can only report the screen, so this says so rather than passing
-    None and getting a stage that times out instead of failing.
+    THE CONNECTION IS PASSED, NOT REOPENED, AND THAT IS NOT AN OPTIMISATION. qemu's
+    `-qmp unix:...,server=on,wait=off` accepts ONE client. A second QMP(path) connects, waits
+    for a greeting that never comes, and dies with
+
+        File "lib/qmp.py", line 78, in _read_message
+            chunk = self.sock.recv(65536)
+        TimeoutError: timed out
+
+    which is what the first real run of setup.yaml hit, at `choose the target disk by capacity`,
+    after the two clicks before it had worked.
+
+    `disk_path` MATTERS TOO. install.py's installer_panes() watches the target qcow2 grow,
+    because that is the only thing that can tell "copying 12 GB" from "hung" while the screen is
+    black.
     """
     import install
 
@@ -84,7 +94,8 @@ def _recovery(driver):
     if not qmp_path:
         raise RuntimeError(
             "this pane needs the driver's QMP path; construct Driver(...) with qmp_path set")
-    return install.Recovery(qmp_path, frames, getattr(driver, "disk_path", None))
+    return install.Recovery(qmp_path, frames, getattr(driver, "disk_path", None),
+                            q=driver.q)
 
 
 def open_disk_utility(driver, step) -> bool:

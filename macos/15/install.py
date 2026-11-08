@@ -326,8 +326,26 @@ class Recovery:
     """
 
     def __init__(self, qmp_path: str, frames_dir: str | None = None,
-                 disk_path: str | None = None):
-        self.q = qmpmod.QMP(qmp_path)
+                 disk_path: str | None = None, *, q=None):
+        """`q` IS AN ALREADY-OPEN QMP CONNECTION, AND PASSING ONE IS NOT AN OPTIMISATION.
+
+        qemu's `-qmp unix:...,server=on,wait=off` is a SINGLE-CLIENT socket by default. When a
+        walkthrough driver already holds it, a second QMP(qmp_path) does not queue - it connects,
+        waits for a greeting that will never come, and dies with
+
+            File "lib/qmp.py", line 78, in _read_message
+                chunk = self.sock.recv(65536)
+            TimeoutError: timed out
+
+        which is exactly what the first real run of macos/15/steps/setup.yaml hit, at
+        `choose the target disk by capacity`, after the two clicks before it had worked.
+
+        So a `python:` step hands its own connection down rather than opening another. The
+        caller that passes one owns its lifetime; close() is a no-op for it.
+        """
+        self._owns_q = q is None
+        self.q = qmpmod.QMP(qmp_path) if q is None else q
+        self.qmp_path = qmp_path
         self.frames = frames_dir
         # The target qcow2, when the caller knows it. An installer writes gigabytes into
         # it; a stopped guest writes nothing. That is the difference between "copying"
@@ -889,6 +907,10 @@ class Recovery:
             time.sleep(settle)
 
     def close(self) -> None:
+        # A CONNECTION THE CALLER PASSED IN IS THE CALLER'S TO CLOSE. Closing it here would take
+        # the walkthrough's own screen reader down with it - see __init__.
+        if not self._owns_q:
+            return
         try:
             self.q.close()
         except OSError:
