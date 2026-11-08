@@ -45,14 +45,53 @@ steps:
 
   # 1. THE LIVE SESSION'S WELCOME DIALOG, AND THE INSTALLER BEHIND IT.
   #
-  # THE DIALOG IS NOT THE INSTALLER AND DOES NOT OPEN BY ITSELF. The live session draws a
-  # Welcome window whose `Install Fedora Linux` button starts Anaconda; a run that assumes
-  # otherwise points every later click at a window that does not exist. Two presses, because
-  # the first may only focus the dialog.
+  # THE DIALOG IS NOT THE INSTALLER AND DOES NOT OPEN BY ITSELF. Run 42382690048 clicked
+  # `Install Fedora Linux...` at its measured centre (838,708) and the uploaded frame shows
+  # that dialog still on screen with everything after it pointed at an installer that had
+  # never started: the next click was Anaconda's `Next` at (729,1002), which on the welcome
+  # dialog is blank background, and the run then waited for a pane that could not appear.
+  #
+  # ANACONDA TAKES ABOUT A MINUTE TO DRAW, AND THIS FILE FIRST TRIED TO CLICK THROUGH IT IN
+  # THIRTY SECONDS. Measured from the video of the run that worked: `Initializing...` is up
+  # at t=60, the Welcome pane at t=80, and `Storage configuration` at t=100. Run 42516813616
+  # pressed Next at t=31 and t=43, spent both on the dialog, and then sat on `erase data and
+  # install` at a coordinate that pane does not have - the disk stayed at 0 MiB for ninety
+  # minutes and nothing said so until the wait timed out.
+  #
+  # SO THE OPEN IS RETRIED, AND EACH RETRY ASKS THE ONLY QUESTION THAT MATTERS - is
+  # Anaconda's OWN SIDEBAR on screen. `Installation method` is one of its four panes and
+  # appears nowhere on the live desktop; `Welcome to Fedora Linux` is the DIALOG's title,
+  # which is why matching it would answer the wrong question. Four presses, as the Python
+  # driver had, and then a bounded wait on the same marker.
   - name: install fedora linux
     at: [838, 708]
-    repeat: [2, 0.8]
+    repeat: [2, 3]
+    settle: 3
+
+  - name: install fedora linux (again, if anaconda is not up)
+    unless: [installation, method]
+    at: [838, 708]
+    repeat: [2, 3]
+    settle: 25
+
+  - name: install fedora linux (and once more)
+    unless: [installation, method]
+    at: [838, 708]
+    repeat: [2, 3]
     settle: 30
+
+  # THE BOUNDED WAIT, SO A SLOW RUNNER IS NOT A FAILED ONE. `stuck` is impossible here: the
+  # marker is Anaconda's own sidebar, which either appears or never does.
+  - name: anaconda is up
+    until_any:
+      - [installation, method]
+      - [let's, install]
+    region: [0, 0, 1920, 1080]
+    region_at: [1920, 1080]
+    scale: 1
+    timeout: 300
+    poll: 10
+    keep_alive: true
 
   # 2. THE WELCOME PANE, WHICH IS NOT COVERED BY ANYTHING.
   #
@@ -68,20 +107,41 @@ steps:
   # IT IS NOT A POPUP: Anaconda's Web UI renders the language list as ORDINARY PAGE CONTENT,
   # so `Suggested languages` is on screen whenever the welcome pane is and a check for that
   # phrase can never be satisfied. What the pane needs is the footer's Next.
+  #
+  # AND THE MARKER THAT SAYS IT WORKED IS THE NEXT PANE'S NAME, not this one's: `installation
+  # method` is the sidebar row of the pane this click is going TO.
   - name: welcome
     at: [729, 1002]
     settle: 15
+    expect_any:
+      - [installation, method]
+      - [let's, install]
 
   # 3. THE PANES BETWEEN WELCOME AND THE POINT OF NO RETURN.
   #
   # `Installation method` and `Storage configuration`, each a click on the same footer.
+  #
+  # `expect` IS NOT DECORATION HERE, AND LOSING IT COST A RUN. The original driver checked
+  # each of these two panes against the words of the pane it was REACHING, because Anaconda's
+  # footer buttons do not move: a click that misses does nothing at all, which means a run can
+  # walk every step and never leave the first pane. Run 42516813616 did exactly that in this
+  # file's first version - `erase data and install` was clicked on whatever pane was up, the
+  # disk stayed at 0 MiB for ninety minutes, and nothing said so until the wait timed out.
+  #
+  # So each step names what it expects to see afterwards, which is the check the Python had.
   - name: installation method
     at: [729, 1002]
     settle: 12
+    expect_any:
+      - [storage, configuration]
+      - [configuracion, de, almacenamiento]
 
   - name: storage configuration
     at: [729, 1002]
     settle: 12
+    expect_any:
+      - [review, and, install]
+      - [revisar, e, instalar]
 
   # 4. THE POINT OF NO RETURN. Its label is not `Next` and its position is not Next's.
   - name: erase data and install
