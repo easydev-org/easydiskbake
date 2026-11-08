@@ -84,8 +84,11 @@ START = (1478, 889)
 #     General Instructions | Installation Options | Final Review and Confirmation
 #     Create a swap file   | Computer Identity    | Localization Defaults | Default User Login
 #
-# THE PANE IS READ AS A SCREENSHOT OF THAT RECTANGLE, enlarged, because at 1:1 the antialiased
-# GTK text reads as nothing - which is indistinguishable from "the page has not arrived".
+# THE PANE IS READ AS A SCREENSHOT OF THAT RECTANGLE, 1:1. That is enough here and it is the
+# cheap read: measured against all six frames above, `tesseract --psm 6` returns
+# `installation options`, `final review and confirmation`, `create a swap file`,
+# `computer identity`, `localization defaults` and `default user login` exactly. This pane's
+# text is 14 px tall, unlike the recovery menu's ten, so it needs no enlargement.
 TITLE_REGION = (332, 248, 700, 285)
 
 # THE PAGES WHILE THE DISK IS BEING WRITTEN, IN THE ORDER MINSTALL DRAWS THEM.
@@ -288,65 +291,50 @@ def walk_minstall(drv: Driver, args) -> bool:
         log("  (the installer window was not read - continuing on coordinates anyway)")
 
     # 2. TERMS OF USE -> INSTALLATION TYPE.
+    if not drv.wait_title("general instructions", 90, "terms of use"):
+        return False
     drv.click(NEXT, "Terms of Use: Next", settle=14.0)
-    drv.look("installation type")
 
     # 3. INSTALLATION TYPE. `Regular install using the entire disk` is preselected and the
     #    only drive is the guest's own `vda (64.0 GB)`.
+    if not drv.wait_title("installation options", 90, "installation type"):
+        return False
     log("installation type left at `Regular install using the entire disk`")
     drv.click(NEXT, "Installation Type: Next (entire disk)", settle=16.0)
-    drv.look("confirmation")
 
     # 4. INSTALLATION CONFIRMATION -> START. THIS IS THE POINT OF NO RETURN: `Start` formats
     #    the drive, and MX begins writing immediately.
+    if not drv.wait_title("final review", 120, "confirmation"):
+        return False
     drv.click(START, "Installation Confirmation: Start", settle=25.0)
-    drv.look("installing")
 
-    # 5. THE QUESTIONS THAT COME WHILE THE DISK IS BEING WRITTEN. Each is `Next`, and the
-    #    defaults on every one of them are the right answer for a bake:
+    # THE MODAL `Start` CAN RAISE, DISMISSED WHETHER OR NOT IT IS READ.
     #
-    #      Create a swap file        swap file ticked, 2048 MB
-    #      Computer Identity         computer name `mx`
-    #      Localization Defaults     `United States - American English`
+    # Run 42497635410's frame `mx8` shows it: `Invalid settings found in configuration file
+    # ().` with an `OK`. While it is up the installer is blocked, and the driver used to press
+    # `Next` three times against it and then type the account into the swap page. (1069,583)
+    # is blank space on the confirmation page when no dialog is up, so the press costs
+    # nothing when there is nothing to dismiss.
+    drv.click(MODAL_OK, "dismiss the `Invalid settings` modal if it is up", settle=4.0)
+    drv.look("after start")
+
+    # 5. THE QUESTIONS THAT COME WHILE THE DISK IS BEING WRITTEN, EACH AWAITED BY ITS TITLE.
     #
-    #    The account page is the only one with fields this driver has to fill.
-    for label in ("swap file", "computer identity", "localization"):
+    #    THE FIRST ONE TAKES ABOUT NINETY SECONDS - the drive is being formatted - and that
+    #    wait is the whole point of this shape. The old code clicked `Next` three times on a
+    #    fixed 18 s settle, so all three presses were spent on the confirmation page and every
+    #    later step ran one page behind: measured, the account was typed into the swap page's
+    #    `Location` field (`admin`, `Invalid location`) and the install stopped there.
+    for title, label in AFTER_START:
+        if not drv.wait_title(title, 180, label):
+            return False
         drv.click(NEXT, f"{label}: Next (defaults kept)", settle=18.0)
         drv.look(f"after {label}")
 
-    # 6. DEFAULT USER LOGIN. THREE FIELDS, AND QMP'S KEYBOARD NOW REACHES THEM.
-    #
-    # THIS USED TO BE DONE WITH `xdotool` FROM A TERMINAL, because QMP keystrokes did not
-    # arrive at these entries - measured: a click on the field, then `input-send-event`
-    # keystrokes, left it unchanged while `keys.type_text` reported `unsupported: []`, and a
-    # triple-click followed by typing did nothing either.
-    #
-    # The cause was a missing device, not a missing technique: this guest's GTK entries take
-    # input from the HID keyboard, and lib/vm.py attached only a USB tablet. With `usb-kbd`
-    # beside it the same QMP keystrokes fill the field at once - measured on a live session,
-    # `docker` appeared in `Default user login name` with no terminal involved.
-    #
-    # So the terminal is gone from this step: the driver types the way every other driver
-    # here does.
-    # TYPED BY `xdotool` INSIDE THE GUEST, WHICH IS THE ONLY METHOD MEASURED TO WORK IN BOTH
-    # PLACES.
-    #
-    # Local sessions: with `usb-kbd` (lib/vm.py) QMP keystrokes DO reach these entries -
-    # measured, `docker` appeared in `Default user login name` with no terminal involved.
-    #
-    # CI run 42497635410: the same code, the same image, and the log said
-    #
-    #     [mx-gui 16:05:44] filling the default user account
-    #     [mx-gui 16:06:00]   account filled: ... Create | a | swap | file ...
-    #
-    # - the pane never moved, so nothing had been typed. Whatever differs between a local
-    # guest and a runner for this GTK application, `xdotool` removes it from the question:
-    # it drives the X server from inside the session, which is what run 42476000228 also
-    # showed working.
-    #
-    # The screen coordinates are used to place the CLICKS, and `--repeat BackSpace` empties a
-    # field first because `ctrl+a` is taken as literal text by these entries.
-    log("filling the default user account with xdotool, inside the guest")
+    # 6. DEFAULT USER LOGIN. THE THREE BOXES ARE MEASURED, AND THE PAGE IS AWAITED FIRST.
+    if not drv.wait_title("default user login", 120, "account"):
+        return False
+    drv.look("account page")
     Q.key_combo(drv.q, "ctrl", "alt", "t")
     time.sleep(9.0)
     fill = (
@@ -366,6 +354,14 @@ def walk_minstall(drv: Driver, args) -> bool:
     Q.key(drv.q, "ret")
     time.sleep(6.0)
     drv.look("account filled")
+
+    # AUTOLOGIN, SO THE DISK COMES UP AT A DESKTOP. The launch stage boots the disk with no
+    # installer and no ssh, so a disk that stops at a greeter can only be judged by its
+    # picture. Ticking this makes the desk the thing that appears - the same reason
+    # kubuntu-gui presses `Log in automatically`.
+    drv.click(AUTOLOGIN, "Autologin: tick", settle=4.0)
+    drv.look("autologin ticked")
+
     drv.click(NEXT, "Default User Login: Next", settle=25.0)
     drv.look("after the account")
 
