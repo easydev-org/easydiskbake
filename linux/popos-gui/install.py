@@ -92,16 +92,26 @@ ERASE_AND_INSTALL = (1334, 817)
 # THE ACCOUNT, TWO PANES. The first is Full Name and User Name; the second is the password
 # twice. Measured on both.
 ACCOUNT_NAME = {
-    "full name": (1136, 538),
-    "user name": (1136, 602),
+    "full name": (1188, 531),
+    "user name": (1188, 592),
 }
+
+# THE FULL NAME IS NOT THE USER NAME, AND THE INSTALLER ENFORCES IT.
+#
+# Measured: with both fields holding `docker` the footer's `Next` stays GREY and does nothing -
+# three presses in a run at 9d4e83a left the pane unchanged and then lost the window. Typing
+# `Docker User` instead makes the installer derive `dockeruser` for the user name and the
+# button turns GREEN at once.
+#
+# So the two are different strings here: the display name is `Docker User` and the login is
+# `docker`, which is the account every other image in this repository carries.
 ACCOUNT_PASSWORD = {
-    "password": (1136, 452),
-    "confirm": (1136, 558),
+    "password": (1188, 440),
+    "confirm": (1188, 546),
 }
 
 # DRIVE ENCRYPTION. The pane DEFAULTS TO `Encrypt`; this driver chooses `Don't Encrypt`.
-DONT_ENCRYPT = (1091, 817)
+DONT_ENCRYPT = (1081, 808)
 
 # THE LIVE MEDIUM'S BOOT TIME. Measured: about 100 s on this image.
 # MEASURED ON A RUNNER, WHICH IS SLOWER THAN A LOCAL SESSION: the desktop drew at about
@@ -242,17 +252,21 @@ def walk_installer(drv: Driver, args) -> bool:
     # on the wrong one. Both fields start empty. `Full Name` copies into `User Name` as it is
     # typed, so `User Name` is emptied by hand and typed once - measured: without that,
     # `User Name` read `dockerdocker`.
-    log("filling the account name (click, then type - the fields start empty)")
+    # THE DISPLAY NAME AND THE LOGIN ARE DIFFERENT STRINGS - see ACCOUNT_NAME's comment.
+    # `Full Name` is what a person is called; `User Name` is the login. Typing the login into
+    # both leaves `Next` grey.
+    display_name = args.user.capitalize() + " User"
+    log(f"filling the account name (display {display_name!r}, login {args.user!r})")
     Q.click(drv.q, *ACCOUNT_NAME["full name"])
     time.sleep(1.5)
-    keys.type_text(drv.q, args.user, per_char=0.12)
+    keys.type_text(drv.q, display_name, per_char=0.09)
     time.sleep(2.0)
     Q.click(drv.q, *ACCOUNT_NAME["user name"])
     time.sleep(1.5)
     for _ in range(40):
         Q.key(drv.q, "backspace")
         time.sleep(0.02)
-    keys.type_text(drv.q, args.user, per_char=0.12)
+    keys.type_text(drv.q, args.user, per_char=0.11)
     time.sleep(1.5)
     drv.look("account name filled")
     drv.click(SELECT, "Create User Account: Next", settle=22.0)
@@ -322,35 +336,13 @@ def walk_installer(drv: Driver, args) -> bool:
     #
     # So one long settle, then the press. `encrypt` in the reading is only logged: if the pane
     # is not up the press misses and the run will say so at the empty-disk check.
-    # THE PASSWORD PAGE'S `Next` IS PRESSED UNTIL THE FOOTER CHANGES, WHICH IS THE ONLY
-    # RELIABLE WAY TO KNOW THE ENCRYPTION PANE IS UP.
+    # THE ENCRYPTION PANE'S BUTTONS ARE AT THEIR OWN COORDINATES - measured on a live pane:
     #
-    # Measured on three runs: the log read `drive encryption: Workspaces | Applications | ...
-    # | u | Oo` - i.e. NOTHING of the pane - and then pressed (1091,817), which on the
-    # password page is empty space beside `Next`. The window lost focus and the installer
-    # closed, leaving a bare desktop and a 0 MiB disk.
+    #     Don't Encrypt  (1081, 808)      Set Password  (1213, 808)      Encrypt  (1347, 808)
     #
-    # `Next` at (1367,817) is safe to press twice from the password page, but NOT from the
-    # encryption pane: there that coordinate is `Encrypt`, which would encrypt the disk. So
-    # the check has to distinguish them, and the distinguishing fact is a BUTTON, not a
-    # sentence: the encryption pane is the only one with a button whose label starts
-    # `Don't`. `drv.text()` includes button labels, and that is what is tested here.
-    #
-    # This is a click guard, not a pane detector for its own sake: it exists because the
-    # alternative is a press that closes the installer, which has now happened three times.
-    for attempt in (1, 2, 3):
-        current = drv.text()
-        if "don't" in current or "dont" in current or "encrypt" in current:
-            log(f"  the encryption pane is up (attempt {attempt})")
-            break
-        log(f"  still on the password pane; pressing Next again ({attempt})")
-        drv.click(SELECT, "Create User Account: Next (again)", settle=25.0)
-        drv.look("drive encryption")
-    else:
-        log("=== THE ENCRYPTION PANE NEVER APPEARED ===")
-        log(f"  screen: {drv.text()[:200]}")
-        return False
-
+    # The pane defaults to `Encrypt`, so `Don't Encrypt` is the press that matters: an
+    # encrypted disk needs a passphrase at boot, one more thing that can fail on a machine
+    # nobody is watching.
     log("choosing `Don't Encrypt` (the pane defaults to Encrypt)")
     drv.click(DONT_ENCRYPT, "Drive Encryption: Don't Encrypt", settle=35.0)
     drv.look("installing")
