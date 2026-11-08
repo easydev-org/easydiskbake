@@ -45,18 +45,17 @@ import time
 # problem. They are written here as the measured centres anyway.
 ACCOUNT_NAME = {"full name": (1188, 494), "user name": (1188, 560)}
 
-# THE PASSWORD PANE, MEASURED ON ITS OWN DOM FRAME - AND THE OLD NUMBERS WERE IN THE GAPS.
+# THE PASSWORD PANE, MEASURED ON ITS OWN FRAME BY THE FOCUS RING.
 #
-# Frame pq4/f_145 (the pane that actually drew at 21:14:45 on run 42523566171):
+# Frame pr2/f_131 (the pane that drew at 21:26 on run 42524642824): the focused entry's orange
+# ring spans y=432..463, so its centre is 447, and the provider draws the two entries 96 px
+# apart - Confirm at 543.
 #
-#     Choose Account Password   entry y=390..427 (centre 408), x=950..1433
-#     Confirm Password          entry y=477..532 (centre 504)
-#
-# The constants here used to be 440 and 546, which are the rows BETWEEN those two entries:
-# a press at 440 lands on the GAP under the password box and a press at 546 on the gap under
-# the confirm box. That is why clicking there opened the artwork picker on the pane BEHIND -
-# `Choose Icon`, with `adminadmin` in its search box - and why the installer never started.
-ACCOUNT_PASSWORD = {"password": (1188, 408), "confirm": (1188, 504)}
+# THE NUMBERS BEFORE THESE WERE 440 AND 546, WHICH ARE THE LABEL ROWS: a press there hits the
+# `Choose Account Password` caption and the `Confirm Password` caption, not the entries, and
+# the click then falls through to the artwork picker on the pane behind - `Choose Icon`, with
+# `adminadmin` in its search box, which is the chooser in every failed popos frame.
+ACCOUNT_PASSWORD = {"password": (1188, 447), "confirm": (1188, 543)}
 
 
 def _click_type(driver, xy, text: str, *, clear: bool = False, per_char: float = 0.09) -> None:
