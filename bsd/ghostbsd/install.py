@@ -400,18 +400,18 @@ def choose_scfb(drv: Driver, timeout: int) -> bool:
         drv.look("boot")
         joined = " ".join(w[0].lower() for w in drv.words)
 
-        # THE DESKTOP IS RECOGNISED BY ITS MENU BAR, AND OCR MISREADS THAT BAR'S FIRST WORD.
+        # THE DESKTOP IS RECOGNISED BY ITS PANEL, AND ITS FIRST WORD IS THE ONE OCR GETS
+        # WRONG.
         #
-        # The panel reads `Applications Places System`, and tesseract returns `Ppplications`
-        # for the first one on a 1920x1080 frame - measured on a live session, every poll:
+        # MATE draws its panel along the top as `Applications Places System`, and tesseract
+        # returns `Ppplications` for the first word on every frame of a live session:
         #
         #     boot: @ | Ppplications | Places | System | Sun | Nov | 8, | 01:19 | 8
         #
-        # so `"applications" in joined` was FALSE on a desktop that was fully up, and the
-        # wait ran to its deadline and logged `=== NEITHER THE DESKTOP NOR THE DRIVER MENU
-        # APPEARED ===` - which is exactly what the last CI run did. `places` alone is the
-        # panel's middle item and is read cleanly on every frame; it is not a word any other
-        # screen in this boot shows.
+        # so `"applications" in joined` was FALSE on a fully drawn desktop, the wait ran to
+        # its deadline, and the run ended with `=== NEITHER THE DESKTOP NOR THE DRIVER MENU
+        # APPEARED ===` - which is exactly what the last CI run did. `places` is read cleanly
+        # and appears on no other screen in this boot.
         if "places" in joined:
             log("the MATE desktop is up")
             return True
