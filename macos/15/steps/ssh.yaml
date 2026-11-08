@@ -1,0 +1,91 @@
+# macOS 15 ssh: turn Remote Login on through System Settings, then prove it from the host.
+#
+#     python3 lib/steps.py macos/15/steps/ssh.yaml --qmp /work/drive.sock.qmp --ssh-port 2222
+#
+# THIS IS THE STAGE THE `ssh:` STEP WAS ADDED FOR, AND IT IS THE CLEAREST CASE FOR EITHER
+# MECHANISM BEING RIGHT.
+#
+# The first half is GUI and cannot be anything else: `systemsetup -setremotelogin on` is refused
+# by TCC, and `launchctl` does not expose "Allow full disk access for remote users" - so the two
+# switches have to be pressed in System Settings. macos/15/ssh.py records six runs of
+# diagnostics that proved it.
+#
+# The second half is the opposite: once sshd answers, everything worth asserting is a command.
+# "Is the port open", "does `sw_vers` run", "is the build the one we installed" are exit codes,
+# not words on a screen - and a word on a screen is a weaker answer than a return code.
+#
+# SO THE FILE HAS A BOUNDARY IN IT, VISIBLE AT THE LINE WHERE `at:` STOPS AND `ssh:` STARTS.
+# That boundary is exactly where Remote Login comes on, and a reader can see it.
+#
+# WHY THE GUI HALF IS `python:` AND NOT EIGHT `at:` STEPS
+#
+# The coordinates are all measured and could be written as steps - and two of them must not be:
+#
+#   the search field      has to be clicked AFTER Spotlight has drawn, and a click that arrives
+#                         first leaves the pane on the Sharing overview. ssh.py: "ten seconds
+#                         costs six and removes the race."
+#   full disk access      IS ALREADY ON. Turning Remote Login on turns it on with it, and
+#                         clicking it again turns it OFF - which was the bug that made the
+#                         clean fail with `diskutil apfs trim WAS REFUSED`. ssh.py takes a
+#                         frame of it instead of pressing it, and a `at:` step cannot express
+#                         "look but do not press".
+
+name: macos 15 remote login
+resolution: [1920, 1080]
+# This is a sequence, not a pane set: the settings window does not skip panes, and each step
+# depends on the one before it having landed.
+vars:
+  user:
+    from: args.user
+    default: docker
+  password:
+    from: args.password
+    default: admin
+
+steps:
+  # --- 1. THE GUI, WHICH IS THE ONLY WAY TO TURN THIS ON --------------------------------
+  #
+  # Everything inside is one measured sequence: Spotlight, the search box, the result row, the
+  # Remote Login switch, a frame of the full-disk-access switch that is deliberately NOT
+  # clicked, and Done. It is Python because two of those are timing decisions and one is a
+  # read-without-writing.
+  - name: enable remote login through system settings
+    python: ssh_panes:enable_remote_login
+
+  # --- 2. THE HOST SIDE, WHERE EVERY ANSWER IS AN EXIT STATUS ---------------------------
+  #
+  # `require_ssh` waits for the daemon the step above just enabled, and reports how long it
+  # took. It replaces the flat `wait: 120` this stage used to have, which was the weakness
+  # ssh.py's own docstring names.
+  - name: wait for sshd
+    require_ssh: true
+    timeout: 600
+
+  # THE FIRST REAL PROOF. `sw_vers` is the guest answering a question about itself; a daemon
+  # that accepted the TCP connection and then closed it on the password packet - which is what
+  # six runs of diagnostics were about - fails here and nowhere earlier.
+  - name: prove the build
+    ssh: sw_vers -productVersion
+
+  - name: prove the account
+    ssh: id -un
+
+  # THE DISK HAS TO BE REPAIRABLE BY LATER STAGES, and this is the check that a remote session
+  # really does have the privilege the GUI switch granted. Without Full Disk Access, `diskutil`
+  # is refused here - which is the failure that made this stage hard in the first place, so it
+  # is asserted rather than assumed.
+  - name: prove disk utility works over ssh
+    ssh: diskutil list | head -5
+
+  # THE MACHINE'S OWN NAME, so the disk is identifiable after it is published.
+  - name: name the machine
+    ssh: sudo -S scutil --set HostName docker <<< "{{ password }}"
+
+  # --- 3. A READ-MEANT-TO-FAIL IS NOT A FAILURE -----------------------------------------
+  #
+  # `optional` exists for exactly this: a check whose negative result is information. It is
+  # used here to record what is NOT installed, so a later reader knows the disk never had it
+  # rather than guessing from a silence.
+  - name: note what is absent
+    ssh: command -v brew || true
+    optional: true

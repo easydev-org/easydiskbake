@@ -1,0 +1,209 @@
+# macOS 15 (Sequoia) Setup Assistant, 1920x1080. The pane shape, not the sequence shape.
+#
+#     python3 lib/steps.py macos/15/steps/sequoia.yaml --qmp /work/drive.sock.qmp
+#
+# THIS FILE IS THE ARGUMENT FOR THE WHOLE ROUTE, AND ALSO ITS LIMIT.
+#
+# WHAT IT REPLACES
+#
+# macos/15/drive_read.py is 694 lines: seventeen handlers, the Wizard class, the event loop and
+# main(). Almost every handler is the same four lines:
+#
+#     def pane_privacy(w):
+#         if not w.says("data", "privacy"):   return False
+#         w.click(w.continue_at, "...", settle=8.0)
+#         return True
+#
+# As data that is one step. The seventeen fit here with their reasons attached, and the reasons
+# are the part that was worth keeping - the Python handlers are mostly comment, which is the
+# tell that the code was already trying to be a table of contents.
+#
+# WHY PANES AND NOT A SEQUENCE
+#
+# The Setup Assistant SKIPS panes: a machine with no network gets no Apple Account pane, a
+# release with no Screen Time has no Screen Time pane, and an answer given two panes earlier
+# decides whether the next one appears at all. A sequence would sit on a pane that never comes.
+# So this is the event loop: look at the screen, answer the one pane whose words are up, look
+# again. `ends: [finder]` says how it finishes, and `finder` is the desktop's menu bar and
+# nothing else - the version that treated "nothing matched" as arrival left the guest one click
+# from finished.
+#
+# A PANE IS ANSWERED IN ONE PASS. Its `do` list is every click the question needs, in order.
+# This is not an optimisation: the account pane is three fields and a Continue, and a loop that
+# ran one action per pass left the pane on the first field forever, because the second pass
+# matched the same pane, saw the full name already typed, and stopped.
+#
+# WHAT IS NOT HERE, AND IT IS NOT MUCH
+#
+#   the Apple Account pane   a popup on 26 and a text link on 15, each followed by a
+#                            confirmation sheet at a different place - see sequoia_panes.py
+#   the 26 Update pane       greys Continue and spins forever; the only exit is a QMP reset
+#
+# Everything else is below, as data.
+
+name: macos 15 sequoia setup assistant
+resolution: [1920, 1080]
+ends: [finder]
+stuck_after: 20
+pane_limit: 3
+
+vars:
+  user:
+    from: args.user
+    default: docker
+  password:
+    from: args.password
+    default: admin
+
+steps:
+  # --- the panes that only need the footer ------------------------------------------------
+  #
+  # THE FOOTER'S FORWARD BUTTON IS NOT IN THE SAME PLACE ON 26: (1306, 810) against
+  # (1276, 798), a button's width apart. That is why this file is 15 and a 26 file repeats the
+  # numbers instead of parameterising them - a shared table is wrong by thirty pixels on one of
+  # the two, and a click that far off a forty-pixel button misses silently while the wizard
+  # carries on.
+
+  - name: data and privacy
+    when: [data, privacy]
+    at: [1306, 810]
+    settle: 8
+
+  - name: written and spoken languages
+    when: [spoken, languages]
+    at: [1306, 810]
+    settle: 8
+
+  # NOT "CONTINUE". This pane's forward button says Not Now, four pixels higher than the usual
+  # footer - clicking (1306, 810) here selects nothing.
+  - name: accessibility
+    when: [accessibility, individual]
+    at: [1306, 806]
+    settle: 12
+
+  # THE ROW IS THE CONTROL, NOT THE LABEL. Measured: two clicks on the circle at (825, 669)
+  # take the selection where a click on the label at (880, 666) did nothing.
+  - name: transfer your data
+    when: [transfer, data]
+    do:
+      - at: [825, 669]
+        settle: 4
+      - at: [1306, 810]
+        settle: 10
+
+  # TYPING SELECTS THE ROW. The list takes nothing from a click except focus; typing "united
+  # states" jumps to the U section with the row already highlighted.
+  - name: country or region
+    when: [country, region]
+    do:
+      - at: [900, 500]
+        settle: 2
+      - at: [900, 500]
+        type: united states
+        settle: 3
+      - at: [1306, 810]
+        settle: 8
+
+  # --- the account, which is three fields ------------------------------------------------
+
+  # THE PASSWORD ROW IS TWO BOXES. These positions are the ones that produced a green tick
+  # beside every field - drive.py's table differs by a row and put the text one row off.
+  - name: create a mac account
+    when: [full, name]
+    do:
+      - at: [945, 447]
+        type: "{{ user }}"
+        settle: 3
+      - at: [850, 531]
+        type: "{{ password }}"
+        settle: 3
+      - at: [1086, 531]
+        type: "{{ password }}"
+        settle: 3
+      - at: [1306, 810]
+        settle: 15
+
+  # --- the panes with their own way out --------------------------------------------------
+
+  # THE SHEET'S "DON'T USE" IS ITS DEFAULT BUTTON: a click darkens it and leaves the sheet up,
+  # and Return is what fires it. Both halves of that were measured. The sheet and the pane share
+  # the word "use", which is why both steps are in one pane: the first answer opens the sheet
+  # and the second one closes it, in the same pass.
+  - name: enable location services
+    when: [location, services]
+    do:
+      - at: [1306, 810]
+        settle: 6
+      - at: [960, 632]
+        settle: 3
+      - key: ret
+        settle: 6
+
+  # UNTICK FIRST. The box is on when the pane opens; clicking it clears it and greys the second
+  # option with it, which is what the bake wants.
+  - name: analytics
+    when: [analytics, improve]
+    do:
+      - at: [808, 513]
+        settle: 3
+      - at: [1306, 810]
+        settle: 10
+
+  # SET UP LATER, AND ITS OWN BUTTON - not the footer.
+  - name: screen time
+    when: [screen, report]
+    at: [619, 806]
+    settle: 8
+
+  - name: time zone
+    when: [time, zone]
+    at: [1306, 806]
+    settle: 10
+
+  - name: choose your look
+    when: [look, appearance]
+    at: [1306, 805]
+    settle: 12
+
+  # THE FOOTER'S AGREE OPENS A LICENCE SHEET, whose own Agree is a different click.
+  - name: terms and conditions
+    when: [terms, conditions]
+    do:
+      - at: [1298, 806]
+        settle: 8
+      - at: [1019, 616]
+        settle: 10
+
+  # "WELCOME TO MAC" IS A PANE, NOT THE DESKTOP. It is a full-screen card with a Continue
+  # button, and treating it as arrival skipped this pane and left the wizard one click from
+  # finished - the same class of mistake as an earlier loop that matched the word "up" inside a
+  # paragraph.
+  - name: welcome to mac
+    when: [welcome, mac]
+    at: [960, 990]
+    settle: 12
+
+  # THE LAST PANE, AND IT ASKS WHETHER TO KEEP THE KEYBOARD SETUP.
+  - name: keyboard
+    when: [keyboard, select]
+    at: [1222, 818]
+    settle: 12
+
+  # --- the pane that is a menu and a sheet, and the one that must not run ------------------
+  #
+  # `python:` because leaving the Apple Account pane is a menu on 26 and a link on 15, each
+  # followed by a confirmation sheet at a different place. Writing that as `at:` steps would
+  # need a conditional-that-gates-a-click, which is the mistake this repository has paid for
+  # four times. The branch is in Python where it is readable as a branch, and the YAML names it.
+  - name: sign in to apple account
+    when: [sign, apple]
+    python: sequoia_panes:apple_account
+
+  # UPDATE MAC AUTOMATICALLY. On 15 this is another footer click. On 26 it greys Continue, spins
+  # and never advances, and the only exit is a system_reset - see the file header. It is
+  # `optional` so a 26 disk that reaches it reports rather than failing the whole walk.
+  - name: update mac automatically
+    when: [update, automatically]
+    at: [1306, 810]
+    settle: 15
+    optional: true

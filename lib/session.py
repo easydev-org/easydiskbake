@@ -47,6 +47,7 @@ sshpass supplies the password because there is no terminal to type it at.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import time
@@ -57,14 +58,22 @@ except ModuleNotFoundError:  # pragma: no cover - depends on how the caller adde
     from lib import net
 
 # THE ACCOUNT, WHICH IS THE SAME ONE EVERY IMAGE IN THIS REPOSITORY USES.
-SSH_USER = "docker"
-SSH_PASSWORD = "admin"
+#
+# THE ENVIRONMENT OVERRIDES ARE FOR THE WALKTHROUGH DRIVER, NOT FOR A BAKE.
+#
+# A bake always means the guest on the bridge, and a default that moved would be a bake
+# connecting somewhere else. But a `ssh:` step in a walkthrough is also the right shape for
+# testing the driver itself against a plain sshd on the same host, and a hard-coded
+# 172.30.0.1 makes that impossible without patching this file. So the defaults are unchanged
+# and reading them is the only thing that changed.
+SSH_USER = os.environ.get("SSH_USER") or "docker"
+SSH_PASSWORD = os.environ.get("SSH_PASSWORD") or "admin"
 
 # THE FORWARDED PORT EXISTS ON THE BRIDGE ADDRESS AND NOWHERE ELSE. Connecting to
 # 127.0.0.1:2222 inside the container reaches the DNAT rule too, but DNAT does not rewrite
 # the source, so the guest replies to its own loopback and the connect hangs. lib/net.py has
 # the measurement; this is the one place the address is read from.
-SSH_HOST = net.FORWARD_HOST
+SSH_HOST = os.environ.get("SSH_HOST") or net.FORWARD_HOST
 
 
 def log(message: str) -> None:

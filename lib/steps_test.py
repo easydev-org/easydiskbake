@@ -1,0 +1,432 @@
+"""Exercise lib/steps.py against a fake guest, with no qemu and no screen.
+
+    python3 lib/steps_test.py
+
+WHY THIS EXISTS AS A TEST AND NOT AS A COMMENT
+
+The interpreter decides whether a run continues, so an interpreter bug is a bake that reports
+success having clicked nothing - which is the exact failure this repository has paid for four
+times (kubuntu three, mint once). None of those were driver bugs; they were "a conditional
+decided to skip a click and nothing said so". So the rules that prevent it are tested here,
+against a guest that can be made to behave in any way the test wants:
+
+    a step whose expect does not appear          must FAIL the walk
+    an optional step whose expect does not appear must NOT fail the walk
+    a step with an unknown key                   must be refused at LOAD time
+    one step, one action                         see test_no_step_acts_twice
+    the footer repeated N times                  produces N clicks at one coordinate
+    a `wait` step does not read the screen to decide anything
+    start_at / stop_before                       walk only the named half
+
+The fake driver records what it was asked to do, so an assertion is about the calls rather than
+about a log line.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import steps  # noqa: E402
+
+
+class FakeDriver:
+    """A guest that says whatever the test puts in `screen`, and records what it was asked."""
+
+    def __init__(self, screen: str = "") -> None:
+        self.screen = screen
+        self.clicks: list[tuple[int, int]] = []
+        self.typed: list[tuple[tuple[int, int], str]] = []
+        self.keys: list[str] = []
+        self.doubles: list[tuple[int, int]] = []
+        self.looks = 0
+        self.words: list[tuple] = []
+        self.q = None
+
+        class _Mod:
+            @staticmethod
+            def click(q, x, y):
+                pass
+
+            @staticmethod
+            def key(q, k):
+                pass
+
+            @staticmethod
+            def key_combo(q, *k, hold=0.0):
+                pass
+
+        self.qmpmod = _Mod()
+
+    def look(self, label: str = "look") -> list[tuple]:
+        self.looks += 1
+        self.words = [(w, 0, 0, 0, 0) for w in self.screen.split()]
+        return self.words
+
+    def text(self) -> str:
+        return self.screen.lower()
+
+    def says(self, *want: str) -> bool:
+        have = {"".join(c for c in w.lower() if c.isalnum()) for w in self.screen.split()}
+        return all("".join(c for c in x.lower() if c.isalnum()) in have for x in want)
+
+    def log(self, message: str) -> None:
+        pass
+
+    def click(self, xy, why: str, settle: float = 2.0) -> None:
+        self.clicks.append(tuple(xy))
+
+    def double_click(self, xy, why: str, settle: float = 20.0) -> None:
+        self.doubles.append(tuple(xy))
+
+    def type_into(self, xy, value: str, *, clear: bool = True, per_char: float = 0.1) -> None:
+        self.typed.append((tuple(xy), value))
+
+    def key(self, spec: str, hold: float = 0.0) -> None:
+        self.keys.append(spec)
+
+    def close(self) -> None:
+        pass
+
+
+def walk_of(steps_list: list[dict], **extra) -> steps.Walk:
+    document = {"name": "test", "steps": steps_list}
+    document.update(extra)
+    return steps.Walk(document, path="inline")
+
+
+def run(document, screen: str = "", **kwargs):
+    driver = FakeDriver(screen)
+    return driver, steps.walk(driver, document, **kwargs)
+
+
+FAILED = []
+
+
+def check(condition: bool, what: str) -> None:
+    if condition:
+        print(f"  ok   {what}")
+    else:
+        print(f"  FAIL {what}")
+        FAILED.append(what)
+
+
+# --- 1. a step that does not advance fails the walk ------------------------------------
+def test_expect_failure() -> None:
+    print("\n=== a step whose expect does not appear fails the walk")
+    walk = walk_of([
+        {"name": "welcome", "at": [10, 20], "settle": 0, "expect": "keyboard"},
+    ])
+    driver, (ok, ran) = run(walk, screen="welcome to the installer")
+    check(not ok, "the walk reports failure")
+    check(ran == [], "the failing step is not counted as having run")
+    check(driver.clicks == [(10, 20)], "the click still happened before the verdict")
+
+
+# --- 2. the same step, marked optional, does not fail the walk ---------------------------
+def test_optional_expect() -> None:
+    print("\n=== an optional step that does not appear does not fail the walk")
+    walk = walk_of([
+        {"name": "privacy", "at": [10, 20], "settle": 0, "expect": "data", "optional": True},
+        {"name": "next", "at": [30, 40], "settle": 0},
+    ])
+    driver, (ok, ran) = run(walk, screen="something else")
+    check(ok, "the walk continues")
+    check(ran == ["privacy", "next"], "both steps are recorded")
+
+
+# --- 3. an unknown key is refused when the file is read, not when it is run --------------
+def test_unknown_key() -> None:
+    print("\n=== an unknown key is refused at load time")
+    try:
+        walk_of([{"name": "a", "at": [1, 2], "clik": "typo"}])
+    except steps.StepError as exc:
+        check("clik" in str(exc), "the message names the offending key")
+    else:
+        check(False, "no error was raised")
+
+
+# --- 4. a step acts once: `at` + `type` types, it does not also click twice --------------
+def test_no_step_acts_twice() -> None:
+    print("\n=== a step with `at` and `type` types into the point, exactly once")
+    walk = walk_of([{"name": "user", "at": [5, 6], "type": "docker", "settle": 0}])
+    driver, (ok, _ran) = run(walk)
+    check(ok, "the walk succeeds")
+    check(driver.typed == [((5, 6), "docker")], "one type, at the measured point")
+    check(driver.clicks == [], "no separate click was also made")
+
+
+# --- 5. repeat presses one coordinate N times -------------------------------------------
+def test_repeat() -> None:
+    print("\n=== repeat presses the same coordinate N times")
+    walk = walk_of([{"name": "panes", "at": [100, 200], "settle": 0, "repeat": [3, 0]}])
+    driver, (ok, _ran) = run(walk)
+    check(ok, "the walk succeeds")
+    check(driver.clicks == [(100, 200)] * 3, f"three clicks at one point, got {driver.clicks}")
+
+
+# --- 6. a wait step does not consult the screen ----------------------------------------
+def test_wait_is_measured() -> None:
+    print("\n=== a wait step is a duration, not a reading")
+    walk = walk_of([{"name": "install", "wait": 0.05, "keep_alive": False}])
+    driver, (ok, _ran) = run(walk)
+    check(ok, "the walk succeeds")
+    check(driver.clicks == [], "nothing was clicked")
+    check(driver.looks >= 1, "the screen was still watched for the log")
+
+
+# --- 7. start_at / stop_before walk only the named half ---------------------------------
+def test_halves() -> None:
+    print("\n=== start_at walks from a step, stop_before stops at one")
+    walk = walk_of([
+        {"name": "one", "at": [1, 1], "settle": 0},
+        {"name": "two", "at": [2, 2], "settle": 0},
+        {"name": "three", "at": [3, 3], "settle": 0},
+    ])
+    driver, (ok, ran) = run(walk, start_at="two")
+    check(ok and ran == ["two", "three"], f"start_at two -> {ran}")
+
+    driver, (ok, ran) = run(walk, stop_before="three")
+    check(ok and ran == ["one", "two"], f"stop_before three -> {ran}")
+
+
+# --- 8. vars come from the caller, and a missing one is refused -------------------------
+def test_vars() -> None:
+    print("\n=== vars are substituted, and a name that is not declared is refused")
+    document = walk_of(
+        [{"name": "user", "at": [1, 2], "type": "{{ user }}", "settle": 0}],
+        vars={"user": {"from": "args.user", "default": "docker"}},
+    )
+    driver, (ok, _ran) = run(document)
+    check(ok and driver.typed == [((1, 2), "docker")], "the default was used")
+
+    driver, (ok, _ran) = run(document, overrides={"args.user": "admin"})
+    check(ok and driver.typed == [((1, 2), "admin")], "the override wins")
+
+    bad = walk_of(
+        [{"name": "user", "at": [1, 2], "type": "{{ nope }}", "settle": 0}],
+        vars={"user": "docker"},
+    )
+    try:
+        run(bad)
+    except steps.StepError as exc:
+        check("nope" in str(exc), "an undeclared name is refused")
+    else:
+        check(False, "no error was raised")
+
+
+# --- 9. panes: the macOS shape ----------------------------------------------------------
+def test_panes() -> None:
+    print("\n=== a pane file runs the one pane whose words are up, and ends on its own word")
+    document = steps.Walk({
+        "name": "test panes",
+        "ends": ["finder"],
+        "stuck_after": 0,
+        "steps": [
+            {"name": "country", "when": ["country", "region"], "at": [1, 1], "settle": 0},
+            {"name": "account", "when": ["full", "name"], "at": [2, 2], "settle": 0},
+        ],
+    }, path="inline")
+
+    # A guest that walks country -> account -> desktop, one look per state.
+    class Scripted(FakeDriver):
+        def __init__(self):
+            super().__init__()
+            self.script = ["Select Your Country or Region",
+                           "Create a Mac Account Full Name",
+                           "Finder File Edit"]
+            self.step = 0
+
+        def look(self, label="look"):
+            self.screen = self.script[min(self.step, len(self.script) - 1)]
+            self.step += 1
+            return super().look(label)
+
+    driver = Scripted()
+    ok, answered = steps.walk(driver, document)
+    check(ok, "the walk reports success on reaching the end word")
+    check(answered == ["country", "account"], f"both panes answered, got {answered}")
+    check(driver.clicks == [(1, 1), (2, 2)], f"one click each, got {driver.clicks}")
+
+    # A guest stuck on a pane nobody knows must FAIL, not spin to the timeout.
+    class Stuck(FakeDriver):
+        def look(self, label="look"):
+            self.screen = "something no pane knows"
+            return super().look(label)
+
+    ok, answered = steps.walk(Stuck(), document)
+    check(not ok, "an unknown pane is a failure, not arrival")
+    check(answered == [], "nothing was answered")
+
+
+def test_pane_limit() -> None:
+    print("\n=== a pane that keeps matching is not clicked forever")
+    document = steps.Walk({
+        "name": "sticky",
+        "ends": ["finder"],
+        "pane_limit": 2,
+        "stuck_after": 0,
+        "steps": [
+            {"name": "update", "when": ["update"], "at": [3, 3], "settle": 0},
+        ],
+    }, path="inline")
+
+    class Sticky(FakeDriver):
+        def look(self, label="look"):
+            self.screen = "Update Mac Automatically"
+            return super().look(label)
+
+    driver = Sticky()
+    ok, answered = steps.walk(driver, document)
+    check(len(driver.clicks) <= 2, f"clicked at most twice, got {len(driver.clicks)}")
+    check(not ok, "a pane that never resolves is a failure")
+
+
+def test_mixed_is_refused() -> None:
+    print("\n=== a file that mixes panes and a sequence is refused")
+    try:
+        steps.Walk({
+            "name": "mixed",
+            "steps": [
+                {"name": "a", "when": ["x"], "at": [1, 1]},
+                {"name": "b", "at": [2, 2]},
+            ],
+        }, path="inline")
+    except steps.StepError as exc:
+        check("mixes" in str(exc), "the message says it mixes the two shapes")
+    else:
+        check(False, "no error was raised")
+
+
+# --- 10. ssh steps ----------------------------------------------------------------------
+def test_ssh_step() -> None:
+    print("\n=== an ssh step's verdict is the exit status, not a word on a screen")
+    calls: list[str] = []
+
+    class SshDriver(FakeDriver):
+        pass
+
+    document = steps.Walk({
+        "name": "ssh",
+        "steps": [
+            {"name": "ok", "ssh": "true"},
+            {"name": "also ok", "ssh": "echo hi"},
+        ],
+    }, path="inline")
+
+    import session
+
+    real = session.ssh
+
+    def fake(port, command, timeout=30):
+        calls.append(command)
+        return 0, "ran"
+
+    session.ssh = fake
+    try:
+        driver = SshDriver()
+        ok, ran = steps.walk(driver, document)
+        check(ok, "the walk succeeds when every command exits 0")
+        check(calls == ["true", "echo hi"], f"both commands ran, got {calls}")
+        check(ran == ["ok", "also ok"], "both steps are recorded")
+
+        # A non-zero status fails the step, and the run, and it does not need a screen.
+        failing = steps.Walk({
+            "name": "ssh fails",
+            "steps": [{"name": "bad", "ssh": "exit 7"}],
+        }, path="inline")
+
+        def fake_fail(port, command, timeout=30):
+            return 7, ""
+
+        session.ssh = fake_fail
+        try:
+            steps.walk(SshDriver(), failing)
+        except steps.StepError as exc:
+            check("7" in str(exc), "the failure names the exit status")
+        else:
+            check(False, "no error was raised for a non-zero status")
+
+        # ...unless the step is optional, which is what "a read meant to fail is information"
+        # is for: the step runs, records itself, and the walk continues.
+        allowed = steps.Walk({
+            "name": "ssh optional",
+            "steps": [
+                {"name": "probe", "ssh": "exit 1", "optional": True},
+                {"name": "next", "ssh": "true"},
+            ],
+        }, path="inline")
+        # THE OPTIONAL STEP FAILS AND THE ONE AFTER IT DOES NOT, which is the whole point:
+        # the fake has to answer per command, not per run.
+        def fake_mixed(port, command, timeout=30):
+            return (1, "") if command == "exit 1" else (0, "")
+
+        session.ssh = fake_mixed
+        ok, ran = steps.walk(SshDriver(), allowed)
+        check(ok and ran == ["probe", "next"],
+              f"an optional failure does not stop the walk, got {ran}")
+    finally:
+        session.ssh = real
+
+
+def test_headless_needs_no_screen() -> None:
+    print("\n=== a walkthrough with no GUI steps needs no QMP socket")
+    headless = steps.HeadlessDriver("/tmp")
+    check(headless.look("x") == [], "looking at nothing is empty, not an error")
+
+    try:
+        headless.says("anything")
+    except steps.StepError as exc:
+        check("no GUI steps" in str(exc), "asking the screen a question is refused")
+    else:
+        check(False, "no error was raised")
+
+
+# --- 11. a real file parses -------------------------------------------------------------
+def test_real_files() -> None:
+    print("\n=== the committed walkthroughs parse")
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for relative in ("linux/mint-gui/steps/ubiquity.yaml",
+                     "bsd/ghostbsd/steps/gbi.yaml",
+                     "macos/15/steps/sequoia.yaml",
+                     "macos/15/steps/setup.yaml",
+                     "macos/15/steps/ssh.yaml"):
+        path = os.path.join(here, relative)
+        try:
+            walk = steps.load(path)
+        except steps.StepError as exc:
+            check(False, f"{relative}: {exc}")
+            continue
+        check(len(walk.steps) > 5, f"{relative}: {len(walk.steps)} steps")
+
+
+def main() -> int:
+    test_expect_failure()
+    test_optional_expect()
+    test_unknown_key()
+    test_no_step_acts_twice()
+    test_repeat()
+    test_wait_is_measured()
+    test_halves()
+    test_vars()
+    test_panes()
+    test_pane_limit()
+    test_mixed_is_refused()
+    test_ssh_step()
+    test_headless_needs_no_screen()
+    test_real_files()
+
+    print()
+    if FAILED:
+        print(f"=== {len(FAILED)} FAILURE(S) ===")
+        for one in FAILED:
+            print(f"  {one}")
+        return 1
+    print("=== ALL STEPS TESTS PASS ===")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

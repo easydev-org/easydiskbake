@@ -1,0 +1,118 @@
+# macOS 15 setup: Recovery -> Disk Utility -> install -> Setup Assistant appears.
+#
+#     python3 lib/steps.py macos/15/steps/setup.yaml --qmp /work/drive.sock.qmp
+#
+# WHAT THIS COVERS AND WHAT IT DELIBERATELY DOES NOT
+#
+# macos/15/install.py is 1694 lines, and most of it is NOT the walkthrough. It is:
+#
+#     the recovery image's own layout      reading the disk list, identifying the target by
+#                                          its CAPACITY, and refusing when it cannot
+#     the erase sheet's OCR                the sheet has no readable buttons, so it is found
+#                                          by looking for a crop and swept
+#     disk growth as evidence              the only way to tell "copying 12 GB" from "hung",
+#                                          because both draw a black screen
+#     the frames, the heartbeat, the last-frame capture, the signal handlers
+#
+# None of that is a step in a sequence and none of it belongs in YAML. What IS a sequence is
+# the part a person does with a mouse: open Disk Utility, erase the disk, go back, reinstall,
+# agree, and wait. That is below.
+#
+# THE PARTS THAT STAY PYTHON ARE NAMED, NOT HIDDEN. `erase_the_disk` covers the sheet sweep and
+# the capacity check; `install` covers the disk-growth wait. They are `python:` steps because
+# they are programs that answer a question - and because writing them as `at:` steps would mean
+# a click whose safety depends on an OCR result, which is the mistake this repository has paid
+# for four times.
+
+name: macos 15 setup (recovery to setup assistant)
+resolution: [1920, 1080]
+# Recovery is an event loop like the Setup Assistant: the menu, Disk Utility's own dialogs and
+# the installer's panes all appear on their own schedule, and a fixed sequence would click into
+# a window that has not been drawn. `ends` is the setup identifier the bake already uses - the
+# screen full of wizard panes is the end of this stage.
+pane_limit: 2
+stuck_after: 240
+
+steps:
+  # --- 1. THE RECOVERY MENU ---------------------------------------------------------------
+  #
+  # Four entries, and the clickable centre is NOT the row's text. Measured: each entry is a
+  # label with an 18px-smaller description under it, so the centre sits between the two.
+  #
+  # THE ENTRY IS OPENED BY SELECTING IT AND THEN PRESSING RETURN. Clicking the entry alone
+  # only highlights it - that is the measurement install.py records, and it is why this is a
+  # two-action pane.
+  - name: recovery menu - disk utility
+    when: [disk, utility]
+    python: setup_panes:open_disk_utility
+
+  - name: recovery menu - reinstall
+    when: [reinstall, macos]
+    python: setup_panes:open_reinstall
+
+  # --- 2. DISK UTILITY --------------------------------------------------------------------
+  #
+  # The erase sheet has no OCR-readable buttons - they are drawn, not rendered as text - so
+  # finding them is a crop and a sweep. This is the single most expensive pane in the whole
+  # bake and it stays Python for that reason.
+  - name: disk utility
+    when: [disk, utility, erase]
+    python: setup_panes:erase_the_disk
+
+  # --- 3. THE INSTALLER -------------------------------------------------------------------
+  #
+  # THE PANES, in order, each with the click that leaves it. Measured by hand on a live guest:
+  #
+  #   welcome        "To set up the installation of macOS Sequoia, click Continue."
+  #                  -> Continue, lower right       (960, 712)
+  #   licence        the agreement text, Agree/Disagree at the foot
+  #                  -> Agree                        (1005, 713)
+  #   licence sheet  the smaller dialog Agree raises, with no readable buttons
+  #                  -> its lower right              (1060, 530)
+  #   destination    the card for the erased disk, then Continue
+  #                  -> the card FIRST               (850, 550)
+  #                     then Continue                (1005, 712)
+  #
+  # THEY ARE ONE PANE EACH SO THE LOG SAYS WHERE IT STOPPED. A single step that clicked all
+  # five would be five coordinates and one verdict, which is what install.py's own comment
+  # describes failing for six runs.
+  - name: installer welcome
+    when: [set, up, installation]
+    at: [960, 712]
+    settle: 5
+
+  - name: licence agreement
+    when: [agree, terms]
+    at: [1005, 713]
+    settle: 60
+
+  - name: licence sheet
+    when: [agree, licence]
+    at: [1060, 530]
+    settle: 30
+
+  # THE CARD HAS TO BE SELECTED FIRST - Continue is grey until it is, and a click on a grey
+  # button does nothing at all.
+  - name: destination disk card
+    when: [destination, select]
+    at: [850, 550]
+    settle: 15
+
+  - name: destination continue
+    when: [destination, select]
+    at: [1005, 712]
+    settle: 25
+
+  # --- 4. THE COPY, WHICH IS NOT A PANE ---------------------------------------------------
+  #
+  # The installer's own transition is: agree, choose the disk, and then the screen goes black
+  # while it copies and reboots. A dark screen cannot say whether the guest is copying or hung,
+  # so this pane is answered by reading how much the target qcow2 has grown - see
+  # setup_panes.install. A fixed wait here was the bug: install.py's comment records a 90-minute
+  # guess that no run had ever measured, and a duration cannot tell slow from stopped.
+  - name: install
+    when: [installing, macos]
+    python: setup_panes:install_macos
+
+  # A BLACK SCREEN IS NOT A FAILURE BY ITSELF. It is the copy. So there is no `when` that can
+  # match it and no click that belongs on it; the step above owns the whole interval.
