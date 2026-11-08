@@ -112,6 +112,15 @@ LINUX_FS_BYTES = uuid.UUID("0fc63daf-8483-4772-8e79-3d69d8477de4").bytes_le
 # them from the disk that is about to be used.
 METADATA_SECTORS = 32768
 
+# 64 GiB, BECAUSE /data IS WHERE INSTALLED APPLICATIONS LIVE.
+#
+# It was 8 GiB, which holds the system's own first-boot state and very little else - a few
+# large applications and it is full, and a full /data does not fail at install time in a
+# way that is easy to read. The disk is sparse: it costs 64 GiB of VIRTUAL size and only
+# what is written (a few hundred MiB after a first boot) in real bytes, so the number on
+# disk does not grow by 56 GiB when this changes.
+USERDATA_BYTES = 64 * 2 ** 30
+
 LZ4_LEGACY_MAGIC = b"\x02\x21\x4c\x18"
 
 
@@ -281,21 +290,51 @@ def metadata_filesystem() -> bytes:
         return fh.read()
 
 
-def userdata_filesystem(dest: str) -> None:
-    """An 8 GiB ext4 /data, without `orphan_file`.
+def userdata_filesystem(dest: str, force: bool = False) -> bool:
+    """A 64 GiB ext4 /data, without `orphan_file`. Returns True if it was created.
 
-    The guest's own e2fsck predates FEATURE_C12:
+    THE GUEST'S OWN e2fsck PREDATES ONE FEATURE:
 
         e2fsck: /dev/block/mapper/userdata has unsupported feature(s): FEATURE_C12
         e2fsck: ... WARNING: Filesystem still has errors
 
     WRITTEN IN PLACE, NOT BUILT IN /tmp AND MOVED. /tmp and the mounted volume are
     different filesystems, and os.replace across them is EXDEV, not a copy.
+
+    AN EXISTING /data IS KEPT, AND THAT IS THE POINT OF THIS CHECK.
+
+    /data is where installed applications live. Rebuilding it on every run would make
+    "keep what I installed" impossible no matter how the disk is packaged, and it is what
+    made every earlier run start from an empty device. `--force-userdata` is the way to ask
+    for a blank one.
+
+    WHAT "EXISTING" IS TESTED BY, AND WHY NOT os.path.exists: a file that is present but
+    not a filesystem - a truncated write from an interrupted run, or a raw image left over
+    from an experiment - would be kept and then fail to mount inside the guest, several
+    minutes later and one layer away from the cause. So the ext4 magic is read.
     """
+    if not force and looks_like_ext4(dest):
+        log(f"userdata {dest}: KEPT (an existing ext4 /data, applications included)")
+        return False
     with open(dest, "wb") as fh:
-        fh.truncate(8 * 2 ** 30)
+        fh.truncate(USERDATA_BYTES)
     subprocess.run(["/sbin/mkfs.ext4", "-q", "-F", "-O", "^orphan_file",
                     "-L", "userdata", dest], check=True)
+    return True
+
+
+def looks_like_ext4(path: str) -> bool:
+    """True if the file carries an ext2/3/4 superblock magic at 1024+0x38.
+
+    The magic is 0x53EF at offset 0x438 and is what libfs_mgr itself checks - reading the
+    same two bytes means this agrees with the guest about what a filesystem is.
+    """
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0x438)
+            return fh.read(2) == b"\x53\xef"
+    except OSError:
+        return False
 
 
 # --- ramdisk ---------------------------------------------------------------
@@ -611,6 +650,8 @@ def main(argv: list[str]) -> int:
                    help="directory holding system.img, vendor.img and ramdisk.img; "
                         "defaults to $ANDROID_SDK_ROOT/system-images/android-35/default/x86_64")
     p.add_argument("--out", default="/a/android", help="where the disks are written")
+    p.add_argument("--force-userdata", action="store_true",
+                   help="throw away an existing /data instead of keeping its applications")
     a = p.parse_args(argv)
 
     sdk = a.sdk or sdk_from_environment()
@@ -630,8 +671,14 @@ def main(argv: list[str]) -> int:
     stage(work, sdk)
     build_cache(os.path.join(sdk, "system.img"), os.path.join(work, "cache.img"))
 
-    userdata_filesystem(os.path.join(work, "userdata.img"))
-    log(f"userdata {os.path.join(work, 'userdata.img')}: 8 GiB ext4")
+    userdata = os.path.join(work, "userdata.img")
+    if userdata_filesystem(userdata, force=a.force_userdata):
+        log(f"userdata {userdata}: {USERDATA_BYTES >> 30} GiB ext4, freshly made")
+        log("  (an existing /data is KEPT by default - its applications are the point)")
+    else:
+        log("  to start from a blank device: --force-userdata")
+        log("  to carry this /data to another machine: python3 android/15/persist.py "
+            "--save")
 
     patch_ramdisk(os.path.join(sdk, "ramdisk.img"),
                   os.path.join(work, "ramdisk.img"))

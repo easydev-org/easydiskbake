@@ -62,6 +62,23 @@ on:
         description: "the tag to push; empty for android-15-qemu"
         default: ""
 
+      # --- keeping what was installed ------------------------------------------------
+      #
+      # A RUNNER IS DISCARDED AT THE END OF A JOB, so "keep my applications" has to mean
+      # "upload the /data pair and hand it back next time". The pair is cache.img +
+      # userdata.img and it is a PAIR: /data is encrypted and its key is in the metadata
+      # partition of cache.img, so /data alone boots to a device with nothing on it.
+      #
+      # Both files are sparse - 64 GiB of virtual size, about 2 GiB of blocks after a
+      # first boot - and upload-artifact stores them as they are, not expanded.
+      keep_userdata:
+        description: "boot: save cache.img + userdata.img as an artifact for reuse"
+        type: boolean
+        default: false
+      userdata_from:
+        description: "boot: an artifact name holding a saved pair; empty to start fresh"
+        default: ""
+
 concurrency:
   group: android-qemu-${{ github.ref }}
   cancel-in-progress: false
@@ -215,6 +232,18 @@ jobs:
       # the disks are rebuilt here from the same system image rather than downloaded. It
       # costs about a minute and removes a class of failure - a missing kernel, a vendor
       # image that silently did not upload - that presents as a SIGSEGV with no message.
+      # THE SAVED PAIR GOES IN BEFORE mkdisks RUNS, BECAUSE mkdisks KEEPS AN EXISTING /data.
+      #
+      # That ordering is the whole mechanism: mkdisks only makes a filesystem when there is
+      # not one already, so a restored userdata.img survives it. Restoring afterwards would
+      # mean the disks were built for a fresh device and then partly overwritten.
+      - name: restore a saved /data
+        if: inputs.userdata_from != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.userdata_from }}
+          path: out/disks
+
       - name: build the disks
         uses: easydev-org/easyactions/log-stream@main
         with:
@@ -243,6 +272,31 @@ jobs:
             status=$?
             echo "run_qemu exited $status"
             exit $status
+
+      # FOLD THE OVERLAYS IN BEFORE SAVING. The guest writes to a qcow2 beside each raw
+      # file, never to the raw file itself, so the raw is unchanged after a run that
+      # installed things - persist.py converts the overlay back and copies the pair.
+      - name: save the /data pair
+        if: always() && inputs.keep_userdata
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: android-qemu-save
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 android/15/persist.py --save --dir out/disks --into out/keep
+
+      - name: keep the /data pair
+        if: always() && inputs.keep_userdata
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-qemu-userdata
+          path: |
+            out/keep/cache.img
+            out/keep/userdata.img
+          if-no-files-found: warn
+          retention-days: 30
 
       # THE PICTURE IS THE PROOF. Everything else this workflow prints is a log line that
       # a boot which stopped early produces just as readily.
