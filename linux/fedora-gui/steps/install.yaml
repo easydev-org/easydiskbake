@@ -1,0 +1,229 @@
+# Fedora Workstation: Anaconda, then GNOME's first-boot wizard - two stages in one file.
+#
+#     python3 lib/steps.py linux/fedora-gui/steps/install.yaml --qmp /work/drive.sock.qmp
+#     python3 lib/steps.py linux/fedora-gui/steps/install.yaml --qmp /work/drive.sock.qmp \
+#         --start-at first boot
+#
+# WHAT THIS REPLACES
+#
+# linux/fedora-gui/install.py's walk_anaconda() and walk_first_boot(). install.py keeps the
+# machine, the frames, the recording and the publish.
+#
+# TWO STAGES IN ONE FILE, AND `--start-at` IS WHY. The installer walk ends by leaving
+# Anaconda; the first-boot wizard runs in a DIFFERENT MACHINE, with no ISO attached, because
+# the point of that stage is that the firmware boots the disk on its own and finds the system
+# Anaconda installed. Both halves are made of the same clicks, so they share one file and the
+# stage picks its half by name.
+#
+# ANACONDA'S FOOTER DOES NOT MOVE AND ITS WINDOW IS 1280x942 CENTRED
+#
+# x 318..1602, y 68..1010 - so its footer is at y 1002, NOT at the bottom of the screen.
+# (729,1002) is inside the Next button. That is why the steps below reuse it.
+#
+# AND Alt+N DOES NOTHING HERE. Anaconda's new UI is a WEB application in a window, not a GTK
+# dialog: its footer buttons are page elements and the toolkit's default-button binding does
+# not exist. Run 42404596625 pressed Alt+N on `Installation method` and nothing moved:
+#
+#     19:10:22  alt+n - installation method: Next
+#     19:10:35  after installation method: (identical)
+
+name: fedora-gui - anaconda and the first boot
+resolution: [1920, 1080]
+
+vars:
+  user:
+    from: args.user
+    default: docker
+  password:
+    from: args.password
+    default: admin
+
+steps:
+  # =======================================================================================
+  # STAGE ONE: ANACONDA
+  # =======================================================================================
+
+  # 1. THE LIVE SESSION'S WELCOME DIALOG, AND THE INSTALLER BEHIND IT.
+  #
+  # THE DIALOG IS NOT THE INSTALLER AND DOES NOT OPEN BY ITSELF. The live session draws a
+  # Welcome window whose `Install Fedora Linux` button starts Anaconda; a run that assumes
+  # otherwise points every later click at a window that does not exist. Two presses, because
+  # the first may only focus the dialog.
+  - name: install fedora linux
+    at: [838, 708]
+    repeat: [2, 0.8]
+    settle: 30
+
+  # 2. THE WELCOME PANE, WHICH IS NOT COVERED BY ANYTHING.
+  #
+  # FOUR RUNS DIED HERE ON THE SAME WRONG ASSUMPTION. Every earlier version treated the
+  # `Suggested languages` list as a POPUP that had to be dismissed before the footer could be
+  # reached - Escape, then a click on the pane title, three times each - and all six attempts
+  # changed nothing:
+  #
+  #     18:30:33  after dismiss 1: ... Welcome. | Let's | install | Fedora | now. |
+  #               Language | Q | Suggested | languages | English (United States) | ...
+  #     18:30:54  after escape 3: (identical)
+  #
+  # IT IS NOT A POPUP: Anaconda's Web UI renders the language list as ORDINARY PAGE CONTENT,
+  # so `Suggested languages` is on screen whenever the welcome pane is and a check for that
+  # phrase can never be satisfied. What the pane needs is the footer's Next.
+  - name: welcome
+    at: [729, 1002]
+    settle: 15
+
+  # 3. THE PANES BETWEEN WELCOME AND THE POINT OF NO RETURN.
+  #
+  # `Installation method` and `Storage configuration`, each a click on the same footer.
+  - name: installation method
+    at: [729, 1002]
+    settle: 12
+
+  - name: storage configuration
+    at: [729, 1002]
+    settle: 12
+
+  # 4. THE POINT OF NO RETURN. Its label is not `Next` and its position is not Next's.
+  - name: erase data and install
+    at: [780, 1002]
+    settle: 20
+
+  # 5. THE INSTALL FINISHES.
+  #
+  # `Successfully installed` is Anaconda's own verdict and the only end to this wait that
+  # means anything. It is TERMINAL - there is nothing after it to skip - so matching it
+  # cannot miss a pane, which is not true of any pane-level check.
+  #
+  # A RUN CAN ALSO LEAVE THIS PANE ON ITS OWN. The measured failure of 2026-11-08: Anaconda
+  # reached `Finalizing: The system configuration is complete` and stayed there for forty
+  # minutes, and the run before it went further still - the frames show the INSTALLED
+  # system's GNOME desktop, with Anaconda's window gone, while the wait was still polling for
+  # a phrase that had already been and gone. The three finalizing groups are that state named
+  # explicitly so the wait can end on it instead of timing out on a disk that is written.
+  - name: the installer finishes
+    until_any:
+      - [successfully, installed]
+      - [finalizing, installation, may, take, a, few, moments]
+      - [configuring, installed, system]
+    region: [0, 0, 1920, 1080]
+    region_at: [1920, 1080]
+    scale: 1
+    timeout: 3600
+    poll: 20
+    keep_alive: true
+
+  # LEAVE THE INSTALLER. The disk is written either way, and a run that stops here leaves
+  # qemu showing a modal over the live desktop.
+  - name: exit to the live desktop
+    at: [963, 364]
+    settle: 10
+    optional: true
+
+  # =======================================================================================
+  # STAGE TWO: GNOME'S FIRST-BOOT WIZARD, ON THE DISK THE INSTALLER WROTE
+  # =======================================================================================
+  #
+  # THIS RUNS IN A DIFFERENT MACHINE - see the file header. `--start-at first boot` starts
+  # here.
+  #
+  # THE WIZARD MAY NOT BE THERE AT ALL: either it was already answered on an earlier run of
+  # this disk, or gdm logged straight in, and both mean the install is fine. The desktop's own
+  # search box is that state, and the step below treats it as the end rather than waiting for
+  # a wizard that is not coming.
+  - name: first boot
+    until_any:
+      - [welcome]
+      - [next]
+      - [type, to, search]
+    region: [0, 0, 1920, 1080]
+    region_at: [1920, 1080]
+    scale: 1
+    timeout: 900
+    poll: 10
+
+  # 1. LANGUAGE. English is preselected; Next.
+  - name: language
+    at: [1432, 181]
+    settle: 10
+
+  # 2. TYPING. English (US) is preselected; Next.
+  - name: typing
+    at: [1432, 181]
+    settle: 10
+
+  # 3. PRIVACY. TWO SWITCHES THAT SHIP ON AND ARE TURNED OFF.
+  - name: location services off
+    at: [1209, 485]
+    settle: 2
+
+  - name: automatic problem reporting off
+    at: [1209, 601]
+    settle: 2
+
+  - name: privacy
+    at: [1432, 181]
+    settle: 10
+
+  # 4. TIME ZONE. THE MAP, NOT THE SEARCH BOX. Searching `united states` returns airports
+  #    with `Charlotte Amalie ... Virgin Islands` first, and the list is long enough that
+  #    picking the right row is a worse question than clicking the continent.
+  - name: time zone from the map
+    at: [590, 560]
+    settle: 6
+
+  - name: time zone
+    at: [1432, 181]
+    settle: 12
+
+  # 5. THIRD-PARTY REPOSITORIES. Not enabled.
+  - name: third party repositories
+    at: [1432, 181]
+    settle: 10
+
+  # 6. THE ACCOUNT. ONE FIELD, AND THE USERNAME IS NOT TOUCHED AT ALL.
+  #
+  # Run 42405729683 filled this pane twice. GNOME's initial setup copies whatever is typed
+  # into Full Name into Username as you go, so a second click on the username field and a
+  # second `docker` produced
+  #
+  #     Full Name | dockeradminadmir
+  #
+  # on the next pane - three fragments run together - and the wizard would not complete. One
+  # field is filled and Username is left to follow.
+  - name: about you - full name
+    at: [830, 511]
+    type: "{{ user }}"
+    settle: 2
+
+  - name: about you
+    at: [1432, 181]
+    settle: 10
+
+  # 7. THE PASSWORD, TWICE, and the weak-password warning is left to stand: `admin` is what
+  #    every other bake here uses and a mismatch between images would be worse than a short
+  #    password.
+  - name: password - password
+    at: [830, 486]
+    type: "{{ password }}"
+    settle: 2
+
+  - name: password - confirm
+    at: [830, 629]
+    type: "{{ password }}"
+    settle: 3
+
+  - name: password
+    at: [1432, 181]
+    settle: 20
+
+  # 8. THE END OF SETUP, AND THE TOUR OFFER OVER THE DESKTOP.
+  - name: start using fedora linux
+    at: [959, 709]
+    settle: 25
+
+  # THE TOUR OFFER IS A DIALOG OVER THE DESKTOP, not part of setup. Skipping it leaves a
+  # clean frame for the artifact.
+  - name: skip the tour
+    at: [852, 756]
+    settle: 12
+    optional: true

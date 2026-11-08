@@ -1,0 +1,188 @@
+# Pop!_OS: `pop-os-installer`'s panes, as a sequence.
+#
+#     python3 lib/steps.py linux/popos-gui/steps/install.yaml --qmp /work/drive.sock.qmp
+#
+# WHAT THIS REPLACES
+#
+# linux/popos-gui/install.py's walk_installer(). install.py keeps the machine, the frames,
+# the recording and the publish.
+#
+# POP!_OS HAS AN INSTALLER OF ITS OWN - not Calamares, not Ubiquity, not Anaconda. It is a GTK
+# application that OPENS BY ITSELF on the live desktop, and its window is a fixed-size card at
+# (485,155)..(1435,860) with the same footer position on every pane: Next / Select / Erase and
+# Install at (1367,817), Back at (1279,817).
+#
+# TWO THINGS ARE NOT DEFAULTS, AND BOTH COST RUNS
+#
+# 1. `Clean Install` IS A CHOICE. The Install pane offers `Clean Install` and `Custom
+#    (Advanced)` as two cards with NEITHER SELECTED, so the footer button does nothing until
+#    one is clicked.
+#
+# 2. THE FULL NAME IS NOT THE USER NAME. With both fields holding `docker` the footer's `Next`
+#    stays GREY: measured, three presses in a run at 9d4e83a left the pane unchanged. Typing
+#    `Docker User` instead makes the installer derive `dockeruser` and the button turns green
+#    at once. So the display name is `Docker User` and the login is `docker`.
+#
+# AND ONE THAT COST THIS RUN TODAY: A GTK ENTRY VALIDATES ON FOCUS-OUT.
+#
+# Run 42502695338 typed both fields correctly and the footer stayed grey for forty-two
+# minutes, because nothing moved the focus after the last character - the caret was still in
+# User Name. One `Tab` leaves the field, which is the event the pane listens for; it also moves
+# the focus to the footer, so it cannot type into another control.
+
+name: popos-gui - the pop installer walk
+resolution: [1920, 1080]
+
+vars:
+  user:
+    from: args.user
+    default: docker
+  password:
+    from: args.password
+    default: admin
+
+steps:
+  # =======================================================================================
+  # 1. THE FOUR PRESELECTED PANES. ONE FOOTER POSITION, MEASURED ON ALL OF THEM.
+  # =======================================================================================
+  #
+  #     Select a Language      English preselected                  Select (1367,817)
+  #     Languages (variants)   United States preselected            Select
+  #     Keyboard Layout        English (US) preselected             Select
+  #     Keyboard (variants)    Default preselected - NOT Dvorak     Select
+  - name: select a language
+    at: [1367, 817]
+    settle: 21
+  - name: language variants
+    at: [1367, 817]
+    settle: 21
+  - name: keyboard layout
+    at: [1367, 817]
+    settle: 21
+  - name: keyboard variants
+    at: [1367, 817]
+    settle: 21
+
+  # =======================================================================================
+  # 2. THE INSTALL PANE. `Clean Install` IS A CHOICE, NOT THE DEFAULT.
+  # =======================================================================================
+  #
+  # The pane offers two cards with neither selected, so the footer does nothing until one is
+  # clicked. `Clean Install` erases the drive this guest owns (`/dev/vda`, 64.0 GiB) and
+  # installs a fresh copy.
+  - name: clean install
+    at: [1180, 456]
+    settle: 8
+
+  - name: install
+    at: [1367, 817]
+    settle: 21
+
+  # =======================================================================================
+  # 3. SELECT A DRIVE. THE ROW, THEN `Erase and Install`.
+  # =======================================================================================
+  #
+  # The list holds one row - `Virtio Block Device /dev/vda 64.0 GiB` - and clicking it selects
+  # it, which is what enables the footer's `Erase and Install` at its own coordinate.
+  - name: select a drive
+    at: [1150, 500]
+    settle: 8
+
+  - name: erase and install
+    at: [1334, 817]
+    settle: 44
+
+  # =======================================================================================
+  # 4. THE ACCOUNT, PANE ONE: FULL NAME AND USER NAME
+  # =======================================================================================
+  #
+  # THE BOXES, MEASURED. Full Name is y=480..511 (centre 495), User Name is y=546..576 (centre
+  # 561), both x=490..1429.
+  #
+  # `Full Name` COPIES INTO `User Name` AS IT IS TYPED, so `User Name` is emptied by hand and
+  # typed once - measured: without that, `User Name` read `dockerdocker`.
+  - name: account - full name
+    at: [1188, 495]
+    type: "Docker User"
+    settle: 2
+
+  - name: account - user name
+    at: [1188, 561]
+    type: "{{ user }}"
+    settle: 2
+
+  # THE FOCUS-OUT IS WHAT ENABLES `Next`, AND IT IS NOT OPTIONAL.
+  #
+  # See the file header: run 42502695338 typed both fields correctly and the footer stayed
+  # grey for forty-two minutes with the caret still in User Name. One Tab leaves the entry,
+  # which is the event the pane validates on.
+  - name: account - leave the last entry
+    key: tab
+    settle: 2
+
+  - name: create user account
+    at: [1367, 817]
+    settle: 22
+
+  # =======================================================================================
+  # 5. THE ACCOUNT, PANE TWO: THE PASSWORD TWICE
+  # =======================================================================================
+  #
+  # PLAIN CLICKS AND TYPING - no `ctrl+a`, no forty backspaces - and ESC FIRST, ALWAYS.
+  #
+  # THIS PAGE IS NOT LIKE THE OTHERS. Measured: a click 10-12 pixels off the entry lands on
+  # the pane's artwork picker and opens `Choose Icon`, a GTK FILE CHOOSER over the installer,
+  # and every later keystroke goes into ITS search box (`adminadmin` in the frame). One Esc
+  # closes it, and it is a no-op on a pane with no dialog open.
+  #
+  # The fields start EMPTY on this pane, so nothing needs clearing.
+  - name: account password - escape any file chooser
+    key: esc
+    settle: 2
+
+  - name: account password - password
+    at: [1188, 440]
+    type: "{{ password }}"
+    settle: 2
+
+  - name: account password - confirm
+    at: [1188, 546]
+    type: "{{ password }}"
+    settle: 2
+
+  - name: account password
+    at: [1367, 817]
+    settle: 25
+
+  # =======================================================================================
+  # 6. DRIVE ENCRYPTION. THE PANE DEFAULTS TO `Encrypt`.
+  # =======================================================================================
+  #
+  # The three buttons are at their own coordinates, measured on a live pane:
+  #
+  #     Don't Encrypt  (1081, 808)      Set Password  (1213, 808)      Encrypt  (1347, 808)
+  #
+  # An encrypted disk needs a passphrase at boot - one more thing that can fail on a machine
+  # nobody is watching - so `Don't Encrypt` is the press that matters.
+  #
+  # ONE LONG SETTLE, THEN THE PRESS, and the reason is measured: runs 42483315092 and
+  # 42484716882 both pressed this coordinate 40 s after the password pane and the installer
+  # CLOSED. This pane's rows are drawn after its content - the `The password is shorter than
+  # 8 characters` note from the page before is drawn ABOVE the button row and moves it while
+  # the window is still settling. A live session that took a frame first and then pressed
+  # worked on the first try.
+  - name: drive encryption - don't encrypt
+    at: [1081, 808]
+    settle: 35
+
+  # =======================================================================================
+  # 7. A MEASURED WAIT. THE PROGRESS PANE SHOWS `Extracting Files (N%)`, AND THE PERCENTAGE
+  #    IS THE ONLY TEXT ON IT - a completed disk must not depend on reading it.
+  # =======================================================================================
+  #
+  # MEASURED: about 12 minutes. FORTY is that with room for a slower runner.
+  #
+  # THE KEEP-ALIVE CLICK IS PART OF THE WAIT: a locked desktop has no installer on it.
+  - name: the install runs, as measured
+    wait: 2400
+    keep_alive: true

@@ -140,6 +140,17 @@ class Driver:
         Q.click(self.q, *xy)
         time.sleep(settle)
 
+    def close(self) -> None:
+        """Release the QMP connection before lib/steps.py opens its own.
+
+        qemu serves one client per socket, so the YAML walk cannot start while this driver
+        still holds it - the same boundary macos/15/bake.py documents.
+        """
+        try:
+            self.screen.close()
+        except Exception:                              # noqa: BLE001
+            pass
+
     def click_twice(self, xy, why: str, settle: float = 12.0) -> None:
         """Click, then click again. The first may only give the window focus."""
         self.click(xy, why, settle=0.8)
@@ -522,7 +533,22 @@ def main(argv: list[str]) -> int:
     try:
         drv = Driver(guest.paths.drive, work)
         if wait_for_live_desktop(drv, args.timeout):
-            ok = walk_anaconda(drv, args)
+            # THE WALK IS A YAML FILE NOW - see steps/install.yaml, whose first stage is
+            # Anaconda and whose second is the first-boot wizard.
+            #
+            # THE QMP SOCKET IS ALREADY OPEN, so this driver is closed first: qemu serves one
+            # client per socket and steps.run_file opens its own.
+            drv.close()
+            import steps
+            walk_path = os.path.join(HERE, "steps", "install.yaml")
+            log(f"=== the walk: {os.path.basename(walk_path)} ===")
+            ok, ran = steps.run_file(
+                walk_path, guest.paths.drive, work=work,
+                user=args.user, password=args.password,
+                stop_before="first boot",
+            )
+            log(f"{len(ran)} step(s) ran" if ok
+                else f"the walkthrough failed after {len(ran)} step(s)")
     finally:
         try:
             ppm = os.path.join(work, "final.ppm")
@@ -572,9 +598,22 @@ def main(argv: list[str]) -> int:
         )
         try:
             drv2 = Driver(disk_guest.paths.drive, work)
-            if not walk_first_boot(drv2, args):
+            # THE SECOND STAGE IS THE SAME FILE, STARTED LATER - see its header. `run_file`'s
+            # start_at makes the two halves one walkthrough rather than two.
+            drv2.close()
+            import steps
+            walk_path = os.path.join(HERE, "steps", "install.yaml")
+            log(f"=== the walk (first boot): {os.path.basename(walk_path)} ===")
+            first_ok, ran2 = steps.run_file(
+                walk_path, disk_guest.paths.drive, work=work,
+                user=args.user, password=args.password,
+                start_at="first boot",
+            )
+            if not first_ok:
                 log("=== THE INSTALLED SYSTEM DID NOT COME UP ===")
                 ok = False
+            else:
+                log(f"{len(ran2)} first-boot step(s) ran")
         finally:
             disk_guest.stop(acpi_first=False)
             snap2.terminate()
