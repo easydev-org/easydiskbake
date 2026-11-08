@@ -82,8 +82,9 @@ steps:
   # in frame pixels, and the words still come back with absolute coordinates.
   - name: wait for the recovery menu
     until: [disk, utility]
-    region: [780, 210, 1400, 550]
+    region: [760, 200, 1400, 560]
     region_at: [1920, 1080]
+    scale: 2
     timeout: 900
     poll: 10
 
@@ -140,6 +141,7 @@ steps:
     python: setup_panes:erase_the_disk
     region: [700, 380, 1300, 640]
     region_at: [1920, 1080]
+    scale: 2
     expect_any:
       - [erase, complete]
       - [main, created]
@@ -151,8 +153,9 @@ steps:
   # the menu never left, it was covered - so it is an `until` on the rows.
   - name: the recovery menu is back
     until: [reinstall, macos]
-    region: [780, 210, 1400, 550]
+    region: [760, 200, 1400, 560]
     region_at: [1920, 1080]
+    scale: 2
     timeout: 300
     poll: 5
 

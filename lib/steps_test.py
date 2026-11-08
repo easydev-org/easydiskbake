@@ -380,7 +380,7 @@ def test_region_is_a_crop() -> None:
             super().__init__(screen)
             self.regions: list[tuple] = []
 
-        def look_at(self, region, label="look"):
+        def look_at(self, region, label="look", *, scale=2):
             self.regions.append(tuple(region))
             return super().look(label)
 

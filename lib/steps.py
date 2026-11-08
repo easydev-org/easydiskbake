@@ -59,12 +59,21 @@ class StepError(RuntimeError):
     pass
 
 
+# THE ENLARGEMENT A CROPPED READ GETS WHEN THE WALKTHROUGH DOES NOT SAY.
+#
+# 2 IS A MEASUREMENT, NOT A DEFAULT. The recovery menu's rows are about ten pixels tall at
+# 1920x1080, and tesseract reading that crop at 1:1 returns nothing at all - which is
+# indistinguishable from "the menu has not arrived". install.py's recovery_menu_text() enlarges
+# its crop by 2 for exactly this pane; the detail pane needs 4 (at 3 the decimal point is lost
+# and "268.4 MB" reads as "2684 MB"), which is why a step may ask for its own.
+DEFAULT_CROP_SCALE = 2
+
+
 # THE VOCABULARY. Every key a step may carry, and what it does. Anything not here is a typo
 # and is refused at load time - a walkthrough that silently ignores a key it does not know is
 # a walkthrough that clicks nothing and reports success, which is the failure mode every
 # driver in this repository has hit at least once.
-STEP_KEYS = {
-    "name",        # required: what the log calls this step
+STEP_KEYS = {    "name",        # required: what the log calls this step
     "at",          # [x, y] to click
     "double",      # [x, y] to double-click (separate from `at` because the gap matters)
     "type",        # text to type after clicking `at`
@@ -81,6 +90,7 @@ STEP_KEYS = {
     "until",       # words that end a wait loop
     "region",      # (x0, y0, x1, y1) to crop before reading, for `until`/`expect`
     "region_at",   # [width, height] the crop was measured at; a mismatch is an error
+    "scale",       # enlargement for a cropped read; small text needs it, see DEFAULT_CROP_SCALE
     "until_dark",  # wait until the screen goes black - the installer's own start signal
     "timeout",     # seconds the `until` loop may run
     "poll",        # seconds between looks in the `until` loop
@@ -376,7 +386,7 @@ class Driver:
             f"{' | '.join(w[0] for w in self.words[:16])}")
         return self.words
 
-    def look_at(self, region, label: str = "look") -> list[tuple]:
+    def look_at(self, region, label: str = "look", *, scale: int = DEFAULT_CROP_SCALE) -> list[tuple]:
         """Read ONE RECTANGLE of the screen, which is what makes a wait cheap and reliable.
 
         WHY A REGION AND NOT THE WHOLE FRAME. Three measured reasons, and the third is the one
@@ -399,6 +409,14 @@ class Driver:
 
         `region` is (x0, y0, x1, y1) in frame pixels and the words come back with ABSOLUTE
         coordinates, because the caller may click what it found.
+
+        SCALING IS NOT A QUALITY KNOB, IT IS WHAT MAKES SMALL TEXT READABLE. The recovery
+        menu's rows are about ten pixels tall at 1920x1080, and tesseract reading the crop at
+        1:1 returns nothing at all - which is indistinguishable from "the menu has not
+        arrived". install.py's recovery_menu_text() has always enlarged its crop by 2 for this
+        reason; a walkthrough that reads the same menu at 1:1 waits out a menu that is already
+        on screen. `scale` defaults to 2 for exactly this: the smallest text any pane here
+        draws.
         """
         self.n += 1
         ppm = self.screen.grab(f"{self.n:03d}-{label}".replace(" ", "-"))
@@ -406,7 +424,25 @@ class Driver:
             self.words = []
             self.ppm = None
             return []
-        self.words = self.screen.text_in(ppm, region)
+
+        # TWO READERS, AND THE DIFFERENCE IS THE ENLARGEMENT.
+        #
+        # assistant.ocr_text_cropped() crops, ENLARGES and reads; it is what every stage driver
+        # in this repository has measured, and the enlargement is the whole reason it works on
+        # small text. It answers with one string and no coordinates, which is enough for a
+        # `until`/`expect` - those ask whether words are on screen, not where.
+        #
+        # ocr.Screen.text_in() crops and reads at 1:1 and answers with coordinates, which a
+        # caller needs only if it intends to click what it found. No step vocabulary does that
+        # today - a coordinate is always a number in the file - so it is reached only when a
+        # walkthrough explicitly asks for a 1:1 read.
+        if scale <= 1:
+            self.words = self.screen.text_in(ppm, region)
+        else:
+            import assistant
+            text = assistant.ocr_text_cropped(ppm, tuple(region), scale=scale)
+            self.words = [(word, 0, 0, 0, 0) for word in (text or "").split()]
+
         self.ppm = ppm
         log(f"look {label} in {tuple(region)}: {len(self.words)} words :: "
             f"{' | '.join(w[0] for w in self.words[:16])}")
@@ -658,12 +694,20 @@ def _read(driver: Driver, step: Step, label: str = "look") -> list[tuple]:
         if at:
             width, height = driver.resolution()
             if [width, height] != list(at):
-                raise StepError(
-                    f"{step.name}: the region {tuple(region)} was measured at "
-                    f"{at[0]}x{at[1]} but the framebuffer is {width}x{height}. A crop that does "
-                    f"not fit reads as an empty screen, which looks exactly like a pane that has "
-                    f"not arrived.")
-        return driver.look_at(region, label)
+                # A REGION IS ONLY MEANINGFUL ON THE SCREEN IT WAS MEASURED ON, and the guest
+                # changes size during a boot: the UEFI shell draws at 1280x800, the recovery
+                # menu at 1920x1080, and lib/live.py's own log records
+                #
+                #     frames arrive in 3 sizes (640x480, 1280x800, 1920x1080)
+                #
+                # So a mismatch is not always a mistake in the file - it can be a poll that
+                # landed before the mode changed. It is reported and the step reads nothing,
+                # which for an `until` means "try again next poll"; the caller's timeout is
+                # what decides whether the pane ever arrives at the size the file expects.
+                log(f"  {step.name}: the framebuffer is {width}x{height} but this region was "
+                    f"measured at {at[0]}x{at[1]}; not reading it")
+                return []
+        return driver.look_at(region, label, scale=int(step.get("scale", DEFAULT_CROP_SCALE)))
     return driver.look(label)
 
 

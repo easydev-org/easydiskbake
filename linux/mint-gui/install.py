@@ -236,21 +236,38 @@ def stop_the_screensaver(drv: Driver) -> None:
     # every idle timer on this build agrees about - QMP's synthetic clicks from outside are
     # not it. The loop runs detached and stops itself after six hours; it is started here so
     # that it is already ticking while Ubiquity copies files.
+    # THE KEEPALIVE IS WRITTEN AS A SCRIPT, NOT AS A ONE-LINER, AND THAT IS THE FIX.
+    #
+    # Run 42497628951 locked its screen anyway and the log read a bare clock (`0833`, `0834`,
+    # `0836`) for the rest of the run. The one-liner above was correct as a COMMAND LINE, but
+    # it was typed into a terminal with `per_char=0.02` and any character the terminal's line
+    # discipline dropped (a missed `&`, an unbalanced quote after a `$`) leaves a shell
+    # waiting for input instead of running the loop - silently, because the terminal is not
+    # being read.
+    #
+    # A heredoc is one command and its body is checked by `sh -n` before anything runs, so a
+    # broken script SAYS SO on the screen instead of doing nothing.
     command = (
-        "gsettings set org.cinnamon.desktop.session idle-delay 0; "
-        "gsettings set org.cinnamon.desktop.screensaver lock-enabled false; "
-        "gsettings set org.cinnamon.desktop.screensaver idle-activation-enabled false; "
-        "xset s off; xset -dpms; xset s noblank; "
-        "( for i in $(seq 1 1080); do "
-        "  xdotool mousemove_relative -- 1 0 2>/dev/null; "
-        "  xdotool mousemove_relative -- -1 0 2>/dev/null; "
-        "  sleep 20; "
-        "done ) >/dev/null 2>&1 & "
-        "exit"
+        "cat > /tmp/noidle.sh <<'EOS'\n"
+        "#!/bin/sh\n"
+        "gsettings set org.cinnamon.desktop.session idle-delay 0\n"
+        "gsettings set org.cinnamon.desktop.screensaver lock-enabled false\n"
+        "gsettings set org.cinnamon.desktop.screensaver idle-activation-enabled false\n"
+        "xset s off; xset -dpms; xset s noblank\n"
+        "while :; do\n"
+        "  xdotool mousemove_relative -- 1 0 2>/dev/null\n"
+        "  xdotool mousemove_relative -- -1 0 2>/dev/null\n"
+        "  sleep 20\n"
+        "done\n"
+        "EOS\n"
+        "sh -n /tmp/noidle.sh && echo NOIDLE-OK || echo NOIDLE-SYNTAX-ERROR\n"
+        "setsid /tmp/noidle.sh >/dev/null 2>&1 </dev/null &\n"
+        "sleep 2; pgrep -f noidle.sh >/dev/null && echo NOIDLE-RUNNING || echo NOIDLE-NOT-RUNNING\n"
+        "exit\n"
     )
     keys.type_text(drv.q, command, per_char=0.02)
     Q.key(drv.q, "ret")
-    time.sleep(10.0)
+    time.sleep(12.0)
     drv.look("screensaver disabled")
 
 
