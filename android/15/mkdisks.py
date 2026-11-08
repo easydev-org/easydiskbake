@@ -9,25 +9,51 @@ emulator's normal path unpacks them into an AVD and hands paths to `-system`/`-v
 That works only when the emulator owns the AVD. Here the disks are assembled explicitly,
 because every piece has to be inspectable:
 
-    cache.img     system, metadata, super, vbmeta, boot - the five names init looks for
+    cache.img     system, metadata and super - the three first-stage init needs by-name
     userdata.img  an ext4 /data
-    ramdisk.img   the SDK ramdisk plus an fstab that names those five
+    ramdisk.img   the SDK ramdisk plus an fstab naming every partition by-name
 
 Everything below was measured against sysimg android-15 x86_64 (build AE3A.240806.019)
 and is written down where the number is not obvious.
 
-THE FIVE PARTITIONS ON cache.img ARE THE POINT
+WHY cache.img HOLDS TWO PARTITIONS AND NOT FIVE
 
-init's first stage reads an fstab and then asks for each `/dev/block/by-name/<name>`.
-`metadata`, `super`, `vbmeta` and `boot` are all things AOSP's own images carry, and
-`system` is the one that has to exist PHYSICALLY even though it also lives inside
-`super`:
+The first working layout wrote five - system, metadata, super, vbmeta, boot - because it
+did not trust Google's own GPT and copied `super` and `vbmeta` out of it. It does trust it.
+The guest mounts both from the system disk, and the duplication showed up as a conflict in
+the guest's own log:
+
+    ueventd: Failed to symlink /dev/block/vdb4 to /dev/block/by-name/vbmeta,
+             which already links to: /dev/block/vda1: File exists
+    ueventd: Failed to symlink /dev/block/vda2 to /dev/block/by-name/super,
+             which already links to: /dev/block/vdb3: File exists
+
+`boot` was 32 MiB of zeros that nothing reads: no fstab entry, and `by-name/boot` appears
+zero times in a fully booted guest's log. Dropping all three took the disk from 2465 MiB
+to 887 MiB.
+
+`system` is the one partition that STILL has to be copied out of `super`, because AVB will
+not verify a logical partition and dm-0 has no by-name path:
 
     init: [libfs_avb] Device path not found: /dev/block/by-name/system
 
-AVB will not verify a logical partition, and dm-0 has no by-name path, so the same bytes
-are copied out of `super` at the offset the LP table names and given a partition of
-their own.
+so the same bytes are given a partition of their own.
+
+WHY NOT ONE DISK
+
+Tried and measured, not assumed. A single GPT holding all seven partitions is enumerated
+correctly by the kernel:
+
+    vda: vda1 vda2 vda3 vda4 vda5 vda6 vda7
+
+and first-stage init still cannot see them:
+
+    init: partition(s) not found in /sys, waiting for their uevent(s): metadata, system
+    init: partition(s) not found after polling timeout: metadata, system
+
+The emulator does not publish GPT partition uevents for the disk it mounts at `-system`;
+`-cache` is a plain virtio-blk and does. `system` and `metadata` therefore have to live on
+the cache disk, which is why this is three files and not one.
 
 WHERE THE OFFSET COMES FROM, AND THE BUG THAT COST THE MOST TIME
 
@@ -61,14 +87,16 @@ import sys
 import uuid
 
 SECTOR = 512
-SUPER_FIRST_LBA = 4096
 LINUX_FS_BYTES = uuid.UUID("0fc63daf-8483-4772-8e79-3d69d8477de4").bytes_le
 
-# Sizes taken from the GPT headers of the SDK images themselves.
-SUPER_SECTORS = 3166207 - SUPER_FIRST_LBA + 1
+# THE SIZE THAT IS ACTUALLY NEEDED, READ FROM GOOGLE'S OWN IMAGE.
+#
+# These used to be constants copied out of the SDK's GPT headers by hand -
+# `SUPER_FIRST_LBA = 4096`, `SUPER_SECTORS = 3166207 - 4096 + 1` - which is a copy that
+# goes stale the moment Google ships a different system image, and the failure mode would
+# be a `super` partition with the wrong length. super_first()/super_sectors() below read
+# them from the disk that is about to be used.
 METADATA_SECTORS = 32768
-VBMETA_SECTORS = 2048
-BOOT_SECTORS = 65536
 
 LZ4_LEGACY_MAGIC = b"\x02\x21\x4c\x18"
 
@@ -136,6 +164,36 @@ def lp_partitions(super_head: bytes) -> dict[str, tuple[int, int]]:
 
 
 # --- GPT -------------------------------------------------------------------
+
+
+def read_gpt(path: str) -> dict[str, tuple[int, int]]:
+    """{name: (first_lba, last_lba)} from a disk image's own GPT.
+
+    THE LAYOUT OF GOOGLE'S IMAGE IS AN INPUT, NOT A CONSTANT. `super` is a GPT partition
+    of system.img with a length that changes when Google ships a new image, and the first
+    version of this file hardcoded both its LBA and its size. Reading them here means a
+    new upstream image either works or fails with a sentence, rather than producing a
+    `super` partition of exactly the wrong length.
+    """
+    out: dict[str, tuple[int, int]] = {}
+    with open(path, "rb") as fh:
+        fh.seek(SECTOR)
+        header = fh.read(92)
+        if header[0:8] != b"EFI PART":
+            return out
+        entries_lba = int.from_bytes(header[72:80], "little")
+        count = int.from_bytes(header[80:84], "little")
+        size = int.from_bytes(header[84:88], "little")
+        fh.seek(entries_lba * SECTOR)
+        array = fh.read(count * size)
+    for i in range(count):
+        entry = array[i * size:(i + 1) * size]
+        if not any(entry):
+            continue
+        name = entry[56:128].decode("utf-16-le", "ignore").rstrip("\x00")
+        out[name] = (int.from_bytes(entry[32:40], "little"),
+                     int.from_bytes(entry[40:48], "little"))
+    return out
 
 
 def gpt(entries: list[tuple[str, int, int]], disk_sectors: int):
@@ -328,15 +386,76 @@ def patch_ramdisk(src: str, dest: str) -> None:
 
 
 def build_cache(src: str, dest: str) -> None:
+    """Two partitions, and nothing that Google's own image already provides.
+
+    THE FIRST VERSION OF THIS FUNCTION WROTE FIVE, THREE OF WHICH WERE REDUNDANT:
+
+        system     carved out of super - genuinely needed, see below
+        metadata   16 MiB ext4 - genuinely needed
+        super      a byte-for-byte copy of GPT partition 2 of system.img
+        vbmeta     a byte-for-byte copy of GPT partition 1 of system.img
+        boot       32 MiB of ZEROS, read by nothing
+
+    `super` and `vbmeta` were duplicated on purpose at the time, because the first working
+    layout put everything on this one disk and did not trust the SDK image's own GPT. It
+    does trust it - the guest mounts both from vda - and the duplication was visible in the
+    guest's own log:
+
+        ueventd: Failed to symlink /dev/block/vdb4 to /dev/block/by-name/vbmeta,
+                 which already links to: /dev/block/vda1: File exists
+        ueventd: Failed to symlink /dev/block/vda2 to /dev/block/by-name/super,
+                 which already links to: /dev/block/vdb3: File exists
+
+    The `boot` partition was 65536 sectors of zeros: `grep -c by-name/boot` over a fully
+    booted guest's log is 0, and the fstab has no entry for it.
+
+    Together that is 1577 MiB of a 2465 MiB disk. What remains is 887 MiB, and every byte
+    of it is something the boot asks for by name.
+
+    WHY `system` STILL HAS TO BE COPIED OUT OF super
+
+    It is also inside super, and AVB will not verify a logical partition:
+
+        init: [libfs_avb] Device path not found: /dev/block/by-name/system
+
+    dm-0 has no by-name path, so the same bytes are given a partition of their own.
+    """
+    # SYSTEM AND METADATA ARE JOINED BY `super` AND `vbmeta`, AND THE EVIDENCE SAYS WHICH
+    # COPY THE GUEST ACTUALLY READS.
+    #
+    # In a fully booted guest both disks carry a partition by each of those names, and
+    # ueventd reports which one won:
+    #
+    #     Failed to symlink /dev/block/vda2 to /dev/block/by-name/super,
+    #              which already links to: /dev/block/vdb3: File exists
+    #     Failed to symlink /dev/block/vdb4 to /dev/block/by-name/vbmeta,
+    #              which already links to: /dev/block/vda1: File exists
+    #
+    # vdb3 is this disk. So `super` IS needed here - removing it stopped the boot with
+    # `realpath failed: /dev/block/by-name/super`, because the system disk's copy at vda2
+    # does not get a by-name link in time for first-stage init.
+    #
+    # `vbmeta` is the other way round: vda1 is Google's copy in system.img and it wins.
+    # That one is genuinely redundant here and is not written.
+    #
+    # `boot` is not written at all. It was 65536 sectors of ZEROS, the fstab has no entry
+    # for it, and `by-name/boot` appears zero times in a fully booted guest's log.
+    gpt_in_system = read_gpt(src)
+    if "super" not in gpt_in_system:
+        raise SystemExit(f"=== {src} has no `super` GPT partition ===")
+    super_first, super_last = gpt_in_system["super"]
+    super_sectors = super_last - super_first + 1
+
     with open(src, "rb") as fh:
-        fh.seek(SUPER_FIRST_LBA * SECTOR)
+        fh.seek(super_first * SECTOR)
         super_head = fh.read(4 * 2 ** 20)
     parts = lp_partitions(super_head)
     if "system" not in parts:
         raise SystemExit("=== NO `system` IN THE LP TABLE ===")
     sys_sector, sys_sectors = parts["system"]
-    log(f"system: sector {sys_sector} in super, {sys_sectors} sectors "
-        f"({sys_sectors * SECTOR / 2 ** 20:.0f} MiB)")
+    log(f"super: {super_sectors * SECTOR / 2 ** 20:.0f} MiB at sector {super_first} "
+        f"(Google's own GPT, NOT copied)")
+    log(f"system: sector {sys_sector} inside super, {sys_sectors * SECTOR / 2 ** 20:.0f} MiB")
 
     # SYSTEM FIRST. by-name published only the early partitions on this disk when the
     # layout was metadata-first, and `system` (then vdb5) was the one that did not
@@ -345,9 +464,7 @@ def build_cache(src: str, dest: str) -> None:
     cursor = 2048
     for name, sectors in (("system", sys_sectors),
                           ("metadata", METADATA_SECTORS),
-                          ("super", SUPER_SECTORS),
-                          ("vbmeta", VBMETA_SECTORS),
-                          ("boot", BOOT_SECTORS)):
+                          ("super", super_sectors)):
         layout.append((name, cursor, cursor + sectors - 1))
         cursor += sectors
     disk_sectors = cursor + 34 + 1
@@ -368,20 +485,15 @@ def build_cache(src: str, dest: str) -> None:
         out.write(meta)
         log(f"metadata: ext4, {len(meta) / 2 ** 20:.0f} MiB")
 
+        # system, EXTRACTED FROM super AT THE OFFSET THE LP TABLE NAMES.
         with open(src, "rb") as s:
-            # system, EXTRACTED FROM super AT THE OFFSET THE LP TABLE NAMES.
-            s.seek((SUPER_FIRST_LBA + sys_sector) * SECTOR)
+            s.seek((super_first + sys_sector) * SECTOR)
             out.seek(positions["system"] * SECTOR)
             copy(s, out, sys_sectors * SECTOR, "system")
 
-            s.seek(SUPER_FIRST_LBA * SECTOR)
+            s.seek(super_first * SECTOR)
             out.seek(positions["super"] * SECTOR)
-            copy(s, out, SUPER_SECTORS * SECTOR, "super")
-
-            s.seek(2048 * SECTOR)
-            out.seek(positions["vbmeta"] * SECTOR)
-            out.write(s.read(VBMETA_SECTORS * SECTOR))
-            log("vbmeta: 1.0 MiB")
+            copy(s, out, super_sectors * SECTOR, "super")
 
     # A PARTITION OF ZEROS READS AS SUCCESS. Check the filesystem magic the guest will
     # look for, in the file that was just written.

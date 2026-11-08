@@ -1,4 +1,4 @@
-name: ghostbsd-gui
+name: ghostbsd-mate
 
 # Install GhostBSD from its official ISO, through gbi - its GTK graphical installer.
 #
@@ -12,9 +12,15 @@ name: ghostbsd-gui
 # GhostBSD is FreeBSD with a desktop and its own GTK installer. It is the BSD-family entry that
 # actually has a graphical install path, which makes it the one worth having a GUI workflow for.
 #
-# THE MATE IMAGE ONLY. GhostBSD publishes two: the default (MATE) and an XFCE spin. They are
-# the same base with a different desktop, and building both would answer the same question
-# twice - so this pins GhostBSD-24.10.1.iso and never the -XFCE one.
+# ONE WORKFLOW PER DESKTOP IMAGE, BECAUSE THEY ARE DIFFERENT DOWNLOADS.
+#
+# GhostBSD publishes two: the default (MATE, `GhostBSD-<release>.iso`) and an XFCE spin
+# (`GhostBSD-<release>-XFCE.iso`). They are the same base with a different desktop, so
+# `ghostbsd-mate.yml` and `ghostbsd-xfce.yml` are the same driver and the same flow - each
+# pinned to its own file and its own sha256, which is the only thing that differs besides
+# the tag it publishes under.
+#
+# THIS IS THE MATE ONE.
 #
 # UEFI, AND THAT IS NOT OPTIONAL. GhostBSD's loader is built for an EFI system partition; with
 # SeaBIOS the image drops to a loader prompt instead of the installer. The frame runs on the
@@ -45,15 +51,15 @@ on:
         description: "seconds the installer may take"
         default: "5400"
       publish_tag:
-        description: "tag to publish under; empty for bsd-ghostbsd-gui"
-        default: "bsd-ghostbsd-gui"
+        description: "tag to publish under; empty for bsd-ghostbsd-mate"
+        default: "bsd-ghostbsd-mate"
       publish:
         description: "publish the finished disk to ghcr"
         type: boolean
         default: true
 
 concurrency:
-  group: ghostbsd-gui-${{ github.ref }}
+  group: ghostbsd-mate-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -85,7 +91,7 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: ghostbsd-gui-prepare
+          name: ghostbsd-mate-prepare
           interval: "10"
           command: |
             set -euo pipefail
@@ -95,7 +101,7 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: ghostbsd-gui-iso
+          name: ghostbsd-mate-iso
           interval: "10"
           command: |
             set -euo pipefail
@@ -115,7 +121,7 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: ghostbsd-gui-install
+          name: ghostbsd-mate-install
           interval: "15"
           command: |
             set -euo pipefail
@@ -125,7 +131,7 @@ jobs:
             echo "iso: $ISO"
             python3 bsd/ghostbsd/install.py \
               --iso "$ISO" \
-              --out out/ghostbsd-gui.qcow2 \
+              --out out/ghostbsd-mate.qcow2 \
               --disk-size "${{ inputs.disk_size || '64G' }}" \
               --timeout "${{ inputs.install_timeout || '5400' }}"
 
@@ -133,7 +139,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ghostbsd-gui-recording
+          name: ghostbsd-mate-recording
           path: |
             out/install.mp4
             out/last-frame.png
@@ -145,7 +151,7 @@ jobs:
         id: publish
         uses: easydev-org/easyactions/oci-push@main
         with:
-          path: out/ghostbsd-gui.qcow2
-          kind: bsd-ghostbsd-gui
+          path: out/ghostbsd-mate.qcow2
+          kind: bsd-ghostbsd-mate
           tag: ${{ inputs.publish_tag || 'bsd-ghostbsd-gui' }}
           token: ${{ github.token }}
