@@ -131,6 +131,8 @@ QEMU_CHECKS = [
     ["iptables", "--version"],
     ["dnsmasq", "--version"],
     ["pkill", "--version"],
+    ["ping", "-V"],
+    ["nc", "-h"],
     # The qemu the emulator embeds is a FILE, not a binary on PATH, so it is asked for
     # directly. mkdisks.py and run_qemu.py never call it by name - the emulator does -
     # which is exactly why a PATH-only check would pass without it.

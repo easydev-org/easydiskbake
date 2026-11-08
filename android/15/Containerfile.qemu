@@ -142,6 +142,8 @@ RUN set -eux; \
         iptables \
         dnsmasq \
         procps \
+        iputils-ping \
+        netcat-openbsd \
         libx11-6 libx11-xcb1 libxcb1 libxau6 libxdmcp6 libbsd0 \
         libpulse0 libasound2t64 libnss3 libnspr4 \
         libgl1 libglx-mesa0 libegl1 libgles2 \
