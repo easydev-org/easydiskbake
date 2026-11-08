@@ -367,8 +367,18 @@ def main(argv: list[str]) -> int:
         #   host_mtu=                the tap is at the container's MTU (1450); virtio-net
         #                            advertises 1500 and the guest then emits frames that
         #                            are silently dropped. This makes the guest learn it.
-        "-qemu", "-qmp", f"unix:{os.path.join(D, 'qmp.sock')},server=on,wait=off",
-        "-qemu", *qemu_net_args(a.tap),
+        # ONE `-qemu`, AND EVERYTHING QEMU NEEDS GOES AFTER IT.
+        #
+        # Two of them does not work: the emulator's parser hands the rest of the vector to
+        # qemu at the FIRST `-qemu`, so the second becomes an argument to qemu itself:
+        #
+        #     qemu-system-x86_64-headless: -qemu: invalid option
+        #
+        # and the emulator exits before the guest boots - 44 args were passed and 59 lines
+        # were logged, none of them a kernel message.
+        "-qemu",
+        "-qmp", f"unix:{os.path.join(D, 'qmp.sock')},server=on,wait=off",
+        *qemu_net_args(a.tap),
     ]
 
     env = dict(os.environ)

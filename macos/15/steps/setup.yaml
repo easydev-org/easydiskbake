@@ -179,28 +179,42 @@ steps:
   - name: welcome continue
     at: [960, 712]
     settle: 5
-    wait_for_change: true
-    change_timeout: 120
-    change_settle: 5
+
+  # SIXTY SECONDS, AND IT IS A FIXED WAIT BECAUSE EVERY DYNAMIC WAIT WAS TRIED HERE.
+  #
+  # install.py states the measurement and the reason, and it is the single most important
+  # thing to know about driving a macOS installer:
+  #
+  #     wait_for_change never settles on a macOS screen - the wallpaper and the clock keep
+  #     the fingerprint moving - and wait_until_drawn returns while the OLD pane is still up,
+  #     which is exactly the pane the next click must not land on.
+  #
+  # Ten seconds was tried and was short by a factor: run 41626151499's log shows the licence
+  # click going out while the welcome pane was still there, which put every later click one
+  # pane out of step and ended as "the disk did not grow in 120s". Twenty-two seconds is what
+  # the licence actually took to draw; the run that worked waited 35. Sixty is that with room.
+  - name: wait for the licence pane
+    wait: 60
 
   # THE LICENCE. Buttons at the foot of the pane, measured with psm 6 - psm 11 returns "ree,"
   # for Agree, which is how a plausible-looking position gets missed. Note also that psm 11
   # finds the word "agree" at y=451 in the middle of a sentence, so a lookup would click prose.
   - name: agree to the licence
     at: [1005, 713]
-    settle: 10
-    wait_for_change: true
-    change_timeout: 120
-    change_settle: 5
+    settle: 5
+
+  # THE SHEET COMES UP OVER THE SAME PANE, and its own Agree is the one that matters - the
+  # pane's Agree disabled itself when it raised the sheet. Confirmed before clicking it: a
+  # click on a sheet that never opened lands on the licence text underneath, which does
+  # nothing and looks exactly like the sheet's button being ignored.
+  - name: wait for the licence sheet
+    wait: 10
 
   # THE SHEET THAT AGREE RAISES, with no readable buttons. Its lower right is the only
   # measurable position, and it is measured on a frame of the sheet itself.
   - name: agree in the sheet
     at: [1060, 530]
     settle: 10
-    wait_for_change: true
-    change_timeout: 120
-    change_settle: 5
 
   # THE DESTINATION. Continue is grey until the card is selected, and a click on a grey button
   # does nothing at all - which is why the card comes first, as two steps.
