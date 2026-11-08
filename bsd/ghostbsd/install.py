@@ -106,8 +106,45 @@ DOUBLE_CLICK_GAP = 0.08
 SCFB_DOWNS = 4
 
 # gbi's own buttons, in the 1920x1080 window it opens centred.
-# These are on the welcome pane and have been the same shape on every pane since.
-GBI_NEXT = (1297, 783)
+#
+# MEASURED PANE BY PANE ON A LIVE GhostBSD 24.10.1 MATE SESSION, one frame each. The wizard
+# is a fixed-size window at (557,271)..(1360,802), and its footer does not move:
+#
+#     Back (1025,781)   Cancel (1150,781)   Next/Install (1293,781)
+#
+# THE ENTIRE FLOW, and it is nine panes:
+#
+#     Welcome To GhostBSD!      Language                      Next
+#     Keyboard Setup            layout + model                Next
+#     Time Zone Selection       continent + city              Next
+#     Installation Type         Full disk configuration       Next
+#     ZFS Configuration         THE DISK CHECKBOX             Next
+#     Boot Option               FreeBSD UEFI loader only      Next
+#     User Admin Setup          four fields                   Install
+#     Installation in progress  (the installer writes the disk)
+#     (window closes)
+#
+# THIS DRIVER USED TO STOP AFTER THE FIRST PANE. It double-clicked the desktop icon, read
+# `gbi welcome`, and returned True - so every run produced a 0 MiB disk and "succeeded".
+GBI_BACK = (1025, 781)
+GBI_CANCEL = (1150, 781)
+GBI_NEXT = (1293, 781)
+
+# ZFS CONFIGURATION: the `Check` box of the only drive row. `Next` is DISABLED until it is
+# ticked - measured: the button is grey at 01:25:07 and black at 01:25:20, one click apart.
+ZFS_DISK_CHECK = (592, 495)
+
+# USER ADMIN SETUP: four fields, and the note above them says the root password is set to
+# the same one.
+GBI_USER = {
+    "real name": (959, 457),
+    "user name": (959, 503),
+    "password": (959, 595),
+    "verify": (959, 643),
+}
+
+# THE INSTALL RUN'S OWN DURATION, AS A NUMBER - see install_to_disk.
+INSTALL_SECONDS = 1800
 
 # --- the loader ---------------------------------------------------------------
 #
@@ -349,7 +386,19 @@ def choose_scfb(drv: Driver, timeout: int) -> bool:
         drv.look("boot")
         joined = " ".join(w[0].lower() for w in drv.words)
 
-        if "applications" in joined and "places" in joined:
+        # THE DESKTOP IS RECOGNISED BY ITS MENU BAR, AND OCR MISREADS THAT BAR'S FIRST WORD.
+        #
+        # The panel reads `Applications Places System`, and tesseract returns `Ppplications`
+        # for the first one on a 1920x1080 frame - measured on a live session, every poll:
+        #
+        #     boot: @ | Ppplications | Places | System | Sun | Nov | 8, | 01:19 | 8
+        #
+        # so `"applications" in joined` was FALSE on a desktop that was fully up, and the
+        # wait ran to its deadline and logged `=== NEITHER THE DESKTOP NOR THE DRIVER MENU
+        # APPEARED ===` - which is exactly what the last CI run did. `places` alone is the
+        # panel's middle item and is read cleanly on every frame; it is not a word any other
+        # screen in this boot shows.
+        if "places" in joined:
             log("the MATE desktop is up")
             return True
 
@@ -375,6 +424,97 @@ def choose_scfb(drv: Driver, timeout: int) -> bool:
     log("=== NEITHER THE DESKTOP NOR THE DRIVER MENU APPEARED ===")
     log(f"  last screen: {' | '.join(w[0] for w in drv.words[:20])}")
     return False
+
+
+    def clear_and_type(self, xy, value: str) -> None:
+        """Click the field, empty it, then type into it."""
+        Q.click(self.q, *xy)
+        time.sleep(1.2)
+        Q.key_combo(self.q, "ctrl", "a")
+        time.sleep(0.3)
+        for _ in range(40):
+            Q.key(self.q, "backspace")
+            time.sleep(0.02)
+        unsupported = keys.type_text(self.q, value, per_char=0.05)
+        if unsupported:
+            log(f"  COULD NOT TYPE {unsupported!r}")
+        time.sleep(0.6)
+
+
+def install_to_disk(drv: Driver, args) -> bool:
+    """Walk gbi's nine panes: A MEASURED COORDINATE, THEN A MEASURED WAIT.
+
+    NOTHING IS READ TO DECIDE ANYTHING. Every step is a number in this file and a duration;
+    the screen is read afterwards and the reading goes into the log, where it is useful for
+    a post-mortem and dangerous as a decision. This is the rule ubuntu-gui and kubuntu-gui
+    follow, and the reason they are green while this driver kept "succeeding" without
+    writing a disk.
+
+    THE WHOLE FLOW WAS MEASURED ON A LIVE SESSION, one frame per pane - see the constants
+    block. The window is fixed size, so one footer coordinate is right for all of them;
+    the two panes that need a click of their own are noted where they happen.
+    """
+    # 1. WELCOME -> KEYBOARD. English is preselected.
+    drv.click(GBI_NEXT, "Welcome: Next (English)", settle=12.0)
+    drv.look("keyboard")
+
+    # 2. KEYBOARD -> TIME ZONE. English (US) is preselected.
+    drv.click(GBI_NEXT, "Keyboard: Next (English US)", settle=12.0)
+    drv.look("time zone")
+
+    # 3. TIME ZONE -> INSTALLATION TYPE. America/Adak is preselected; the requirement is a
+    #    disk that boots, not a particular region, and this is the installer's own default.
+    log("time zone left at the installer's default")
+    drv.click(GBI_NEXT, "Time Zone: Next", settle=12.0)
+    drv.look("installation type")
+
+    # 4. INSTALLATION TYPE -> ZFS. `Full disk configuration` is preselected.
+    drv.click(GBI_NEXT, "Installation Type: Next (Full disk configuration)", settle=14.0)
+    drv.look("zfs configuration")
+
+    # 5. ZFS CONFIGURATION. THE DISK MUST BE TICKED OR `Next` STAYS DISABLED - measured:
+    #    the button is grey until the checkbox at (592, 495) is clicked.
+    drv.click(ZFS_DISK_CHECK, "ZFS: tick the disk", settle=5.0)
+    drv.look("disk ticked")
+    drv.click(GBI_NEXT, "ZFS: Next", settle=14.0)
+    drv.look("boot option")
+
+    # 6. BOOT OPTION. `FreeBSD UEFI loader only` is preselected - the right answer on OVMF.
+    drv.click(GBI_NEXT, "Boot Option: Next (FreeBSD UEFI loader only)", settle=14.0)
+    drv.look("user admin")
+
+    # 7. USER ADMIN SETUP. Four fields; the installer sets root's password to the same one.
+    log("filling the user form")
+    drv.clear_and_type(GBI_USER["real name"], args.user)
+    drv.clear_and_type(GBI_USER["user name"], args.user)
+    drv.clear_and_type(GBI_USER["password"], args.password)
+    drv.clear_and_type(GBI_USER["verify"], args.password)
+    drv.look("user filled")
+
+    # 8. INSTALL. The same footer button, whose label has changed.
+    drv.click(GBI_NEXT, "User Admin: Install", settle=25.0)
+    drv.look("installing")
+
+    # 9. A MEASURED WAIT. The `Installation in progress` pane is a slideshow and a progress
+    #    bar; measuring "is it done" would be a detector, so the duration is the answer.
+    #    MEASURED: from `Install` to the window closing is about 8 minutes on this ISO.
+    #    THIRTY MINUTES is that with room for a slower runner.
+    #
+    #    THE POINTER IS CLICKED INSIDE THE LOOP: MATE blanks its own display when idle - the
+    #    frame goes solid black, which is what a manual session showed after ten minutes -
+    #    and a blanked display reads as an empty screen for every later step.
+    log(f"waiting {INSTALL_SECONDS}s for the install (measured: about 8 minutes)")
+    started = time.time()
+    while time.time() - started < min(INSTALL_SECONDS, args.timeout):
+        try:
+            Q.click(drv.q, 400 + (int(time.time()) % 40), 300)
+        except Exception:                          # noqa: BLE001
+            pass
+        drv.look("installing")
+        time.sleep(20)
+
+    log("=== THE INSTALL RUN ENDED, AS MEASURED ===")
+    return True
 
 
 def main(argv: list[str]) -> int:
@@ -470,7 +610,13 @@ def main(argv: list[str]) -> int:
             # 1. THE INSTALLER, FROM THE DESKTOP ICON.
             drv.double_click(INSTALL_ICON, "Install GhostBSD", settle=25.0)
             drv.look("gbi welcome")
-            ok = True
+            if "welcome" not in " ".join(w[0].lower() for w in drv.words):
+                log("the installer did not open on the first double-click; once more")
+                drv.double_click(INSTALL_ICON, "Install GhostBSD (second attempt)",
+                                 settle=30.0)
+                drv.look("gbi welcome")
+            # 2. THE WIZARD. THIS IS THE STEP THAT WAS MISSING - see install_to_disk.
+            ok = install_to_disk(drv, args)
         else:
             log("=== THE LIVE DESKTOP DID NOT COME UP ===")
     finally:
