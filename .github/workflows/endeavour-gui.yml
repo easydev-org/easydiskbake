@@ -1,0 +1,149 @@
+name: endeavour-gui
+
+# Install EndeavourOS from its official Live ISO, through Calamares, its graphical
+# installer.
+#
+# THE ENTRY POINT IS ENDEAVOUROS' OWN WELCOME WINDOW. The live session opens `Welcome` with
+# an INSTALL tab whose first row is `Start the Installer`; that opens a small
+# `Choose installation method` dialog, and OFFLINE is the answer this workflow gives - the
+# install then comes from the medium alone, with no mirror round-trip whose contents change
+# daily. Calamares opens after that.
+#
+# THE MEDIUM IS BOOTED AS ITS OWN BOOTLOADER INTENDS - no -kernel, no -initrd, no -append.
+# The ISO's grub.cfg carries its volume label and archisobasedir; a hand-written line has
+# cost two runs on each driver here that tried it.
+#
+# THE FOOTER'S COORDINATES ARE THE ENGLISH ONES. Calamares sizes its footer buttons to
+# their labels, so `Next` sits 66 px further left when the wizard is translated. On GitHub's
+# runners the installer comes up in English - the egress is in the United States and the
+# language follows Calamares' own geoip answer - and linux/endeavour-gui/install.py is
+# measured against that. There is an `endeavour-probe` workflow that records the language,
+# so a change in that assumption shows up as a failing probe rather than as a silent
+# mis-click.
+#
+# UEFI, like every GUI driver here: lib/uefi.py attaches OVMF.
+#
+# MANUAL ONLY: an installer driven by synthetic clicks is not something to run on every push.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bake_run:
+        description: "Install EndeavourOS through its graphical installer"
+        type: boolean
+        default: true
+      iso_url:
+        description: "ISO URL (empty for the pinned image)"
+        default: ""
+      iso_sha256:
+        description: "ISO sha256 (empty for the pinned value)"
+        default: ""
+      disk_size:
+        description: "guest disk size"
+        default: "64G"
+      install_timeout:
+        description: "seconds the installer may take"
+        default: "5400"
+      publish_tag:
+        description: "tag to publish under; empty for linux-garuda-gui"
+        default: "linux-endeavour-gui"
+      publish:
+        description: "publish the finished disk to ghcr"
+        type: boolean
+        default: true
+
+concurrency:
+  group: endeavour-gui-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bake:
+    if: inputs.bake_run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '40'
+          token: ${{ github.token }}
+
+      - name: prepare
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: endeavour-gui-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py tags --prefix linux-
+
+      - name: fetch the Live ISO
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: endeavour-gui-iso
+          interval: "10"
+          command: |
+            set -euo pipefail
+            URL="${{ inputs.iso_url }}"
+            SHA="${{ inputs.iso_sha256 }}"
+            if [ -z "$URL" ]; then
+              URL="https://mirror.alpix.eu/endeavouros/iso/EndeavourOS_Titan-Nova-2026.08.15.iso"
+              SHA="0487f46fe29e0ab2ed153ba874568cc542a0507fb6029f29ad552b36ba447393"
+            fi
+            mkdir -p out/iso
+            ISO_URL="$URL" ISO_SHA256="$SHA" DEST="out/iso/EndeavourOS_Titan-Nova-2026.08.15.iso" \
+              python3 lib/fetch_vendor_iso.py --segments 8
+
+      - name: install through Calamares
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: endeavour-gui-install
+          interval: "15"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            export SNAPSHOT_INTERVAL=2
+            ISO=$(ls out/iso/*.iso | head -1)
+            echo "iso: $ISO"
+            python3 linux/endeavour-gui/install.py \
+              --iso "$ISO" \
+              --out out/endeavour-gui.qcow2 \
+              --disk-size "${{ inputs.disk_size || '64G' }}" \
+              --timeout "${{ inputs.install_timeout || '5400' }}"
+
+      - name: keep the recording
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: endeavour-gui-recording
+          path: |
+            out/install.mp4
+            out/last-frame.png
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: push the disk
+        if: success() && inputs.publish
+        id: publish
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/endeavour-gui.qcow2
+          kind: linux-endeavour-gui
+          tag: ${{ inputs.publish_tag || 'linux-endeavour-gui' }}
+          token: ${{ github.token }}
