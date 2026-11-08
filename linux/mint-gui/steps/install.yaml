@@ -82,9 +82,14 @@ steps:
   #
   # Ubiquity is not running when the session settles; its icon is on the desktop at (114,47).
   # The double-click matters: a single press only selects the icon on this desktop.
+  #
+  # `optional` BECAUSE THE ORIGINAL DRIVER DID NOT FAIL HERE EITHER: it double-clicked, and
+  # let the sequence tell the truth - a wizard that never opened leaves every later click on
+  # the desktop and the empty-disk check says so loudly. This reading is a log line.
   - name: install linux mint
     double: [114, 47]
     settle: 25
+    optional: true
     expect_any:
       - [welcome]
       - [install]

@@ -54,9 +54,21 @@ steps:
     at: [960, 743]
     repeat: [2, 0.8]
     settle: 35
+    # A LOG LINE, NOT A GATE, AND `optional` IS WHAT MAKES IT ONE. The original driver retried
+    # once and only failed if the wizard was still not up after that; an `expect_any` that can
+    # fail the whole walk would lose that retry. See the next step.
+    optional: true
     expect_any:
       - [welcome]
       - [location]
+
+  # THE RETRY, AND IT IS CONDITIONAL: a second pair of presses is right only when the wizard
+  # has not opened, because when it has they land inside it.
+  - name: open the installer (once more, if it did not)
+    unless: [welcome]
+    at: [960, 743]
+    repeat: [2, 0.8]
+    settle: 40
 
   # =======================================================================================
   # 2. WELCOME, ON ITS OWN FOOTER

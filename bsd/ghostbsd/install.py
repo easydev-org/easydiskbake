@@ -196,6 +196,17 @@ class Driver:
         self.n = 0
         self.words: list[tuple] = []
 
+    def close(self) -> None:
+        """Release the QMP connection before lib/steps.py opens its own.
+
+        qemu serves one client per socket, so the YAML walk cannot start while this driver
+        still holds it - the same boundary macos/15/bake.py documents.
+        """
+        try:
+            self.screen.close()
+        except Exception:                              # noqa: BLE001
+            pass
+
     def look(self, label: str) -> None:
         self.n += 1
         ppm = self.screen.grab(f"{self.n:03d}-{label}")
@@ -689,18 +700,24 @@ def main(argv: list[str]) -> int:
         if not set_usbhid_in_loader(drv):
             log("=== THE LOADER STEP FAILED ===")
         elif choose_scfb(drv, args.timeout):
-            # 1. THE INSTALLER, FROM THE DESKTOP ICON. The icon is found by its own teal
-            #    disc, because its row swaps with `Trash` between boots - see INSTALL_ICON_ROWS.
-            icon = drv.install_icon()
-            drv.double_click(icon, "Install GhostBSD", settle=25.0)
-            drv.look("gbi welcome")
-            if "welcome" not in " ".join(w[0].lower() for w in drv.words):
-                log("the installer did not open on the first double-click; once more")
-                drv.double_click(icon, "Install GhostBSD (second attempt)",
-                                 settle=30.0)
-                drv.look("gbi welcome")
-            # 2. THE WIZARD. THIS IS THE STEP THAT WAS MISSING - see install_to_disk.
-            ok = install_to_disk(drv, args)
+            # THE WALK IS A YAML FILE NOW - see steps/install.yaml. Its first step is a
+            # `python:` extension in steps/panes.py, because the desktop puts
+            # `Install GhostBSD` and `Trash` in either order and a fixed coordinate presses
+            # the wrong one half the time; that extension finds the installer's icon by the
+            # teal disc it draws, then does the 80 ms double-click.
+            #
+            # THE QMP SOCKET IS ALREADY OPEN, so this driver is closed first: qemu serves one
+            # client per socket and steps.run_file opens its own.
+            drv.close()
+            import steps
+            walk_path = os.path.join(HERE, "steps", "install.yaml")
+            log(f"=== the walk: {os.path.basename(walk_path)} ===")
+            ok, ran = steps.run_file(
+                walk_path, guest.paths.drive, work=work,
+                user=args.user, password=args.password,
+            )
+            log(f"{len(ran)} step(s) ran" if ok
+                else f"the walkthrough failed after {len(ran)} step(s)")
         else:
             log("=== THE LIVE DESKTOP DID NOT COME UP ===")
     finally:
