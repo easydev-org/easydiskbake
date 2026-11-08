@@ -230,19 +230,20 @@ steps:
   # 4. THE COPY, WHICH IS NOT A PANE
   # =======================================================================================
   #
-  # The installer's transition is: agree, choose the disk, then the screen goes BLACK while it
-  # copies and reboots. A dark screen cannot say whether the guest is copying or hung - both
-  # draw nothing - so the question is answered by the disk.
+  # NO `until_dark` HERE, AND THAT IS A CORRECTION. The guess was that the screen goes black
+  # while the installer copies. MEASURED on a live guest: it does not. After Continue the
+  # progress pane stays up and reads
   #
-  # `until_dark` is the start signal: the click above is accepted, and the installer begins.
-  - name: the screen goes dark as the copy starts
-    until_dark: true
-    timeout: 600
-
-  # AND THEN THE DISK. install.py's installer_panes() watches st_blocks on the target qcow2,
-  # which is what grows on a sparse file, and returns when the wizards is on screen - the
-  # reboot into the installed system. A duration cannot do this: the previous version waited a
-  # flat 90 minutes that no run had ever measured.
+  #     macOS Sequoia will be installed on the disk main
+  #     about 2 hours and 52 minutes remaining
+  #
+  # at a mean grey of 26.6, unchanged for two minutes. A wait for darkness would have sat
+  # there until its timeout while the disk was being written the whole time.
+  #
+  # THE DISK IS THE SIGNAL, and it is the only one that can tell "copying 12 GB" from "hung" -
+  # the screen cannot, because both of those panes draw. install.py's installer_panes() watches
+  # st_blocks on the target qcow2, which is what grows on a sparse file, and returns when the
+  # wizard appears: the reboot into the installed system, which is this stage's end.
   - name: the copy runs to completion
     python: setup_panes:install_macos
     timeout: 14400

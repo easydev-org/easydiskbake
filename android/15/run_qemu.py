@@ -120,29 +120,6 @@ SCRIPT = [
 ]
 
 
-def qemu_net_args(tap: str) -> list[str]:
-    """The qemu-side tap arguments, or nothing when no tap was asked for.
-
-    THESE ARE lib/vm.py's, COPIED RATHER THAN SHARED. That module builds its argv for a
-    Guest object it owns; this one drives the emulator, whose argument handling differs in
-    one important way - anything after `-qemu` goes to qemu untouched, and that is the only
-    route to `-netdev tap`. Sharing the code would mean sharing the shape, and the shapes
-    are not the same.
-
-    The MAC and the MTU match lib/net.py's: 52:54:00:56:4d:01 is what the rest of this
-    repository hands its guests, and the MTU is the bridge's, so the guest never sends a
-    frame larger than the path it leaves on.
-    """
-    if not tap:
-        return []
-    mtu = netlib.MTU
-    return [
-        "-netdev", f"tap,id=n0,ifname={tap},script=no,downscript=no",
-        "-device", f"virtio-net-pci,netdev=n0,mac=52:54:00:56:4d:01,"
-                   f"romfile=,host_mtu={mtu}",
-    ]
-
-
 def drive(proc: subprocess.Popen, seconds: int) -> None:
     """Type each command when `fraction * seconds` has elapsed.
 
@@ -343,6 +320,25 @@ def main(argv: list[str]) -> int:
         # guest at all.
         "-shell",
         "-append-userspace-opt", LOOPBACK,
+        # `-net-tap` REPLACES THE EMULATOR'S DEFAULT NIC; pushing tap arguments through
+        # `-qemu` ADDS a second one.
+        #
+        # Measured with `-verbose`, which prints the qemu command line the emulator actually
+        # builds. Passing `-qemu -netdev tap,... -device virtio-net-pci,...` produced BOTH:
+        #
+        #     -netdev user,id=mynet -device virtio-net-pci,netdev=mynet      <- default
+        #     -netdev tap,id=n0,ifname=qemutest0,... -device virtio-net-pci,netdev=n0,...
+        #
+        # Two NICs, and Android binds its network stack to the first - the userspace one,
+        # which has no reachable address. The tap was there and unused:
+        #
+        #     qemubr0 172.30.0.1/24 UP, qemutap0 master qemubr0 UP
+        #     /var/lib/misc/dnsmasq.leases: (no lease file)
+        #
+        # `-net-tap` is the emulator's own option and it replaces the default instead of
+        # adding to it. An earlier attempt with it failed for a different reason - the pod
+        # had no /dev/net/tun - which is why the failure looked like this one.
+        *(["-net-tap", a.tap] if a.tap else []),
         "-feature", "RefCountPipe",
         "-feature", "VirtioVsockPipe",
         "-show-kernel",
@@ -373,12 +369,8 @@ def main(argv: list[str]) -> int:
         # qemu at the FIRST `-qemu`, so the second becomes an argument to qemu itself:
         #
         #     qemu-system-x86_64-headless: -qemu: invalid option
-        #
-        # and the emulator exits before the guest boots - 44 args were passed and 59 lines
-        # were logged, none of them a kernel message.
         "-qemu",
         "-qmp", f"unix:{os.path.join(D, 'qmp.sock')},server=on,wait=off",
-        *qemu_net_args(a.tap),
     ]
 
     env = dict(os.environ)
