@@ -525,6 +525,10 @@ def main(argv: list[str]) -> int:
     p.add_argument("--mem", type=int, default=4096)
     p.add_argument("--cpus", type=int, default=4)
     p.add_argument("--timeout", type=int, default=5400)
+    # THE ACCOUNT THE INSTALLER CREATES. `docker`/`admin` is what every other bake here
+    # uses; gbi also sets root's password to the same value, which it says above the form.
+    p.add_argument("--user", default=os.environ.get("GHOSTBSD_USER", "docker"))
+    p.add_argument("--password", default=os.environ.get("GHOSTBSD_PASSWORD", "admin"))
     p.add_argument("--firmware-code", default=os.environ.get(
         "FIRMWARE_CODE", "/usr/share/OVMF/OVMF_CODE_4M.fd"))
     p.add_argument("--firmware-vars", default=os.environ.get(
