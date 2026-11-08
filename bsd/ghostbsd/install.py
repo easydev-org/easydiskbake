@@ -98,6 +98,26 @@ import vm           # noqa: E402
 # gbi and 500 ms does not. MATE reads two presses further apart than its double-click
 # interval as two single clicks, and a single click only selects the icon.
 INSTALL_ICON = (88, 240)
+
+# THE DESKTOP PUTS `Install GhostBSD` AND `Trash` IN EITHER ORDER, SO THE ICON IS FOUND BY
+# ITS OWN PIXELS, NOT BY ITS ROW.
+#
+# Measured on two runs of this same image, both at 1920x1080:
+#
+#     run 42441278741   Computer (88,110)  Home (88,188)  Install GhostBSD (88,240)  Trash (88,340)
+#     run 42502676624   Computer (88,110)  Home (88,188)  Trash (88,240)  Install GhostBSD (88,340)
+#
+# - the two icons swap rows between boots. The old code pressed (88,240) unconditionally, so
+# on the second layout it double-clicked `Trash` and opened Caja; the wizard never started,
+# every pane click then landed on a file manager, and the run ended with
+# `=== THE DISK IS EMPTY (0 MiB) ===`. That is the failure this replaces, and it is exactly
+# the kind a fixed coordinate cannot survive: the screen is correct, the number is not.
+#
+# The installer's icon is a TEAL DISC - the only saturated cyan on this desktop - so it is
+# located by scanning that colour in the icon column. `(88, 240)` and `(88, 340)` are the two
+# rows it has been seen at; the search covers both and anything in between.
+INSTALL_ICON_ROWS = (240, 340)
+
 DOUBLE_CLICK_GAP = 0.08
 
 # The X driver menu that GhostBSD shows when it cannot start X itself. scfb draws on the
@@ -181,6 +201,65 @@ class Driver:
         ppm = self.screen.grab(f"{self.n:03d}-{label}")
         self.words = self.screen.text(ppm) if ppm else []
         log(f"  {label}: {' | '.join(w[0] for w in self.words[:20])}")
+
+    def install_icon(self) -> tuple:
+        """Where `Install GhostBSD` actually is, from the teal disc it draws.
+
+        THE ICON ITSELF IS THE ONLY RELIABLE MARK. Its row swaps with `Trash` between boots
+        (see INSTALL_ICON_ROWS), so a constant is wrong half the time and no reading of the
+        LABEL helps - the label is drawn in the same font as `Trash`, and both are white on
+        the same wallpaper.
+
+        The disc is a saturated cyan circle, roughly (60,150,170) at its rim, and it is the
+        only such colour in the left column. Scanning for it in the icon column and taking
+        the middle of what is found answers with a coordinate that is right for either
+        layout. If nothing matches, the first measured row is returned - the caller then
+        behaves exactly as the old fixed constant did rather than pressing nothing.
+        """
+        ppm = self.screen.grab(f"{self.n:03d}-install-icon")
+        if not ppm:
+            return INSTALL_ICON
+        try:
+            from PIL import Image
+        except ImportError:
+            return INSTALL_ICON
+        try:
+            with Image.open(ppm) as image:
+                rgb = image.convert("RGB")
+                width, _ = rgb.size
+                px = rgb.load()
+                rows = []
+                for y in range(40, 420):
+                    run = best = 0
+                    for x in range(30, 160):
+                        r, g, b = px[x, y]
+                        # the teal of the disc, and nothing else on this desktop
+                        if r < 110 and g > 95 and b > 95 and g > r + 30 and b > r + 25:
+                            run += 1
+                            best = max(best, run)
+                        else:
+                            run = 0
+                    if best >= 10:
+                        rows.append(y)
+        except OSError:
+            return INSTALL_ICON
+        if not rows:
+            log("  the installer icon was not found by its colour; using the measured row")
+            return INSTALL_ICON
+        # one band per icon: group the matching rows that are within a few pixels
+        bands, cur = [], [rows[0]]
+        for y in rows[1:]:
+            if y - cur[-1] <= 8:
+                cur.append(y)
+            else:
+                bands.append((cur[0], cur[-1]))
+                cur = [y]
+        bands.append((cur[0], cur[-1]))
+        top = min(bands, key=lambda band: band[1] - band[0])
+        centre = (top[0] + top[1]) // 2
+        log(f"  the installer icon is at (88,{centre}) - found by its teal disc, "
+            f"bands {bands}")
+        return (88, centre)
 
     def click(self, xy, why: str, settle: float = 2.0) -> None:
         log(f"click {xy} - {why}")
@@ -610,12 +689,14 @@ def main(argv: list[str]) -> int:
         if not set_usbhid_in_loader(drv):
             log("=== THE LOADER STEP FAILED ===")
         elif choose_scfb(drv, args.timeout):
-            # 1. THE INSTALLER, FROM THE DESKTOP ICON.
-            drv.double_click(INSTALL_ICON, "Install GhostBSD", settle=25.0)
+            # 1. THE INSTALLER, FROM THE DESKTOP ICON. The icon is found by its own teal
+            #    disc, because its row swaps with `Trash` between boots - see INSTALL_ICON_ROWS.
+            icon = drv.install_icon()
+            drv.double_click(icon, "Install GhostBSD", settle=25.0)
             drv.look("gbi welcome")
             if "welcome" not in " ".join(w[0].lower() for w in drv.words):
                 log("the installer did not open on the first double-click; once more")
-                drv.double_click(INSTALL_ICON, "Install GhostBSD (second attempt)",
+                drv.double_click(icon, "Install GhostBSD (second attempt)",
                                  settle=30.0)
                 drv.look("gbi welcome")
             # 2. THE WIZARD. THIS IS THE STEP THAT WAS MISSING - see install_to_disk.
