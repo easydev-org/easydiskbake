@@ -55,6 +55,20 @@ The emulator does not publish GPT partition uevents for the disk it mounts at `-
 `-cache` is a plain virtio-blk and does. `system` and `metadata` therefore have to live on
 the cache disk, which is why this is three files and not one.
 
+Could stock qemu do it instead? It was checked, and the answer is not in this file's
+control: `kernel-ranchu` is a qemu `Image`, not a Linux bzImage. Its first 497 bytes are
+0xff padding and the `HdrS` header starts at 498:
+
+    0xff * 497, then 1f 01 00 40 3c 12 00 00 ...
+
+`qemu-system-x86_64 -kernel` looks for the boot protocol header at 0x1f1 of the file, finds
+padding, and falls through to SeaBIOS - which then boots from ROM and exits with nothing on
+the serial port. Booting this image under stock qemu means either converting the kernel to
+a bzImage or extracting it and supplying the emulator's own load addresses, and neither is
+a change to the disk layout. So the three-disk shape stands until that is done, and the
+`-system` restriction above is unchanged whether qemu or the emulator launches it, because
+it comes from Android's first-stage init rather than from the VMM.
+
 WHERE THE OFFSET COMES FROM, AND THE BUG THAT COST THE MOST TIME
 
 liblp stores partitions and extents in two tables that follow the metadata header
