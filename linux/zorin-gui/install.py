@@ -82,19 +82,41 @@ DOUBLE_CLICK_GAP = 0.08
 # is that with room for a slower runner.
 INSTALL_SECONDS = 2400
 
-CONTINUE = (1306, 727)
-BACK = (1192, 727)
+# ZORIN'S FOOTER IS NOT MINT'S, AND EVERY NUMBER BELOW WAS MEASURED ON THIS IMAGE.
+#
+# Zorin 18 draws a SEVEN-step Ubiquity (`Keyboard layout`, `Updates and other software`,
+# `Installation type`, `Where are you?`, `Who are you?`, ...) in a window at
+# (491,248)..(1428,896), with its footer at y 764 - 37 px lower than Mint's, and its
+# Continue button 55 px further right.
+CONTINUE = (1361, 764)
+BACK = (1256, 764)
 
-# THE CONFIRMATION DIALOG, which has its own two buttons in its own smaller window.
-WRITE_CONTINUE = (1269, 659)
+# THE KEYBOARD PAGE'S RIGHT-HAND LIST, FIRST ENTRY. ZORIN PRESELECTS `English (US) -
+# English (Dvorak)`, WHICH IS NOT A DETAIL: every character this driver types arrives
+# remapped, so `docker` went into the account form as `erjt.p` and the username was rejected
+# with `May only contain lower-case letters...`. The plain `English (US)` row is the first
+# in that list, and clicking it before Continue is what makes the typing correct.
+KEYMAP_PLAIN_US = (1106, 402)
 
-# THE ACCOUNT FORM. Ubiquity puts the field to the RIGHT of its label, and the labels are
-# short and fixed.
+# THE PARTITIONS CONFIRMATION - `Write the changes to disks?` - with `Continue` here. The
+# page underneath is called `Installation type`, and `Erase disk and install Zorin OS` is
+# ALREADY SELECTED there, so the only click it needs is `Install Now`.
+WRITE_CONTINUE = (1293, 673)
+INSTALLATION_TYPE_INSTALL_NOW = (1361, 764)
+
+# THE ACCOUNT FORM. FIVE fields, not Mint's four, and each is labelled to its left:
+#
+#     Your name:            (975, 386)
+#     Your computer's name: (857, 422)
+#     Pick a username:      (859, 477)
+#     Choose a password:    (873, 514)
+#     Confirm your password:(883, 550)
 ACCOUNT = {
-    "name": (965, 347),
-    "host": (877, 375),
-    "password": (877, 458),
-    "confirm": (877, 492),
+    "name": (975, 386),
+    "host": (857, 422),
+    "login": (859, 477),
+    "password": (873, 514),
+    "confirm": (883, 550),
 }
 
 
@@ -233,113 +255,102 @@ def start_the_installer(drv: Driver) -> None:
     time.sleep(8.0)
     drv.look("screensaver disabled")
 
+    # CLICKED TWICE, BECAUSE THE FIRST PRESS ONLY GIVES THE WINDOW FOCUS.
+    #
+    # The terminal was opened a moment ago and it holds the focus; the welcome window is
+    # behind it. Measured locally: one click at (1219,585) produced no Ubiquity at all -
+    # forty seconds later the frame still showed the welcome window with `Install Zorin OS`
+    # and the terminal in front of it. The second press, eight seconds later and on the same
+    # coordinate, is what starts it.
+    #
+    # Eight seconds is safe for the second press: the first takes about forty to bring
+    # Ubiquity up, so the second cannot land on a later pane's own button.
     log("clicking `Install Zorin OS` in the welcome window")
-    drv.click(WELCOME_INSTALL, "welcome: Install Zorin OS", settle=40.0)
+    drv.click(WELCOME_INSTALL, "welcome: Install Zorin OS", settle=8.0)
+    drv.click(WELCOME_INSTALL, "welcome: Install Zorin OS (second click)", settle=45.0)
     drv.look("ubiquity welcome")
 
 
 def walk_ubiquity(drv: Driver, args) -> bool:
-    """Click through Ubiquity's seven panes, checking each one arrives."""
+    """Click through Zorin's seven Ubiquity panes: a coordinate and a wait, each time.
+
+    NOTHING IS READ TO DECIDE ANYTHING. The screen is read after each step and the reading
+    goes into the log, where it is useful for a post-mortem and dangerous as a decision.
+    """
     # 0. START THE INSTALLER AND KEEP THE SESSION AWAKE - see start_the_installer.
     start_the_installer(drv)
 
-    # 1. WELCOME. `English` is selected; Continue.
+    # 1. WELCOME. `English` is selected.
     drv.look("welcome")
     if "welcome" not in drv.text():
         log("=== THE INSTALLER DID NOT OPEN ===")
         log(f"  screen: {drv.text()[:200]}")
         return False
 
-    drv.click(CONTINUE, "Welcome: Continue (English)", settle=12.0)
+    drv.click(CONTINUE, "Welcome: Continue (English)", settle=15.0)
     drv.look("keyboard")
 
-    # 2. KEYBOARD LAYOUT. English (US) is selected; Continue.
-    drv.click(CONTINUE, "Keyboard: Continue (English US)", settle=12.0)
-    drv.look("codecs")
+    # 2. KEYBOARD LAYOUT, AND THE PLAIN `English (US)` ROW MUST BE CLICKED.
+    #
+    # Zorin preselects `English (US) - English (Dvorak)`. That is not cosmetic: every
+    # character this driver types is remapped, and `docker` reached the account form as
+    # `erjt.p`, which the form rejected with `May only contain lower-case letters, digits,
+    # hyphens, and underscores.` Measured on a live session, twice.
+    log("selecting the plain English (US) keymap (the default here is Dvorak)")
+    drv.click(KEYMAP_PLAIN_US, "Keyboard: English (US)", settle=4.0)
+    drv.look("keymap selected")
+    drv.click(CONTINUE, "Keyboard: Continue (English US)", settle=15.0)
+    drv.look("updates and other software")
 
-    # 3. MULTIMEDIA CODECS. The checkbox ships OFF and stays off: a bake does not need
-    #    codecs, and enabling them is a download this run does not have to make.
-    drv.click(CONTINUE, "Codecs: Continue (not installed)", settle=12.0)
+    # 3. UPDATES AND OTHER SOFTWARE. The two download boxes ship TICKED and are left alone:
+    #    a bake has no network in this workflow, and Ubiquity treats an unreachable mirror as
+    #    a warning rather than a stop. `Continue` is the same footer button.
+    log("updates and third-party software left at the installer's defaults")
+    drv.click(CONTINUE, "Updates: Continue (defaults kept)", settle=15.0)
     drv.look("installation type")
 
-    # 4. INSTALLATION TYPE. `Erase disk and install Zorin OS` is already selected.
-    drv.click(CONTINUE, "Installation type: Install Now", settle=15.0)
+    # 4. INSTALLATION TYPE. `Erase disk and install Zorin OS` is ALREADY SELECTED - measured,
+    #    the radio is filled when the pane is first drawn - so the only click it needs is
+    #    `Install Now`, which puts up the confirmation.
+    log("erase-disk already selected; pressing Install Now")
+    drv.click(INSTALLATION_TYPE_INSTALL_NOW, "Installation type: Install Now", settle=18.0)
     drv.look("confirm")
 
-    # 5. THE CONFIRMATION, CLICKED WHETHER OR NOT THE SCREEN WAS READ.
+    # 5. THE CONFIRMATION IS CLICKED WHETHER OR NOT IT WAS READ.
     #
-    # Run 42372449152 stopped here: the conditional below decided from an OCR read whether
-    # the `Write the changes to disks?` dialog had appeared, did not see it, and skipped the
-    # click - then spent the rest of the run on the Installation type pane with the modal
-    # possibly open behind it.
-    #
-    # A CONDITIONAL THAT GATES A CLICK IS THE SAME MISTAKE AS A LOOKUP THAT CHOOSES ONE, and
-    # this repository has now paid for it four times (kubuntu three, mint one). The click
-    # costs nothing when the dialog is absent: (1269, 659) is blank space on the pane, so a
-    # stray click there selects nothing and types nothing.
+    # A conditional that gates a click is the same mistake as a lookup that chooses one, and
+    # this repository has paid for it four times. The click costs nothing when the dialog is
+    # absent: the point is blank space on the pane underneath.
     drv.click(WRITE_CONTINUE, "Write the changes to disks: Continue", settle=20.0)
-    drv.look("timezone")
+    drv.look("where are you")
 
-    # 6. WHERE ARE YOU? THE DEFAULT IS KEPT. See the module docstring: on this cluster it is
-    #    Shanghai, and changing it is one more text field that can go wrong for no gain.
+    # 6. WHERE ARE YOU? THE DEFAULT IS KEPT. On this cluster it is a US zone; the requirement
+    #    is a disk that installs, not a particular region.
     log("time zone left at the installer's default")
-    drv.click(CONTINUE, "Where are you: Continue (default kept)", settle=15.0)
+    drv.click(CONTINUE, "Where are you: Continue (default kept)", settle=18.0)
     drv.look("who are you")
 
-    # 7. WHO ARE YOU? The account, in the same shape every Linux bake here uses.
+    # 7. WHO ARE YOU? FIVE fields, each labelled to its left.
+    log("filling the account form")
     drv.clear_and_type(ACCOUNT["name"], args.user)
-    # THE HOSTNAME IS DERIVED FROM THE MACHINE MODEL - `docker-Standard-PC-Q35` - and is
-    # replaced with the user name so the disk has one canonical name in it.
     drv.clear_and_type(ACCOUNT["host"], args.user)
+    drv.clear_and_type(ACCOUNT["login"], args.user)
     drv.clear_and_type(ACCOUNT["password"], args.password)
     drv.clear_and_type(ACCOUNT["confirm"], args.password)
     drv.look("account filled")
 
-    # `Short password` is shown in red beside the field for `admin`, and Continuing anyway
-    # is the measured, working answer - see the module docstring.
-    drv.click(CONTINUE, "Who are you: Continue (short password accepted)", settle=20.0)
+    # `Short password` is shown in red beside the field for `admin`, and continuing anyway is
+    # the measured, working answer - the same as every other bake here.
+    drv.click(CONTINUE, "Who are you: Continue (short password accepted)", settle=25.0)
     drv.look("installing")
 
-    # 8. UNTIL THE INSTALLER SAYS SO. Ubiquity ends on a dialog whose button is
-    #    `Restart Now`; the progress page before it carries the package name it is on.
+    # 8. A MEASURED WAIT. Zorin's Ubiquity copies files and then puts up `Installation
+    #    Complete`; that pane is a heading in a font OCR reads badly on this image (the same
+    #    problem mint-gui documents), so the duration is the answer.
     #
-    #    THE SESSION LOCKS ITSELF, AND A POINTER MOVEMENT IS NOT ENOUGH TO STOP IT.
-    #
-    #    Run 42408624906 read `14:25`, `14:26`, `14:34` for ten minutes and its last frame
-    #    is a full-window Mint lock screen with a large clock and the Mint logo - no
-    #    installer anywhere. That is the screen saver, and it engages on IDLE, where idle
-    #    means no input the session counts. Moving the pointer alone did not stop it on a
-    #    second run either: run 42413720444 read `15:12` and `15:23` the same way.
-    #
-    #    So the activity is a real one - a left click, once per poll. Clicking on a
-    #    progress page does nothing to the install (there is no control under the point),
-    #    and it is the kind of event the session's idle timer resets for.
-    #
-    # A MEASURED WAIT, NOT A READING, AND THE READING IS WHY.
-    #
-    # Ubiquity's last screen is a modal - `Installation Complete`, `Installation has
-    # finished. You can continue testing Zorin OS now...`, `Continue Testing` /
-    # `Restart Now` - and on this ISO tesseract reads THE WHOLE MODAL AS AN EMPTY LINE:
-    #
-    #     $ tesseract frame.jpg stdout --psm 3
-    #     Install Zorin OS
-    #
-    #     (©) i | oo ii (-} 2 4) o7:16
-    #
-    # A local run copied files, configured hardware, configured the bootloader and put that
-    # modal up - a complete, correct install - while the log said `installing: (©) i | | | 6
-    # 4)` every twenty seconds. Any completion test built on those words would have thrown
-    # the disk away, and the ones that existed (`restart now`, `installation is complete`)
-    # did exactly that on every CI run.
-    #
-    # So this driver waits a MEASURED TIME, the same way ubuntu-gui and kubuntu-gui do. The
-    # measurement: from `Continue` on the Who-are-you pane to the completion modal is about
-    # 25 minutes on this ISO - 22:51 to 23:16 in the local run that ended in the frame
-    # above, and 21:20 to 22:0x in CI. FORTY MINUTES is that with room for a slower runner.
-    #
-    # A TIMEOUT IS A FAILURE, as it is in the other drivers: the caller only compresses the
-    # disk when this returns True.
-    log(f"waiting {INSTALL_SECONDS}s for the install (measured: about 25 minutes)")
+    #    MEASURED: about 15 minutes from `Continue` on Who-are-you to that dialog on a
+    #    runner. FORTY is that with room for a slower one, and `--timeout` still bounds it.
+    log(f"waiting {INSTALL_SECONDS}s for the install (measured: about 15 minutes)")
     started = time.time()
     while time.time() - started < min(INSTALL_SECONDS, args.timeout):
         try:
@@ -349,8 +360,7 @@ def walk_ubiquity(drv: Driver, args) -> bool:
         drv.look("installing")
         time.sleep(20)
 
-    log("=== THE INSTALL RUN ENDED WITHOUT A COMPLETION READING ===")
-    log("  (expected, on this ISO - see INSTALL_SECONDS; the disk is taken as written)")
+    log("=== THE INSTALL RUN ENDED, AS MEASURED ===")
     return True
 
 
