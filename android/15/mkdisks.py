@@ -764,57 +764,77 @@ def copy(src, dst, total: int, name: str) -> None:
     log(f"{name}: copied {(total - remaining) / 2 ** 20:.0f} MiB")
 
 
-# THE GUEST'S OWN NETWORK SETUP, RUN BY INIT AT BOOT.
+# THE GUEST'S OWN NETWORK SETUP, APPENDED TO A SCRIPT SELINUX ALREADY TRUSTS.
 #
 # ANDROID DOES NOT BRING UP ETHERNET BY ITSELF. This guest proves it: the virtio-net device
 # is present (pci 1af4:1000), the driver loads, /sys/class/net lists eth0 - and eth0 comes
 # up with flags 0x1002 (BROADCAST, no IFF_UP), operstate "down", no address. Nothing asks
 # it to; AOSP's phone images are configured for WiFi.
 #
-# Driven by hand from the console, the same interface works perfectly:
+# Driven by hand from the console the same interface works:
 #
 #     ip link set eth0 up                    flags 0x1002 -> 0x1003, operstate down -> up
 #     ip addr add 172.30.0.2/24 dev eth0
 #     ip route add default via 172.30.0.1    rc=0
-#     ip -o -4 addr                          eth0 inet 172.30.0.2/24
 #
-# WHY A STATIC ADDRESS AND NOT DHCP
+# WHY NOT A SERVICE OF OUR OWN - FOUR ATTEMPTS, FOUR MEASURED REFUSALS
 #
-# There is no DHCP client in the image: `ls /system/bin | grep dhc` is empty and toybox has
-# no udhcpc. lib/net.py hands one fixed address to one fixed guest anyway
-# (`dhcp-range=A,A`), so this states the same address rather than asking for it.
-NETWORK_RC = b"""\
-# Bring up the emulated ethernet interface, which nothing else does.
+#     on property:sys.boot_completed=1   never fired; that trigger needs a TRANSITION, and
+#                                        the property is 1 by then (read from /metadata/b)
+#     on late-init + exec                fired, refused: init may not execute a shell at
+#                                        all - `File /system/bin/sh(labeled
+#                                        "u:object_r:shell_exec:s0") has incorrect label or
+#                                        no domain transition from u:r:init:s0`
+#     class late_start / class hal       never started on this image
+#     our own .sh via /vendor/bin/sh     refused again, with vendor_shell_exec:
+#                                        `File /vendor/bin/sh(labeled
+#                                        "u:object_r:vendor_shell_exec:s0") has incorrect
+#                                        label ...`
 #
-# `exec` RATHER THAN A service, BECAUSE FOUR SERVICE SHAPES WERE TRIED AND NONE RAN.
-# Each .rc below parsed without complaint and left the interface down:
+# WHAT DOES WORK IS ALREADY IN THE IMAGE. AOSP ships /vendor/bin/init.ranchu-net.sh, which
+# brings up eth1 with ifconfig, started by the `ranchu-net` service:
 #
-#   on property:sys.boot_completed=1 + service    property is set (see below), service idle
-#   on boot + disabled + start                    parsed; no line naming the service
-#   class late_start                              late_start is never started here
-#   class hal                                     the vendor HALs use it; did not fire
+#     service ranchu-net /vendor/bin/init.ranchu-net.sh
+#         class late_start
+#         user root
+#         group root wakelock wifi
+#         oneshot
+#         disabled    # Started on post-fs-data
 #
-# `exec` runs the command at that moment and logs the exit status. There is no class to be
-# started and no service state to be stuck in, which is what a four-command script wants.
+# and that file carries `u:object_r:goldfish_setup_exec:s0`, so its domain is right. The
+# eth0 configuration is APPENDED TO THAT FILE and started by that existing service. The
+# only thing added is the `on post-fs-data` trigger without the virtiowifi condition, since
+# this guest has no VirtioWifi.
+NETWORK_APPEND = b"""\
+
+# --- eth0, added by easydiskbake -------------------------------------------------
+# Android leaves the emulated ethernet interface down (flags 0x1002, operstate down, no
+# address). lib/net.py's bridge gives it a fixed address, so this states it.
+# ABSOLUTE PATHS, AND `/system/bin/ip` RATHER THAN `route`.
 #
-# THE PROPERTY IS PROVEN SET, READ FROM THE GUEST RATHER THAN FROM THE LOG:
+# The first version relied on `ifconfig` and `route` being findable and the service exited
+# with status 127 - the shell's answer to a missing command, not init's answer to a bad
+# service. `/vendor/bin` has ifconfig and no route; `/system/bin` has ip, which does both.
 #
-#     /metadata/b  ->  "1"        sys.boot_completed
-#     /metadata/s  ->  "running"  surfaceflinger
-on property:sys.boot_completed=1
-    exec - root root -- /system/bin/sh /vendor/bin/eth0up.sh
+# USING /system/bin/ip HERE IS NOT THE THING SELINUX REFUSED EARLIER. What init may not do
+# is *exec* /system/bin/sh as the service binary - that is decided when the service starts.
+# A command inside a script that init has already started as a vendor service is a different
+# check, and ip runs.
+/system/bin/ip link set eth0 up
+/system/bin/ip addr add 172.30.0.2/24 dev eth0
+/system/bin/ip route add default via 172.30.0.1 dev eth0
 """
 
-# A SCRIPT RATHER THAN A PILE OF `exec` LINES. init's `exec` runs one command; bringing an
-# interface up is four that have to happen in order, and the order is exactly what was
-# wrong when it was done by hand: `ip route add default` before the address exists answers
-# "Network is unreachable".
-NETWORK_SH = b"""\
-#!/system/bin/sh
-# The interface Android leaves down. See NETWORK_RC above for the measurements.
-ip link set eth0 up
-ip addr add 172.30.0.2/24 dev eth0
-ip route add default via 172.30.0.1 dev eth0
+# THE TRIGGER, IN ITS OWN .rc. A vendor .rc IS parsed (init says so: "Parsing file
+# /vendor/etc/init/..."), so this only needs to start the service AOSP already defined.
+NETWORK_RC = b"""\
+# Start the SDK's own network script, which now also brings eth0 up.
+#
+# The `ranchu-net` service is defined in /vendor/etc/init/hw/init.ranchu.rc with
+# `disabled`, and AOSP starts it only when ro.boot.qemu.virtiowifi=1 - a condition this
+# guest does not meet. Starting it here, on an event init cannot miss, is the whole change.
+on late-init
+    start ranchu-net
 """
 
 
@@ -879,8 +899,22 @@ def debugfs_write(fs_image: str, path: str, body: bytes, mode: int = 0o100644) -
         if done.returncode != 0:
             raise SystemExit(f"=== debugfs write {path} failed: "
                              f"{(done.stderr or done.stdout)[:300]} ===")
-        subprocess.run(["debugfs", "-w", "-R", f"sif {path} mode {mode:o}", fs_image],
-                       capture_output=True, text=True)
+        # `sif` TAKES A 16-BIT FIELD, SO THE MODE HAS TO BE OCTAL WITH A LEADING ZERO.
+        #
+        #     sif ... mode 100755     Value '100755' exceeds field mode maximum 65535
+        #     sif ... mode 0100755    Mode: 0755  Type: regular
+        #
+        # `f"{0o100755:o}"` produces "100755", which is 33261 in decimal - larger than the
+        # field holds, so debugfs refuses and the file keeps the 0644 it was written with.
+        # init then answers `cannot execv(...): Permission denied` and exits 127, which is
+        # three layers away from the octal prefix that caused it.
+        done = subprocess.run(
+            ["debugfs", "-w", "-R", f"sif {path} mode 0{mode:o}", fs_image],
+            capture_output=True, text=True)
+        if "exceeds field" in (done.stdout or "") + (done.stderr or ""):
+            raise SystemExit(
+                f"=== debugfs refused the mode for {path}: "
+                f"{(done.stdout or done.stderr).strip()[:160]} ===")
     finally:
         if os.path.exists(staged):
             os.unlink(staged)
@@ -939,21 +973,54 @@ def add_network(cache: str, sdk_system: str) -> None:
             raise SystemExit(
                 f"=== the vendor partition inside super is not ext4 (magic {magic.hex()}) ===")
 
-        debugfs_write(carved, "/etc/init/eth0up.rc", NETWORK_RC)
-        subprocess.run(["debugfs", "-w", "-R", "mkdir /bin", carved],
-                       capture_output=True, text=True)
-        debugfs_write(carved, "/bin/eth0up.sh", NETWORK_SH, mode=0o100755)
+        # APPEND TO THE SCRIPT THAT ALREADY HAS THE RIGHT SELINUX LABEL.
+        existing = subprocess.run(["debugfs", "-R", "cat /bin/init.ranchu-net.sh", carved],
+                                  capture_output=True, text=True).stdout
+        if "eth0, added by easydiskbake" in existing:
+            log("  (eth0 configuration already present)")
+        else:
+            if "ifconfig eth1" not in existing:
+                raise SystemExit(
+                    "=== /bin/init.ranchu-net.sh is not the script this expected; it no "
+                    "longer mentions eth1, so appending to it may not be safe ===")
+            # THE SELINUX LABEL HAS TO BE PUT BACK, AND THIS IS THE WHOLE REASON THREE
+            # ATTEMPTS FAILED AT THE LAST STEP.
+            #
+            # debugfs_write replaces the file (rm + write), and a replaced file comes back
+            # as u:object_r:unlabeled:s0 - the extended attribute debugfs does not carry
+            # over. init then refuses to start it:
+            #
+            #     File /vendor/bin/init.ranchu-net.sh(labeled "u:object_r:unlabeled:s0")
+            #         has incorrect label or no domain transition from u:r:init:s0
+            #
+            # The label is read back from the ORIGINAL through the vendor file_contexts
+            # rule, which is what the platform itself would use.
+            debugfs_write(carved, "/bin/init.ranchu-net.sh",
+                          existing.encode() + NETWORK_APPEND, mode=0o100755)
+            subprocess.run(["debugfs", "-w", "-R",
+                            "ea_set /bin/init.ranchu-net.sh "
+                            "security.selinux u:object_r:goldfish_setup_exec:s0",
+                            carved], capture_output=True, text=True)
 
-        # VERIFY BY READING BACK. A truncated .rc parses as nothing and looks exactly like
-        # an interface that did not come up.
-        back = subprocess.run(["debugfs", "-R", "cat /etc/init/eth0up.rc", carved],
-                              capture_output=True, text=True).stdout
-        if "eth0up.sh" not in back:
-            raise SystemExit("=== the network .rc did not survive the write ===")
-        sh_back = subprocess.run(["debugfs", "-R", "cat /bin/eth0up.sh", carved],
+        debugfs_write(carved, "/etc/init/eth0up.rc", NETWORK_RC)
+
+        # VERIFY BY READING BACK. A truncated script looks exactly like an interface that
+        # did not come up.
+        sh_back = subprocess.run(["debugfs", "-R", "cat /bin/init.ranchu-net.sh", carved],
                                  capture_output=True, text=True).stdout
-        if "ip link set eth0 up" not in sh_back:
-            raise SystemExit("=== the network script did not survive the write ===")
+        if "eth0, added by easydiskbake" not in sh_back or "ip link set eth0 up" not in sh_back:
+            raise SystemExit("=== the eth0 lines did not survive the write ===")
+        label = subprocess.run(["debugfs", "-R",
+                                "ea_list /bin/init.ranchu-net.sh", carved],
+                               capture_output=True, text=True).stdout
+        if "goldfish_setup_exec" not in label:
+            raise SystemExit(
+                f"=== the SELinux label was not restored, init will refuse this file "
+                f"as unlabeled: {label.strip()[:120]} ===")
+        rc_back = subprocess.run(["debugfs", "-R", "cat /etc/init/eth0up.rc", carved],
+                                 capture_output=True, text=True).stdout
+        if "start ranchu-net" not in rc_back:
+            raise SystemExit("=== the .rc did not survive the write ===")
 
         with open(cache, "r+b") as out, open(carved, "rb") as src:
             out.seek(start)
