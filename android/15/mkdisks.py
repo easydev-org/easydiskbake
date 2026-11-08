@@ -303,18 +303,25 @@ def userdata_filesystem(dest: str, force: bool = False) -> bool:
 
     AN EXISTING /data IS KEPT, AND THAT IS THE POINT OF THIS CHECK.
 
-    /data is where installed applications live. Rebuilding it on every run would make
-    "keep what I installed" impossible no matter how the disk is packaged, and it is what
-    made every earlier run start from an empty device. `--force-userdata` is the way to ask
-    for a blank one.
+    /data is where installed applications live. Rebuilding it every run makes "keep what I
+    installed" impossible however the disk is packaged, and it is what made every earlier
+    run start from an empty device. `--force-userdata` asks for a blank one.
 
-    WHAT "EXISTING" IS TESTED BY, AND WHY NOT os.path.exists: a file that is present but
-    not a filesystem - a truncated write from an interrupted run, or a raw image left over
-    from an experiment - would be kept and then fail to mount inside the guest, several
-    minutes later and one layer away from the cause. So the ext4 magic is read.
+    WHY THE TEST IS THE SIZE AND NOT THE EXT4 MAGIC
+
+    An earlier version checked for `0x53EF` at 0x438 and that was WRONG - measured:
+
+        freshly mkfs'd, never booted   0x53EF   <- looks like ext4
+        after one boot                 0xfcbf   <- does not
+
+    /data uses metadata encryption, so once the guest has booted, the whole partition is
+    ciphertext including the superblock. The magic check therefore rebuilt a good, encrypted
+    /data on every run after the first, throwing away its applications AND the key that
+    matched it. Size is the property that survives encryption and distinguishes a real image
+    from a truncated one, and it is what this asks.
     """
-    if not force and looks_like_ext4(dest):
-        log(f"userdata {dest}: KEPT (an existing ext4 /data, applications included)")
+    if not force and has_userdata(dest):
+        log(f"userdata {dest}: KEPT (an existing /data, applications included)")
         return False
     with open(dest, "wb") as fh:
         fh.truncate(USERDATA_BYTES)
@@ -323,16 +330,16 @@ def userdata_filesystem(dest: str, force: bool = False) -> bool:
     return True
 
 
-def looks_like_ext4(path: str) -> bool:
-    """True if the file carries an ext2/3/4 superblock magic at 1024+0x38.
+def has_userdata(path: str) -> bool:
+    """True if the file is a /data image of the size this builder makes.
 
-    The magic is 0x53EF at offset 0x438 and is what libfs_mgr itself checks - reading the
-    same two bytes means this agrees with the guest about what a filesystem is.
+    SIZE, NOT CONTENT - see the docstring above: after the first boot every byte of /data is
+    encrypted, so no filesystem-level test works. A file of the wrong size is a leftover from
+    a different version of this builder or an interrupted write, and either is worth
+    replacing; a file of the right size is the guest's own data and is kept.
     """
     try:
-        with open(path, "rb") as fh:
-            fh.seek(0x438)
-            return fh.read(2) == b"\x53\xef"
+        return os.path.getsize(path) == USERDATA_BYTES
     except OSError:
         return False
 
