@@ -292,6 +292,18 @@ def start_the_installer(drv: Driver) -> None:
     #
     # Eight seconds is safe for the second press: the first takes about forty to bring
     # Ubiquity up, so the second cannot land on a later pane's own button.
+    # THE LAUNCHER'S LANGUAGE IS NOT SET HERE, AND THAT IS DELIBERATE.
+    #
+    # This window follows the same geolocation answer Calamares does: measured, one local run
+    # drew `Welcome` / `Install Zorin OS`, the next drew `Paigaldamine` / `Tere tulemast` -
+    # ESTONIAN - on the same ISO twenty minutes apart. Its cards do not move, so the BUTTON is
+    # at the same place in both, which is why this driver clicks a coordinate.
+    #
+    # A step that selected the list's `English` row was tried and removed: the list scrolls to
+    # the CURRENT language, so the row's position depends on what was preselected - measured,
+    # `English` sat at y 516 in a window whose list had scrolled to `Estonian`, not at the y
+    # 383 the earlier frame had shown. A coordinate measured on one scroll position is not a
+    # coordinate for another, and the button below is the only control this step needs.
     # THE LAUNCHER IS CLICKED FIRST, ON A CLEAN DESKTOP, AND THE TERMINAL COMES AFTER.
     #
     # THIS ORDER IS THE FIX. The driver used to open its terminal first - to disable the
@@ -352,25 +364,17 @@ def walk_ubiquity(drv: Driver, args) -> bool:
     # 0. START THE INSTALLER AND KEEP THE SESSION AWAKE - see start_the_installer.
     start_the_installer(drv)
 
-    # 1. WELCOME. `English` is selected.
+    # 1. THE WELCOME PANE. Its LANGUAGE LIST IS NOT TOUCHED - `English` is its default unless
+    #    the geolocation probe moved it, and picking a row by coordinate is unsafe because the
+    #    list scrolls to the current entry: measured, `English` sat at y 516 in a window
+    #    scrolled to `Estonian` and at y 383 in one scrolled to the top. Only the footer
+    #    button is pressed.
     #
-    # THE READING IS LOGGED AND NOT ACTED ON, because Ubiquity's language follows the same
-    # geolocation answer the launcher's does: measured, CI drew the launcher in ESTONIAN
-    # (`Paigaldamine`), and a translated Ubiquity would fail any test for the word `welcome`
-    # on a screen that is perfectly correct. The driver proceeds on its measured coordinates
-    # and lets the disk check at the end be the verdict - an empty disk is already a loud
-    # failure there.
+    #    NO WORD IS TESTED FOR. Ubiquity was measured coming up in English and in Estonian on
+    #    the same ISO; a test for the word `welcome` fails on a screen that is perfectly
+    #    correct. The disk check at the end is the verdict, and it is loud.
     drv.look("welcome")
-    if "welcome" not in drv.text():
-        log("  (the word `welcome` was not read - translated wizard; continuing anyway)")
-
-    # THE WELCOME PANE'S LANGUAGE LIST IS NOT TOUCHED: `English` IS ITS DEFAULT.
-    #
-    # An earlier version clicked (1106, 402) on this pane, intending the keyboard page's
-    # right-hand list; when that click did not land on a later pane it landed HERE, and the
-    # window came back reading `Laipni lūdzam` - Latvian - because the click had picked a
-    # row from the welcome pane's own language list. Only the footer button is pressed.
-    drv.click(CONTINUE, "Welcome: Continue (English is preselected)", settle=15.0)
+    drv.click(CONTINUE, "Welcome: Continue", settle=15.0)
     drv.look("keyboard")
 
     # THE PANE MUST ACTUALLY HAVE CHANGED BEFORE THE NEXT CLICK, OR THAT CLICK LANDS ON THE
