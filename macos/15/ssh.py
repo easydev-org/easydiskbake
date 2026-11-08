@@ -601,7 +601,7 @@ REMOTE_LOGIN_STEPS: list[str] = []  # replaced by the System Settings sequence
 REMOTE_LOGIN_CHECK = "netstat -an | grep -c '*.22 '"
 
 
-def enable_remote_login(guest: vm.Guest) -> None:
+def enable_remote_login(guest: vm.Guest, q=None) -> None:
     """Turn Remote Login on THROUGH SYSTEM SETTINGS, which is the only way that works.
 
     THIS REPLACES THIRTY SHELL COMMANDS, AND THE THIRTY WERE THE BUG.
@@ -653,7 +653,18 @@ def enable_remote_login(guest: vm.Guest) -> None:
     # one runs right before the first Spotlight chord, which is the moment that matters.
     dismiss_keyboard_assistant(guest)
 
-    q = qmpmod.QMP(kb_work)
+    # `q=` IS FOR A CALLER THAT ALREADY HOLDS THE SOCKET, AND PASSING IT IS NOT OPTIONAL THERE.
+    #
+    # qemu's `-qmp unix:...,server=on,wait=off` accepts ONE client. A walkthrough driver that
+    # owns the connection cannot hand this function a path and have it open a second - the
+    # second connect gets no greeting and dies with
+    #
+    #     TimeoutError: timed out
+    #       lib/qmp.py, in _read_message: chunk = self.sock.recv(65536)
+    #
+    # which is the same failure macos/15/install.py's Recovery(q=...) exists to avoid, in the
+    # other stage. The caller that passes one owns its lifetime.
+    q = q or qmpmod.QMP(kb_work)
 
     def click(x: int, y: int, settle: float = 2.0) -> None:
         qmpmod.click(q, x, y)

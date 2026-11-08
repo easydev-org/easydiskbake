@@ -61,7 +61,10 @@ def enable_remote_login(driver, step) -> bool:
     import ssh as sshstage
 
     try:
-        sshstage.enable_remote_login(_Guest(driver.qmp_path))
+        # THE CONNECTION IS SHARED, NOT REOPENED. qemu's -qmp unix:... accepts ONE client, so a
+        # call that opens a second while the walkthrough holds the first dies in a greeting
+        # timeout - see enable_remote_login's own note.
+        sshstage.enable_remote_login(_Guest(driver.qmp_path), q=driver.q)
     except SystemExit as exc:
         driver.log(f"  enable_remote_login stopped: {exc}")
         return False
