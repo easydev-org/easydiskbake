@@ -256,6 +256,9 @@ def main(argv: list[str]) -> int:
     p.add_argument("--artifacts", default="out")
     p.add_argument("--work", default=None)
     p.add_argument("--boot-timeout", type=int, default=900)
+    p.add_argument("--desktop-settle", type=int, default=240,
+                   help="how long a desktop image gets to paint before the frame is taken; "
+                        "only used where there is no ssh session to ask")
     p.add_argument("--ssh-port", type=int, default=2222)
     p.add_argument("--ssh", default="required", choices=("required", "optional", "skip"),
                    help="what an unanswered ssh port means: `required` (a bake that enables "
@@ -331,10 +334,26 @@ def main(argv: list[str]) -> int:
         ser.open(timeout=60)
 
         # 1. THE SYSTEM BOOTED.
-        if not wait_for_console(console_path, marker, min(args.boot_timeout, 600), note):
-            note("  the disk did not reach userspace; the console is uploaded")
-            take_screenshot(guest, artifacts, note)
-            return finish(1)
+        #
+        # THE CONSOLE IS A SIGNAL, NOT A GATE, ON A GUI IMAGE. A desktop distribution's
+        # bootloader hides its menu (`quiet splash`), its init prints nothing to ttyS0, and
+        # its console log stays at zero bytes for the whole boot - measured on Zorin's disk,
+        # which reached a working desktop with an empty console.log. Waiting for a marker
+        # there spends the entire budget and then reports a failure on a correct disk.
+        #
+        # So on `--ssh skip` the console is polled for a SHORT while and then let go: if it
+        # says something, that is logged and believed; if it says nothing, the desktop check
+        # below is what decides. The answer-file bakes keep the strict wait, because their
+        # installers do print to the console and a silent one there really is a broken boot.
+        console_seconds = min(args.boot_timeout, 600) if args.ssh != "skip" else 60
+        saw_console = wait_for_console(console_path, marker, console_seconds, note)
+        if not saw_console:
+            if args.ssh != "skip":
+                note("  the disk did not reach userspace; the console is uploaded")
+                take_screenshot(guest, artifacts, note)
+                return finish(1)
+            note(f"  the console said nothing in {console_seconds}s - expected for a desktop "
+                 "image; the frame decides")
 
         # 2. SSH ANSWERS, WHERE THE DISK IS EXPECTED TO ANSWER.
         #
@@ -377,6 +396,22 @@ def main(argv: list[str]) -> int:
                 note("  the system is reachable and its desktop session is not running")
         else:
             note(f"no compositor expected for {kind}; ssh is the whole test")
+
+        # GIVE THE DESKTOP TIME TO DRAW BEFORE THE FRAME IS TAKEN. `--desktop-settle` is how
+        # long, and it exists because the alternative is a frame of the boot splash reported
+        # as "no desktop". The answer-file bakes do not need it (they have ssh to ask), so the
+        # default keeps their timing.
+        settle = args.desktop_settle if (compositor and not ssh_ok) else 0
+        if settle:
+            log(f"waiting {settle}s for the desktop to draw")
+            deadline = time.time() + settle
+            while time.time() < deadline:
+                try:
+                    import qmp as qmpmod
+                    qmpmod.move(guest.paths.drive, 400, 300)
+                except Exception:                  # noqa: BLE001
+                    pass
+                time.sleep(20)
 
         png = take_screenshot(guest, artifacts, note)
         if png:
