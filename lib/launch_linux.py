@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -340,7 +341,43 @@ def main(argv: list[str]) -> int:
     # a different firmware - a legacy-boot path would find an MBR that is not there and then
     # report a firmware message as if it were a boot.
     import uefi
+    # THE INSTALLER'S OWN NVRAM, WHEN THE BAKE KEPT IT. A UEFI installer writes its boot entry
+    # into the VARS image (``Boot0001 ... \EFI\<distro>\grubx64.efi``), not into the disk's
+    # MBR, and OVMF only falls back to the removable-media path if it finds nothing else. Start
+    # the disk with a FRESH template and the entry is gone: measured on Zorin's disk, the
+    # firmware fell through to
+    #
+    #     >>Start PXE over IPv4.
+    #     PXE-E16: No valid offer received.
+    #
+    # and never touched the disk.
+    #
+    # So a vars file sitting next to the disk is used when there is one - the driver leaves it
+    # there under the guest's own name - and a template is only a fallback for a disk whose
+    # bake did not keep it.
+    # ANY .vars BESIDE THE DISK, because the bake names it after the WORK directory, not after
+    # the kind: Zorin's install left `zt.vars` next to `zt/d.qcow2`, and looking for
+    # `zorin-gui.vars` missed it - measured, the firmware fell through to PXE and the disk was
+    # never read. A directory holding one disk and one vars image holds that disk's NVRAM.
+    sibling = None
+    disk_dir = os.path.dirname(disk)
+    by_kind = [os.path.join(disk_dir, n) for n in (f"{kind}.vars", "vars.fd", "efivars.fd")]
+    sibling = next((c for c in by_kind if os.path.exists(c)), None)
+    if sibling is None:
+        found = sorted(f for f in os.listdir(disk_dir) if f.endswith(".vars"))
+        if len(found) == 1:
+            sibling = os.path.join(disk_dir, found[0])
+    # ORDER MATTERS: shape_with_uefi() COPIES THE TEMPLATE INTO <work>/<kind>.vars AND REMOVES
+    # ANY FILE ALREADY THERE - see its docstring, which is right for an install (a stale NVRAM
+    # must not boot a disk that no longer has a system). So the installer's own NVRAM has to be
+    # written AFTER that call, not before it: measured, copying it first left the template in
+    # place and the firmware went to PXE.
     shape = uefi.shape_with_uefi(shape, work, kind)
+    if sibling:
+        shutil.copyfile(sibling, shape.firmware_vars)
+        log(f"using the installer's NVRAM: {sibling} -> {shape.firmware_vars}")
+    else:
+        log("no installer NVRAM beside the disk; OVMF gets a fresh template")
     # NO CDROM. That is what makes this a test of the disk rather than of an installer.
     drives = ["-drive", f"file={disk},if=virtio,format=qcow2"]
     guest = vm.Guest(work, extra=drives, shape=shape, stdout=os.devnull)
