@@ -11,8 +11,13 @@ name: mx-gui
 # `antiX/initrd.gz`, and the driver hands both to qemu the way this image's own isolinux
 # entry does. OVMF is attached by lib/uefi.py, as for every GUI driver here.
 #
-# THE ISO IS PINNED to the SourceForge project download with its sha256 (25b5ce20...); that
-# file is 2927624192 bytes and the value is the one this driver was measured against.
+# THE ISO IS PINNED to a SourceForge MIRROR HOST, not to `downloads.sourceforge.net`.
+#
+# The project URL redirects through an interstitial and `lib/fetch_vendor_iso.py`'s HEAD gets
+# `HTTP Error 403: Forbidden` from it - measured on run 4247... , which is the only thing that
+# failed. A mirror host answers 200 with the real Content-Length, so that is what is pinned,
+# together with the sha256 of the file this driver was measured against (25b5ce20...,
+# 2927624192 bytes).
 #
 # MANUAL ONLY: an installer driven by synthetic clicks is not something to run on every push.
 
@@ -93,7 +98,7 @@ jobs:
             URL="${{ inputs.iso_url }}"
             SHA="${{ inputs.iso_sha256 }}"
             if [ -z "$URL" ]; then
-              URL="https://downloads.sourceforge.net/project/mx-linux/Final/Xfce/MX-25.3_Xfce_x64.iso"
+              URL="https://netix.dl.sourceforge.net/project/mx-linux/Final/Xfce/MX-25.3_Xfce_x64.iso"
               SHA="25b5ce20caeee1b0e50507291df5ac8a8211b1b9999d8dd7416da9b66ed9fbf9"
             fi
             mkdir -p out/iso
