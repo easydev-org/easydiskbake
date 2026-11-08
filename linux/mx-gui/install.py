@@ -201,6 +201,17 @@ class Driver:
             {"type": "btn", "data": {"down": False, "button": "left"}}])
         time.sleep(settle)
 
+    def close(self) -> None:
+        """Release the QMP connection before lib/steps.py opens its own.
+
+        qemu serves one client per socket, so the YAML walk cannot start while this driver
+        still holds it - the same boundary macos/15/bake.py documents.
+        """
+        try:
+            self.screen.close()
+        except Exception:                              # noqa: BLE001
+            pass
+
     def clear_and_type(self, xy, value: str) -> None:
         """Click the field, empty it completely, then type."""
         Q.click(self.q, *xy)
@@ -490,7 +501,22 @@ def main(argv: list[str]) -> int:
     try:
         drv = Driver(guest.paths.drive, work)
         if wait_for_live_desktop(drv, args.timeout):
-            ok = walk_minstall(drv, args)
+            # THE WALK IS A YAML FILE NOW - see steps/install.yaml. Each page's Next is
+            # preceded by an `until` on the title minstall draws, which is the fix for the
+            # run whose account went into the swap page's Location field.
+            #
+            # THE QMP SOCKET IS ALREADY OPEN, so this driver is closed first: qemu serves one
+            # client per socket and steps.run_file opens its own.
+            drv.close()
+            import steps
+            walk_path = os.path.join(HERE, "steps", "install.yaml")
+            log(f"=== the walk: {os.path.basename(walk_path)} ===")
+            ok, ran = steps.run_file(
+                walk_path, guest.paths.drive, work=work,
+                user=args.user, password=args.password,
+            )
+            log(f"{len(ran)} step(s) ran" if ok
+                else f"the walkthrough failed after {len(ran)} step(s)")
     finally:
         try:
             ppm = os.path.join(work, "final.ppm")
