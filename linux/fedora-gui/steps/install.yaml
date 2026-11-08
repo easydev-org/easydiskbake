@@ -88,26 +88,34 @@ steps:
     at: [780, 1002]
     settle: 20
 
-  # 5. THE INSTALL FINISHES.
+  # 5. THE INSTALL IS WRITTEN, AND THE DISK IS WHAT SAYS SO.
   #
-  # `Successfully installed` is Anaconda's own verdict and the only end to this wait that
-  # means anything. It is TERMINAL - there is nothing after it to skip - so matching it
-  # cannot miss a pane, which is not true of any pane-level check.
+  # `Successfully installed` IS ANACONDA'S OWN VERDICT BUT IT DOES NOT ALWAYS COME. Measured on
+  # run 42502633627: Anaconda sat on
   #
-  # A RUN CAN ALSO LEAVE THIS PANE ON ITS OWN. The measured failure of 2026-11-08: Anaconda
-  # reached `Finalizing: The system configuration is complete` and stayed there for forty
-  # minutes, and the run before it went further still - the frames show the INSTALLED
-  # system's GNOME desktop, with Anaconda's window gone, while the wait was still polling for
-  # a phrase that had already been and gone. The three finalizing groups are that state named
-  # explicitly so the wait can end on it instead of timing out on a disk that is written.
-  - name: the installer finishes
-    until_any:
-      - [successfully, installed]
-      - [finalizing, installation, may, take, a, few, moments]
-      - [configuring, installed, system]
-    region: [0, 0, 1920, 1080]
-    region_at: [1920, 1080]
-    scale: 1
+  #     Installing
+  #     Finalizing: The system configuration is complete.
+  #     Finalizing installation may take a few moments.
+  #     Configuring installed system
+  #
+  # for forty minutes while the disk was being filled, and an earlier run went further still -
+  # its frames show the INSTALLED system's GNOME desktop with Anaconda's window gone - while a
+  # wait for a sentence was still polling for a phrase that had already been and gone.
+  #
+  # AND THE SENTENCE ITSELF IS NOT PROOF: `Finalizing installation may take a few moments` is
+  # printed WHILE IT IS STILL WRITING, so ending the wait on it would declare the install done
+  # at the moment the last files are being copied, and install.py would stop the machine.
+  #
+  # THIS IS `disk_settle`, AND IT IS THE MEASUREMENT MACOS HAS ALWAYS USED. An installation
+  # writes gigabytes into the target qcow2; a guest that has stopped writes nothing. st_blocks
+  # is what grows on a sparse file, so the question becomes "has the disk held still for long
+  # enough, after it was actually written to" - which is the only thing that can tell slow from
+  # stopped. `disk_min_mb: 512` is the floor that stops an untouched sparse image looking
+  # settled at 4 MiB; `disk_settle: 180` covers one qcow2 flush without spending minutes
+  # afterwards.
+  - name: the install is written
+    disk_settle: 180
+    disk_min_mb: 512
     timeout: 3600
     poll: 20
     keep_alive: true

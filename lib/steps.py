@@ -89,6 +89,8 @@ STEP_KEYS = {    "name",        # required: what the log calls this step
     "expect_any",  # a list of word-sets, any one of which passes
     "until",       # words that end a wait loop
     "until_any",   # a list of word-sets, any one of which ends the wait
+    "disk_settle", # wait until the target qcow2 stops growing, for this many quiet seconds
+    "disk_min_mb", # ...but only once it holds at least this many allocated MiB
     "region",      # (x0, y0, x1, y1) to crop before reading, for `until`/`expect`
     "region_at",   # [width, height] the crop was measured at; a mismatch is an error
     "scale",       # enlargement for a cropped read; small text needs it, see DEFAULT_CROP_SCALE
@@ -121,7 +123,7 @@ ACTION_ONLY_KEYS = {"at", "double", "type", "clear", "key", "run", "ssh", "keep_
 # Steps that wait for something to happen rather than doing something. `expect` does not apply
 # to these: they already have their own condition, and a second one would be a second opinion
 # about the same screen.
-WAIT_STEPS = {"until", "until_any", "wait", "wait_for_change", "until_dark"}
+WAIT_STEPS = {"until", "until_any", "wait", "wait_for_change", "until_dark", "disk_settle"}
 
 # Everything above that actually drives the guest. A step with none of these is a check, and
 # a check that does nothing is reported rather than run.
@@ -717,6 +719,22 @@ def _read(driver: Driver, step: Step, label: str = "look") -> list[tuple]:
     return driver.look(label)
 
 
+def _disk_mb(driver) -> int | None:
+    """Allocated MiB in the target qcow2, or None when the walk has no disk to watch.
+
+    st_blocks, NOT st_size: a qcow2 is sparse, so its apparent size is the virtual disk size
+    from the moment it is created and never changes. The allocated blocks are what grow as
+    the guest writes - the measurement macos/15/install.py's disk_allocated() has always used.
+    """
+    path = getattr(driver, "disk_path", None)
+    if not path:
+        return None
+    try:
+        return os.stat(path).st_blocks * 512 >> 20
+    except OSError:
+        return None
+
+
 def _run_until(driver: Driver, step: Step) -> bool:
     """Wait until the step's `until` words are on screen, or its timeout expires.
 
@@ -752,6 +770,62 @@ def _run_until(driver: Driver, step: Step) -> bool:
             except Exception:                          # noqa: BLE001
                 pass
         time.sleep(poll)
+    return False
+
+
+def _run_until_disk_settles(driver: Driver, step: Step) -> bool:
+    """Until the target disk has stopped growing - which is the only honest "it is written".
+
+    WHY A SCREEN SENTENCE IS NOT ENOUGH, AND THIS IMAGE IS THE PROOF. Fedora's Anaconda
+    prints `Finalizing: The system configuration is complete. Finalizing installation may take
+    a few moments.` while it is STILL WRITING, and it printed exactly that for forty minutes on
+    run 42502633627 while the disk was being filled. A wait that ends on the sentence therefore
+    declares the install finished at the moment the last files are still being copied, and the
+    caller then stops the machine.
+
+    THE DISK CAN TELL THE TWO APART. An installation writes gigabytes into the target qcow2; a
+    guest that has stopped writes nothing. `st_blocks` is what grows on a sparse file, and a
+    quiet interval is the answer. It is the measurement macos/15/install.py's installer_panes()
+    has always used for the same reason, and its docstring says it best:
+
+        a guess about duration cannot tell slow from stopped.
+
+    TWO CONDITIONS, AND BOTH MATTER:
+
+        disk_min_mb    a floor, so a disk that has not been touched yet cannot look "settled".
+                       An unwritten sparse image sits at a few MiB and never moves.
+        disk_settle    how long the size must not change. Long enough to cover one qcow2
+                       flush, short enough not to spend minutes after the last write.
+
+    A SCREEN THAT CHANGES IS NOT A REASON TO KEEP WAITING: this is for an installer whose last
+    pane is static while it copies, so the disk replaces the screen entirely here.
+    """
+    timeout = float(step.get("timeout", 3600))
+    poll = float(step.get("poll", 20))
+    quiet_needed = float(step.get("disk_settle", 180))
+    floor = int(step.get("disk_min_mb", 512))
+    deadline = time.time() + timeout
+
+    last_size: int | None = None
+    quiet_since: float | None = None
+    while time.time() < deadline:
+        mb = _disk_mb(driver)
+        if mb is None:
+            log(f"  {step.name}: no disk to watch; this wait cannot decide")
+            return False
+        if last_size is None or mb != last_size:
+            log(f"  the disk is {mb} MiB allocated")
+            last_size, quiet_since = mb, time.time()
+        elif mb >= floor and time.time() - quiet_since >= quiet_needed:
+            log(f"  the disk has held at {mb} MiB for {quiet_needed:.0f}s - it is written")
+            return True
+        if step["keep_alive"]:
+            try:
+                driver.qmpmod.click(driver.q, 400 + (int(time.time()) % 40), 300)
+            except Exception:                          # noqa: BLE001
+                pass
+        time.sleep(poll)
+    log(f"  {step.name}: the disk never settled (last {last_size} MiB)")
     return False
 
 
@@ -1152,6 +1226,16 @@ def walk(driver: Driver, steps: Walk, *, overrides: dict[str, str] | None = None
             ran.append(here.name)
             continue
 
+        if here["disk_settle"]:
+            if not _run_until_disk_settles(driver, here):
+                if here["optional"]:
+                    log(f"  {here.name}: the disk never settled, and the step is optional")
+                    ran.append(here.name)
+                    continue
+                return False, ran
+            ran.append(here.name)
+            continue
+
         if here["wait"]:
             seconds = float(here["wait"])
             log(f"  waiting {seconds:.0f}s, as measured")
@@ -1227,7 +1311,7 @@ def run_file(walkthrough: str, qmp_path: str, *, work: str = "",
 
     needs_screen = bool(steps.panes) or any(
         s["at"] or s["double"] or s["expect"] or s["expect_any"] or s["until"]
-        or s["until_any"] or s["until_dark"] or s["wait_for_change"] or s["sweep"] or s["when"]
+        or s["until_any"] or s["disk_settle"] or s["until_dark"] or s["wait_for_change"] or s["sweep"] or s["when"]
         or s["unless"]
         for s in steps.steps)
 
@@ -1295,7 +1379,7 @@ def main(argv: list[str]) -> int:
     # half of a walkthrough untestable anywhere but a running guest. See HeadlessDriver.
     needs_screen = bool(steps.panes) or any(
         s["at"] or s["double"] or s["expect"] or s["expect_any"] or s["until"]
-        or s["until_any"] or s["when"] or s["unless"] for s in steps.steps)
+        or s["until_any"] or s["disk_settle"] or s["when"] or s["unless"] for s in steps.steps)
     if needs_screen and not args.qmp:
         log("FAILED: this walkthrough has GUI steps; --qmp is required")
         return 1

@@ -545,6 +545,10 @@ def main(argv: list[str]) -> int:
             ok, ran = steps.run_file(
                 walk_path, guest.paths.drive, work=work,
                 user=args.user, password=args.password,
+                # THE DISK ITSELF IS THE FINISH SIGNAL - see the `disk_settle` step. Anaconda
+                # prints `Finalizing installation may take a few moments` WHILE IT IS STILL
+                # WRITING, so the only honest "it is written" is the qcow2 holding still.
+                disk_path=disk,
                 stop_before="first boot",
             )
             log(f"{len(ran)} step(s) ran" if ok
