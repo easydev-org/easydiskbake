@@ -223,6 +223,20 @@ class Driver:
             log(f"  COULD NOT TYPE {unsupported!r} - no qcode for those characters")
         Q.key(self.q, "ret")
 
+    def clear_and_type(self, xy, value: str) -> None:
+        """Click the field, empty it, then type into it."""
+        Q.click(self.q, *xy)
+        time.sleep(1.2)
+        Q.key_combo(self.q, "ctrl", "a")
+        time.sleep(0.3)
+        for _ in range(40):
+            Q.key(self.q, "backspace")
+            time.sleep(0.02)
+        unsupported = keys.type_text(self.q, value, per_char=0.05)
+        if unsupported:
+            log(f"  COULD NOT TYPE {unsupported!r}")
+        time.sleep(0.6)
+
 
 def _at_loader_prompt(drv: Driver) -> bool:
     """Whether the screen is the loader's own OK prompt.
@@ -424,21 +438,6 @@ def choose_scfb(drv: Driver, timeout: int) -> bool:
     log("=== NEITHER THE DESKTOP NOR THE DRIVER MENU APPEARED ===")
     log(f"  last screen: {' | '.join(w[0] for w in drv.words[:20])}")
     return False
-
-
-    def clear_and_type(self, xy, value: str) -> None:
-        """Click the field, empty it, then type into it."""
-        Q.click(self.q, *xy)
-        time.sleep(1.2)
-        Q.key_combo(self.q, "ctrl", "a")
-        time.sleep(0.3)
-        for _ in range(40):
-            Q.key(self.q, "backspace")
-            time.sleep(0.02)
-        unsupported = keys.type_text(self.q, value, per_char=0.05)
-        if unsupported:
-            log(f"  COULD NOT TYPE {unsupported!r}")
-        time.sleep(0.6)
 
 
 def install_to_disk(drv: Driver, args) -> bool:
