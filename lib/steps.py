@@ -88,6 +88,7 @@ STEP_KEYS = {    "name",        # required: what the log calls this step
     "expect",      # words that must appear afterwards; a mismatch fails the step
     "expect_any",  # a list of word-sets, any one of which passes
     "until",       # words that end a wait loop
+    "until_any",   # a list of word-sets, any one of which ends the wait
     "region",      # (x0, y0, x1, y1) to crop before reading, for `until`/`expect`
     "region_at",   # [width, height] the crop was measured at; a mismatch is an error
     "scale",       # enlargement for a cropped read; small text needs it, see DEFAULT_CROP_SCALE
@@ -119,7 +120,7 @@ ACTION_ONLY_KEYS = {"at", "double", "type", "clear", "key", "run", "ssh", "keep_
 # Steps that wait for something to happen rather than doing something. `expect` does not apply
 # to these: they already have their own condition, and a second one would be a second opinion
 # about the same screen.
-WAIT_STEPS = {"until", "wait", "wait_for_change", "until_dark"}
+WAIT_STEPS = {"until", "until_any", "wait", "wait_for_change", "until_dark"}
 
 # Everything above that actually drives the guest. A step with none of these is a check, and
 # a check that does nothing is reported rather than run.
@@ -718,20 +719,31 @@ def _read(driver: Driver, step: Step, label: str = "look") -> list[tuple]:
 def _run_until(driver: Driver, step: Step) -> bool:
     """Wait until the step's `until` words are on screen, or its timeout expires.
 
+    TWO SHAPES, BECAUSE A COMPLETION IS NOT ALWAYS ONE PHRASE. `until: [all, done]` is a
+    conjunction - every word must be up. `until_any: [[all, done], [you, may, now], ...]` is a
+    disjunction - the step ends on the first group that matches. The second exists for the
+    sentence an installer prints when it finishes, because that sentence is TRANSLATED: the
+    Calamares drivers each carry a list of completions in five languages, and what was Python
+    there is a list here.
+
     THE KEEP-ALIVE CLICK IS AT A FIXED HARMLESS POINT, not wherever the pointer is. Several
     guests blank their own display on idle and a QMP click from outside is not the event their
     idle timer counts - mint needed a real click and ghostbsd needed the same, and both
     measured that a moving pointer alone was not enough.
     """
-    target = step["until"]
-    words = target if isinstance(target, list) else [target]
+    if step["until_any"]:
+        groups = [[g] if isinstance(g, str) else list(g) for g in step["until_any"]]
+    else:
+        target = step["until"]
+        groups = [target if isinstance(target, list) else [target]]
+
     timeout = float(step.get("timeout", 1800))
     poll = float(step.get("poll", 20))
     deadline = time.time() + timeout
 
     while time.time() < deadline:
         _read(driver, step, step.name)
-        if all(driver.says(w) for w in words):
+        if any(all(driver.says(w) for w in group) for group in groups):
             return True
         if step["keep_alive"]:
             try:
@@ -1077,7 +1089,7 @@ def walk(driver: Driver, steps: Walk, *, overrides: dict[str, str] | None = None
             ran.append(here.name)
             continue
 
-        if here["until"]:
+        if here["until"] or here["until_any"]:
             if not _run_until(driver, here):
                 if here["optional"]:
                     log(f"  {here.name}: did not appear, and the step is optional")
@@ -1164,7 +1176,7 @@ def run_file(walkthrough: str, qmp_path: str, *, work: str = "",
 
     needs_screen = bool(steps.panes) or any(
         s["at"] or s["double"] or s["expect"] or s["expect_any"] or s["until"]
-        or s["until_dark"] or s["wait_for_change"] or s["sweep"] or s["when"]
+        or s["until_any"] or s["until_dark"] or s["wait_for_change"] or s["sweep"] or s["when"]
         for s in steps.steps)
 
     if needs_screen:
@@ -1231,7 +1243,7 @@ def main(argv: list[str]) -> int:
     # half of a walkthrough untestable anywhere but a running guest. See HeadlessDriver.
     needs_screen = bool(steps.panes) or any(
         s["at"] or s["double"] or s["expect"] or s["expect_any"] or s["until"]
-        or s["when"] for s in steps.steps)
+        or s["until_any"] or s["when"] for s in steps.steps)
     if needs_screen and not args.qmp:
         log("FAILED: this walkthrough has GUI steps; --qmp is required")
         return 1
