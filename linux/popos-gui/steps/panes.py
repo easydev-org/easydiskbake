@@ -45,17 +45,22 @@ import time
 # problem. They are written here as the measured centres anyway.
 ACCOUNT_NAME = {"full name": (1188, 494), "user name": (1188, 560)}
 
-# THE PASSWORD PANE, MEASURED ON ITS OWN FRAME BY THE FOCUS RING.
+# THE PASSWORD PANE, MEASURED ON ITS OWN FRAME BY THE FOCUS RING, AND CLICKED AT THE FAR END.
 #
 # Frame pr2/f_131 (the pane that drew at 21:26 on run 42524642824): the focused entry's orange
-# ring spans y=432..463, so its centre is 447, and the provider draws the two entries 96 px
-# apart - Confirm at 543.
+# ring spans y=432..463, so its centre is 447, and the installer draws the two 96 px apart -
+# Confirm at 543.
 #
-# THE NUMBERS BEFORE THESE WERE 440 AND 546, WHICH ARE THE LABEL ROWS: a press there hits the
-# `Choose Account Password` caption and the `Confirm Password` caption, not the entries, and
-# the click then falls through to the artwork picker on the pane behind - `Choose Icon`, with
-# `adminadmin` in its search box, which is the chooser in every failed popos frame.
-ACCOUNT_PASSWORD = {"password": (1188, 447), "confirm": (1188, 543)}
+# THE X IS 1350, NOT 1188, AND THAT IS THE WHOLE OF THE LAST DEFECT. The artwork picker's
+# avatar circle is at (1190,405) with a radius of about 40 px, and the entry is a long box that
+# starts at x=970. A press at x=1188 is directly BELOW that circle on this pane, and the presses
+# that were meant for the entry kept landing on the picker instead - measured on run
+# 42525650794, whose frame at 21:38:45 is a `Choose Icon` chooser looking at
+# `usr/share/pixmaps`, and whose next frame has `adminadmin` in the chooser's search box.
+#
+# x=1350 is inside the same entry and 160 px from the avatar, so the press cannot reach the
+# picker at all. The y values were already right.
+ACCOUNT_PASSWORD = {"password": (1350, 447), "confirm": (1350, 543)}
 
 
 def _click_type(driver, xy, text: str, *, clear: bool = False, per_char: float = 0.09) -> None:
@@ -143,10 +148,6 @@ def fill_account_password(driver, step) -> bool:
         if unsupported:
             driver.log(f"  COULD NOT TYPE {unsupported!r}")
         time.sleep(1.2)
-        # A CHOOSER OPENED BY THIS PRESS IS CLOSED BEFORE THE NEXT ONE, so the second entry
-        # cannot be typed into its search box.
-        driver.qmpmod.key(driver.q, "esc")
-        time.sleep(1.0)
 
     driver.look("password filled")
     text = driver.text()
