@@ -251,8 +251,23 @@ def walk_installer(drv: Driver, args) -> bool:
     # 9. DRIVE ENCRYPTION. THE PANE DEFAULTS TO `Encrypt`; this clicks `Don't Encrypt`: an
     #    encrypted disk needs a passphrase at boot, one more thing that can fail on a machine
     #    nobody is watching.
-    log("choosing `Don't Encrypt` (the pane defaults to Encrypt)")
-    drv.click(DONT_ENCRYPT, "Drive Encryption: Don't Encrypt", settle=35.0)
+    # CHOSEN BY KEYBOARD, BECAUSE THE BUTTON'S POSITION FOLLOWS THE PANE'S WARNING TEXT.
+    #
+    # Measured on a live session: `Don't Encrypt` sits at (1091,817) on a pane with no
+    # warning, and typing a short password adds `The password is shorter than 8 characters`
+    # ABOVE the buttons - which moves them. A press measured on the first layout landed 40 px
+    # high on the second and the installer closed instead of starting.
+    #
+    # The key sequence is stable where the coordinate is not: the pane focuses `Encrypt` (its
+    # default, drawn green), so Shift+Tab moves to `Don't Encrypt` and Return presses it.
+    log("choosing `Don't Encrypt` by keyboard (the pane defaults to Encrypt)")
+    Q.key(drv.q, "tab")
+    time.sleep(0.8)
+    Q.key_combo(drv.q, "shift", "tab")
+    time.sleep(0.8)
+    drv.look("encryption focused")
+    Q.key(drv.q, "ret")
+    time.sleep(35.0)
     drv.look("installing")
 
     # 10. A MEASURED WAIT. The progress pane shows `Extracting Files (N%)`; the percentage is
