@@ -94,14 +94,20 @@ steps:
   # 3. SELECT A DRIVE. THE ROW, THEN `Erase and Install`.
   # =======================================================================================
   #
-  # The list holds one row - `Virtio Block Device /dev/vda 64.0 GiB` - and clicking it selects
-  # it, which is what enables the footer's `Erase and Install` at its own coordinate.
+  # THE ROW IS A BAR AT y=295..330, NOT THE TEXT BESIDE IT. Measured on run 42529279468's
+  # frame at 22:27: the selectable bar spans x=665..1385, y=295..330, and the drive's name
+  # (`Virtio Block Device /dev/vda 68.7 GB unusued`) is the caption to its left. The walk
+  # pressed (1150,500) - two hundred pixels BELOW the bar - so nothing was selected, the
+  # footer's `Erase and Install` stayed grey, and the installer sat on this pane for the whole
+  # run with the disk at 0 MiB. The videos show it from 22:25 to 22:31.
   - name: select a drive
-    at: [1150, 500]
+    at: [1000, 312]
     settle: 8
 
+  # `Erase and Install` is grey until the row is selected, and its own centre is measured from
+  # the same frame: the label spans x=1274..1366, so the button is centred at (1320,798).
   - name: erase and install
-    at: [1334, 817]
+    at: [1320, 798]
     settle: 44
 
   # =======================================================================================
