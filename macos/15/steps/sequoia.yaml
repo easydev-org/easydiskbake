@@ -159,6 +159,11 @@ steps:
         settle: 10
 
   # SET UP LATER, AND ITS OWN BUTTON - not the footer.
+  # THIS PANE FINISHES ON ITS OWN AND TAKES ABOUT FORTY SECONDS - drive_read.py measures it
+  # with `w.wait_for("look", timeout=180)`, which is the only reliable end-of-pane signal: a
+  # fixed sleep either wastes time or clicks a greyed Continue on the pane that follows. Here
+  # the pane loop supplies that wait by simply looking again, so this settle is only the pause
+  # after the click; the 8 seconds is not the pane's duration.
   - name: screen time
     when: [screen, report]
     at: [619, 806]
