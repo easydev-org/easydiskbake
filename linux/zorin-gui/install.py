@@ -68,7 +68,7 @@ import vm           # noqa: E402
 # its right-hand card is the one that starts Ubiquity; the left card only starts a live
 # session test. Measured on a frame of the Asturian rendering (`Instalar Zorin OS`), whose
 # layout is identical to the English one.
-WELCOME_INSTALL = (1219, 585)
+WELCOME_INSTALL = (1223, 586)
 
 INSTALL_ICON = (114, 47)
 DOUBLE_CLICK_GAP = 0.08
@@ -292,9 +292,20 @@ def start_the_installer(drv: Driver) -> None:
     #
     # Eight seconds is safe for the second press: the first takes about forty to bring
     # Ubiquity up, so the second cannot land on a later pane's own button.
-    log("clicking `Install Zorin OS` in the welcome window")
-    drv.click(WELCOME_INSTALL, "welcome: Install Zorin OS", settle=8.0)
-    drv.click(WELCOME_INSTALL, "welcome: Install Zorin OS (second click)", settle=45.0)
+    # TWO PRESSES 3 SECONDS APART, RETRIED ONCE. Measured on a live session: `(1223,586)`
+    # twice, three seconds apart, opens Ubiquity; the earlier 8-second gap did not, and the
+    # CI run at 0b62f3f logged the welcome window still on screen 57 seconds later.
+    #
+    # The retry is bounded at two attempts and bounded in time - this is not a wait loop, it
+    # is one more try at a click that the screen says did not take.
+    for attempt in (1, 2):
+        drv.click(WELCOME_INSTALL, f"welcome: Install Zorin OS (attempt {attempt})", settle=3.0)
+        drv.click(WELCOME_INSTALL, f"welcome: Install Zorin OS (attempt {attempt}, second)",
+                  settle=40.0)
+        drv.look("ubiquity welcome")
+        if "ubiquity" in drv.text() or "keyboard layout" in drv.text():
+            break
+        log("  Ubiquity is not up yet; one more pair of presses")
     drv.look("ubiquity welcome")
 
 
