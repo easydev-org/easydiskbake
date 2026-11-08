@@ -153,23 +153,48 @@ def frame_is_painted(ppm: str) -> tuple:
     """Whether a framebuffer frame shows something rather than a blank screen.
 
     Returns (painted, description). THE TEST IS NARROW ON PURPOSE - it separates a screen
-    that shows a desktop from one that shows nothing, and it does not try to tell one desktop
+    that shows something from one that shows nothing, and it does not try to tell one desktop
     from another:
 
-        painted      the frame has more than 8 distinct colours AND at least 2% of its pixels
-                     differ from the most common colour
-        not painted  a single flat colour (a compositor that never drew), all black (the
-                     guest is at a text console), or fewer than 2000 coloured pixels
+        painted      the frame has at least 24 distinct colours AND more than 0.5% of its
+                     pixels differ from the most common colour
+        not painted  a single flat colour (a compositor that never drew), all black, or a
+                     text console (too few distinct colours to be anything but glyphs)
 
     WHY NOT OCR, WHY NOT A WORD. This repository has already paid for that twice: a desktop
     whose panel reads as `Ppplications`, and a wizard whose panes are translated. A picture
     with structure in it is a picture with a desktop in it, whatever language it is in.
 
-    WHY THE THRESHOLDS ARE LOOSE. Measured on this repository's own frames: NixOS' labwc drew
-    a COMPLETELY black frame while working, and miracle-wm drew a flat backdrop - which is why
-    lib/session.py does not use pixels for its own verdict. That is exactly why this is used
-    only where no ssh session exists to ask: a desktop that paints nothing here is reported
-    as unpainted rather than as broken, and the PNG is uploaded either way.
+    THE 2% FLOOR WAS WRONG, AND FEDORA PAID FOR IT. Both thresholds were measured against
+    this repository's own frames, and run 42499595942 is why they changed:
+
+        ubuntu  desktop   3256 colours, 65.4% not the most common   painted
+        kubuntu desktop   5041 colours, 70.9%                          painted
+        zorin   GDM       2644 colours, 96.8%                          painted
+        fedora  GDM        358 colours,  1.7%                          WRONGLY blank
+
+    Fedora's greeter is a DARK full-screen image - a near-flat background with a user tile and
+    a wordmark - so almost every sample IS the background and only 1.7% of them are not. It
+    had reached GDM with the account `docker` drawn on screen, and this function called it
+    "a flat or black screen" and failed a disk that booted correctly.
+
+    WHAT ACTUALLY TELLS A GREETER FROM A BLANK SCREEN IS THE COLOUR COUNT, NOT THE AREA. A
+    greeter, even a dark one, paints a gradient, a round tile, a wordmark and antialiased text;
+    a blank framebuffer or an 80x25 text console paints one colour or a handful of glyph
+    colours. Measured on synthetic controls and on the frames above:
+
+        blank black         1 colour   0.00%      text console   5 colours   7.14%
+        dark flat           1 colour   0.00%      fedora GDM   358 colours   1.70%
+
+    So the area floor drops to 0.5% - enough to reject a literally flat frame - and the colour
+    count carries the discrimination. A text console is still refused, by the colour count
+    alone, which is the part that never needed the area threshold.
+
+    WHY IT STAYS DELIBERATELY LOOSE OTHERWISE. Measured on this repository's own frames: NixOS'
+    labwc drew a COMPLETELY black frame while working, and miracle-wm drew a flat backdrop -
+    which is why lib/session.py does not use pixels for its own verdict. That is exactly why
+    this is used only where no ssh session exists to ask: a desktop that paints nothing here
+    is reported as unpainted rather than as broken, and the PNG is uploaded either way.
     """
     try:
         with open(ppm, "rb") as fh:
@@ -206,7 +231,9 @@ def frame_is_painted(ppm: str) -> tuple:
     common = max(counts.values())
     distinct = len(counts)
     varying = total - common
-    painted = distinct > 8 and varying > total * 0.02
+    # SEE THE DOCSTRING: the colour count separates a greeter from a console, and the area
+    # floor only has to reject a literally flat frame.
+    painted = distinct >= 24 and varying > total * 0.005
     return painted, (f"{distinct} colours, {100 * varying / total:.1f}% not the most common"
                      f" ({common} of {total} samples)")
 

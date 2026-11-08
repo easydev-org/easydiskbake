@@ -644,6 +644,10 @@ def _wait_for_change(driver: Driver, step: Step) -> bool:
     # cannot see this particular repaint. The count is what tells them apart.
     log(f"  {step.name}: no change in {timeout:.0f}s over {samples} sample(s): "
         f"{'the picture never moved' if not changed else 'it moved and never settled'}")
+    # AND WHAT THE SCREEN ACTUALLY SAYS, because a click that did nothing and a click that
+    # landed on the wrong control look identical in a fingerprint. This line is the difference
+    # between "the coordinate is wrong" and "the guest is not responding".
+    driver.look(f"{step.name} - unchanged")
     log(f"    brightness now {driver.brightness()}")
     return False
 

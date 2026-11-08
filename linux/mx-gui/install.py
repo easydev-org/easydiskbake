@@ -74,12 +74,65 @@ CLOSE = (759, 889)
 # THE CONFIRMATION'S OWN BUTTON, on the last page before the disk is touched.
 START = (1478, 889)
 
-# DEFAULT USER LOGIN PAGE.
+# WHERE THE INSTALLER DRAWS ITS OWN PAGE TITLE, AND WHY EVERY CLICK WAITS ON IT.
+#
+# minstall draws the title of the current page in the LOWER LEFT pane, at about (338,255) to
+# (700,280), and it is the only stable word on the page - the body text changes, the footer
+# buttons do not move, and the window itself is at a fixed place. Measured on a live MX-25.3
+# session, one frame per page (`mx4`..`mxd` in the working notes):
+#
+#     General Instructions | Installation Options | Final Review and Confirmation
+#     Create a swap file   | Computer Identity    | Localization Defaults | Default User Login
+#
+# THE PANE IS READ AS A SCREENSHOT OF THAT RECTANGLE, enlarged, because at 1:1 the antialiased
+# GTK text reads as nothing - which is indistinguishable from "the page has not arrived".
+TITLE_REGION = (332, 248, 700, 285)
+
+# THE PAGES WHILE THE DISK IS BEING WRITTEN, IN THE ORDER MINSTALL DRAWS THEM.
+#
+# START FORMATS THE DRIVE AND THE FIRST OF THESE TAKES ABOUT NINETY SECONDS TO APPEAR -
+# measured on run 42497635410, whose log clicks three `Next`s at 16:04:42, 16:05:02 and
+# 16:05:23 while the screen still said `Final Review and Confirmation`, and whose last frame
+# is the swap page with
+#
+#     Location: admin          Size: 0 MB          Invalid location
+#
+# - the account had been typed into the SWAP PAGE's location field, one page behind where the
+# driver thought it was. That is what a fixed `settle` buys: every click lands a page early,
+# and the driver never learns.
+#
+# So each of these is awaited by its own title before its `Next` is pressed. A page that does
+# not arrive is reported rather than clicked through.
+AFTER_START = (
+    ("Create a swap file",   "swap file"),
+    ("Computer Identity",    "computer identity"),
+    ("Localization Defaults", "localization"),
+)
+
+# DEFAULT USER LOGIN PAGE. THE BOXES, MEASURED, NOT GUESSED.
+#
+# The three entries are the light rectangles at x=879..1541 in the account pane; their rows
+# are y=330..354, 366..388 and 400..424 (`mxd`). The old constants were (1100,303), (1100,336)
+# and (1100,370): the first is on the LABEL row above the login box and the other two are 30
+# px high, so a press could land on the pane rather than in a field. The centres below are the
+# middle of each measured rectangle.
 ACCOUNT = {
-    "login": (1100, 303),
-    "password": (1100, 336),
-    "confirm": (1100, 370),
+    "login": (1210, 342),
+    "password": (1210, 377),
+    "confirm": (1210, 412),
 }
+
+# `Autologin` on that page, measured: the checkbox square is x=693..708, y=554..569.
+AUTOLOGIN = (700, 561)
+
+# THE `Invalid settings found in configuration file ()` MODAL THAT `Start` CAN RAISE.
+#
+# It is a small dialog inside the installer window - `Invalid settings found in configuration
+# file ().  Please review marked fields as you encounter them.` - and its `OK` button is the
+# light rectangle at x=1028..1110, y=569..597 (frame `mx8`). While it is up the installer
+# does nothing, so it is dismissed whether or not it is read: (1069,583) is blank space on
+# the confirmation page when no dialog is up, exactly like mint's WRITE_CONTINUE.
+MODAL_OK = (1069, 583)
 
 # THE LIVE DESKTOP'S BOOT TIME. Measured: about 90 s on this image (antiX is small), and the
 # wait is that with room.
@@ -158,6 +211,41 @@ class Driver:
         if unsupported:
             log(f"  COULD NOT TYPE {unsupported!r}")
         time.sleep(0.8)
+
+    def title(self) -> str:
+        """The page title minstall is drawing, read from its own sidebar pane.
+
+        `look()` reads the whole frame, which is slow and full of body text; this reads only
+        the rectangle the title is drawn in, enlarged, and lowercases it. It is used to WAIT
+        for a page, never to choose a coordinate - every coordinate in this driver is a
+        measured constant.
+        """
+        self.n += 1
+        ppm = self.screen.grab(f"{self.n:03d}-title")
+        if not ppm:
+            return ""
+        words = self.screen.text_in(ppm, TITLE_REGION)
+        return " ".join(w[0].lower() for w in words)
+
+    def wait_title(self, want: str, seconds: float, label: str = "") -> bool:
+        """Until the sidebar title names `want`.
+
+        A BOUNDED WAIT, ONCE. Each page gets its own budget and there is no retry loop around
+        it: a page that has not arrived when the budget expires is a failure to report, not a
+        reason to keep polling. `want` is matched case-insensitively against the whole title.
+        """
+        want_l = want.lower()
+        log(f"waiting up to {seconds:.0f}s for the {label or want!r} page")
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            title = self.title()
+            if want_l in title:
+                log(f"  the page is up: {title!r}")
+                return True
+            time.sleep(6)
+        log(f"=== THE {want.upper()!r} PAGE NEVER CAME UP ===")
+        log(f"  last title: {self.title()!r}")
+        return False
 
 
 def wait_for_live_desktop(drv: Driver, timeout: int) -> bool:
