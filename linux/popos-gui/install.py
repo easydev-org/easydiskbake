@@ -91,9 +91,23 @@ ERASE_AND_INSTALL = (1334, 817)
 
 # THE ACCOUNT, TWO PANES. The first is Full Name and User Name; the second is the password
 # twice. Measured on both.
+#
+# THE NAME BOXES WERE 36 PIXELS TOO LOW, AND THAT IS WHY `Next` NEVER TURNED GREEN.
+#
+# Run 42502695338's last frame shows the pane with `Docker User` and `docker` both typed in
+# and the footer's `Next` still grey, after 42 minutes. The measured boxes on that frame are
+#
+#     Full Name   y=480..511 (centre 495), x=490..1429 (centre 959)
+#     User Name   y=546..576 (centre 561)
+#
+# - while the constants here were 531 and 592, which are the gaps BESIDE those boxes. The
+# click still landed close enough for the text to go into the right field, but the entry never
+# received a focus-OUT, so the pane's validity check never ran and the button never enabled.
+# The coordinates below are the measured centres, and a `Tab` after the last field does the
+# focus-out explicitly - see fill_account_named().
 ACCOUNT_NAME = {
-    "full name": (1188, 531),
-    "user name": (1188, 592),
+    "full name": (1188, 495),
+    "user name": (1188, 561),
 }
 
 # THE FULL NAME IS NOT THE USER NAME, AND THE INSTALLER ENFORCES IT.
@@ -268,6 +282,15 @@ def walk_installer(drv: Driver, args) -> bool:
         time.sleep(0.02)
     keys.type_text(drv.q, args.user, per_char=0.11)
     time.sleep(1.5)
+    # THE FOCUS-OUT IS WHAT ENABLES `Next`, AND IT WAS MISSING.
+    #
+    # Run 42502695338 typed both fields correctly and the footer stayed grey for 42 minutes.
+    # A GTK entry validates on focus-out, and nothing here moved the focus after the last
+    # `docker` was typed - the pointer was still in the entry. One Tab leaves it, which is the
+    # event the pane listens for. It also moves to the footer, so this cannot type anything
+    # into a control by accident.
+    Q.key(drv.q, "tab")
+    time.sleep(1.0)
     drv.look("account name filled")
     drv.click(SELECT, "Create User Account: Next", settle=22.0)
     drv.look("create user account password")
