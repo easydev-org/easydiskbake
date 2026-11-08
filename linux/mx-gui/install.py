@@ -335,24 +335,32 @@ def walk_minstall(drv: Driver, args) -> bool:
     if not drv.wait_title("default user login", 120, "account"):
         return False
     drv.look("account page")
-    Q.key_combo(drv.q, "ctrl", "alt", "t")
-    time.sleep(9.0)
-    fill = (
-        f"xdotool mousemove {ACCOUNT['login'][0]} {ACCOUNT['login'][1]} click 1; sleep 0.5; "
-        f"xdotool key --repeat 40 BackSpace; xdotool type --delay 80 {args.user}; sleep 0.5; "
-        f"xdotool mousemove {ACCOUNT['password'][0]} {ACCOUNT['password'][1]} click 1; "
-        f"sleep 0.5; xdotool key --repeat 40 BackSpace; "
-        f"xdotool type --delay 80 {args.password}; sleep 0.5; "
-        f"xdotool mousemove {ACCOUNT['confirm'][0]} {ACCOUNT['confirm'][1]} click 1; "
-        f"sleep 0.5; xdotool key --repeat 40 BackSpace; "
-        f"xdotool type --delay 80 {args.password}"
-    )
-    keys.type_text(drv.q, fill, per_char=0.010)
-    Q.key(drv.q, "ret")
-    time.sleep(20.0)
-    keys.type_text(drv.q, "exit", per_char=0.05)
-    Q.key(drv.q, "ret")
-    time.sleep(6.0)
+
+    # TYPED WITH QMP, WHICH THIS INSTALLER'S ENTRIES ACCEPT ONCE `usb-kbd` IS ATTACHED.
+    #
+    # The history of this step is worth keeping, because it has been changed twice on the
+    # strength of runs that were failing for a DIFFERENT reason:
+    #
+    #   run 42476000228  QMP keystrokes did not reach these entries at all, and `xdotool`
+    #                    run inside the guest did. The cause was a missing device: lib/vm.py
+    #                    attached only a USB tablet, and these GTK entries take input from a
+    #                    HID keyboard. `usb-kbd` was added there.
+    #   711c676          back to QMP, because the device was the cause.
+    #   run 42497635410  the log reads `account filled: ... Create | a | swap | file`, and
+    #                    its last frame is the SWAP page with `Location: admin` - which is
+    #                    the proof that QMP typing WORKS here. `admin` had been typed into a
+    #                    GTK entry by QMP; the page was one behind, not the keyboard.
+    #
+    # The page is awaited above now, so this is the same `clear_and_type` the other drivers
+    # use: click, select-all, empty, type. It replaced an `xdotool` one-liner typed into a
+    # terminal, which arrived with its tail missing - measured on the current run, which read
+    # `Default User Login` for minutes with the third field empty and `Next` greyed out,
+    # because a long line typed at `per_char=0.010` loses characters and the shell sits
+    # waiting for the rest.
+    log("filling the default user account")
+    drv.clear_and_type(ACCOUNT["login"], args.user)
+    drv.clear_and_type(ACCOUNT["password"], args.password)
+    drv.clear_and_type(ACCOUNT["confirm"], args.password)
     drv.look("account filled")
 
     # AUTOLOGIN, SO THE DISK COMES UP AT A DESKTOP. The launch stage boots the disk with no
