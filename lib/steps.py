@@ -79,12 +79,17 @@ STEP_KEYS = {
     "expect",      # words that must appear afterwards; a mismatch fails the step
     "expect_any",  # a list of word-sets, any one of which passes
     "until",       # words that end a wait loop
+    "until_dark",  # wait until the screen goes black - the installer's own start signal
     "timeout",     # seconds the `until` loop may run
     "poll",        # seconds between looks in the `until` loop
     "keep_alive",  # click harmlessly between polls, for a guest that blanks its own screen
     "require",     # fail the whole walkthrough if this step did not run
     "optional",    # a step that may be skipped without failing the run
     "repeat",      # (count, settle) for a footer button pressed the same way N times
+    "sweep",       # a band of clicks at one x, stopping when the sheet opens
+    "wait_for_change",  # until the screen stops looking like it did before
+    "change_timeout",   # seconds wait_for_change may take
+    "change_settle",    # seconds between fingerprints in wait_for_change
     "when",        # this step is a PANE: it runs only if these words are on screen
     "do",          # a list of actions for one pane - the pane is answered in one pass
     "end",         # a pane that means the run is over (the desktop)
@@ -102,11 +107,11 @@ ACTION_ONLY_KEYS = {"at", "double", "type", "clear", "key", "run", "ssh", "keep_
 # Steps that wait for something to happen rather than doing something. `expect` does not apply
 # to these: they already have their own condition, and a second one would be a second opinion
 # about the same screen.
-WAIT_STEPS = {"until", "wait"}
+WAIT_STEPS = {"until", "wait", "wait_for_change", "until_dark"}
 
 # Everything above that actually drives the guest. A step with none of these is a check, and
 # a check that does nothing is reported rather than run.
-ACTION_KEYS = {"at", "double", "type", "key", "run", "ssh", "require_ssh"}
+ACTION_KEYS = {"at", "double", "type", "key", "run", "ssh", "require_ssh", "sweep"}
 
 
 class Step:
@@ -366,6 +371,78 @@ class Driver:
     def text(self) -> str:
         return " ".join(w[0].lower() for w in self.words)
 
+    def brightness(self) -> float | None:
+        """The mean grey of a fresh screendump, or None when it cannot be read.
+
+        EVERY 97TH PIXEL over all three channels. A fixed stride larger than any text run,
+        cheap, and it gives the same answer as reading all of them for a question about the
+        whole screen. install.py uses this number to tell a dark frame from a drawn pane.
+        """
+        from PIL import Image
+        import io
+
+        path = os.path.join(self.work, "shots", "brightness.ppm")
+        try:
+            self.q.execute("screendump", filename=path)
+            with open(path, "rb") as fh:
+                image = Image.open(io.BytesIO(fh.read())).convert("RGB")
+        except Exception:                                  # noqa: BLE001
+            return None
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+        pixels = image.tobytes()
+        total = 0
+        count = 0
+        for index in range(0, len(pixels) - 2, 97 * 3):
+            total += pixels[index] + pixels[index + 1] + pixels[index + 2]
+            count += 3
+        return (total / count) if count else None
+
+    def fingerprint(self) -> int | None:
+        """A coarse hash of the current screen, for "did the picture change at all".
+
+        MEASURED STRIDE, NOT A FULL READ. Every 97th pixel over all three channels, which is
+        far coarser than the text on an installer pane and far finer than "the whole screen
+        scrolled". install.py's version of this is where the number comes from: hashing only
+        the red byte of every 401st pixel left two macOS backgrounds that differ in a grey-blue
+        tint indistinguishable, and run 41498618924 reported "the pane did not change" over a
+        welcome page that had replaced the recovery menu.
+
+        It reads the framebuffer directly rather than OCR: this question is about the picture,
+        and tesseract on a black screen and on a painting pane both return nothing.
+        """
+        from PIL import Image
+        import io
+
+        path = os.path.join(self.work, "shots", "fingerprint.ppm")
+        try:
+            self.q.execute("screendump", filename=path)
+        except Exception:                                  # noqa: BLE001
+            return None
+        try:
+            with open(path, "rb") as fh:
+                raw = fh.read()
+            image = Image.open(io.BytesIO(raw)).convert("RGB")
+            pixels = image.tobytes()
+        except (OSError, ValueError):
+            return None
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+        digest = 0
+        for index in range(0, len(pixels) - 2, 97 * 3):
+            digest = (digest * 131 + pixels[index]) & 0xFFFFFFFF
+            digest = (digest * 131 + pixels[index + 1]) & 0xFFFFFFFF
+            digest = (digest * 131 + pixels[index + 2]) & 0xFFFFFFFF
+        return digest
+
     def log(self, message: str) -> None:
         """A step module's own line, in the same shape as this module's.
 
@@ -440,6 +517,82 @@ def _expect_matches(driver: Driver, expect=None, expect_any=None) -> bool:
     if expect_any:
         return any(all(driver.says(w) for w in group) for group in expect_any)
     return True
+
+
+def _wait_for_change(driver: Driver, step: Step) -> bool:
+    """Until the picture has moved away from what it was AND then stopped again.
+
+    THE MISSING HALF IS WHY RUN 41615881004 FAILED. "Has the picture stopped moving" is the
+    right question for a pane that is PAINTING, and the wrong one for a pane that is supposed
+    to REPLACE another: a sheet that never closed is perfectly still, so the wait returned True
+    while the licence sheet was still up and the next two clicks landed on the sheet.
+
+    So: take a fingerprint now, wait for it to move, then wait for the new picture to settle.
+    A screen that never changes times out, which is the honest answer for a click that did
+    nothing. install.py's version of this is where the measurement comes from.
+    """
+    timeout = float(step.get("change_timeout", 120))
+    settle = float(step.get("change_settle", 5))
+    before = driver.fingerprint()
+    if before is None:
+        log(f"  {step.name}: the screen cannot be read; nothing can be compared")
+        return False
+
+    deadline = time.time() + timeout
+    changed = False
+    stable = 0
+    last = before
+    while time.time() < deadline:
+        time.sleep(settle)
+        now = driver.fingerprint()
+        if now is None:
+            continue
+        if not changed:
+            if now != before:
+                changed = True
+                log(f"  {step.name}: the screen changed")
+            continue
+        # SOMETHING NEW IS HERE; now wait for it to finish drawing. Two identical fingerprints
+        # in a row is the settle, because a repaint that is still going changes every frame.
+        if now == last:
+            stable += 1
+            if stable >= 1:
+                log(f"  {step.name}: settled")
+                return True
+        else:
+            stable = 0
+        last = now
+
+    log(f"  {step.name}: no change in {timeout:.0f}s "
+        f"({'the picture never moved' if not changed else 'it never settled'})")
+    return False
+
+
+def _run_until_dark(driver: Driver, step: Step) -> bool:
+    """Until the screen is mostly black, sampled rather than OCR'd.
+
+    THE INSTALLER'S OWN START SIGNAL. macOS agrees to the licence, takes the destination, and
+    then goes BLACK while it copies - so a dark frame is not a failure here, it is the evidence
+    that the click was accepted and the copy began. install.py calls the same measurement
+    "brightness", and it is a mean grey over a fixed stride.
+
+    A THRESHOLD AND NOT "zero", because a black framebuffer still has a few non-zero pixels and
+    a transition through near-black is long enough to catch. install.py measured every real
+    pane here at 20 or more mean grey, so 8 is far from both ends.
+    """
+    timeout = float(step.get("timeout", 600))
+    threshold = float(step.get("dark", 8))
+    poll = float(step.get("poll", 10))
+    deadline = time.time() + timeout
+
+    while time.time() < deadline:
+        brightness = driver.brightness()
+        if brightness is not None and brightness <= threshold:
+            log(f"  {step.name}: the screen is dark ({brightness:.0f} <= {threshold:.0f})")
+            return True
+        time.sleep(poll)
+    log(f"  {step.name}: the screen never went dark in {timeout:.0f}s")
+    return False
 
 
 def _run_until(driver: Driver, step: Step) -> bool:
@@ -522,6 +675,35 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222) -> None:
 
     if step["double"]:
         driver.double_click(step["double"], step.name, settle=settle)
+
+    # --- sweep: A BAND OF CLICKS, BECAUSE A SINGLE VALUE IS A COIN TOSS ---------------
+    #
+    # ONE CONTROL HERE HAS A HIT AREA A FEW PIXELS TALL AND IT MOVES BY A PIXEL OR TWO as the
+    # toolbar redraws. install.py's history is the evidence, and it is worth keeping:
+    #
+    #     (1290, 306) nothing   (1290, 296) nothing   (1290, 311) nothing
+    #     (1290, 314) nothing   (1290, 309) nothing
+    #     (1255, 278) the sheet OPENED
+    #     (1290, 295) the sheet OPENED again
+    #
+    # so a fixed number is a coin toss per run and the band is the fix. Twenty-one clicks two
+    # seconds apart is forty seconds; the first that lands raises the sheet, and every click
+    # after it lands on the sheet's own backdrop and does nothing.
+    #
+    # THIS IS A PRIMITIVE AND NOT A HACK. "Sweep a band until a control responds" is the
+    # honest description of what a person does with an unreliable hit area, and it belongs in
+    # the vocabulary rather than being written out as twenty-one `at:` steps that a reader
+    # would have to count.
+    if step["sweep"]:
+        first, last, stride = step["sweep"]
+        x = int(step.get("at")[0]) if step.get("at") else 0
+        for y in range(int(first), int(last) + 1, int(stride)):
+            driver.click((x, y), f"{step.name} at y={y}", settle=settle)
+            if step["expect_any"] and _expect_matches(driver, None, step["expect_any"]):
+                log(f"  {step.name}: responded at y={y}")
+                return
+        log(f"  {step.name}: swept {first}..{last} with no response")
+        return
 
     if step["at"] and step["type"] is not None:
         driver.type_into(step["at"], str(step["type"]),
@@ -707,6 +889,30 @@ def walk(driver: Driver, steps: Walk, *, overrides: dict[str, str] | None = None
         log(f"=== {here.name}")
 
         # --- waits ---------------------------------------------------------------------
+        if here["until_dark"]:
+            if not _run_until_dark(driver, here):
+                if here["optional"]:
+                    log(f"  {here.name}: never went dark, and the step is optional")
+                    ran.append(here.name)
+                    continue
+                log(f"=== {here.name}: THE SCREEN NEVER WENT DARK ===")
+                log(f"  last screen: {driver.text()[:200]}")
+                return False, ran
+            ran.append(here.name)
+            continue
+
+        if here["wait_for_change"]:
+            if not _wait_for_change(driver, here):
+                if here["optional"]:
+                    log(f"  {here.name}: nothing changed, and the step is optional")
+                    ran.append(here.name)
+                    continue
+                log(f"=== {here.name}: THE SCREEN DID NOT CHANGE ===")
+                log(f"  last screen: {driver.text()[:200]}")
+                return False, ran
+            ran.append(here.name)
+            continue
+
         if here["until"]:
             if not _run_until(driver, here):
                 if here["optional"]:

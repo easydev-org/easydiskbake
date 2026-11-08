@@ -1066,6 +1066,54 @@ def disk_utility(d: Recovery) -> bool:
     return True
 
 
+# THE WINDOW A TARGET DISK'S CAPACITY HAS TO FALL IN, AND WHY IT IS WIDE.
+#
+# 60..200 GB is the range a disk this bake could have made falls into. The disk size is an
+# input (`--disk-size`, 64G by default), so pinning a literal would break the day somebody baked
+# a 128 GB disk. What it excludes is everything else this installer can select: the 2.88 GB
+# recovery volume and the 268 MB boot image - the two that a fixed number of Up keypresses
+# picked by accident in run 41685628982.
+TARGET_MIN_GB = 60.0
+TARGET_MAX_GB = 200.0
+
+
+def choose_target_disk(d: Recovery, attempts: int = 8) -> float | None:
+    """Step the selection until the detail pane reports a capacity a target could have.
+
+    Returns the capacity in GB, or None when every reading was outside the range. THE CALLER
+    MUST STOP ON None: erasing the wrong disk installs macOS into the recovery volume or into
+    the boot image, and the failure does not surface for fifty minutes.
+
+    THIS IS A FUNCTION RATHER THAN A BLOCK INSIDE select_and_erase(), because the walkthrough in
+    macos/15/steps/setup.yaml has to do the choosing and the erasing as two steps - choosing is
+    a measurement, erasing is a sweep, and a reader of the YAML should be able to see which is
+    which. The behaviour is unchanged: select_and_erase() calls this first.
+    """
+    chosen: float | None = None
+    for attempt in range(attempts):
+        size = d.selected_disk_gb()
+        log(f"  attempt {attempt + 1}: the detail pane reads "
+            + ("nothing readable" if size is None else f"{size:.2f} GB"))
+        if size is not None and TARGET_MIN_GB <= size <= TARGET_MAX_GB:
+            chosen = size
+            log(f"  the target is selected: {size:.2f} GB")
+            break
+        # ONE ROW UP, THEN LET THE PANE REBUILD BEFORE READING AGAIN.
+        #
+        # The pane repaints for several seconds after the selection moves - that is when Disk
+        # Utility reads the newly selected device's partition table - and a read taken too soon
+        # returns the PREVIOUS disk's number, which is worse than none.
+        d.key("up", settle=3.0)
+        d.wait(3, "the detail pane has to show the newly selected disk")
+
+    if chosen is None:
+        log("=== NO DISK IN THE TARGET RANGE WAS SELECTED ===")
+        log(f"  every reading was outside {TARGET_MIN_GB:.0f}..{TARGET_MAX_GB:.0f} GB")
+        log("  erasing the wrong one installs macOS into the recovery volume or the boot")
+        log("  image, so the sequence stops here rather than guessing")
+    return chosen
+
+
 def select_and_erase(d: Recovery) -> None:
     """Select the target disk and erase it AS APFS, NAMED main.
 
@@ -1155,30 +1203,7 @@ def select_and_erase(d: Recovery) -> None:
     # (`--disk-size`, 64G by default): pinning a literal would break the day somebody baked
     # a 128 GB disk. What it excludes is everything else this installer can select: the
     # 2.88 GB recovery volume and the 268 MB boot image.
-    TARGET_MIN_GB = 60.0
-    TARGET_MAX_GB = 200.0
-    chosen: float | None = None
-    for attempt in range(8):
-        size = d.selected_disk_gb()
-        log(f"  attempt {attempt + 1}: the detail pane reads "
-            + ("nothing readable" if size is None else f"{size:.2f} GB"))
-        if size is not None and TARGET_MIN_GB <= size <= TARGET_MAX_GB:
-            chosen = size
-            log(f"  the target is selected: {size:.2f} GB")
-            break
-        # ONE ROW UP, THEN LET THE PANE REBUILD BEFORE READING AGAIN.
-        #
-        # The pane repaints for several seconds after the selection moves - that is when
-        # Disk Utility reads the newly selected device's partition table - and a read
-        # taken too soon returns the PREVIOUS disk's number, which is worse than none.
-        d.key("up", settle=3.0)
-        d.wait(3, "the detail pane has to show the newly selected disk")
-
-    if chosen is None:
-        log("=== NO DISK IN THE TARGET RANGE WAS SELECTED ===")
-        log(f"  every reading was outside {TARGET_MIN_GB:.0f}..{TARGET_MAX_GB:.0f} GB")
-        log("  erasing the wrong one installs macOS into the recovery volume or the boot")
-        log("  image, so the sequence stops here rather than guessing")
+    if choose_target_disk(d) is None:
         raise SystemExit(1)
 
     d.wait(5, "the detail pane settles on the chosen disk")

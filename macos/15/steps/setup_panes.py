@@ -1,43 +1,59 @@
-"""The macOS setup panes that are programs, not clicks.
+"""The macOS setup panes that are programs, not clicks - and why there are only two.
 
-WHY THIS FILE IS SO THIN, AND WHY THAT IS THE FINDING
+macos/15/install.py is 1694 lines. The walk in steps/setup.yaml covers the sequence: the
+recovery menu, opening Disk Utility, the installer's four panes, the waits between them. What
+is left here is two things, and both were measured the hard way:
 
-macos/15/install.py is 1694 lines. Almost none of it is a sequence of clicks, and the part
-that is has already been extracted into setup.yaml. What is left is here, as six calls into
-the functions install.py already has:
+    select_target_disk   which disk to erase, decided by CAPACITY from a frame
+    install_macos        whether the copy has finished, decided by DISK GROWTH
 
-    open_disk_utility       wait for the recovery menu to be DRAWN, not for a duration
-    open_reinstall          the same menu, a different row
-    erase_the_disk          a sheet with no OCR-readable buttons, a capacity check, and a
-                            disk that must be identified by its SIZE
-    install                 disk growth as evidence, because a black screen cannot tell
-                            "copying 12 GB" from "hung"
+WHY THESE TWO ARE NOT `at:` STEPS
 
-WHY NOT REWRITE THEM AS `at:` STEPS - the honest answer
+    SELECTING BY CAPACITY
 
-Each of those four is a decision, not an action, and every one of them was measured the hard
-way:
+        A fixed click erased the wrong disk and nobody noticed for fifty minutes. The frames
+        from run 41685628982 end on the destination pane reading:
 
-    the recovery menu needs "wait until drawn" because TWO runs clicked into a blank
-    framebuffer and landed in Time Machine System Restore. A `settle: 60` and a `settle: 120`
-    were both tried and both failed, which is why install.py says "240 also failed, which is
-    why this no longer waits at all".
+            macOS Base System   2.88 GB total
+            main                268.4 MB total      <- the 268 MB boot image, not the target
 
-    the erase sheet's buttons are drawn, not text, so finding them is a crop and a sweep of
-    twenty-one positions - install.py's own comment.
+        Disk Utility lists the 2.88 GB recovery volume, the 268 MB boot image and the 64 GB
+        target, 28 pixels apart, and the row that is selected when the window opens is a
+        RUNTIME state - two runs with identical clicks selected different disks. So the
+        target is found by reading the detail pane's capacity and stepping up a row at a time
+        until the number is one a target disk could have (60..200 GB, wide because --disk-size
+        is an input).
 
-    the target disk is chosen by CAPACITY, because a frame of the sidebar showed two rows and
-    a fixed click erased the 268 MB recovery volume instead of the 68 GB target. That is a
-    read-then-decide, and it is the one place a decision before a click is CORRECT - the click
-    is not "go here", it is "erase disk of this size".
+        THIS IS THE ONE PLACE A READ BEFORE A CLICK IS CORRECT, and the reason is that the
+        click is not "go here" - it is "erase the disk of this size". A coordinate cannot say
+        that.
 
-So these are `python:` steps and the YAML names them. That split is the answer to "can this be
-YAML": the SEQUENCE can, and these four cannot, and pretending otherwise would put a decision
-inside a coordinate.
+    THE COPY
 
-DELEGATION RATHER THAN A SECOND COPY. Each function below imports the real one and passes the
-driver through. A reimplementation would be a second set of measurements that could disagree
-with the first, which is the failure mode every module in this repository warns about.
+        The installer goes black while it copies, so the screen cannot distinguish "copying
+        12 GB" from "hung". install.py watches st_blocks on the target qcow2 instead, which is
+        what grows on a sparse file, and stops when the wizard appears. The earlier version
+        waited a flat 90 minutes with a comment about how long a copy takes - a number no run
+        had ever measured, and the wrong shape anyway, because a duration cannot tell slow
+        from stopped.
+
+WHY THE ERASE IS ONE STEP AND NOT SEVEN
+
+    select_and_erase() = capacity check, sweep the Erase button, name the volume, confirm,
+    wait for the report, press Done. FIVE OF THOSE DEPEND ON THE ONE BEFORE HAVING LANDED:
+
+        the name is typed into a field that only exists if the sheet opened
+        the Done button is on a sheet that only exists if the confirm was accepted
+
+    Splitting them into `at:` steps would mean a file where step 5 is a click into a dialog
+    that step 3 may not have opened - and a click into nothing is what made six runs of this
+    bake fail with "the disk did not grow". The sheet's own `expect_any` is in the YAML at the
+    sweep, so the sequence still stops with the screen in the log if the button is never
+    found; what stays inside is the five clicks that are only meaningful together.
+
+DELEGATION, NOT A SECOND COPY. Every function below imports the real one and passes the
+driver's socket through. A reimplementation would be a second set of measurements that could
+disagree with the first.
 """
 
 from __future__ import annotations
@@ -47,37 +63,28 @@ import sys
 
 REPO = os.environ.get("REPO") or os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-if REPO not in sys.path:
-    sys.path.insert(0, REPO)
-if os.path.join(REPO, "lib") not in sys.path:
-    sys.path.insert(0, os.path.join(REPO, "lib"))
-if os.path.join(REPO, "macos", "15") not in sys.path:
-    sys.path.insert(0, os.path.join(REPO, "macos", "15"))
+for path in (REPO, os.path.join(REPO, "lib"), os.path.join(REPO, "macos", "15")):
+    if path not in sys.path:
+        sys.path.insert(0, path)
 
 
 def _recovery(driver):
-    """install.py's Recovery, built around the driver's own QMP connection.
+    """install.py's Recovery, built on the driver's own QMP socket.
 
-    THE DRIVER ALREADY OWNS THE SCREEN, so this does not open a second QMP client for the
-    frames - it hands Recovery the same socket path and lets it make its own, which is what
-    install.py's class expects and what keeps `.shot()` writing into the same work directory.
-
-    `disk_path` IS THE TARGET qcow2 AND IT MATTERS. install.py's installer_panes() watches how
-    much the file has grown, because that is the only thing that can tell "copying 12 GB" from
-    "hung" while the screen is black. A driver with no disk path can only report the screen,
-    so this says so rather than passing None and getting a stage that times out instead of
-    failing.
+    `disk_path` MATTERS. install.py's installer_panes() watches the target qcow2 grow, because
+    that is the only thing that can tell "copying 12 GB" from "hung" while the screen is black.
+    A driver without a disk path can only report the screen, so this says so rather than passing
+    None and getting a stage that times out instead of failing.
     """
     import install
 
     frames = os.path.join(driver.work, "frames")
     os.makedirs(frames, exist_ok=True)
     qmp_path = getattr(driver, "qmp_path", "")
-    disk = getattr(driver, "disk_path", None)
     if not qmp_path:
         raise RuntimeError(
             "this pane needs the driver's QMP path; construct Driver(...) with qmp_path set")
-    return install.Recovery(qmp_path, frames, disk)
+    return install.Recovery(qmp_path, frames, getattr(driver, "disk_path", None))
 
 
 def open_disk_utility(driver, step) -> bool:
@@ -100,13 +107,23 @@ def open_reinstall(driver, step) -> bool:
         d.close()
 
 
-def erase_the_disk(driver, step) -> bool:
-    """Erase, then leave Disk Utility so the recovery menu can be used again.
+def select_target_disk(driver, step) -> bool:
+    """Choose the target by capacity. Stops the run rather than guessing."""
+    import install
 
-    `leave_disk_utility` IS PART OF ERASING. The sheet has to be closed before any later click
-    lands where it was aimed - install.py records that without it every subsequent click lands
-    on the sheet.
-    """
+    d = _recovery(driver)
+    try:
+        size = install.choose_target_disk(d)
+        if size is None:
+            return False
+        driver.log(f"  the target is {size:.2f} GB")
+        return True
+    finally:
+        d.close()
+
+
+def erase_the_disk(driver, step) -> bool:
+    """Sweep Erase, name the volume, confirm, press Done, then leave Disk Utility."""
     import install
 
     d = _recovery(driver)
