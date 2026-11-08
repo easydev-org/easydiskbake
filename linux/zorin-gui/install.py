@@ -363,7 +363,17 @@ def walk_ubiquity(drv: Driver, args) -> bool:
     #
     #    MEASURED: about 15 minutes from `Continue` on Who-are-you to that dialog on a
     #    runner. FORTY is that with room for a slower one, and `--timeout` still bounds it.
-    log(f"waiting {INSTALL_SECONDS}s for the install (measured: about 15 minutes)")
+    # ZORIN'S COMPLETION PANE IS READABLE, SO IT IS USED - AND THE MEASURED WAIT IS THE CAP.
+    #
+    # Measured on CI run 42476192327: Ubiquity reaches
+    #
+    #     Installation Complete | Installation is complete. You need to ...
+    #
+    # in plain words, unlike Mint's and openSUSE's, whose last panes are headings OCR cannot
+    # read. Waiting out the full INSTALL_SECONDS after the disk is complete would waste
+    # twenty-five minutes of every run - so the pane ends the loop and the duration is only
+    # the bound.
+    log(f"waiting up to {INSTALL_SECONDS}s for the install (measured: about 10 minutes)")
     started = time.time()
     while time.time() - started < min(INSTALL_SECONDS, args.timeout):
         try:
@@ -371,6 +381,10 @@ def walk_ubiquity(drv: Driver, args) -> bool:
         except Exception:                          # noqa: BLE001
             pass
         drv.look("installing")
+        current = drv.text()
+        if "installation complete" in current or "installation is complete" in current:
+            log("=== INSTALL COMPLETE ===")
+            return True
         time.sleep(20)
 
     log("=== THE INSTALL RUN ENDED, AS MEASURED ===")
