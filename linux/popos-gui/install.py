@@ -289,15 +289,32 @@ def walk_installer(drv: Driver, args) -> bool:
     #
     # The fields start EMPTY on this pane, so nothing needs clearing. A click and the text is
     # exactly what a live session did, and that session installed 3.58 GiB.
-    log("filling the account password (click, then type - the fields start empty)")
-    for label, spot in (("password", ACCOUNT_PASSWORD["password"]),
-                        ("confirm", ACCOUNT_PASSWORD["confirm"])):
-        Q.click(drv.q, *spot)
-        time.sleep(1.5)
-        unsupported = keys.type_text(drv.q, args.password, per_char=0.12)
-        if unsupported:
-            log(f"  COULD NOT TYPE {unsupported!r}")
-        time.sleep(1.0)
+    # TAB FROM THE PREVIOUS PANE'S LAST FIELD, RATHER THAN CLICKING THIS PANE'S ENTRIES.
+    #
+    # MEASURED FAILURE: pressing (1188,440) here opened `Choose Icon` - a GTK file chooser -
+    # and the password went into ITS search box (`adminadmin` in the frame). The coordinate is
+    # right on a pane that has just been drawn; this driver arrives at it after a `look()`,
+    # and the pane scrolls its content up when the password warning appears, which moves the
+    # entries under the pointer.
+    #
+    # THE KEYBOARD REACHES THEM REGARDLESS: the installer keeps the focus in its form, so Tab
+    # from the field that was last typed into walks the remaining controls in order - password,
+    # confirm, then the footer's Next. The two entries start empty.
+    log("filling the account password with Tab from the form (the entries start empty)")
+    Q.click(drv.q, *ACCOUNT_NAME["user name"])
+    time.sleep(1.2)
+    Q.key(drv.q, "tab")
+    time.sleep(1.0)
+    unsupported = keys.type_text(drv.q, args.password, per_char=0.12)
+    if unsupported:
+        log(f"  COULD NOT TYPE {unsupported!r}")
+    time.sleep(1.5)
+    Q.key(drv.q, "tab")
+    time.sleep(1.0)
+    unsupported = keys.type_text(drv.q, args.password, per_char=0.12)
+    if unsupported:
+        log(f"  COULD NOT TYPE {unsupported!r}")
+    time.sleep(1.5)
     drv.look("password filled")
     drv.click(SELECT, "Create User Account: Next", settle=25.0)
     drv.look("drive encryption")
