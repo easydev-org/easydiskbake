@@ -64,6 +64,12 @@ import vm           # noqa: E402
 # THE DESKTOP ICON. Double-clicked with an 80 ms gap: MATE and Cinnamon read two presses
 # farther apart than their double-click interval as two single clicks, and a single click
 # only selects the icon. The same measurement that set the GhostBSD driver's value.
+# THE WELCOME WINDOW'S `Install Zorin OS` BUTTON, at 1920x1080. The window is centred and
+# its right-hand card is the one that starts Ubiquity; the left card only starts a live
+# session test. Measured on a frame of the Asturian rendering (`Instalar Zorin OS`), whose
+# layout is identical to the English one.
+WELCOME_INSTALL = (1219, 585)
+
 INSTALL_ICON = (114, 47)
 DOUBLE_CLICK_GAP = 0.08
 
@@ -157,18 +163,24 @@ class Driver:
 
 
 def wait_for_live_desktop(drv: Driver, timeout: int) -> bool:
-    """Until Cinnamon has drawn its panel.
+    """Until the live session has drawn ZORIN'S OWN WELCOME WINDOW.
 
-    THE MARKER IS THE PANEL'S OWN MENU BUTTON AND CLOCK, which are on every Cinnamon desktop
-    and nowhere else - the installer's window does not exist until this driver opens it, so
-    there is nothing inside the installer to wait for.
+    NOT MINT'S PANEL MARKER. Mint's driver waits for a Cinnamon panel; Zorin 18 opens a
+    `Welcome` window by itself - `Try Zorin OS` and `Install Zorin OS`, on top of a language
+    list - and that window IS the thing the next step needs, so waiting for it is both the
+    right question and a stronger one. Measured on a local session:
+
+        boot: Install | Welcome | English | Espanol | Esperanto | ... | Try | Zorin | OS |
+              Install | Zorin | OS | ... | You | can | try
+
+    Both words are always present in that window and appear nowhere else in this boot.
     """
     log("waiting for the live desktop")
     deadline = time.time() + timeout
     while time.time() < deadline:
         drv.look("boot")
         joined = drv.text()
-        if "install linux mint" in joined or ("menu" in joined and "mint" in joined):
+        if "try" in joined and "zorin" in joined:
             log("the live session is up")
             return True
         time.sleep(10)
@@ -178,12 +190,32 @@ def wait_for_live_desktop(drv: Driver, timeout: int) -> bool:
 
 
 def start_the_installer(drv: Driver) -> None:
-    """Start Ubiquity from a terminal, and stop the session locking itself.
+    """Click `Install Zorin OS` in the welcome window, and stop the session locking itself.
 
-    See the module docstring for why the desktop icon cannot be used here. `ubiquity` is the
-    same binary the launcher's Exec= names, and `pkexec` is how the launcher runs it too.
+    THE WELCOME WINDOW IS THE ENTRY POINT, NOT THE DESKTOP ICON AND NOT A TERMINAL.
+
+    Measured on a live session. Zorin opens a window of its own on the live desktop:
+
+        Instalar / Bienllégáu          (Asturian; English is `Welcome` / `Hello`)
+        [ Try Zorin OS ]  [ Install Zorin OS ]
+        `Puedes probar Zorin OS ensin facer dengún cambéu nel equipu...`
+
+    with a language list down the left, `English` among the entries. Its right-hand button
+    starts Ubiquity, and that button is the thing this driver must press.
+
+    TWO OTHER ROUTES WERE TRIED AND BOTH FAILED, which is why this comment exists:
+
+      * the desktop icon - GNOME refuses to run an untrusted `.desktop`, and answers
+        `Untrusted application launcher / Failed to run "install-zorin-os.desktop"`;
+      * `pkexec ubiquity` typed into a terminal - it starts nothing on this image, and the
+        five footer clicks that followed all landed on the welcome window, which was still
+        on screen and still reading `Welcome | English | ... | Try | Zorin | OS`.
+
+    THE SESSION MUST NOT BLANK OR LOCK while the install runs - the failure mint-gui
+    measured, and it costs a whole run because a locked screen reads as a clock. One
+    terminal does that and closes itself; the installer is then started by the button.
     """
-    log("starting Ubiquity from a terminal, and keeping the session awake")
+    log("disabling the screen saver and the lock")
     Q.key_combo(drv.q, "ctrl", "alt", "t")
     time.sleep(8.0)
     command = (
@@ -194,12 +226,15 @@ def start_the_installer(drv: Driver) -> None:
         "  xdotool mousemove_relative -- 1 0 2>/dev/null; "
         "  xdotool mousemove_relative -- -1 0 2>/dev/null; "
         "  sleep 20; done ) >/dev/null 2>&1 & "
-        "pkexec ubiquity & "
         "exit"
     )
     keys.type_text(drv.q, command, per_char=0.02)
     Q.key(drv.q, "ret")
-    time.sleep(45.0)
+    time.sleep(8.0)
+    drv.look("screensaver disabled")
+
+    log("clicking `Install Zorin OS` in the welcome window")
+    drv.click(WELCOME_INSTALL, "welcome: Install Zorin OS", settle=40.0)
     drv.look("ubiquity welcome")
 
 

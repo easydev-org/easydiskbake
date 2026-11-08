@@ -122,6 +122,9 @@ ACCOUNT = {
 # THE LIVE MEDIUM'S BOOT TIME, AS A NUMBER. Measured: about 200 s from qemu start to a
 # clickable welcome window on this image.
 # THE INSTALL RUN'S OWN DURATION - see step 9 of walk_calamares.
+# MEASURED IN CI, AFTER THE LANGUAGE PIN: run 42460239742 compressed 4341 MiB of a
+# 9885 MiB disk. Before the pin the same driver produced 0 MiB, because every click was
+# landing on a translated footer.
 INSTALL_SECONDS = 2700
 
 DESKTOP_SECONDS = 270
