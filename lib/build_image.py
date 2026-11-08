@@ -105,6 +105,7 @@ BUILDER_CHECKS = [
 QEMU_CHECKS = [
     ["python3", "--version"],
     ["lz4", "--version"],
+    ["unzip", "-v"],
     ["mkfs.ext4", "-V"],
     ["debugfs", "-V"],
     ["zstd", "--version"],
