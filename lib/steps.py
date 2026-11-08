@@ -80,6 +80,7 @@ STEP_KEYS = {
     "expect_any",  # a list of word-sets, any one of which passes
     "until",       # words that end a wait loop
     "region",      # (x0, y0, x1, y1) to crop before reading, for `until`/`expect`
+    "region_at",   # [width, height] the crop was measured at; a mismatch is an error
     "until_dark",  # wait until the screen goes black - the installer's own start signal
     "timeout",     # seconds the `until` loop may run
     "poll",        # seconds between looks in the `until` loop
@@ -316,6 +317,9 @@ class HeadlessDriver:
         log(f"look {label}: no screen (this walkthrough has no GUI steps)")
         return []
 
+    def resolution(self) -> tuple[int, int]:
+        return (0, 0)
+
     def text(self) -> str:
         return ""
 
@@ -408,6 +412,15 @@ class Driver:
 
     def text(self) -> str:
         return " ".join(w[0].lower() for w in self.words)
+
+    def resolution(self) -> tuple[int, int]:
+        """The framebuffer's size, as the Screen was told it.
+
+        NOT ASKED OF QEMU. ocr.Screen takes width/height because qmp.py needs the geometry at
+        import time to convert pixels to absolute pointer coordinates; that is the same pair of
+        numbers a screenshot comes back at, so it is the honest answer.
+        """
+        return (self.screen.width, self.screen.height)
 
     def brightness(self) -> float | None:
         """The mean grey of a fresh screendump, or None when it cannot be read.
@@ -639,9 +652,24 @@ def _read(driver: Driver, step: Step, label: str = "look") -> list[tuple]:
     THE SINGLE PLACE THE CROP IS APPLIED, so `until`, `expect` and `sweep` cannot disagree about
     whether they were reading a region or the whole screen. That disagreement is exactly the
     bug where a `until` matched a sentence in a paragraph on the other half of the frame.
+
+    A CROP IS IN FRAME PIXELS AND THE FRAME IS NOT ALWAYS 1920x1080. The UEFI shell draws at
+    1280x800 and the macOS installer at 1920x1080, so a region measured on one is empty space on
+    the other - and an empty crop reads as "the words are not there", which is indistinguishable
+    from "the pane has not arrived". A region therefore states the resolution it was measured
+    at, and a mismatch is an error rather than a silent empty read.
     """
     region = step.get("region")
     if region:
+        at = step.get("region_at")
+        if at:
+            width, height = driver.resolution()
+            if [width, height] != list(at):
+                raise StepError(
+                    f"{step.name}: the region {tuple(region)} was measured at "
+                    f"{at[0]}x{at[1]} but the framebuffer is {width}x{height}. A crop that does "
+                    f"not fit reads as an empty screen, which looks exactly like a pane that has "
+                    f"not arrived.")
         return driver.look_at(region, label)
     return driver.look(label)
 
