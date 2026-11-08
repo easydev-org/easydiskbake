@@ -764,6 +764,212 @@ def copy(src, dst, total: int, name: str) -> None:
     log(f"{name}: copied {(total - remaining) / 2 ** 20:.0f} MiB")
 
 
+# THE GUEST'S OWN NETWORK SETUP, RUN BY INIT AT BOOT.
+#
+# ANDROID DOES NOT BRING UP ETHERNET BY ITSELF. This guest proves it: the virtio-net device
+# is present (pci 1af4:1000), the driver loads, /sys/class/net lists eth0 - and eth0 comes
+# up with flags 0x1002 (BROADCAST, no IFF_UP), operstate "down", no address. Nothing asks
+# it to; AOSP's phone images are configured for WiFi.
+#
+# Driven by hand from the console, the same interface works perfectly:
+#
+#     ip link set eth0 up                    flags 0x1002 -> 0x1003, operstate down -> up
+#     ip addr add 172.30.0.2/24 dev eth0
+#     ip route add default via 172.30.0.1    rc=0
+#     ip -o -4 addr                          eth0 inet 172.30.0.2/24
+#
+# WHY A STATIC ADDRESS AND NOT DHCP
+#
+# There is no DHCP client in the image: `ls /system/bin | grep dhc` is empty and toybox has
+# no udhcpc. lib/net.py hands one fixed address to one fixed guest anyway
+# (`dhcp-range=A,A`), so this states the same address rather than asking for it.
+NETWORK_RC = b"""\
+# Bring up the emulated ethernet interface, which nothing else does.
+#
+# `exec` RATHER THAN A service, BECAUSE FOUR SERVICE SHAPES WERE TRIED AND NONE RAN.
+# Each .rc below parsed without complaint and left the interface down:
+#
+#   on property:sys.boot_completed=1 + service    property is set (see below), service idle
+#   on boot + disabled + start                    parsed; no line naming the service
+#   class late_start                              late_start is never started here
+#   class hal                                     the vendor HALs use it; did not fire
+#
+# `exec` runs the command at that moment and logs the exit status. There is no class to be
+# started and no service state to be stuck in, which is what a four-command script wants.
+#
+# THE PROPERTY IS PROVEN SET, READ FROM THE GUEST RATHER THAN FROM THE LOG:
+#
+#     /metadata/b  ->  "1"        sys.boot_completed
+#     /metadata/s  ->  "running"  surfaceflinger
+on property:sys.boot_completed=1
+    exec - root root -- /system/bin/sh /vendor/bin/eth0up.sh
+"""
+
+# A SCRIPT RATHER THAN A PILE OF `exec` LINES. init's `exec` runs one command; bringing an
+# interface up is four that have to happen in order, and the order is exactly what was
+# wrong when it was done by hand: `ip route add default` before the address exists answers
+# "Network is unreachable".
+NETWORK_SH = b"""\
+#!/system/bin/sh
+# The interface Android leaves down. See NETWORK_RC above for the measurements.
+ip link set eth0 up
+ip addr add 172.30.0.2/24 dev eth0
+ip route add default via 172.30.0.1 dev eth0
+"""
+
+
+def carve_partition(image: str, name: str) -> tuple[str, int, int]:
+    """Copy one GPT partition out of an image so debugfs can edit it.
+
+    DEBUGFS NEEDS A FILESYSTEM, NOT A DISK. Both SDK images are GPTs whose single partition
+    starts at LBA 2048; pointing debugfs at the whole file makes it look for a superblock at
+    offset 0 and refuse. Returns the carved file and the LBA range, which is what
+    put_partition() needs to put it back.
+    """
+    parts = read_gpt(image)
+    if name not in parts:
+        raise SystemExit(f"=== {image} has no `{name}` GPT partition ===")
+    first, last = parts[name]
+    carved = f"{image}.{name}-part"
+    with open(image, "rb") as fh, open(carved, "wb") as out:
+        fh.seek(first * SECTOR)
+        remaining = (last - first + 1) * SECTOR
+        while remaining > 0:
+            chunk = fh.read(min(8 * 2 ** 20, remaining))
+            if not chunk:
+                break
+            out.write(chunk)
+            remaining -= len(chunk)
+    return carved, first, last
+
+
+def put_partition(image: str, carved: str, first: int, last: int) -> None:
+    """Write an edited partition back at the offset it came from, in place.
+
+    THE GPT AROUND IT IS NOT TOUCHED, which is the point: header, entry array and both
+    checksums stay as they were, so nothing has to be recomputed.
+    """
+    with open(image, "r+b") as out, open(carved, "rb") as src:
+        out.seek(first * SECTOR)
+        remaining = (last - first + 1) * SECTOR
+        while remaining > 0:
+            chunk = src.read(min(8 * 2 ** 20, remaining))
+            if not chunk:
+                break
+            out.write(chunk)
+            remaining -= len(chunk)
+
+
+def debugfs_write(fs_image: str, path: str, body: bytes, mode: int = 0o100644) -> None:
+    """Create or replace a file inside an ext4 image with debugfs.
+
+    REMOVE FIRST, THEN WRITE. debugfs has no in-place rewrite: `write` onto an existing name
+    fails, and `rm` followed by `write` reuses the blocks that were just freed, so a body
+    longer than the old one still fits.
+    """
+    staged = fs_image + ".staged"
+    with open(staged, "wb") as fh:
+        fh.write(body)
+    try:
+        subprocess.run(["debugfs", "-w", "-R", f"rm {path}", fs_image],
+                       capture_output=True, text=True)
+        done = subprocess.run(["debugfs", "-w", "-R",
+                               f"write {staged} {path}", fs_image],
+                              capture_output=True, text=True)
+        if done.returncode != 0:
+            raise SystemExit(f"=== debugfs write {path} failed: "
+                             f"{(done.stderr or done.stdout)[:300]} ===")
+        subprocess.run(["debugfs", "-w", "-R", f"sif {path} mode {mode:o}", fs_image],
+                       capture_output=True, text=True)
+    finally:
+        if os.path.exists(staged):
+            os.unlink(staged)
+
+
+def add_network(cache: str, sdk_system: str) -> None:
+    """Install the eth0 bring-up .rc into the vendor partition INSIDE super.
+
+    /vendor IS NOT vendor.img. That file is an argument to the emulator and nothing mounts
+    it. The guest says so itself:
+
+        init: [libfs_mgr] Created logical partition vendor on device /dev/block/dm-4
+        init: [libfs_mgr] __mount(source=/dev/block/dm-4,target=/vendor,type=ext4)=0
+
+    so `/vendor` is a logical partition of `super`, and an .rc written into vendor.img is
+    never read. Two boots with a correct-looking file had no effect for exactly that reason.
+
+    THE EXTENT DESCRIBES TWO DIFFERENT SPACES. liblp gives the vendor offset RELATIVE TO
+    super, and super sits at LBA 4096 in system.img but at 1819216 on the cache disk this
+    builder writes. Mixing them lands 1819216 sectors early, at something that is not the
+    vendor filesystem:
+
+        === the vendor partition inside super is not ext4 (magic 8a1d) ===
+
+    So the extent comes from the table and the LBA comes from the disk being edited.
+    """
+    with open(sdk_system, "rb") as fh:
+        sdk_super = read_gpt(sdk_system)["super"][0]
+        fh.seek(sdk_super * SECTOR)
+        head = fh.read(4 * 2 ** 20)
+    lp = lp_partitions(head)
+    if "vendor" not in lp:
+        raise SystemExit("=== super has no `vendor` logical partition ===")
+    vendor_off, vendor_sectors = lp["vendor"]
+
+    super_lba = read_gpt(cache)["super"][0]
+    start = (super_lba + vendor_off) * SECTOR
+    size = vendor_sectors * SECTOR
+
+    carved = cache + ".vendor-part"
+    try:
+        with open(cache, "rb") as fh, open(carved, "wb") as out:
+            fh.seek(start)
+            remaining = size
+            while remaining > 0:
+                chunk = fh.read(min(8 * 2 ** 20, remaining))
+                if not chunk:
+                    break
+                out.write(chunk)
+                remaining -= len(chunk)
+
+        with open(carved, "rb") as fh:
+            fh.seek(1024 + 0x38)
+            magic = fh.read(2)
+        if magic != b"\x53\xef":
+            raise SystemExit(
+                f"=== the vendor partition inside super is not ext4 (magic {magic.hex()}) ===")
+
+        debugfs_write(carved, "/etc/init/eth0up.rc", NETWORK_RC)
+        subprocess.run(["debugfs", "-w", "-R", "mkdir /bin", carved],
+                       capture_output=True, text=True)
+        debugfs_write(carved, "/bin/eth0up.sh", NETWORK_SH, mode=0o100755)
+
+        # VERIFY BY READING BACK. A truncated .rc parses as nothing and looks exactly like
+        # an interface that did not come up.
+        back = subprocess.run(["debugfs", "-R", "cat /etc/init/eth0up.rc", carved],
+                              capture_output=True, text=True).stdout
+        if "eth0up.sh" not in back:
+            raise SystemExit("=== the network .rc did not survive the write ===")
+        sh_back = subprocess.run(["debugfs", "-R", "cat /bin/eth0up.sh", carved],
+                                 capture_output=True, text=True).stdout
+        if "ip link set eth0 up" not in sh_back:
+            raise SystemExit("=== the network script did not survive the write ===")
+
+        with open(cache, "r+b") as out, open(carved, "rb") as src:
+            out.seek(start)
+            remaining = size
+            while remaining > 0:
+                chunk = src.read(min(8 * 2 ** 20, remaining))
+                if not chunk:
+                    break
+                out.write(chunk)
+                remaining -= len(chunk)
+        log(f"vendor (in super, {size >> 20} MiB): eth0 bring-up installed")
+    finally:
+        if os.path.exists(carved):
+            os.unlink(carved)
+
+
 def patch_vendor(vendor: str) -> None:
     """Strip the /data encryption flags from /vendor/etc/fstab.ranchu, in place.
 
@@ -924,8 +1130,11 @@ def main(argv: list[str]) -> int:
     p.add_argument("--out", default="/a/android", help="where the disks are written")
     p.add_argument("--force-userdata", action="store_true",
                    help="throw away an existing /data instead of keeping its applications")
+    p.add_argument("--no-net", dest="net", action="store_false",
+                   help="do not install the eth0 bring-up service into vendor")
     p.add_argument("--noencrypt", action="store_true",
                    help="do not encrypt /data, so the disk is readable from any host")
+    p.set_defaults(net=True)
     a = p.parse_args(argv)
 
     sdk = a.sdk or sdk_from_environment()
@@ -963,6 +1172,10 @@ def main(argv: list[str]) -> int:
     else:
         build_cache(os.path.join(sdk, "system.img"), cache)
         log("  (a fresh cache.img means a fresh /data: the key is made with it)")
+
+    # THE GUEST'S NETWORK, INTO THE PARTITION THAT IS ACTUALLY MOUNTED AT /vendor.
+    if a.net:
+        add_network(cache, os.path.join(sdk, "system.img"))
 
     userdata = os.path.join(work, "userdata.img")
     if userdata_filesystem(userdata, force=a.force_userdata):

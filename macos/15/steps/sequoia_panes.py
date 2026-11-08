@@ -46,12 +46,29 @@ def apple_account(driver, step) -> bool:
     release = str(step.get("release") or driver.release)
 
     if release != "26":
-        driver.click(APPLE_SET_UP_LATER_15, "the 'Set Up Later' link (15)", settle=4.0)
-        driver.look("apple-later")
-        # THE CONFIRMATION SHEET IS PART OF THIS PANE. Whether it appears at all is decided by
-        # the pane, not by us, so it is checked rather than clicked blind.
-        if driver.says("sure") or driver.says("skip"):
+        # 15 PUTS A TEXT LINK IN THE BOTTOM-LEFT CORNER, AND THE LINK ALONE IS NOT THE WAY OUT.
+        #
+        # `Set Up Later` opens the confirmation sheet - and if the sheet does not appear, ONE
+        # RETURN IS WHAT RAISES IT. drive_read.py's own 15 branch sends `press("ret")` right
+        # after this click, and leaving it out is what made the first CI run of this
+        # walkthrough report
+        #
+        #     sign in to apple account: seen 3 times and still up
+        #
+        # three times, on a pane whose only problem was that the sheet had not been confirmed.
+        driver.click(APPLE_SET_UP_LATER_15, "the 'Set Up Later' link (15)", settle=6.0)
+        driver.press("ret", gap=3.0)
+
+        driver.look("apple-sheet")
+        if driver.says("skip"):
             driver.click(APPLE_SKIP_15, "the sheet's blue Skip (15)", settle=8.0)
+
+        # THE VERDICT IS THE SCREEN, NOT "I CLICKED". Returning True unconditionally is how a
+        # pane is answered three times in a row and then reported STUCK.
+        driver.look("apple-after")
+        if driver.says("sign", "apple"):
+            driver.log("  the Apple Account pane is still up; no measured way out worked")
+            return False
         return True
 
     # 26. THE POPUP FIRST, THEN THE MENU'S ROW.

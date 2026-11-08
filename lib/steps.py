@@ -576,6 +576,19 @@ class Driver:
         else:
             self.qmpmod.key_combo(self.q, *names, hold=hold)
 
+    def press(self, name: str, times: int = 1, gap: float = 3.0) -> None:
+        """Send one key `times` times, pausing `gap` between.
+
+        SEPARATE FROM key(), because a REPEATED key is how macOS confirms a sheet: the Apple
+        Account pane's `Set Up Later` link raises a sheet, and if the sheet has not drawn yet a
+        Return raises it - which is what drive_read.py's own 15 branch does with
+        `press("ret", gap=3.0)`. That call is spelled `key_combo`-adjacent but means "the same
+        key again", and a step vocabulary that cannot say it leaves a pane unanswered.
+        """
+        for _ in range(times):
+            self.qmpmod.key(self.q, name)
+            time.sleep(gap)
+
     def close(self) -> None:
         try:
             self.q.close()
