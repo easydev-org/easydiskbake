@@ -287,8 +287,22 @@ def walk_ubiquity(drv: Driver, args) -> bool:
         log(f"  screen: {drv.text()[:200]}")
         return False
 
-    drv.click(CONTINUE, "Welcome: Continue (English)", settle=15.0)
+    # THE WELCOME PANE'S LANGUAGE LIST IS NOT TOUCHED: `English` IS ITS DEFAULT.
+    #
+    # An earlier version clicked (1106, 402) on this pane, intending the keyboard page's
+    # right-hand list; when that click did not land on a later pane it landed HERE, and the
+    # window came back reading `Laipni lūdzam` - Latvian - because the click had picked a
+    # row from the welcome pane's own language list. Only the footer button is pressed.
+    drv.click(CONTINUE, "Welcome: Continue (English is preselected)", settle=15.0)
     drv.look("keyboard")
+
+    # THE PANE MUST ACTUALLY HAVE CHANGED BEFORE THE NEXT CLICK, OR THAT CLICK LANDS ON THE
+    # WRONG CONTROL - which is exactly the failure above. `Keyboard layout` is the only pane
+    # that carries the two list boxes, so the title is the test.
+    if "keyboard layout" not in drv.text():
+        log("=== THE WELCOME PANE DID NOT ADVANCE TO KEYBOARD LAYOUT ===")
+        log(f"  screen: {drv.text()[:200]}")
+        return False
 
     # 2. KEYBOARD LAYOUT, AND THE PLAIN `English (US)` ROW MUST BE CLICKED.
     #
