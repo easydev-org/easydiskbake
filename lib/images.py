@@ -197,8 +197,13 @@ DESKTOP = {
         "size": 3091660800,
     },
     "opensuse-tumbleweed-kde": {
+        # `Current.iso` IS THE ALIAS THAT SURVIVES A SNAPSHOT ROTATION. The dated name this
+        # driver was measured on (`Snapshot20261105`) returns 404 from the download host now
+        # - measured - while the alias redirects to whatever the current snapshot is. The
+        # size and sha256 below are the measured file's, so a rotation fails the check
+        # loudly instead of baking a different build.
         "url": "https://download.opensuse.org/tumbleweed/iso/"
-               "openSUSE-Tumbleweed-KDE-Live-x86_64-Snapshot20261105-Media.iso",
+               "openSUSE-Tumbleweed-KDE-Live-x86_64-Current.iso",
         "sha256": "cc71dd199e2160c62e235dd723f438455c8586f034e2617b4ad53e555af517d2",
         "size": 1279537152,
     },
