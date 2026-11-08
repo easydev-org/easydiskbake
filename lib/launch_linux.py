@@ -64,10 +64,27 @@ import vm  # noqa: E402
 #
 # An empty marker means "do not wait for one" - used by nothing today, kept because a
 # distribution whose console is silent would otherwise fail before ssh is even tried.
+# A GUI BAKE'S DISK IS THE SAME KIND OF ARTEFACT AND ANSWERED BY THE SAME THREE QUESTIONS,
+# so the eleven desktop distributions join the table rather than getting a second launch
+# script. What differs per entry is only what its own init prints on the serial console and
+# which compositor proves a session - both of which are facts about that distribution.
 BOOTED_MARKER = {
     "ubuntu": "Ubuntu",
     "kubuntu": "Ubuntu",
     "freebsd": "FreeBSD/amd64",
+    # --- the GUI bakes, in the order .github/workflows lists them -------------------
+    "ubuntu-gui": "Ubuntu",
+    "kubuntu-gui": "Ubuntu",
+    "fedora-gui": "Fedora",
+    "mint-gui": "Linux Mint",
+    "opensuse-gui": "openSUSE",
+    "cachyos-gui": "CachyOS",
+    "manjaro-gui": "Manjaro",
+    "ghostbsd-mate": "FreeBSD/amd64",
+    "endeavour-gui": "EndeavourOS",
+    "zorin-gui": "Zorin",
+    "mx-gui": "MX Linux",
+    "popos-gui": "Pop!_OS",
 }
 
 # THE COMPOSITOR THAT PROVES A DESKTOP SESSION, or "" for a system that has none.
@@ -81,11 +98,27 @@ COMPOSITOR = {
     "ubuntu": "gnome-shell",
     "kubuntu": "kwin_wayland",
     "freebsd": "xfce4-session",
+    # The GUI bakes. Each is the compositor its ISO actually runs, so a disk whose desktop
+    # failed to start is told apart from one whose desktop never existed.
+    "ubuntu-gui": "gnome-shell",
+    "kubuntu-gui": "kwin_wayland",
+    "fedora-gui": "gnome-shell",
+    "mint-gui": "cinnamon",          # Cinnamon runs on Xorg
+    "opensuse-gui": "kwin_wayland",
+    "cachyos-gui": "kwin_wayland",
+    "manjaro-gui": "kwin_wayland",
+    "ghostbsd-mate": "mate-session",  # MATE on Xorg
+    "endeavour-gui": "kwin_wayland",
+    "zorin-gui": "gnome-shell",
+    "mx-gui": "xfce4-session",        # Xfce on Xorg
+    "popos-gui": "cosmic-comp",
 }
 
 # DISKS WHOSE DESKTOP IS AN X SESSION BY DESIGN. Only FreeBSD, for the reason above.
 # has no display manager at all and its entry is "" so this is never consulted for it.
-ALLOW_X11 = {"freebsd"}
+# DISKS WHOSE DESKTOP IS AN X SESSION BY DESIGN. The three that ship an X desktop - Mint's
+# Cinnamon, GhostBSD's MATE and MX's Xfce - plus FreeBSD, for the reason above.
+ALLOW_X11 = {"freebsd", "mint-gui", "ghostbsd-mate", "mx-gui"}
 
 
 def log(message: str) -> None:
@@ -113,6 +146,68 @@ def wait_for_console(console: str, marker: str, seconds: int, note) -> bool:
         time.sleep(5)
     note(f"=== THE CONSOLE NEVER SAID {marker!r} IN {seconds}s ===")
     return False
+
+
+def frame_is_painted(ppm: str) -> tuple:
+    """Whether a framebuffer frame shows something rather than a blank screen.
+
+    Returns (painted, description). THE TEST IS NARROW ON PURPOSE - it separates a screen
+    that shows a desktop from one that shows nothing, and it does not try to tell one desktop
+    from another:
+
+        painted      the frame has more than 8 distinct colours AND at least 2% of its pixels
+                     differ from the most common colour
+        not painted  a single flat colour (a compositor that never drew), all black (the
+                     guest is at a text console), or fewer than 2000 coloured pixels
+
+    WHY NOT OCR, WHY NOT A WORD. This repository has already paid for that twice: a desktop
+    whose panel reads as `Ppplications`, and a wizard whose panes are translated. A picture
+    with structure in it is a picture with a desktop in it, whatever language it is in.
+
+    WHY THE THRESHOLDS ARE LOOSE. Measured on this repository's own frames: NixOS' labwc drew
+    a COMPLETELY black frame while working, and miracle-wm drew a flat backdrop - which is why
+    lib/session.py does not use pixels for its own verdict. That is exactly why this is used
+    only where no ssh session exists to ask: a desktop that paints nothing here is reported
+    as unpainted rather than as broken, and the PNG is uploaded either way.
+    """
+    try:
+        with open(ppm, "rb") as fh:
+            data = fh.read()
+    except OSError:
+        return False, "no frame"
+    if not data.startswith(b"P6"):
+        return False, "not a P6 frame"
+    fields, i = [], 2
+    while len(fields) < 3:
+        while i < len(data) and data[i:i + 1].isspace():
+            i += 1
+        start = i
+        while i < len(data) and not data[i:i + 1].isspace():
+            i += 1
+        fields.append(int(data[start:i]))
+    i += 1
+    w, h, _ = fields
+    px = data[i:]
+    if len(px) < w * h * 3:
+        return False, "truncated frame"
+
+    # SAMPLED, NOT EVERY PIXEL. A 1920x1080 frame is 6 MB and this runs once per launch; a
+    # grid of every 8th pixel is 32k samples, which is plenty to catch a flat colour.
+    step = 8 * 3
+    counts: dict = {}
+    total = 0
+    for o in range(0, w * h * 3 - 3, step):
+        key = (px[o], px[o + 1], px[o + 2])
+        counts[key] = counts.get(key, 0) + 1
+        total += 1
+    if not total:
+        return False, "no samples"
+    common = max(counts.values())
+    distinct = len(counts)
+    varying = total - common
+    painted = distinct > 8 and varying > total * 0.02
+    return painted, (f"{distinct} colours, {100 * varying / total:.1f}% not the most common"
+                     f" ({common} of {total} samples)")
 
 
 def take_screenshot(guest, artifacts: str, note) -> str:
@@ -162,6 +257,10 @@ def main(argv: list[str]) -> int:
     p.add_argument("--work", default=None)
     p.add_argument("--boot-timeout", type=int, default=900)
     p.add_argument("--ssh-port", type=int, default=2222)
+    p.add_argument("--ssh", default="required", choices=("required", "optional", "skip"),
+                   help="what an unanswered ssh port means: `required` (a bake that enables "
+                        "sshd), `optional` (try it, do not fail on it) or `skip` (do not ask - "
+                        "the GUI images do not ship sshd yet, which is a later stage)")
     p.add_argument("--mem", type=int, default=4096)
     p.add_argument("--cpus", type=int, default=4)
     p.add_argument("--resolution", default="1920x1080")
@@ -237,17 +336,39 @@ def main(argv: list[str]) -> int:
             take_screenshot(guest, artifacts, note)
             return finish(1)
 
-        # 2. SSH ANSWERS. This is the real proof for a BSD, which has no desktop.
-        if not session.wait_for_ssh(args.ssh_port, args.boot_timeout, note):
-            note("  the system booted but never answered on ssh")
-            note("  sshd is on in every one of these disks, so this is the ssh config,")
-            note("  the account, or the network - not the boot")
-            take_screenshot(guest, artifacts, note)
-            return finish(1)
+        # 2. SSH ANSWERS, WHERE THE DISK IS EXPECTED TO ANSWER.
+        #
+        # `--ssh skip` IS FOR THE GUI IMAGES, AND IT IS NOT A WEAKENING. A desktop installed
+        # by clicking through an installer does not carry sshd - measured, no GUI driver here
+        # installs `openssh-server`, and none of their images has it. Adding it after the fact
+        # would change the disk being verified. So this stage asks the one question these
+        # disks can answer - does the desktop come up - and a later stage installs sshd and
+        # asks this one too.
+        ssh_ok = False
+        if args.ssh == "skip":
+            note(f"ssh not attempted (--ssh skip): these images do not carry sshd")
+        else:
+            ssh_ok = session.wait_for_ssh(args.ssh_port, args.boot_timeout, note)
+            if not ssh_ok:
+                if args.ssh == "required":
+                    note("  the system booted but never answered on ssh")
+                    note("  sshd is on in every one of these disks, so this is the ssh config,")
+                    note("  the account, or the network - not the boot")
+                    take_screenshot(guest, artifacts, note)
+                    return finish(1)
+                note("  ssh did not answer (optional); continuing to the desktop check")
 
         # 3. THE DESKTOP SESSION, where one is expected.
         passed = True
-        if compositor:
+        if compositor and not ssh_ok:
+            # THE SESSION CHECK IS AN SSH CONVERSATION - `loginctl` run inside the guest - so
+            # without a session there is nothing to read. The screenshot below is then the
+            # evidence, which is what a desktop image without sshd leaves.
+            note(f"no ssh session, so the {compositor!r} check cannot run; "
+                 "the screenshot is the record")
+            if args.ssh == "required":
+                passed = False
+        elif compositor:
             passed = session.wait_for_wayland(
                 args.ssh_port, compositor, args.boot_timeout, note,
                 ssh_seconds=60,      # already answered above
@@ -259,7 +380,18 @@ def main(argv: list[str]) -> int:
 
         png = take_screenshot(guest, artifacts, note)
         if png:
-            note(f"screenshot {png} (for the record, not the verdict)")
+            if compositor and not ssh_ok:
+                # NO SSH SESSION, SO THE FRAME IS THE VERDICT - the one place this script
+                # judges pixels, and only where nothing else can be asked.
+                painted, why = frame_is_painted(os.path.join(artifacts, "screen.ppm"))
+                note(f"screenshot {png}: {why}")
+                if painted:
+                    note("  the frame shows a desktop")
+                else:
+                    note("  the frame shows no desktop: a flat or black screen")
+                    passed = False
+            else:
+                note(f"screenshot {png} (for the record, not the verdict)")
         return finish(0 if passed else 1)
     finally:
         guest.stop()
