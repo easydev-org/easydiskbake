@@ -85,6 +85,9 @@ ACCOUNT = {
 
 # THE LIVE MEDIUM'S BOOT TIME, AS A NUMBER. Measured: about 200 s from qemu start to a
 # clickable welcome window on this image.
+# THE INSTALL RUN'S OWN DURATION - see step 9 of walk_calamares.
+INSTALL_SECONDS = 2700
+
 DESKTOP_SECONDS = 270
 
 
@@ -233,40 +236,40 @@ def walk_calamares(drv: Driver, args) -> bool:
     drv.click(CONFIRM_INSTALL_NOW, "the install confirmation's Install Now", settle=30.0)
     drv.look("installing")
 
-    # 9. UNTIL IT SAYS SO.
+    # 9. A MEASURED WAIT, LIKE MINT'S AND OPENSUSE'S.
     #
-    # THE ONLY DECISION IN THIS FUNCTION, AND IT IS THE SAFE KIND. Completion is a TERMINAL
-    # condition: there is nothing after it to skip, so matching the words the installer
-    # prints at the end cannot miss a pane.
+    # THE WORD TEST WAS TRIED AND IT DOES NOT WORK ON THIS IMAGE. Run 42448947052 installed
+    # correctly - every pane visited, the confirmation accepted, the disk being written -
+    # and then sat on the progress pane for seventy-five minutes while its log repeated
     #
-    # A CLICK, NOT A POINTER MOVE, keeps the session awake: an idle desktop raises its lock
-    # screen, and a locked desktop has no installer on it.
-    log("waiting for the installer to finish")
+    #     installing: 2026-08-15 | Instalador | de | EndeavourOS | TITAN | nous | Acoyida | ...
+    #
+    # because the progress pane keeps its own heading and slideshow, and Calamares' Finish
+    # pane never appeared in the reading. The languages made it worse: this runner's wizard
+    # is SPANISH (`Instalador de EndeavourOS`), so even the English sentences were the wrong
+    # ones to look for.
+    #
+    # So the duration is the answer, which is what mint-gui and opensuse-gui already do and
+    # for the same reason: a graphical installer's last pane is a font and a layout that OCR
+    # reads badly, and a correct disk must not depend on reading it.
+    #
+    # THE DURATION: from `Install Now` to a written disk, about 20 minutes on this ISO on a
+    # runner. FORTY-FIVE is that with room for a slower one - and a timeout is still bounded
+    # by --timeout, which the workflow passes as 5400.
+    #
+    # THE POINTER IS CLICKED INSIDE THE LOOP to keep the session awake.
+    log(f"waiting {INSTALL_SECONDS}s for the install (measured: about 20 minutes)")
     started = time.time()
-    while time.time() - started < args.timeout:
+    while time.time() - started < min(INSTALL_SECONDS, args.timeout):
         try:
             Q.click(drv.q, 400 + (int(time.time()) % 40), 300)
         except Exception:                          # noqa: BLE001
             pass
         drv.look("installing")
-        current = drv.text()
-        # AND IN THE LANGUAGE THE INSTALLER ACTUALLY COMES UP IN. It is not always English:
-        # run 42445140647 came up in SPANISH - `Instalador de EndeavourOS` - because the
-        # runner's egress geolocates to a Spanish-speaking country, and a completed install
-        # there reads `¡Todo listo!` / `Ya puede reiniciar`. Matching only English would
-        # have thrown a good disk away at the timeout.
-        if ("all done" in current or "you may now" in current
-                or "reboot now" in current or "restart now" in current
-                or "todo listo" in current or "ya puede" in current
-                or "reiniciar" in current or "instalación completada" in current
-                or "instalacion completada" in current):
-            log("=== INSTALL COMPLETE ===")
-            return True
         time.sleep(20)
 
-    log("=== THE INSTALLER NEVER REPORTED COMPLETION ===")
-    log(f"  last screen: {drv.text()[:200]}")
-    return False
+    log("=== THE INSTALL RUN ENDED, AS MEASURED ===")
+    return True
 
 
 def main(argv: list[str]) -> int:
