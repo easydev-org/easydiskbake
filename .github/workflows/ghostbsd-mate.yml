@@ -53,6 +53,13 @@ on:
       publish_tag:
         description: "tag to publish under; empty for bsd-ghostbsd-mate"
         default: "bsd-ghostbsd-mate"
+      boot_timeout:
+        description: "stage 2: seconds the booted disk has to reach its desktop"
+        default: "900"
+      launch_run:
+        description: "stage 2: boot the finished disk and check the desktop comes up"
+        type: boolean
+        default: true
       publish:
         description: "publish the finished disk to ghcr"
         type: boolean
@@ -148,3 +155,73 @@ jobs:
           kind: bsd-ghostbsd-mate
           tag: ${{ inputs.publish_tag || 'bsd-ghostbsd-gui' }}
           token: ${{ github.token }}
+
+  # ===========================================================================
+  # STAGE TWO - BOOT THE DISK AND SEE THE DESKTOP. See lib/launch_linux.py.
+  # ===========================================================================
+  #
+  # THE BAKE PROVES THE INSTALL; THIS PROVES THE ARTEFACT. A disk whose bootloader was never
+  # written installs perfectly and then does nothing, and the only way to see it is to start
+  # the disk with no installer attached - which is what this job does, through the same
+  # lib/launch_linux.py the answer-file bakes use.
+  #
+  # IT PULLS FROM ghcr RATHER THAN TAKING AN ARTIFACT, because a 5 GiB file through the
+  # artifact store is slower than the registry and expires. That is why the bake must publish
+  # for this job to have anything to start.
+  #
+  # `--ssh skip` IS STAGE THREE'S QUESTION, NOT THIS ONE. None of these images carries sshd -
+  # no GUI driver installs it - so this stage asks whether the desktop comes up, and the frame
+  # is its verdict where no session exists to read.
+  launch:
+    needs: [bake]
+    if: |
+      always() && inputs.launch_run && inputs.bake_run
+      && needs.bake.result == 'success' && inputs.publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN
+    permissions:
+      contents: read
+      packages: read
+      checks: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '30'
+          token: ${{ github.token }}
+
+      - name: launch it
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: ghostbsd-mate-launch
+          interval: "20"
+          command: |
+            set -euo pipefail
+            python3 lib/launch_linux.py \
+              --tag "${{ needs.bake.outputs.tag || 'bsd-ghostbsd-mate' }}" \
+              --kind ghostbsd-mate \
+              --ssh skip \
+              --artifacts "out/ghostbsd-mate-launch" \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}"
+
+      - name: keep the verdict
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ghostbsd-mate-launch
+          path: |
+            out/ghostbsd-mate-launch/launch.txt
+            out/ghostbsd-mate-launch/console.log
+            out/ghostbsd-mate-launch/screen.png
+          if-no-files-found: warn
+          retention-days: 14

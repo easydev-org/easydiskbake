@@ -41,6 +41,25 @@ import sys
 import threading
 import time
 
+# THE REPOSITORY'S OWN NETWORK, NOT SLIRP.
+#
+# Every other guest here runs on a tap bridged to lib/net.py: a real interface with dnsmasq
+# for DHCP and DNS, MASQUERADE for outbound, and iptables DNAT for the port forwards. The
+# reason is in that module's docstring and it applies here too - a slirp guest's packets are
+# re-issued by the qemu process, which does not carry the container's proxy or routing, and
+# a guest that needs to reach anything is a guest that hangs.
+#
+# Android was started on slirp by the emulator's default and got NO NETWORK AT ALL:
+#
+#     lo 127.0.0.1/8
+#     dummy0, ifb0, ifb1, tunl0, gre0 ...     all DOWN
+#     ping: connect: Network is unreachable
+#
+# virtio_net was loaded and never bound to a PCI device, because no -netdev was passed.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))))
+from lib import net as netlib  # noqa: E402
+
 LOOPBACK = "androidboot.boot_devices=vda,vdb,vdc,vdd,vde," \
            "pci0000:00/0000:00:01.0,pci0000:00/0000:00:02.0,pci0000:00/0000:00:03.0," \
            "pci0000:00/0000:00:04.0,pci0000:00/0000:00:05.0,pci0000:00/0000:00:06.0"
@@ -243,8 +262,29 @@ def main(argv: list[str]) -> int:
     p.add_argument("--seconds", type=int, default=260)
     p.add_argument("--evidence", default="",
                    help="write the guest's screenshot to this path, for upload")
+    p.add_argument("--tap", default="",
+                   help="a tap interface from lib/net.py; empty for the emulator's default "
+                        "(a userspace NAT that gives the guest no reachable network)")
+    p.add_argument("--ssh-port", type=int, default=2222,
+                   help="host port forwarded to the guest's ssh port")
     a = p.parse_args(argv)
     D = os.path.abspath(a.dir)
+
+    # THE LINK FIRST, BECAUSE THE EMULATOR OPENS IT BY NAME.
+    #
+    # lib/net.py creates the bridge, the tap, dnsmasq and the DNAT rules, and is idempotent -
+    # a second call finds what is already there. The forward is 2222 -> the guest's ssh port,
+    # which is what every other system in this repository uses and what a caller expects.
+    if a.tap:
+        ok, why = netlib.available()
+        if not ok:
+            raise SystemExit(
+                f"=== NO BRIDGED NETWORK AVAILABLE ===\n  {why}\n"
+                f"  A container needs NET_ADMIN and /dev/net/tun. See lib/net.py.")
+        netlib.up(ssh_port=a.ssh_port, forwards={a.ssh_port: 22, 8022: 8022})
+        print(f"[run_qemu] tap {a.tap}, "
+              f"{netlib.FORWARD_HOST}:{a.ssh_port} -> guest:22, "
+              f"{netlib.FORWARD_HOST}:8022 -> guest:8022", flush=True)
 
     log = os.path.join(D, "run.log")
     # THE AVD SENTINEL THE EMULATOR INSISTS ON. Its absence is a SIGSEGV with no
@@ -276,6 +316,11 @@ def main(argv: list[str]) -> int:
         # guest at all.
         "-shell",
         "-append-userspace-opt", LOOPBACK,
+        # THE TAP, OR NOTHING. `-net-tap` is the emulator's own option for this - it does
+        # not need to be smuggled through `-qemu` like the QMP socket does - and lib/net.py
+        # has already created the interface, the bridge, the DHCP lease and the DNAT rules
+        # by the time this runs.
+        *(["-net-tap", a.tap] if a.tap else []),
         "-feature", "RefCountPipe",
         "-feature", "VirtioVsockPipe",
         "-show-kernel",
@@ -344,6 +389,12 @@ def main(argv: list[str]) -> int:
         ok = False
 
     print("\nVERDICT:", "ANDROID BOOTS" if ok else "see the log")
+    if a.tap:
+        # THE ADDRESS THE CALLER SHOULD USE. Every client in this repository names the
+        # bridge address rather than 127.0.0.1 - a loopback destination cannot be DNATed to
+        # a guest, because the rewrite changes the destination and not the source.
+        print(f"[run_qemu] reach it at {netlib.FORWARD_HOST}:{a.ssh_port} (ssh) "
+              f"or :8022")
     return 0 if ok else 1
 
 

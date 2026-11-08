@@ -236,17 +236,51 @@ def unpack_opencore(archive: str, work: str) -> str:
                         supplies the rest; _merge_template() is what combines them.
     """
     out = os.path.join(work, "opencore")
-    if os.path.isdir(out):
-        return out
+    efi = os.path.join(out, "X64", "EFI")
+
+    # A WARM CACHE MUST RETURN THE EFI TREE, NOT THE EXTRACTION ROOT.
+    #
+    # This returned `out` when the directory existed, and `out` is where unzip unpacks - not
+    # where the tree lands. On a FRESH directory the two are the same call site and the
+    # difference does not exist, which is why this survived every CI run: each job starts with
+    # an empty emptyDir, so the cache never hit and the bug never ran.
+    #
+    # A PERSISTENT WORK DIRECTORY EXPOSES IT IMMEDIATELY. The first real run of
+    # macos/15/steps/setup.yaml on a reused volume built a boot.img whose ESP held
+    #
+    #     ::/        opencore    <DIR>
+    #
+    # and no EFI/ at all, so OVMF found nothing to load and dropped to its shell:
+    #
+    #     BdsDxe: failed to load Boot0001 "UEFI Misc Device": Not Found
+    #     BdsDxe: loading Boot0003 "EFI Internal Shell"
+    #     Shell>
+    #
+    # and the walkthrough then polled for a recovery menu that was never going to appear. The
+    # check below is the same one extract_template_boot() already had for exactly this reason -
+    # a marker that names the tree that was chosen, so a warm cache returns what a cold one did.
+    marker = os.path.join(out, ".efi-tree")
+    if os.path.isfile(marker):
+        with open(marker, encoding="utf-8") as fh:
+            cached = fh.read().strip()
+        if cached and os.path.isdir(os.path.join(cached, "BOOT")):
+            return cached
+        log(f"  {marker} names {cached!r}, which is not an EFI tree; unpacking again")
+        shutil.rmtree(out, ignore_errors=True)
+    elif os.path.isdir(out):
+        log(f"  {out} exists but was never finished; unpacking again")
+        shutil.rmtree(out, ignore_errors=True)
+
     os.makedirs(out, exist_ok=True)
     subprocess.run(
         ["unzip", "-q", archive, "X64/EFI/*", "-d", out],
         check=True,
     )
-    efi = os.path.join(out, "X64", "EFI")
     for required in ("BOOT/BOOTx64.efi", "OC/OpenCore.efi"):
         if not os.path.exists(os.path.join(efi, required)):
             raise OpenCoreError(f"{archive} holds no {required}; the archive layout changed")
+    with open(marker, "w", encoding="utf-8") as fh:
+        fh.write(efi + "\n")
     return efi
 
 
@@ -745,6 +779,31 @@ def build_boot_image(efi: str, dest: str) -> str:
             f"{dest} does not hold OpenCore.efi inside its ESP after mcopy:\n"
             f"{listing.stdout[:600]}"
         )
+
+    # THE FIRMWARE LOOKS FOR \\EFI\\BOOT\\BOOTX64.EFI AND NOTHING ELSE.
+    #
+    # "OpenCore.efi is somewhere on the ESP" is a weaker question, and it was answered YES by
+    # a boot image whose tree had been copied one level too high: the listing read
+    #
+    #     ::/        opencore    <DIR>
+    #     ::/opencore/...
+    #
+    # which contains the string OpenCore.efi and cannot boot. OVMF then found no boot entry,
+    # fell through to its internal shell, and the failure surfaced as a walkthrough polling
+    # for a recovery menu that was never going to appear.
+    #
+    # So the check is the PATH the firmware actually opens.
+    for required in ("::/EFI/BOOT/BOOTX64.EFI", "::/EFI/OC/OpenCore.efi"):
+        probe = subprocess.run(["mdir", "-i", partition, "-/", required],
+                               capture_output=True, text=True)
+        if probe.returncode != 0:
+            raise OpenCoreError(
+                f"{dest} has no {required} in its ESP. The firmware looks for "
+                f"\\EFI\\BOOT\\BOOTX64.EFI; without it OVMF drops to its internal shell and "
+                f"nothing says why. The tree at the top of this ESP is:\n"
+                f"{listing.stdout[:600]}"
+            )
+
     log(f"boot.img: {image_size >> 20} MiB, GPT + ESP at LBA {esp_first}, "
         f"EFI tree copied")
     return dest
