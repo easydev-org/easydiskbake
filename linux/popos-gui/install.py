@@ -237,10 +237,23 @@ def walk_installer(drv: Driver, args) -> bool:
     # 7. THE ACCOUNT, PANE ONE. `Full Name` COPIES INTO `User Name` AS IT IS TYPED, so both
     #    are set explicitly - measured: typing the name into both without clearing left
     #    `User Name` reading `dockerdocker`.
-    log("filling the account name")
-    drv.clear_and_type(ACCOUNT_NAME["full name"], args.user)
-    drv.look("full name typed")
-    drv.clear_and_type(ACCOUNT_NAME["user name"], args.user)
+    # CLICK AND TYPE, for the same reason as the password pane: this installer's pages put
+    # their entries close to their artwork controls, and a `ctrl+a` + forty BackSpaces lands
+    # on the wrong one. Both fields start empty. `Full Name` copies into `User Name` as it is
+    # typed, so `User Name` is emptied by hand and typed once - measured: without that,
+    # `User Name` read `dockerdocker`.
+    log("filling the account name (click, then type - the fields start empty)")
+    Q.click(drv.q, *ACCOUNT_NAME["full name"])
+    time.sleep(1.5)
+    keys.type_text(drv.q, args.user, per_char=0.12)
+    time.sleep(2.0)
+    Q.click(drv.q, *ACCOUNT_NAME["user name"])
+    time.sleep(1.5)
+    for _ in range(40):
+        Q.key(drv.q, "backspace")
+        time.sleep(0.02)
+    keys.type_text(drv.q, args.user, per_char=0.12)
+    time.sleep(1.5)
     drv.look("account name filled")
     drv.click(SELECT, "Create User Account: Next", settle=22.0)
     drv.look("create user account password")
@@ -248,9 +261,29 @@ def walk_installer(drv: Driver, args) -> bool:
     # 8. THE ACCOUNT, PANE TWO: the password twice. `admin` draws
     #    `The password is shorter than 8 characters` beside the field, and the same footer
     #    button continues - the warning every other bake here accepts.
-    log("filling the account password")
-    drv.clear_and_type(ACCOUNT_PASSWORD["password"], args.password)
-    drv.clear_and_type(ACCOUNT_PASSWORD["confirm"], args.password)
+    # PLAIN CLICK, THEN TYPE - no `ctrl+a`, no forty backspaces.
+    #
+    # THIS PAGE IS NOT LIKE THE OTHERS. Measured on run at 14c896f: after typing the
+    # password the frame read
+    #
+    #     Choose | Icon | Recent | Q | admin... | Home | Desktop | Other Locations
+    #
+    # - a GTK FILE CHOOSER, opened by a click that landed on this pane's artwork picker
+    # rather than on the entry. The generic clear-then-type helper clicks the field, selects
+    # all, and sends forty BackSpaces; on a page whose entries and artwork sit close
+    # together, one of those lands on the wrong control and the installer is covered.
+    #
+    # The fields start EMPTY on this pane, so nothing needs clearing. A click and the text is
+    # exactly what a live session did, and that session installed 3.58 GiB.
+    log("filling the account password (click, then type - the fields start empty)")
+    for label, spot in (("password", ACCOUNT_PASSWORD["password"]),
+                        ("confirm", ACCOUNT_PASSWORD["confirm"])):
+        Q.click(drv.q, *spot)
+        time.sleep(1.5)
+        unsupported = keys.type_text(drv.q, args.password, per_char=0.12)
+        if unsupported:
+            log(f"  COULD NOT TYPE {unsupported!r}")
+        time.sleep(1.0)
     drv.look("password filled")
     drv.click(SELECT, "Create User Account: Next", settle=25.0)
     drv.look("drive encryption")
@@ -356,7 +389,7 @@ def main(argv: list[str]) -> int:
     p.add_argument("--cpus", type=int, default=4)
     p.add_argument("--timeout", type=int, default=5400)
     p.add_argument("--user", default=os.environ.get("POPOS_USER", "docker"))
-    p.add_argument("--password", default=os.environ.get("POPOS_PASSWORD", "admin12345"))
+    p.add_argument("--password", default=os.environ.get("POPOS_PASSWORD", "admin"))
     args = p.parse_args(argv)
 
     if not os.path.isfile(args.iso):
