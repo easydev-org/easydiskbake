@@ -404,6 +404,46 @@ def test_region_is_a_crop() -> None:
     check(ok, "a step with no region reads the whole frame")
 
 
+def test_pane_do_list() -> None:
+    print("\n=== a pane's `do` list is answered in ONE pass")
+    document = steps.Walk({
+        "name": "account pane",
+        "ends": ["finder"],
+        "stuck_after": 0,
+        "pane_limit": 2,
+        "steps": [
+            {"name": "create a mac account", "when": ["full", "name"],
+             "do": [
+                 {"at": [1, 1], "type": "docker", "settle": 0},
+                 {"at": [2, 2], "type": "admin", "settle": 0},
+                 {"at": [3, 3], "settle": 0},
+             ]},
+        ],
+    }, path="inline")
+
+    class Account(FakeDriver):
+        def __init__(self):
+            super().__init__()
+            self.script = ["Create a Mac Account Full Name", "Finder File Edit"]
+            self.step = 0
+
+        def look(self, label="look"):
+            self.screen = self.script[min(self.step, len(self.script) - 1)]
+            self.step += 1
+            return super().look(label)
+
+    driver = Account()
+    ok, answered = steps.walk(driver, document)
+    check(ok, "the walk reaches the end")
+    # THREE ACTIONS IN ONE PASS, NOT THREE PASSES. A loop that ran one action per pass left the
+    # pane on the first field forever - the second pass matched the same pane, saw the full name
+    # already typed, and stopped.
+    check(driver.typed == [((1, 1), "docker"), ((2, 2), "admin")],
+          f"both fields typed in one pass, got {driver.typed}")
+    check(driver.clicks == [(3, 3)], f"and the Continue clicked once, got {driver.clicks}")
+    check(answered == ["create a mac account"], f"one pane answered, got {answered}")
+
+
 def test_headless_needs_no_screen() -> None:
     print("\n=== a walkthrough with no GUI steps needs no QMP socket")
     headless = steps.HeadlessDriver("/tmp")
@@ -449,6 +489,7 @@ def main() -> int:
     test_mixed_is_refused()
     test_ssh_step()
     test_region_is_a_crop()
+    test_pane_do_list()
     test_headless_needs_no_screen()
     test_real_files()
 
