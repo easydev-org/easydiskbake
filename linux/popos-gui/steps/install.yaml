@@ -63,16 +63,16 @@ steps:
   # `Erase and Install` and the account panes really are at y=817 - see the steps below. This
   # is the same lesson as cachyos' three footer heights, and the numbers are per pane.
   - name: select a language
-    at: [1367, 790]
+    python: footer:press_footer
     settle: 21
   - name: language variants
-    at: [1367, 790]
+    python: footer:press_footer
     settle: 21
   - name: keyboard layout
-    at: [1367, 790]
+    python: footer:press_footer
     settle: 21
   - name: keyboard variants
-    at: [1367, 790]
+    python: footer:press_footer
     settle: 21
 
   # =======================================================================================
@@ -87,7 +87,7 @@ steps:
     settle: 8
 
   - name: install
-    at: [1367, 817]
+    python: footer:press_footer
     settle: 21
 
   # =======================================================================================
@@ -107,7 +107,7 @@ steps:
   # `Erase and Install` is grey until the row is selected, and its own centre is measured from
   # the same frame: the label spans x=1274..1366, so the button is centred at (1320,798).
   - name: erase and install
-    at: [1320, 798]
+    python: footer:press_footer
     settle: 44
 
   # =======================================================================================
@@ -134,7 +134,7 @@ steps:
     settle: 2
 
   - name: create user account
-    at: [1367, 817]
+    python: footer:press_footer
     settle: 22
 
   # =======================================================================================
@@ -150,7 +150,7 @@ steps:
     settle: 2
 
   - name: account password next
-    at: [1367, 817]
+    python: footer:press_footer
     settle: 25
 
   # =======================================================================================

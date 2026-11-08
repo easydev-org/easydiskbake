@@ -113,6 +113,7 @@ STEP_KEYS = {    "name",        # required: what the log calls this step
     "stuck_after", # seconds of no pane matching before the walk is declared stuck
     "release",     # which release this pane's numbers were measured on
     "python",      # an escape hatch: "module:function" for a measured exception
+    "press",       # for a python step: which footer control it should press by name
 }
 
 # THE KEYS AN ACTION INSIDE `do` MAY CARRY. A pane's actions are the same vocabulary as a
