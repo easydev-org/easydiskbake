@@ -91,21 +91,25 @@ steps:
     settle: 21
 
   # =======================================================================================
-  # 3. SELECT A DRIVE. THE ROW, THEN `Erase and Install`.
+  # 3. SELECT A DRIVE. THE CARD, THEN `Erase and Install`.
   # =======================================================================================
   #
-  # THE ROW IS A BAR AT y=295..330, NOT THE TEXT BESIDE IT. Measured on run 42529279468's
-  # frame at 22:27: the selectable bar spans x=665..1385, y=295..330, and the drive's name
-  # (`Virtio Block Device /dev/vda 68.7 GB unusued`) is the caption to its left. The walk
-  # pressed (1150,500) - two hundred pixels BELOW the bar - so nothing was selected, the
-  # footer's `Erase and Install` stayed grey, and the installer sat on this pane for the whole
-  # run with the disk at 0 MiB. The videos show it from 22:25 to 22:31.
+  # THE CARD IS AT (1193,498), NOT A BAR AT y=312. Measured on run 42533083200's frame at
+  # 23:07, which is the pane this step was actually looking at: the drive's card - the icon
+  # plus `Virtio Block Device` and `/dev/vda 64.0 GiB` - has its ink between x=1114..1272,
+  # y=477..519.
+  #
+  # AN EARLIER VERSION USED (1000,312) FROM A DIFFERENT LAYOUT. That frame (run 42529279468)
+  # showed a horizontal grey bar for the drive because the disk was then UNPARTITIONED and the
+  # pane drew a partition strip; on a fresh disk this pane draws a CARD in the middle instead.
+  # Clicking the empty bar selected nothing, `Erase and Install` stayed grey, and the locator
+  # then reported "no footer button" - which is the honest answer and how this was found.
   - name: select a drive
-    at: [1000, 312]
+    at: [1193, 498]
     settle: 8
 
-  # `Erase and Install` is grey until the row is selected, and its own centre is measured from
-  # the same frame: the label spans x=1274..1366, so the button is centred at (1320,798).
+  # `Erase and Install` is enabled by that selection. The locator finds it: on this pane its
+  # grey fill is at y=805..828, and once the card is selected it turns green in place.
   - name: erase and install
     python: footer:press_footer
     settle: 44
