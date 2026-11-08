@@ -356,7 +356,7 @@ def main(argv: list[str]) -> int:
     p.add_argument("--cpus", type=int, default=4)
     p.add_argument("--timeout", type=int, default=5400)
     p.add_argument("--user", default=os.environ.get("POPOS_USER", "docker"))
-    p.add_argument("--password", default=os.environ.get("POPOS_PASSWORD", "admin"))
+    p.add_argument("--password", default=os.environ.get("POPOS_PASSWORD", "admin12345"))
     args = p.parse_args(argv)
 
     if not os.path.isfile(args.iso):
