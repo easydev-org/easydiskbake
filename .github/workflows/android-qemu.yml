@@ -237,12 +237,66 @@ jobs:
       # That ordering is the whole mechanism: mkdisks only makes a filesystem when there is
       # not one already, so a restored userdata.img survives it. Restoring afterwards would
       # mean the disks were built for a fresh device and then partly overwritten.
+      # download-artifact ONLY SEES ARTIFACTS FROM THE RUN THAT IS EXECUTING. Measured:
+      #
+      #     Unable to download artifact(s): Artifact not found for name: android-qemu-userdata
+      #
+      # while the artifact was present and unexpired - it was uploaded by the PREVIOUS run.
+      # Reaching across runs needs `github-token` and an explicit `run-id`, and `run-id` must
+      # be a number, so the name is resolved to the newest matching artifact first.
+      # download-artifact ONLY SEES ARTIFACTS FROM THE RUN THAT IS EXECUTING. Measured:
+      #
+      #     Unable to download artifact(s): Artifact not found for name: android-qemu-userdata
+      #
+      # while the artifact was present and unexpired - it had been uploaded by the PREVIOUS
+      # run. Reaching across runs needs the REST API and `run-id`, and `run-id` is a number,
+      # so the newest matching artifact is resolved first.
+      #
+      # NO `gh` IN THIS IMAGE, so the API is called with curl and the token directly. That is
+      # the same interface `gh` uses; there is nothing here that needs the CLI.
       - name: restore a saved /data
         if: inputs.userdata_from != ''
-        uses: actions/download-artifact@v4
+        uses: easydev-org/easyactions/log-stream@main
         with:
-          name: ${{ inputs.userdata_from }}
-          path: out/disks
+          token: ${{ github.token }}
+          name: android-qemu-restore
+          interval: "10"
+          command: |
+            set -euo pipefail
+            API="https://api.github.com/repos/${{ github.repository }}"
+            AUTH="Authorization: Bearer ${{ github.token }}"
+            mkdir -p out/disks
+
+            # THE NEWEST UNEXPIRED ARTIFACT WITH THAT NAME, ACROSS EVERY RUN.
+            curl -fsSL -H "$AUTH" "$API/actions/artifacts?per_page=100" \
+              | python3 -c "
+            import json,sys
+            want = sys.argv[1]
+            arts = [a for a in json.load(sys.stdin)['artifacts']
+                    if a['name'] == want and not a['expired']]
+            if not arts:
+                sys.exit(3)
+            a = max(arts, key=lambda x: x['created_at'])
+            print(a['id'], a['workflow_run']['id'])
+            " "${{ inputs.userdata_from }}" > /tmp/pick.txt || {
+              echo "=== no unexpired artifact named ${{ inputs.userdata_from }} ==="
+              exit 1
+            }
+            ID=$(cut -d" " -f1 /tmp/pick.txt); RUN=$(cut -d" " -f2 /tmp/pick.txt)
+            echo "artifact $ID from run $RUN"
+
+            # THE ARTIFACT IS A ZIP, and one large file inside it. curl follows the redirect
+            # the API answers with to the blob storage host.
+            curl -fsSL -H "$AUTH" -o /tmp/pair.zip \
+              "$API/actions/artifacts/$ID/zip"
+            python3 -c "
+            import zipfile
+            with zipfile.ZipFile('/tmp/pair.zip') as z:
+                for n in z.namelist():
+                    print('extracting', n)
+                z.extractall('out/disks')
+            "
+            ls -la out/disks | head
 
       - name: build the disks
         uses: easydev-org/easyactions/log-stream@main
