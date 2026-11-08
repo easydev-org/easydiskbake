@@ -1,0 +1,150 @@
+name: zorin-gui
+
+# Install Zorin OS from its official Live ISO, through Ubiquity, its graphical installer.
+#
+# Zorin is an Ubuntu derivative and its installer is Ubiquity - the same program Mint uses,
+# with the same seven panes - so linux/zorin-gui/install.py is mint-gui's driver with this
+# desktop's two differences handled: GNOME refuses to run the desktop's own installer
+# launcher (it is not marked trusted), and the session blanks and locks itself. Both are
+# dealt with by one terminal that starts `pkexec ubiquity`, disables the X and GNOME blanks,
+# and keeps a pointer keepalive running from inside the session.
+#
+# THE SHA256 BELONGS TO THIS EXACT FILE, r3 of 18. The mirror also carries 18.1 and older
+# revisions of 18; the value and the URL are the ones this driver was measured against, and
+# a different build fails the check rather than being silently baked.
+#
+# THE MEDIUM IS BOOTED AS ITS OWN BOOTLOADER INTENDS - no -kernel, no -initrd, no
+# hand-copied command line. Those were tried and cost two runs: an added `copytoram`
+# filled the guest's memory from the ISO's own squashfs, and a guessed
+# `archisobasedir=garuda` sent Garuda to an emergency shell because its medium is miso,
+# not archiso. The ISO's own grub.cfg has both right, and the firmware finds it through
+# the El Torito catalog.
+#
+# THE MACHINE IS UEFI. On the BIOS path Garuda refuses outright ("not booted in UEFI
+# mode ... unsupported") and produced disks with an MBR and no ESP. Booting the medium on
+# OVMF is what its own images expect, and it is what lib/uefi.py attaches.
+#
+# MANUAL ONLY: an installer driven by synthetic clicks is not something to run on every push.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bake_run:
+        description: "Install Linux Mint 22.3 Cinnamon through Ubiquity"
+        type: boolean
+        default: true
+      iso_url:
+        description: "ISO URL (empty for the pinned image)"
+        default: ""
+      iso_sha256:
+        description: "ISO sha256 (empty for the pinned value)"
+        default: ""
+      disk_size:
+        description: "guest disk size"
+        default: "64G"
+      install_timeout:
+        description: "seconds the installer may take"
+        default: "5400"
+      publish_tag:
+        description: "tag to publish under; empty for linux-mint-gui"
+        default: "linux-zorin-gui"
+      publish:
+        description: "publish the finished disk to ghcr"
+        type: boolean
+        default: true
+
+concurrency:
+  group: zorin-gui-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bake:
+    if: inputs.bake_run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '40'
+          token: ${{ github.token }}
+
+      - name: prepare
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: zorin-gui-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py tags --prefix linux-
+
+      - name: fetch the Live ISO
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: zorin-gui-iso
+          interval: "10"
+          command: |
+            set -euo pipefail
+            URL="${{ inputs.iso_url }}"
+            SHA="${{ inputs.iso_sha256 }}"
+            if [ -z "$URL" ]; then
+              URL="https://mirrors.edge.kernel.org/zorinos-isos/18/Zorin-OS-18-Core-64-bit-r3.iso"
+              SHA="09959ce793b8a065b70207e46cd646b1de805fc7e0bad925ce28df6e04b7f807"
+            fi
+            mkdir -p out/iso
+            ISO_URL="$URL" ISO_SHA256="$SHA" DEST="out/iso/Zorin-OS-18-Core-64-bit-r3.iso" \
+              python3 lib/fetch_vendor_iso.py --segments 8
+
+      - name: install through Ubiquity
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: zorin-gui-install
+          interval: "15"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            export SNAPSHOT_INTERVAL=2
+            ISO=$(ls out/iso/*.iso | head -1)
+            echo "iso: $ISO"
+            python3 linux/zorin-gui/install.py \
+              --iso "$ISO" \
+              --out out/zorin-gui.qcow2 \
+              --disk-size "${{ inputs.disk_size || '64G' }}" \
+              --timeout "${{ inputs.install_timeout || '5400' }}"
+
+      - name: keep the recording
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zorin-gui-recording
+          path: |
+            out/install.mp4
+            out/last-frame.png
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: push the disk
+        if: success() && inputs.publish
+        id: publish
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/zorin-gui.qcow2
+          kind: linux-zorin-gui
+          tag: ${{ inputs.publish_tag || 'linux-zorin-gui' }}
+          token: ${{ github.token }}
