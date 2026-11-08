@@ -1,19 +1,28 @@
-"""Build the bake image, the Android builder image and the Android qemu image, and push all three.
+"""Build the bake image, the Android images and the macOS appliance, and push them all.
 
-    python3 lib/build_image.py                 # all three
+    python3 lib/build_image.py                 # the three tooling images
+    python3 lib/build_image.py --only appliance  # just the macOS appliance
     python3 lib/build_image.py --only bake     # just the bake image
 
-THREE IMAGES, THREE PURPOSES
+FOUR IMAGES, FOUR PURPOSES
 
     <repo>:latest           the bake image: qemu, xorriso, swtpm, OVMF, ffmpeg,
                             wimlib, aria2, oras, python3
     <repo>:android-builder  cmdline-tools, a JRE, unzip, zstd - and nothing that boots
     <repo>:android-qemu     the emulator, adb, lz4, e2fsprogs and a system image - the
                             tools that turn an AOSP system image into bootable disks
+    <repo>:macos15-appliance a bootable macOS 15 VM: the baked macos15-ssh disk, the
+                            recovery image and the OpenCore assets, all inside the image
 
 They are separate because the second is 1.5 GB of SDK and JDK that only one workflow
 calls, and the bake image is pulled by every bake. Combining them would make every
 Windows bake carry an Android SDK it never opens.
+
+macos15-appliance is separate for the opposite reason: it is 16 GiB of disk that only
+someone who wants to run macOS pulls, so it must not be a layer of the image every bake
+starts from. It is also the one image here that needs a registry credential DURING the
+build - it pulls six artifacts from this repository's own package - which is a `--secret`
+mount rather than a build argument, so the token never lands in the image history.
 
 android-qemu is separate for a measured reason rather than a tidy one: the bake image has
 no `lz4`, and mkdisks.py needs it to append an fstab to the SDK ramdisk as a third legacy
@@ -119,16 +128,46 @@ QEMU_CHECKS = [
 ]
 
 
-def _build(image: str, tag: str, dockerfile: str, *, stamp: str | None) -> None:
+# What the macOS appliance carries. EVERY ENTRY IS SOMETHING THE BOOT NEEDS, and the point
+# of checking here rather than at first start is that a missing asset otherwise shows up as a
+# guest sitting at a prohibited sign - or, worse, at a Setup Assistant, which looks like a
+# working boot for several minutes.
+#
+# The disk is checked through its manifest, not by listing files: 15.9 GiB of qcow2 is either
+# the published bytes or it is nothing, and only the hashes can tell the two apart.
+APPLIANCE_CHECKS = [
+    ["sh", "-c", "test -s /assets/recovery.dmg"],
+    ["sh", "-c", "test -s /assets/opencore/macos.rom"],
+    ["sh", "-c", "test -s /assets/opencore/OVMF_VARS-1920x1080.fd"],
+    ["sh", "-c", "test -s /assets/opencore/opencore.zip"],
+    ["sh", "-c", "test -s /assets/opencore/opencore-template.iso"],
+    ["sh", "-c", "test -s /assets/disk/parts.json"],
+    # RE-READ THE MANIFEST AND EVERY PART'S HASH. This is the check that makes "the image
+    # carries the published disk" a measurement rather than a claim, and it is cheap next to
+    # the pull that produced it.
+    ["python3", "/repo/lib/disk_parts.py", "verify", "/assets/disk"],
+    ["sh", "-c", "command -v websockify qemu-system-x86_64 dnsmasq iptables ip"],
+    ["sh", "-c", "test -f /usr/share/novnc/vnc.html"],
+]
+
+
+def _build(image: str, tag: str, dockerfile: str, *, stamp: str | None,
+           secret: str | None = None) -> None:
     log(f"building {image}:{tag}")
     tags = ["-t", f"{image}:{tag}"]
     if stamp:
         tags += ["-t", f"{image}:{stamp}"]
 
-    result = subprocess.run(
-        ["docker", "build", "--progress=plain", "-f", dockerfile, *tags, "."],
-        check=False,
-    )
+    args = ["docker", "build", "--progress=plain"]
+    if secret:
+        # A MOUNT, NOT AN ARG. `--build-arg TOKEN=...` writes the value into the image
+        # history, which every layer keeps; a BuildKit secret is mounted for the one RUN that
+        # reads it and is absent from the result. The appliance build pulls from this
+        # repository's own ghcr package, so it is the one build here that needs a credential.
+        args += ["--secret", f"id=ghcr_token,src={secret}"]
+    args += ["-f", dockerfile, *tags, "."]
+
+    result = subprocess.run(args, check=False)
     if result.returncode != 0:
         raise Failed(f"docker build for {dockerfile} failed ({result.returncode})")
 
@@ -161,8 +200,11 @@ def _push(image: str, tags: list[str]) -> None:
 
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--only", choices=["bake", "android", "qemu"], default=None,
-                   help="build one image instead of all three")
+    p.add_argument("--only", choices=["bake", "android", "qemu", "appliance"], default=None,
+                   help="build one image instead of all four")
+    p.add_argument("--ghcr-token-file", default="",
+                   help="file holding a ghcr token for the appliance build; written to a "
+                        "temporary file when empty and pushed out of the image afterwards")
     args = p.parse_args(argv)
 
     registry = os.environ.get("REGISTRY", "ghcr.io")
@@ -190,6 +232,29 @@ def main(argv: list[str]) -> int:
             _build(image, "android-qemu", "android/15/Containerfile.qemu", stamp=None)
             _verify(image, "android-qemu", QEMU_CHECKS)
             _push(image, ["android-qemu"])
+
+        if args.only in (None, "appliance"):
+            # NO STAMP. A 16 GiB image is not something to redeploy by accident, and its
+            # content is a published disk rather than a build of this commit - the stamp
+            # would date the Dockerfile, not the macOS install inside it.
+            token_file = args.ghcr_token_file
+            temporary = ""
+            if not token_file:
+                token = os.environ.get("GITHUB_TOKEN", "")
+                if token:
+                    temporary = "/tmp/ghcr_token"
+                    with open(temporary, "w", encoding="utf-8") as fh:
+                        fh.write(token)
+                    token_file = temporary
+            try:
+                _build(image, "macos15-appliance",
+                       "macos/15/Containerfile.appliance", stamp=None,
+                       secret=token_file or None)
+            finally:
+                if temporary and os.path.exists(temporary):
+                    os.unlink(temporary)
+            _verify(image, "macos15-appliance", APPLIANCE_CHECKS)
+            _push(image, ["macos15-appliance"])
 
         log("IMAGE_READY")
         return 0

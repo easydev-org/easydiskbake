@@ -330,6 +330,34 @@ def userdata_filesystem(dest: str, force: bool = False) -> bool:
     return True
 
 
+def has_cache(path: str) -> bool:
+    """True if the file is a cache.img this builder made - a GPT with `system` in it.
+
+    CHECKED BY STRUCTURE, NOT BY SIZE. cache.img's size follows the super partition inside
+    it, which changes when Google ships a different system image; a size test would rebuild
+    a perfectly good cache the first time that happened and take the /data key with it. The
+    partition table is the property that says "this is one of ours".
+    """
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(SECTOR)
+            header = fh.read(92)
+            if header[0:8] != b"EFI PART":
+                return False
+            entries_lba = int.from_bytes(header[72:80], "little")
+            count = int.from_bytes(header[80:84], "little")
+            size = int.from_bytes(header[84:88], "little")
+            fh.seek(entries_lba * SECTOR)
+            array = fh.read(count * size)
+    except OSError:
+        return False
+    names = {
+        array[i * size:(i + 1) * size][56:128].decode("utf-16-le", "ignore").rstrip("\x00")
+        for i in range(count) if any(array[i * size:(i + 1) * size])
+    }
+    return {"system", "metadata"} <= names
+
+
 def has_userdata(path: str) -> bool:
     """True if the file is a /data image of the size this builder makes.
 
@@ -676,7 +704,26 @@ def main(argv: list[str]) -> int:
     log(f"system image: {sdk}")
 
     stage(work, sdk)
-    build_cache(os.path.join(sdk, "system.img"), os.path.join(work, "cache.img"))
+    # cache.img IS REBUILT ONLY WHEN THERE IS NOT ONE, AND THE REASON IS THE SAME AS /data's.
+    #
+    # It holds the `metadata` partition, and /data's decryption key lives there:
+    #
+    #     /metadata/vold
+    #     /metadata/password_slots
+    #
+    # so rebuilding it throws the key away while leaving the encrypted /data in place. The
+    # guest then boots, cannot open /data, and stops in apexd-bootstrap with nothing in the
+    # log naming the cause - measured on run 42478503710, and the reason a restored pair
+    # could not be used at all.
+    #
+    # THE OTHER PARTITIONS ARE UNCHANGED BY A BOOT - system and super are read-only - so
+    # keeping the file keeps nothing stale: it is the same system with its metadata written.
+    cache = os.path.join(work, "cache.img")
+    if has_cache(cache) and not a.force_userdata:
+        log(f"cache {cache}: KEPT (an existing disk, and the key that opens /data is on it)")
+    else:
+        build_cache(os.path.join(sdk, "system.img"), cache)
+        log("  (a fresh cache.img means a fresh /data: the key is made with it)")
 
     userdata = os.path.join(work, "userdata.img")
     if userdata_filesystem(userdata, force=a.force_userdata):

@@ -62,7 +62,13 @@ import json
 import os
 import sys
 
-PART_SIZE = 4 << 30          # 4 GiB, comfortably under the 10 GB layer ceiling
+PART_SIZE = 4 << 30          # 4 GiB, comfortably under the documented per-layer ceiling
+PARTS = 4                    # the default count; the Dockerfile names these one per COPY
+
+# THE CEILING THIS FILE IS BUILT AROUND. GitHub documents it as 10 GB per layer, and every
+# published size below is checked against it rather than against a round number: a part that
+# is "about 4 GiB" is only useful if 4 GiB is provably under the limit.
+LAYER_LIMIT = 10 << 30
 MANIFEST = "parts.json"
 CHUNK = 8 << 20
 
@@ -83,11 +89,34 @@ def _sha256_file(path: str) -> str:
     return digest.hexdigest()
 
 
-def split(path: str, out: str, part_size: int = PART_SIZE) -> str:
-    """Cut `path` into `out/part-NNNN` and write `out/parts.json`. Returns the manifest path."""
+def split(path: str, out: str, part_size: int = 0, parts: int = 0) -> str:
+    """Cut `path` into `out/part-NNNN` and write `out/parts.json`. Returns the manifest path.
+
+    TWO WAYS TO SAY HOW BIG THE PARTS ARE, AND THE COUNT IS THE ONE THAT MATTERS HERE.
+
+    `part_size` is what a caller means when it cares about the ceiling: "no part may exceed
+    this". `parts` is what an IMAGE BUILD needs, because the Dockerfile has to name every part
+    in its own COPY instruction - a COPY of the whole directory is a single layer, which is
+    the thing the split exists to avoid. A fixed count makes that file static.
+
+    Both are checked against the ceiling rather than trusted: a disk that grew since the last
+    build would otherwise produce a 6 GiB part and a build that fails at push time, after the
+    whole 16 GiB was uploaded.
+    """
     if not os.path.isfile(path):
         raise PartsError(f"no disk at {path}")
     os.makedirs(out, exist_ok=True)
+
+    total = os.path.getsize(path)
+    if parts:
+        part_size = (total + parts - 1) // parts
+        log(f"{total >> 20} MiB in {parts} part(s) of {part_size >> 20} MiB")
+    if part_size > LAYER_LIMIT:
+        raise PartsError(
+            f"a part of {part_size >> 20} MiB is over the {LAYER_LIMIT >> 30} GiB layer "
+            f"ceiling. Raise the part count (--parts) and add the extra COPY lines to "
+            f"macos/15/Containerfile.appliance."
+        )
 
     total = os.path.getsize(path)
     whole = hashlib.sha256()
@@ -234,8 +263,11 @@ def main(argv: list[str]) -> int:
     s = sub.add_parser("split", help="cut a disk into parts and write parts.json")
     s.add_argument("disk")
     s.add_argument("--out", required=True)
+    s.add_argument("--parts", type=int, default=0,
+                   help="how many parts (preferred for an image build: the Dockerfile "
+                        "names each one in its own COPY)")
     s.add_argument("--part-size", type=int, default=PART_SIZE,
-                   help=f"bytes per part (default {PART_SIZE}, 4 GiB)")
+                   help=f"bytes per part when --parts is not given (default {PART_SIZE})")
 
     j = sub.add_parser("join", help="write the disk back out of its parts")
     j.add_argument("directory")
@@ -250,7 +282,7 @@ def main(argv: list[str]) -> int:
 
     try:
         if a.cmd == "split":
-            print(split(a.disk, a.out, part_size=a.part_size))
+            print(split(a.disk, a.out, part_size=a.part_size, parts=a.parts))
             return 0
         if a.cmd == "join":
             print(join(a.directory, a.to))

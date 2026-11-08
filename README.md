@@ -39,6 +39,37 @@ disk that cannot boot. `/var/db/.AppleSetupDone` and every `DidSee*` key being t
 not help - the wizard still reappears after a clean shutdown. Use `macos15.yml` for
 anything that needs a macOS disk.
 
+### Running one: the macOS appliance image
+
+`image-build.yml` with `only: appliance` builds `ghcr.io/easydev-org/easydiskbake:macos15-appliance`,
+a container that **is** a macOS 15 machine - the baked `macos15-ssh` disk, the recovery
+image and the OpenCore assets are all inside it, so its first start never touches the
+network:
+
+```sh
+docker run --rm -it \
+    --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN \
+    -p 6080:6080 -p 2222:2222 -p 5900:5900 \
+    -v macos15-data:/data \
+    ghcr.io/easydev-org/easydiskbake:macos15-appliance
+```
+
+```
+http://localhost:6080/vnc.html      the guest's screen
+ssh -p 2222 docker@localhost        password: admin
+```
+
+The volume holds the joined base disk, a qcow2 overlay backing onto it, and the OpenCore
+work tree; qemu boots the overlay, so the base stays byte-identical to what the image
+shipped. Delete the volume and the next start is a factory boot.
+
+Network is the same single mode every bake here uses - a tap on a bridge with dnsmasq,
+MASQUERADE and DNAT (`lib/net.py`), never qemu's `-netdev user`. KVM is required; there is
+no software-emulation fallback, for the reason `lib/vm.py` gives. qemu is PID 1.
+
+It is not built by `only: both`: it is 16 GiB, takes about a quarter of an hour, and only
+someone who wants to run macOS pulls it.
+
 ## Layout
 
 ```

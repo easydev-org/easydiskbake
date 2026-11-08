@@ -117,7 +117,13 @@ def fetch(out: str) -> int:
     log(f"disk {DISK_TAG}")
     pulled = pull_disk.pull(DISK_TAG, tmp)
     log(f"  {pulled}: {os.path.getsize(pulled) >> 20} MiB")
-    manifest = disk_parts.split(pulled, os.path.join(out, "disk"))
+    # A FIXED COUNT, BECAUSE THE DOCKERFILE HAS TO NAME EVERY PART.
+    #
+    # `COPY --from=assets /assets/disk /assets/disk` is ONE instruction and therefore ONE
+    # layer, which is the thing splitting exists to avoid. Each part needs its own COPY line,
+    # so the number of parts has to be known when the Dockerfile is written - see PARTS in
+    # lib/disk_parts.py and the COPY lines in Containerfile.appliance.
+    manifest = disk_parts.split(pulled, os.path.join(out, "disk"), parts=disk_parts.PARTS)
     os.unlink(pulled)
 
     # THE PARTS HAVE TO GO, they are most of the image and the disk has been re-read once

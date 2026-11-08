@@ -64,6 +64,13 @@
 # ---------------------------------------------------------------------------
 FROM ghcr.io/easydev-org/easydiskbake:latest AS assets
 
+# /repo DOES NOT EXIST IN THE BASE IMAGE, and that is worth saying because the RUN below
+# reads from it. Every bake gets /repo from `actions/checkout` at run time; a `docker build`
+# gets it from here. Only the half appliance.py imports is copied - the twelve lines it needs
+# from lib/ and this directory - so the build context stays small.
+COPY lib /repo/lib
+COPY macos/15 /repo/macos/15
+
 # BuildKit mount for the credential. Nothing here is persisted into a layer.
 RUN --mount=type=secret,id=ghcr_token \
     --mount=type=cache,target=/root/.cache/appliance \
@@ -111,7 +118,27 @@ RUN set -eux; \
 # THE ENTRY POINT IS EXPECTED TO BE EMPTY - the root Containerfile clears it because GitHub
 # Actions runs a container job as `docker run <image> <command>` and the qemux base's
 # entrypoint starts a VM. That is exactly what THIS image wants back.
-COPY --from=assets /assets /assets
+#
+# EVERY PART IS ITS OWN COPY INSTRUCTION, AND THAT IS NOT A STYLE CHOICE.
+#
+# `COPY --from=assets /assets /assets` is ONE instruction, so it is ONE layer holding all
+# 15.9 GiB - which is precisely the layer the split in lib/disk_parts.py exists to avoid. A
+# COPY of a distinct source file is a distinct layer; naming each part separately is what makes
+# the ceiling argument true instead of decorative.
+#
+# The count is lib/disk_parts.PARTS (4), and appliance.py splits to exactly that many. A build
+# whose disk grew past 10 GiB per part fails in disk_parts.split() with the count to raise,
+# rather than at push time after uploading the whole thing.
+COPY --from=assets /assets/recovery.dmg /assets/recovery.dmg
+COPY --from=assets /assets/opencore/opencore.zip /assets/opencore/opencore.zip
+COPY --from=assets /assets/opencore/opencore-template.iso /assets/opencore/opencore-template.iso
+COPY --from=assets /assets/opencore/macos.rom /assets/opencore/macos.rom
+COPY --from=assets /assets/opencore/OVMF_VARS-1920x1080.fd /assets/opencore/OVMF_VARS-1920x1080.fd
+COPY --from=assets /assets/disk/parts.json /assets/disk/parts.json
+COPY --from=assets /assets/disk/part-0000 /assets/disk/part-0000
+COPY --from=assets /assets/disk/part-0001 /assets/disk/part-0001
+COPY --from=assets /assets/disk/part-0002 /assets/disk/part-0002
+COPY --from=assets /assets/disk/part-0003 /assets/disk/part-0003
 
 # /ASSETS IS READ-ONLY AT RUN TIME.
 #
