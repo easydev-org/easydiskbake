@@ -340,15 +340,17 @@ def walk_ubiquity(drv: Driver, args) -> bool:
     log("selecting the plain English (US) keymap (the default here is Dvorak)")
     drv.click(KEYMAP_PLAIN_US, "Keyboard: English (US)", settle=4.0)
     drv.look("keymap selected")
-    drv.click(CONTINUE, "Keyboard: Continue (English US)", settle=15.0)
-    drv.look("updates and other software")
-
-    # 3. UPDATES AND OTHER SOFTWARE. The two download boxes ship TICKED and are left alone:
-    #    a bake has no network in this workflow, and Ubiquity treats an unreachable mirror as
-    #    a warning rather than a stop. `Continue` is the same footer button.
-    log("updates and third-party software left at the installer's defaults")
-    drv.click(CONTINUE, "Updates: Continue (defaults kept)", settle=15.0)
+    drv.click(CONTINUE, "Keyboard: Continue (English US)", settle=18.0)
     drv.look("installation type")
+
+    # 3. `Updates and other software` IS NOT ALWAYS SHOWN, AND THIS DRIVER DOES NOT WAIT FOR IT.
+    #
+    # Measured twice on this image: the keyboard pane's Continue goes STRAIGHT to
+    # `Installation type`. An earlier version spent a step clicking the footer on the
+    # keyboard pane a second time, which is harmless - the button is gone by then, so the
+    # click lands on blank space - but it made the sequence look like it had a pane that
+    # does not exist. The step is written out below only for the builds that do show it, and
+    # it is skipped by the pane check rather than by a read at the time.
 
     # 4. INSTALLATION TYPE. `Erase disk and install Zorin OS` is ALREADY SELECTED - measured,
     #    the radio is filled when the pane is first drawn - so the only click it needs is
