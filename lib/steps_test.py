@@ -81,7 +81,8 @@ class FakeDriver:
     def double_click(self, xy, why: str, settle: float = 20.0) -> None:
         self.doubles.append(tuple(xy))
 
-    def type_into(self, xy, value: str, *, clear: bool = True, per_char: float = 0.1) -> None:
+    def type_into(self, xy, value: str, *, clear: bool = True, per_char: float = 0.1,
+                  modifier: str = "ctrl") -> None:
         self.typed.append((tuple(xy), value))
 
     def key(self, spec: str, hold: float = 0.0) -> None:

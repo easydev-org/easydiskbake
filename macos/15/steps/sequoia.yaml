@@ -117,17 +117,26 @@ steps:
 
   # THE PASSWORD ROW IS TWO BOXES. These positions are the ones that produced a green tick
   # beside every field - drive.py's table differs by a row and put the text one row off.
+  # `modifier: meta_l` IS NOT COSMETIC. Select-all is Control+A on Linux and Command+A on
+  # macOS; the wrong one moves the cursor instead of selecting, so the installer's suggested
+  # name stays and the typed value is INSERTED in front of it. The field then holds both, the
+  # form never validates, Continue stays disabled - and the wizard sits on this pane while every
+  # later pane is matched against its text. That is what the first YAML desktop run did, and its
+  # log shows the account pane still up sixty seconds later.
   - name: create a mac account
     when: [full, name]
     do:
       - at: [945, 447]
         type: "{{ user }}"
+        modifier: meta_l
         settle: 3
       - at: [850, 531]
         type: "{{ password }}"
+        modifier: meta_l
         settle: 3
       - at: [1086, 531]
         type: "{{ password }}"
+        modifier: meta_l
         settle: 3
       - at: [1306, 810]
         settle: 15
@@ -209,8 +218,22 @@ steps:
   # followed by a confirmation sheet at a different place. Writing that as `at:` steps would
   # need a conditional-that-gates-a-click, which is the mistake this repository has paid for
   # four times. The branch is in Python where it is readable as a branch, and the YAML names it.
+  # THE MATCH IS THE TITLE, NOT "sign" AND "apple" ANYWHERE - and that cost a run.
+  #
+  # The account pane's own body reads "The password you create here will be used to log in to
+  # [your Apple Account]", so a `says("sign", "apple")` matches it. The first YAML desktop run
+  # therefore answered the ACCOUNT pane as the Apple Account pane, clicked `Set Up Later` at a
+  # coordinate that is not on the account form, and reported
+  #
+  #     the Apple Account pane is still up; no measured way out worked
+  #
+  # over a screen that read 'Create a Mac Account'.
+  #
+  # "Sign In to Your Apple Account" is the pane's title and appears nowhere else, so the match
+  # is those words. This is the same rule every driver here states: match the title strip, not
+  # a phrase in the body.
   - name: sign in to apple account
-    when: [sign, apple]
+    when: [sign, in, to, your, apple, account]
     python: sequoia_panes:apple_account
 
   # UPDATE MAC AUTOMATICALLY. On 15 this is another footer click. On 26 it greys Continue, spins

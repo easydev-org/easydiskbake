@@ -36,6 +36,17 @@ APPLE_SET_UP_LATER_26 = (700, 856)
 APPLE_SKIP_26 = (1020, 640)
 
 
+def _still_on_the_pane(driver) -> bool:
+    """Is "Sign In to Your Apple Account" still on screen?
+
+    THE TITLE, NOT A PHRASE. The account pane's body says "used to log in to [your Apple
+    Account]", so `says("sign", "apple")` is true there too - and a check that cannot tell the
+    two apart reports the wrong thing twice: success on a pane that is still up, and failure on
+    a pane that was never the Apple Account one.
+    """
+    return driver.says("sign", "in", "to", "your", "apple", "account")
+
+
 def apple_account(driver, step) -> bool:
     """Leave "Sign In to Your Apple Account" without an account, on either release.
 
@@ -65,8 +76,11 @@ def apple_account(driver, step) -> bool:
 
         # THE VERDICT IS THE SCREEN, NOT "I CLICKED". Returning True unconditionally is how a
         # pane is answered three times in a row and then reported STUCK.
+        # THE SAME TITLE MATCH THE WALKTHROUGH USES. `says("sign", "apple")` is TRUE on the
+        # account pane, whose body reads "used to log in to your Apple Account" - so a loose
+        # check here reports success while the wizard is still on a different pane.
         driver.look("apple-after")
-        if driver.says("sign", "apple"):
+        if _still_on_the_pane(driver):
             driver.log("  the Apple Account pane is still up; no measured way out worked")
             return False
         return True
@@ -85,7 +99,7 @@ def apple_account(driver, step) -> bool:
         driver.click(APPLE_SKIP_26, "the sheet's blue Skip (26)", settle=8.0)
 
     driver.look("apple-after")
-    if driver.says("sign", "apple"):
+    if _still_on_the_pane(driver):
         driver.log("  the Apple Account pane is still up; no measured way out worked")
         return False
     return True

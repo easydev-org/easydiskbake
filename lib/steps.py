@@ -94,6 +94,7 @@ STEP_KEYS = {    "name",        # required: what the log calls this step
     "region",      # (x0, y0, x1, y1) to crop before reading, for `until`/`expect`
     "region_at",   # [width, height] the crop was measured at; a mismatch is an error
     "scale",       # enlargement for a cropped read; small text needs it, see DEFAULT_CROP_SCALE
+    "modifier",    # the select-all modifier: "ctrl" on Linux, "meta_l" on macOS
     "until_dark",  # wait until the screen goes black - the installer's own start signal
     "timeout",     # seconds the `until` loop may run
     "poll",        # seconds between looks in the `until` loop
@@ -118,7 +119,7 @@ STEP_KEYS = {    "name",        # required: what the log calls this step
 # sequence step minus the pane machinery: they cannot wait for the screen, because the pane
 # already decided that, and they cannot be a pane themselves.
 ACTION_ONLY_KEYS = {"at", "double", "type", "clear", "key", "run", "ssh", "keep_alive",
-                    "settle", "terminal_wait", "timeout"}
+                    "settle", "terminal_wait", "timeout", "modifier"}
 
 # Steps that wait for something to happen rather than doing something. `expect` does not apply
 # to these: they already have their own condition, and a second one would be a second opinion
@@ -554,15 +555,41 @@ class Driver:
         Q._send(self.q, "release 2", [{"type": "btn", "data": {"down": False, "button": "left"}}])
         time.sleep(settle)
 
-    def type_into(self, xy, value: str, *, clear: bool = True, per_char: float = 0.1) -> None:
+    def type_into(self, xy, value: str, *, clear: bool = True, per_char: float = 0.1,
+                  modifier: str = "ctrl") -> None:
+        """Click a field, clear it, type the value.
+
+        `modifier` IS NOT COSMETIC. Select-all is Control+A on Linux and Command+A on macOS,
+        and the wrong one does something else entirely: on macOS Control+A moves the cursor to
+        the start of the line, so the old text stays, the new text is INSERTED before it, and
+        the field holds both.
+
+        That is what the YAML desktop stage did on its first run - the account form read
+
+            Create | a | Mac | Account | The | password | you | create | here | will | be | used
+            | to | log | in | to
+
+        for ninety seconds while every later pane was answered against a form that never
+        validated: `full name` became `docker` appended to whatever the installer had already
+        put there, so Continue stayed disabled and the wizard never left the pane. drive_read.py
+        has always used meta_l; this is the same measurement, reachable from a walkthrough as
+        `modifier: meta_l`.
+        """
         self.qmpmod.click(self.q, *xy)
         time.sleep(1.2)
         if clear:
-            self.qmpmod.key_combo(self.q, "ctrl", "a")
-            time.sleep(0.4)
-            for _ in range(60):
+            # TWICE, THEN TWENTY-FOUR BACKSPACES - drive_read.py's clear_field(). macOS ignores
+            # a select-all that arrives while a field is still taking focus, and a field that
+            # held a suggested name needs the backspaces when the select-all did not take.
+            for _ in range(2):
+                self.qmpmod.key_combo(self.q, modifier, "a")
+                time.sleep(0.5)
                 self.qmpmod.key(self.q, "backspace")
-                time.sleep(0.02)
+                time.sleep(0.4)
+            for _ in range(24):
+                self.qmpmod.key(self.q, "backspace")
+                time.sleep(0.12)
+            time.sleep(0.8)
         import keys
         unsupported = keys.type_text(self.q, value, per_char=per_char)
         if unsupported:
@@ -927,7 +954,8 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222) -> None:
 
     if step["at"] and step["type"] is not None:
         driver.type_into(step["at"], str(step["type"]),
-                         clear=bool(step.get("clear", True)))
+                         clear=bool(step.get("clear", True)),
+                         modifier=str(step.get("modifier", "ctrl")))
         time.sleep(settle)
 
     elif step["at"]:
