@@ -7,7 +7,7 @@ name: mx-gui
 # "terms, type, start, then a sequence of Next pages", not "all the questions then install".
 # linux/mx-gui/install.py has the pane-by-pane measurements.
 #
-# THE MEDIUM ISANTIx'S, NOT CASPER'S: the kernel is at `antiX/vmlinuz` and the initrd at
+# THE MEDIUM IS antiX'S, NOT CASPER'S: the kernel is at `antiX/vmlinuz` and the initrd at
 # `antiX/initrd.gz`, and the driver hands both to qemu the way this image's own isolinux
 # entry does. OVMF is attached by lib/uefi.py, as for every GUI driver here.
 #
