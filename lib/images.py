@@ -197,15 +197,22 @@ DESKTOP = {
         "size": 3091660800,
     },
     "opensuse-tumbleweed-kde": {
-        # `Current.iso` IS THE ALIAS THAT SURVIVES A SNAPSHOT ROTATION. The dated name this
-        # driver was measured on (`Snapshot20261105`) returns 404 from the download host now
-        # - measured - while the alias redirects to whatever the current snapshot is. The
-        # size and sha256 below are the measured file's, so a rotation fails the check
-        # loudly instead of baking a different build.
+        # `Current.iso` IS THE ALIAS THAT SURVIVES A SNAPSHOT ROTATION, AND THE DATED NAME IS
+        # GONE FROM THE HOST - measured, `Snapshot20261105-Media.iso` answers 404 in both
+        # `tumbleweed/iso/` and `history/20261105/`.
+        #
+        # THE SHA256 IS DELIBERATELY NOT PINNED. openSUSE rotates this alias every few days.
+        # A pin here would fail on every rotation, and the failure would be a checksum error
+        # on a file whose only problem is being newer - which teaches the reader to widen the
+        # pin rather than to look. What IS pinned is the size and an ISO9660 check, so a
+        # truncated transfer or an HTML error page still fails; `lib/publish_iso.py` performs
+        # both. The GUI driver that boots this image was measured on the 20261105 snapshot;
+        # a new snapshot changes the image content, not the Calamares version it carries, and
+        # the driver's own empty-disk check is what catches a layout change.
         "url": "https://download.opensuse.org/tumbleweed/iso/"
                "openSUSE-Tumbleweed-KDE-Live-x86_64-Current.iso",
-        "sha256": "cc71dd199e2160c62e235dd723f438455c8586f034e2617b4ad53e555af517d2",
-        "size": 1279537152,
+        "sha256": None,
+        "size": None,
     },
     "cachyos-desktop": {
         "url": "https://mirror.cachyos.org/ISO/desktop/260809/"
