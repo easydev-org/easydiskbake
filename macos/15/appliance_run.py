@@ -100,20 +100,53 @@ def need_kvm() -> None:
         "  Pass --device /dev/kvm (and the host needs kvm_intel or kvm_amd loaded).")
 
 def join_base(assets: str, data: str) -> str:
-    """The base disk, joined from the image's parts and verified against their manifest."""
-    dest = os.path.join(data, "macos15-ssh.qcow2")
-    log("=== base disk ===")
-    return disk_parts.join(os.path.join(assets, "disk"), dest)
+    """A disk baked into the image, joined from its parts, or "" when there is none.
+
+    THIS IS THE OLD PATH, KEPT BECAUSE AN IMAGE MAY STILL CARRY ONE. The default build does not
+    - see appliance.py - and `--disk` is how a disk is chosen now. But a Containerfile that
+    copies parts into /assets/disk produces a valid image too, and a start against it should
+    boot what it shipped rather than failing because the modern path expects a pull.
+    """
+    directory = os.path.join(assets, "disk")
+    if not os.path.isfile(os.path.join(directory, disk_parts.MANIFEST)):
+        return ""
+    dest = os.path.join(data, os.path.basename(_baked_disk_name(assets)))
+    log("=== a disk is baked into this image ===")
+    return disk_parts.join(directory, dest)
 
 
-def open_overlay(base: str, data: str) -> str:
+def _baked_disk_name(assets: str) -> str:
+    """What the baked disk calls itself, from its own manifest.
+
+    `parts.json` records `source`, which is the file the parts were cut from - `macos15-ssh`.
+    Using it means the volume holds a file named for what it actually is, rather than a generic
+    `base.qcow2` that says nothing in `ls`.
+    """
+    import json
+    path = os.path.join(assets, "disk", disk_parts.MANIFEST)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh).get("source") or "disk.qcow2"
+    except (OSError, ValueError):
+        return "disk.qcow2"
+
+
+def open_overlay(base: str, data: str, *, plain: bool = False) -> str:
     """Create the boot disk's overlay once, then reuse it.
 
-    THE BASE IS OPENED READ-ONLY BY QEMU while a backing file is in use, so nothing this
-    guest does can touch the artifact. That is the same guarantee lib/overlay.py relies on;
-    only the lifetime differs.
+    THE BASE IS OPENED READ-ONLY BY QEMU while a backing file is in use, so nothing this guest
+    does can touch the artifact. That is the same guarantee lib/overlay.py relies on; only the
+    lifetime differs.
+
+    `plain` IS FOR A SETUP DISK, WHICH IS AN INSTALLER. machine.TARGET_DRIVE_PLAIN records the
+    macos26 run that lost 17 GiB mid-install: macOS writes ~36 GiB, takes an APFS snapshot,
+    discards its staging volume and switches the root, and with discard=unmap every TRIM is
+    honoured immediately - so the clusters the snapshot still refers to are freed under it and
+    the installer stops at "About 48 minutes remaining". A finished disk wants the opposite, so
+    the flag follows the stage rather than the container.
     """
-    path = os.path.join(data, "run.qcow2")
+    name = "install.qcow2" if plain else "run.qcow2"
+    path = os.path.join(data, name)
 
     if os.path.exists(path):
         info = subprocess.run(
@@ -203,11 +236,19 @@ def start_novnc(port: int, vnc: int) -> None:
                      start_new_session=True)
 
 
+def _has_baked_disk(assets: str) -> bool:
+    return os.path.isfile(os.path.join(assets, "disk", disk_parts.MANIFEST))
+
+
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--assets", default=os.environ.get("ASSETS", "/assets"))
     p.add_argument("--data", default=os.environ.get("DATA", "/data"))
     p.add_argument("--work", default="", help="OpenCore work directory (default <data>/work)")
+    # THE CHOICE THIS CONTAINER EXISTS FOR. See appliance.DISKS for the three names; NO_DISK is
+    # a real answer and not an absence - it is how a person gets to Recovery.
+    p.add_argument("--disk", default=os.environ.get("VM_DISK", "none"),
+                   help="none (Recovery), setup, desktop, ssh, or a published tag")
     p.add_argument("--mem", type=int, default=int(os.environ.get("VM_MEM", "8192")))
     p.add_argument("--cpus", type=int, default=int(os.environ.get("VM_CPUS", "4")))
     p.add_argument("--ssh-port", type=int, default=int(os.environ.get("VM_SSH_PORT", "2222")))
@@ -224,18 +265,36 @@ def main(argv: list[str]) -> int:
     os.makedirs(a.data, exist_ok=True)
     os.makedirs(work, exist_ok=True)
 
-    base = join_base(a.assets, a.data)
-    log(f"base {base} ({os.path.getsize(base) >> 20} MiB)")
-
-    # THE DISK IS CONNECTED WITH discard=unmap. The bake's installer must not have it - see
-    # machine.TARGET_DRIVE_PLAIN for the macos26 run that lost 17 GiB mid-install - but this
-    # guest is a finished system, and a finished system is exactly what discard exists for.
-    disk = open_overlay(base, a.data)
-
     log("=== OpenCore, firmware, APFS driver ===")
     appliance.stage(a.assets, work)
     assets = opencore.build("15", work)
     log(f"identity {assets['identity']['serial']} / {assets['identity']['mac']}")
+
+    # THE DISK, IN ONE OF THREE WAYS, IN THE ORDER A USER MEANS THEM.
+    #
+    #   --disk none     no disk at all, and the firmware boots OpenCore into Recovery
+    #   --disk <name>   pulled from this repository's package onto the volume, once
+    #   (no --disk)     a disk baked into the image, if the image has one
+    #
+    # The baked-in case is checked last on purpose: an explicit choice must win over whatever
+    # the image happens to carry, or someone with the old 16 GiB image could not boot their own
+    # shell of choice out of it.
+    base = ""
+    if a.disk and a.disk != appliance.NO_DISK:
+        base = appliance.pull_disk_named(a.disk, a.data)
+    elif a.disk == appliance.NO_DISK:
+        base = join_base(a.assets, a.data) if _has_baked_disk(a.assets) else ""
+
+    if base:
+        log(f"base {base} ({os.path.getsize(base) >> 20} MiB)")
+        # THE DISK IS CONNECTED WITH discard=unmap. The bake's installer must not have it - see
+        # machine.TARGET_DRIVE_PLAIN for the macos26 run that lost 17 GiB mid-install - but a
+        # finished system is exactly what discard exists for. A `setup` disk IS an installer,
+        # so it gets the plain drive.
+        disk = open_overlay(base, a.data, plain=a.disk == "setup")
+    else:
+        log("no disk: booting the firmware with nothing attached, which reaches Recovery")
+        disk = ""
 
     shape = machine.shape(assets, cpus=a.cpus, mem_mb=a.mem)
     shape.ssh_port = a.ssh_port
@@ -250,10 +309,20 @@ def main(argv: list[str]) -> int:
     extra = [
         "-drive", f"file={assets['boot']},format=raw,if=none,id=oc",
         "-device", "virtio-blk-pci,drive=oc,bootindex=0",
-        "-drive", machine.TARGET_DRIVE.format(disk=disk),
-        "-device", "virtio-blk-pci,drive=target,bootindex=1",
-        "-device", f"isa-applesmc,osk={machine.OSK_PLAIN}",
     ]
+    # THE TARGET DISK IS OPTIONAL, AND THAT IS THE POINT OF --disk none.
+    #
+    # With no target the firmware still loads OpenCore from boot.img, and OpenCore's own boot
+    # entry list has nothing to chain to - which is the Recovery environment. That is a real
+    # thing to want: it is how a person erases a disk, restores from a backup, or installs a
+    # release this repository does not publish.
+    if disk:
+        template = machine.TARGET_DRIVE_PLAIN if a.disk == "setup" else machine.TARGET_DRIVE
+        extra += [
+            "-drive", template.format(disk=disk),
+            "-device", "virtio-blk-pci,drive=target,bootindex=1",
+        ]
+    extra += ["-device", f"isa-applesmc,osk={machine.OSK_PLAIN}"]
 
     # net.up() IS WHAT MAKES THE ONE NETWORK MODE EXIST - bridge, tap, DHCP, MASQUERADE and
     # the forwards. It is called here rather than by vm.Guest because this entry point execs

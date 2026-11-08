@@ -141,11 +141,12 @@ APPLIANCE_CHECKS = [
     ["sh", "-c", "test -s /assets/opencore/OVMF_VARS-1920x1080.fd"],
     ["sh", "-c", "test -s /assets/opencore/opencore.zip"],
     ["sh", "-c", "test -s /assets/opencore/opencore-template.iso"],
-    ["sh", "-c", "test -s /assets/disk/parts.json"],
-    # RE-READ THE MANIFEST AND EVERY PART'S HASH. This is the check that makes "the image
-    # carries the published disk" a measurement rather than a claim, and it is cheap next to
-    # the pull that produced it.
-    ["python3", "/repo/lib/disk_parts.py", "verify", "/assets/disk"],
+    # THE IMAGE MUST NOT CARRY A DISK, because that is what makes it one image that boots four
+    # things instead of a 16 GiB image that boots one. This is an assertion about a deliberate
+    # absence, which is the kind that is otherwise noticed only when the image is 16 GiB again.
+    ["sh", "-c", "test ! -e /assets/disk"],
+    # The four choices are cheap to state and are the image's whole interface.
+    ["python3", "/repo/macos/15/appliance.py", "pull", "--list"],
     ["sh", "-c", "command -v websockify qemu-system-x86_64 dnsmasq iptables ip"],
     ["sh", "-c", "test -f /usr/share/novnc/vnc.html"],
 ]
