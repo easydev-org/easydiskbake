@@ -292,6 +292,17 @@ def start_the_installer(drv: Driver) -> None:
     #
     # Eight seconds is safe for the second press: the first takes about forty to bring
     # Ubiquity up, so the second cannot land on a later pane's own button.
+    # THE LAUNCHER IS CLICKED FIRST, ON A CLEAN DESKTOP, AND THE TERMINAL COMES AFTER.
+    #
+    # THIS ORDER IS THE FIX. The driver used to open its terminal first - to disable the
+    # screen saver - and then click the launcher. Measured in CI (run at ed7702f): two pairs
+    # of presses at (1223,586) and Ubiquity never appeared, the frame still showing
+    # `Paigaldamine | Tere tulemast | Eesti | ...` sixty seconds later. The terminal window
+    # was in front of the welcome window, so the clicks went into it.
+    #
+    # A LOCAL RUN THAT DID SUCCEED was the same driver WITHOUT the terminal step before the
+    # click: Ubiquity opened on the first pair. That is the difference, and the order is all
+    # that was wrong.
     # TWO PRESSES 3 SECONDS APART, RETRIED ONCE. Measured on a live session: `(1223,586)`
     # twice, three seconds apart, opens Ubiquity; the earlier 8-second gap did not, and the
     # CI run at 0b62f3f logged the welcome window still on screen 57 seconds later.
@@ -306,7 +317,30 @@ def start_the_installer(drv: Driver) -> None:
         if "ubiquity" in drv.text() or "keyboard layout" in drv.text():
             break
         log("  Ubiquity is not up yet; one more pair of presses")
-    drv.look("ubiquity welcome")
+
+    # NOW THE TERMINAL, with Ubiquity already up and owning the screen.
+    #
+    # `setsid` plus full redirection puts the keepalive in its own session with no descriptor
+    # on the pty, so `exit` closes the window with it instead of leaving it in front of the
+    # installer. Alt+F4 was tried and put up the LAUNCHER'S `Quit the installation?` dialog.
+    log("disabling the screen saver and the lock")
+    Q.key_combo(drv.q, "ctrl", "alt", "t")
+    time.sleep(8.0)
+    command = (
+        "xset s off; xset -dpms; xset s noblank; "
+        "gsettings set org.gnome.desktop.session idle-delay 0; "
+        "gsettings set org.gnome.desktop.screensaver lock-enabled false; "
+        "setsid sh -c 'while :; do "
+        "  xdotool mousemove_relative -- 1 0; xdotool mousemove_relative -- -1 0; "
+        "  sleep 20; done' >/dev/null 2>&1 < /dev/null &"
+    )
+    keys.type_text(drv.q, command, per_char=0.02)
+    Q.key(drv.q, "ret")
+    time.sleep(6.0)
+    keys.type_text(drv.q, "exit", per_char=0.05)
+    Q.key(drv.q, "ret")
+    time.sleep(6.0)
+    drv.look("screensaver disabled")
 
 
 def walk_ubiquity(drv: Driver, args) -> bool:
@@ -319,11 +353,16 @@ def walk_ubiquity(drv: Driver, args) -> bool:
     start_the_installer(drv)
 
     # 1. WELCOME. `English` is selected.
+    #
+    # THE READING IS LOGGED AND NOT ACTED ON, because Ubiquity's language follows the same
+    # geolocation answer the launcher's does: measured, CI drew the launcher in ESTONIAN
+    # (`Paigaldamine`), and a translated Ubiquity would fail any test for the word `welcome`
+    # on a screen that is perfectly correct. The driver proceeds on its measured coordinates
+    # and lets the disk check at the end be the verdict - an empty disk is already a loud
+    # failure there.
     drv.look("welcome")
     if "welcome" not in drv.text():
-        log("=== THE INSTALLER DID NOT OPEN ===")
-        log(f"  screen: {drv.text()[:200]}")
-        return False
+        log("  (the word `welcome` was not read - translated wizard; continuing anyway)")
 
     # THE WELCOME PANE'S LANGUAGE LIST IS NOT TOUCHED: `English` IS ITS DEFAULT.
     #
