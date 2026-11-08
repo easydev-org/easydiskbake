@@ -104,7 +104,10 @@ ACCOUNT_PASSWORD = {
 DONT_ENCRYPT = (1091, 817)
 
 # THE LIVE MEDIUM'S BOOT TIME. Measured: about 100 s on this image.
-DESKTOP_SECONDS = 220
+# MEASURED ON A RUNNER, WHICH IS SLOWER THAN A LOCAL SESSION: the desktop drew at about
+# 210 s and the installer a few seconds later, against about 100 s locally. 300 s is that with
+# room, and the wait is bounded by --timeout as well.
+DESKTOP_SECONDS = 300
 
 # THE INSTALL RUN. Measured: about 12 minutes from `Don't Encrypt` to the completion pane.
 INSTALL_SECONDS = 2400
@@ -185,7 +188,11 @@ def wait_for_installer(drv: Driver, timeout: int) -> bool:
     while time.time() < deadline:
         drv.look("boot")
         joined = drv.text()
-        if "select a language" in joined or "install pop" in joined:
+        # THE INSTALLER'S OWN TITLE, OR ITS FIRST PANE'S HEADING. The window title is
+        # `Install Pop!_OS 24.04 LTS`; the pane reads `Select a Language`. Either is enough,
+        # and a translated build still carries the title.
+        if ("select a language" in joined or "install pop" in joined
+                or "pop!_os" in joined):
             log("the installer is up")
             return True
         time.sleep(15)
