@@ -789,6 +789,56 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222) -> None:
         time.sleep(settle)
 
 
+def _run_python(driver: Driver, step: Step, walk_path: str) -> bool:
+    """Run a step's `python: module:function`, finding the module BESIDE THE WALKTHROUGH.
+
+    WHERE `setup_panes` LIVES IS NOT WHERE PYTHON LOOKS BY DEFAULT, and the first real run of
+    this failed with
+
+        ModuleNotFoundError: No module named 'setup_panes'
+        ... after 'click (1142, 586) - open disk utility'
+
+    The module sits next to the YAML - macos/15/steps/setup_panes.py beside
+    macos/15/steps/setup.yaml - which is the right place: an extension belongs with the
+    walkthrough that names it, not in lib/ with the general primitives. So the walkthrough's
+    own directory goes on the path for the duration of the call, and is removed afterwards so
+    two walkthroughs with a module of the same name cannot shadow each other.
+
+    A RELATIVE NAME IS ALSO ACCEPTED. `python: ./mine:fn` and `python: mine:fn` both work, so a
+    file does not have to know the layout above it.
+    """
+    import importlib
+
+    module_name, _, function_name = str(step["python"]).partition(":")
+    if not function_name:
+        raise StepError(
+            f"{step.name}: python needs 'module:function', got {step['python']!r}")
+
+    here = os.path.dirname(os.path.abspath(walk_path)) if walk_path else ""
+    added = False
+    if here and here not in sys.path:
+        sys.path.insert(0, here)
+        added = True
+    try:
+        # A CACHED MODULE FROM AN EARLIER STEP IS THE SAME MODULE, which is what makes a
+        # module-level cache inside an extension behave the way its author wrote it.
+        module = importlib.import_module(module_name.lstrip("./"))
+        handler = getattr(module, function_name, None)
+        if handler is None:
+            raise StepError(
+                f"{step.name}: {module_name} has no {function_name}; "
+                f"it defines {', '.join(n for n in dir(module) if not n.startswith('_'))[:200]}")
+        return bool(handler(driver, step))
+    except ModuleNotFoundError as exc:
+        raise StepError(
+            f"{step.name}: no module {module_name!r}. Looked in {here or '(nowhere)'} and on "
+            f"the path; an extension sits beside the walkthrough that names it. ({exc})"
+        ) from exc
+    finally:
+        if added and here in sys.path:
+            sys.path.remove(here)
+
+
 def walk_panes(driver: Driver, steps: Walk, values: dict[str, str], *,
                ssh_port: int = 2222) -> tuple[bool, list[str]]:
     """The macOS shape: look at the screen, run the one pane that matches, look again.
@@ -847,10 +897,8 @@ def walk_panes(driver: Driver, steps: Walk, values: dict[str, str], *,
 
             log(f"=== {here.name}")
             if here["python"]:
-                module_name, _, function_name = str(here["python"]).partition(":")
-                import importlib
-                module = importlib.import_module(module_name)
-                ok = bool(getattr(module, function_name)(driver, here))
+                log(f"=== {here.name} (python {here['python']})")
+                ok = _run_python(driver, here, steps.path)
                 counts[here.name] = counts.get(here.name, 0) + 1
                 answered.append(here.name)
                 if not ok and not here["optional"]:
@@ -925,12 +973,8 @@ def walk(driver: Driver, steps: Walk, *, overrides: dict[str, str] | None = None
 
         # --- a measured exception, and it is allowed to be Python ----------------------
         if here["python"]:
-            module_name, _, function_name = str(here["python"]).partition(":")
-            import importlib
-            module = importlib.import_module(module_name)
-            handler = getattr(module, function_name)
-            log(f"=== {here.name} (python {module_name}:{function_name})")
-            ok = bool(handler(driver, here))
+            log(f"=== {here.name} (python {here['python']})")
+            ok = _run_python(driver, here, steps.path)
             ran.append(here.name)
             if not ok and not here["optional"]:
                 log(f"=== {here.name} FAILED (a python step said so)")
