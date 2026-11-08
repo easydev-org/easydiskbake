@@ -1092,6 +1092,54 @@ def walk(driver: Driver, steps: Walk, *, overrides: dict[str, str] | None = None
     return True, ran
 
 
+def run_file(walkthrough: str, qmp_path: str, *, work: str = "",
+             user: str = "docker", password: str = "admin",
+             disk_path: str | None = None, ssh_port: int = 2222,
+             start_at: str = "", stop_before: str = "",
+             release: str = "15", log_prefix: str = "") -> tuple[bool, list[str]]:
+    """Walk a YAML file against a running guest, from Python rather than from the CLI.
+
+    THIS IS HOW A STAGE JOINS ITS YAML WITHOUT GIVING UP WHAT IT ALREADY DOES. macos/15/bake.py
+    starts the machine, records it, keeps the artifacts current and publishes a disk; the part
+    that belongs in YAML is the walk in the middle. So the stage calls this with a `--steps`
+    path and leaves everything else alone - the alternative would be a second entry point that
+    duplicates the recording and the publishing, which is the "one fact in two places" mistake.
+
+    `log_prefix` is the stage's own tag ([macos-install], [desktop]) because a reader looking at
+    a CI log needs to know which stage a line came from, and this module's [steps] is common to
+    all of them.
+    """
+    steps = load(walkthrough)
+
+    here = work or os.path.dirname(os.path.abspath(walkthrough))
+    os.makedirs(here, exist_ok=True)
+
+    needs_screen = bool(steps.panes) or any(
+        s["at"] or s["double"] or s["expect"] or s["expect_any"] or s["until"]
+        or s["until_dark"] or s["wait_for_change"] or s["sweep"] or s["when"]
+        for s in steps.steps)
+
+    if needs_screen:
+        if not qmp_path:
+            raise StepError(f"{walkthrough} has GUI steps and no --qmp was given")
+        driver = Driver(qmp_path, here, width=steps.resolution[0],
+                        height=steps.resolution[1], disk_path=disk_path)
+    else:
+        driver = HeadlessDriver(here, disk_path=disk_path)
+
+    # A YAML STEP MAY NEED TO KNOW WHICH RELEASE IT IS DRIVING - the Apple Account pane is a
+    # menu on 26 and a text link on 15 - and a `python:` extension reads it from the driver
+    # rather than from a global.
+    setattr(driver, "release", str(release))
+
+    try:
+        return walk(driver, steps,
+                    overrides={"args.user": user, "args.password": password},
+                    start_at=start_at, stop_before=stop_before, ssh_port=ssh_port)
+    finally:
+        driver.close()
+
+
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("walkthrough", help="the YAML file")

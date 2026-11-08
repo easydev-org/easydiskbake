@@ -95,6 +95,10 @@ def main(argv: list[str]) -> int:
     p.add_argument("--cpus", type=int, default=4)
     p.add_argument("--ssh-port", type=int, default=2223,
                    help="the HOST port the guest's 22 is forwarded to")
+    p.add_argument("--steps", default="",
+                   help="turn Remote Login on from this YAML walkthrough instead of ssh.py's "
+                        "own System Settings sequence. The login, the wait and the checks "
+                        "around it are unchanged.")
     p.add_argument("--boot-timeout", type=int, default=900)
     p.add_argument("--overlay", action="store_true",
                    help="treat --disk as a READ-ONLY base and write into a throwaway qcow2 "
@@ -278,7 +282,22 @@ def main(argv: list[str]) -> int:
             return 1
 
         log("=== turning Remote Login on ===")
-        enable_remote_login(guest)
+        if args.steps:
+            import steps as stepslib
+            ok, ran = stepslib.run_file(
+                args.steps, guest.paths.drive, work=os.path.dirname(frames) or ".",
+                # THE ACCOUNT COMES FROM THE MODULE, which is where this stage already keeps
+                # it - there is no --user here because the stage is about the disk's existing
+                # account, not about creating one.
+                user=GUEST_USER, password=os.environ.get("MACOS_PASSWORD", "admin"),
+                ssh_port=args.ssh_port, release="15",
+            )
+            log(f"{len(ran)} step(s) answered" if ok
+                else f"the walkthrough failed after {len(ran)} step(s)")
+            if not ok:
+                return 1
+        else:
+            enable_remote_login(guest)
 
         log(f"checking that the guest's sshd answers on the host's port {args.ssh_port}")
         if not wait_for_ssh(args.ssh_port, timeout=180):

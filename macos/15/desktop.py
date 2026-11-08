@@ -103,6 +103,9 @@ def main(argv: list[str]) -> int:
     p.add_argument("--release", default=os.environ.get("MACOS_RELEASE", "15"),
                    help="which release the setup disk is; drive.py has a coordinate table "
                         "per release and a guessed one types into the wrong field")
+    p.add_argument("--steps", default="",
+                   help="drive the Setup Assistant from this YAML walkthrough instead of "
+                        "drive_read.py. Everything else in the stage is unchanged.")
     p.add_argument("--assistant-timeout", type=int, default=45 * 60)
     p.add_argument("--desktop-timeout", type=int, default=30 * 60)
     p.add_argument("--inspect-after", type=int, default=None,
@@ -282,21 +285,31 @@ def main(argv: list[str]) -> int:
         # its coordinate comments are where every number here came from - but it is not
         # called. A pane that this driver cannot answer fails loudly at that pane, which is
         # the whole reason for reading the screen instead of replaying a table.
-        log("=== the Setup Assistant: drive_read.py ===")
-        try:
-            proc = subprocess.run(
-                [sys.executable, os.path.join(HERE, "drive_read.py"),
-                 "--qmp", guest.paths.drive, "--frames", frames,
-                 "--user", args.user, "--password", args.password,
-                 "--release", args.release,
-                 "--boot-timeout", str(args.desktop_timeout)],
-                check=False, timeout=args.assistant_timeout,
+        if args.steps:
+            log(f"=== the Setup Assistant: steps {os.path.basename(args.steps)} ===")
+            import steps as stepslib
+            ok, ran = stepslib.run_file(
+                args.steps, guest.paths.drive, work=os.path.dirname(frames) or ".",
+                user=args.user, password=args.password, release=args.release,
             )
-            if proc.returncode != 0:
-                log(f"the reading driver exited {proc.returncode}; see its log for the pane "
-                    f"it could not answer")
-        except (subprocess.TimeoutExpired, OSError) as exc:
-            log(f"the reading driver failed: {exc}")
+            log(f"{len(ran)} step(s) answered" if ok
+                else f"the walkthrough failed after {len(ran)} step(s)")
+        else:
+            log("=== the Setup Assistant: drive_read.py ===")
+            try:
+                proc = subprocess.run(
+                    [sys.executable, os.path.join(HERE, "drive_read.py"),
+                     "--qmp", guest.paths.drive, "--frames", frames,
+                     "--user", args.user, "--password", args.password,
+                     "--release", args.release,
+                     "--boot-timeout", str(args.desktop_timeout)],
+                    check=False, timeout=args.assistant_timeout,
+                )
+                if proc.returncode != 0:
+                    log(f"the reading driver exited {proc.returncode}; see its log for the pane "
+                        f"it could not answer")
+            except (subprocess.TimeoutExpired, OSError) as exc:
+                log(f"the reading driver failed: {exc}")
 
         log("waiting for a desktop")
         if args.inspect_after is not None:

@@ -117,6 +117,10 @@ def parse(argv: list[str]) -> argparse.Namespace:
                         "appear; this is the copy and the first boot, not the wizard")
     p.add_argument("--user", default=os.environ.get("MACOS_USER", "docker"))
     p.add_argument("--password", default=os.environ.get("MACOS_PASSWORD", "admin"))
+    p.add_argument("--steps", default="",
+                   help="drive the installer from this YAML walkthrough instead of "
+                        "install.py's own sequence. The machine, the recording and the "
+                        "publish are unchanged - only the walk is data. See lib/steps.py.")
     p.add_argument("--keep-work", action="store_true")
     return p.parse_args(argv)
 
@@ -184,6 +188,8 @@ class Baker:
             self.work, assets, self.disk, recovery,
             cpus=self.args.cpus, mem_mb=self.args.mem,
         ).start()
+        # KEPT SO A YAML WALK CAN BE HANDED THE SAME SOCKET. See guest_paths().
+        self._guest = guest
 
         shots = os.path.join(self.frames, "shots")
         os.makedirs(shots, exist_ok=True)
@@ -327,6 +333,41 @@ class Baker:
             "macos-15_desktop-bake")
         return True
 
+    def _run_steps(self) -> bool:
+        """The same stage, with the walk read from YAML instead of from install.py.
+
+        EVERYTHING OUTSIDE THE WALK IS UNCHANGED: the machine, the recovery image as a USB
+        device, the frames, the recording, the publish. `lib/steps.py` drives the same screen
+        with the same measured coordinates; the difference is where the sequence is written.
+
+        THE CONNECTION IS NOT RE-OPENED. qemu's -qmp unix:...,server=on,wait=off accepts one
+        client, and the bake's own QMP client (in `guest`) may already hold it - see
+        macos/15/install.py's Recovery(q=...) note. steps.run_file opens its own, so the guest
+        handle here is only used for the path.
+        """
+        import steps
+
+        log(f"=== installation: steps {os.path.basename(self.args.steps)} ===")
+        ok, ran = steps.run_file(
+            self.args.steps, self.guest_paths().drive,
+            work=self.work, user=self.args.user, password=self.args.password,
+            disk_path=self.disk, release=self.args.release,
+        )
+        log(f"{len(ran)} step(s) answered" if ok
+            else f"the walkthrough failed after {len(ran)} step(s)")
+        return ok
+
+    def guest_paths(self):
+        """The running guest's socket paths.
+
+        SET BY run(), NOT BY __init__, because the guest does not exist until the machine is
+        built - and a `--steps` walk needs its QMP socket while install.py's sequence is given
+        the same path as an argument. Keeping the handle means the two paths cannot drift.
+        """
+        if not getattr(self, "_guest", None):
+            raise SystemExit("no guest: run() has not started one")
+        return self._guest.paths
+
     def run_installer(self, guest: vm.Guest) -> bool:
         """Recovery -> the reboot into the installed system, via macos/15/install.py.
 
@@ -335,6 +376,9 @@ class Baker:
         and the first version ignored that: it treated "the script exited" as "the
         installation finished" and handed a black screen to the Setup Assistant driver.
         """
+        if self.args.steps:
+            return self._run_steps()
+
         script = os.path.join(HERE, "install.py")
         log(f"=== installation: {os.path.basename(script)} ===")
         # A thread because the guest must keep running while the sequence plays out,

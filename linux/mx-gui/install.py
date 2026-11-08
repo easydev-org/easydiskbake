@@ -240,10 +240,43 @@ def walk_minstall(drv: Driver, args) -> bool:
     #
     # So the terminal is gone from this step: the driver types the way every other driver
     # here does.
-    log("filling the default user account")
-    drv.clear_and_type(ACCOUNT["login"], args.user)
-    drv.clear_and_type(ACCOUNT["password"], args.password)
-    drv.clear_and_type(ACCOUNT["confirm"], args.password)
+    # TYPED BY `xdotool` INSIDE THE GUEST, WHICH IS THE ONLY METHOD MEASURED TO WORK IN BOTH
+    # PLACES.
+    #
+    # Local sessions: with `usb-kbd` (lib/vm.py) QMP keystrokes DO reach these entries -
+    # measured, `docker` appeared in `Default user login name` with no terminal involved.
+    #
+    # CI run 42497635410: the same code, the same image, and the log said
+    #
+    #     [mx-gui 16:05:44] filling the default user account
+    #     [mx-gui 16:06:00]   account filled: ... Create | a | swap | file ...
+    #
+    # - the pane never moved, so nothing had been typed. Whatever differs between a local
+    # guest and a runner for this GTK application, `xdotool` removes it from the question:
+    # it drives the X server from inside the session, which is what run 42476000228 also
+    # showed working.
+    #
+    # The screen coordinates are used to place the CLICKS, and `--repeat BackSpace` empties a
+    # field first because `ctrl+a` is taken as literal text by these entries.
+    log("filling the default user account with xdotool, inside the guest")
+    Q.key_combo(drv.q, "ctrl", "alt", "t")
+    time.sleep(9.0)
+    fill = (
+        f"xdotool mousemove {ACCOUNT['login'][0]} {ACCOUNT['login'][1]} click 1; sleep 0.5; "
+        f"xdotool key --repeat 40 BackSpace; xdotool type --delay 80 {args.user}; sleep 0.5; "
+        f"xdotool mousemove {ACCOUNT['password'][0]} {ACCOUNT['password'][1]} click 1; "
+        f"sleep 0.5; xdotool key --repeat 40 BackSpace; "
+        f"xdotool type --delay 80 {args.password}; sleep 0.5; "
+        f"xdotool mousemove {ACCOUNT['confirm'][0]} {ACCOUNT['confirm'][1]} click 1; "
+        f"sleep 0.5; xdotool key --repeat 40 BackSpace; "
+        f"xdotool type --delay 80 {args.password}"
+    )
+    keys.type_text(drv.q, fill, per_char=0.010)
+    Q.key(drv.q, "ret")
+    time.sleep(20.0)
+    keys.type_text(drv.q, "exit", per_char=0.05)
+    Q.key(drv.q, "ret")
+    time.sleep(6.0)
     drv.look("account filled")
     drv.click(NEXT, "Default User Login: Next", settle=25.0)
     drv.look("after the account")

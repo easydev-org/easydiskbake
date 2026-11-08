@@ -82,7 +82,7 @@ steps:
   # in frame pixels, and the words still come back with absolute coordinates.
   - name: wait for the recovery menu
     until: [disk, utility]
-    region: [800, 460, 1300, 560]
+    region: [780, 210, 1400, 550]
     region_at: [1920, 1080]
     timeout: 900
     poll: 10
@@ -151,7 +151,7 @@ steps:
   # the menu never left, it was covered - so it is an `until` on the rows.
   - name: the recovery menu is back
     until: [reinstall, macos]
-    region: [800, 300, 1300, 360]
+    region: [780, 210, 1400, 550]
     region_at: [1920, 1080]
     timeout: 300
     poll: 5

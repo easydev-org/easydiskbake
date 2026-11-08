@@ -188,6 +188,7 @@ jobs:
             export MACOS_USER=docker
             export MACOS_PASSWORD=admin
             python3 macos/15/bake.py \
+              --steps macos/15/steps/setup.yaml \
               --out "out/macos15.qcow2" \
               --release "15" \
               --disk-size "${{ inputs.disk_size || '128G' }}" \
@@ -300,6 +301,7 @@ jobs:
             DISK=$(ls out/*.qcow2 | head -1)
             echo "setup disk: $DISK"
             python3 macos/15/desktop.py \
+              --steps macos/15/steps/sequoia.yaml \
               --disk "$DISK" \
               --out out/macos15-desktop.qcow2 \
               --assistant-timeout "${{ inputs.assistant_timeout || '2700' }}" \
@@ -394,6 +396,7 @@ jobs:
             export MACOS_PASSWORD=admin
             DISK=$(ls out/*.qcow2 | head -1)
             python3 macos/15/ssh.py \
+              --steps macos/15/steps/ssh.yaml \
               --disk "$DISK" \
               --out out/macos15-ssh.qcow2 \
               --ssh-port "${{ inputs.ssh_port || '2222' }}" \
