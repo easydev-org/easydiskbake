@@ -163,6 +163,18 @@ class Driver:
         self.click(xy, why, settle=0.8)
         self.click(xy, f"{why} (second click)", settle=settle)
 
+    def close(self) -> None:
+        """Release the QMP connection before lib/steps.py opens its own.
+
+        qemu's `-qmp unix:...,server=on,wait=off` serves ONE client per socket, so a YAML
+        walk cannot start while this driver still holds it - see macos/15/bake.py's
+        _run_steps(), which documents the same boundary.
+        """
+        try:
+            self.screen.close()
+        except Exception:                              # noqa: BLE001
+            pass
+
     def type_into(self, xy, value: str) -> None:
         Q.click(self.q, *xy)
         time.sleep(1.2)
@@ -427,7 +439,22 @@ def main(argv: list[str]) -> int:
     try:
         drv = Driver(guest.paths.drive, work)
         if wait_for_desktop(drv, args.timeout):
-            ok = walk_calamares(drv, args)
+            # THE WALK IS A YAML FILE NOW - see steps/install.yaml, which carries every
+            # number and every reason that used to be in walk_calamares(). Everything
+            # around it is unchanged: the machine, the frames, the recording, the publish.
+            #
+            # THE QMP SOCKET IS ALREADY OPEN, so this driver is closed first. qemu serves one
+            # client per socket and steps.run_file opens its own.
+            drv.close()
+            import steps
+            walk_path = os.path.join(HERE, "steps", "install.yaml")
+            log(f"=== the walk: {os.path.basename(walk_path)} ===")
+            ok, ran = steps.run_file(
+                walk_path, guest.paths.drive, work=work,
+                user=args.user, password=args.password,
+            )
+            log(f"{len(ran)} step(s) ran" if ok
+                else f"the walkthrough failed after {len(ran)} step(s)")
     finally:
         try:
             ppm = os.path.join(work, "final.ppm")
