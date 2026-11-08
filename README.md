@@ -17,12 +17,35 @@ booting an ISO, watching it, recording it, reaching it over VNC and SSH, and dec
 whether the disk that came out is bootable - and each distribution keeps only what is
 genuinely its own.
 
+## macOS: 15 is the supported release, 26 is not
+
+**macOS 15 (Sequoia) is the only macOS release this project bakes end to end** - setup,
+desktop, ssh and dev all pass, and the published disk boots on its own to a login
+screen that accepts `docker` / `admin`.
+
+**macOS 26 (Tahoe) is known to be broken and is kept as a two-stage experiment**
+(`setup` → `desktop`, see `.github/workflows/macos26.yml`):
+
+| what | result |
+|---|---|
+| the installer and the wizard's panes | work; the disk is installed and the wizard can be driven |
+| the wizard finishing | **never**. Its "Update Mac Automatically" pane greys Continue and Back and spins forever; `system_reset` is the only exit and it leaves the wizard state unwritten |
+| `system_powerdown` | **ignored**; measured at 60 s and 150 s with no response |
+| seeing a 26 desktop | **only by restarting inside the setup run** - the wizard has to be driven forward in the same boot |
+| booting the baked disk later | **hangs**, or lands back on the wizard. A macOS 26 disk baked by CI does not survive on its own |
+
+So `macos26.yml` stops at the desktop and has no ssh or dev stage: those would publish a
+disk that cannot boot. `/var/db/.AppleSetupDone` and every `DidSee*` key being true does
+not help - the wizard still reappears after a clean shutdown. Use `macos15.yml` for
+anything that needs a macOS disk.
+
 ## Layout
 
 ```
 lib/        the shared half: qmp, keys, ocr, panefp, snapshots, iso, vm, smoke
 linux/      one directory per distribution; mx/ is the worked example
-macos/      14/, 15/, 26/ - one per release, because the pane sequence differs
+macos/      14/, 15/, 26/ - one per release, because the pane sequence differs;
+            15 is the only one with a complete pipeline, see above
 windows/    11/ - one directory for every Windows, because one XML covers them all
 android/    placeholder: an emulator image is not an installer, see its README
 bsd/        placeholder: same shape as linux, three assumptions in lib/ differ

@@ -1,18 +1,33 @@
 name: macos26
 
-# macOS 26: recovery -> Setup Assistant. The desktop, ssh and dev stages are not here yet.
+# macOS 26 IS NOT A SUPPORTED FULL-INSTALL TARGET. THIS WORKFLOW STOPS AT THE DESKTOP.
 #
-#     setup
+#     setup -> desktop
 #
-# WHY ONLY ONE JOB
+# and there is no ssh stage, no dev stage and no usable published disk, because a macOS 26
+# disk does not survive the trip through Setup Assistant. What was measured:
 #
-# 15 has four stages and 26 has one, because that is what exists. macos/26/ has bake.py and
-# install.py - its own coordinates, measured from Tahoe's own panes - and no desktop.py, ssh.py
-# or dev.py. Writing those job definitions now would be writing the sequence before the
-# positions are measured, which is the mistake every earlier macOS run was: a plausible
-# coordinate and a recording that disagreed with it.
+#   * The wizard never finishes. Its "Update Mac Automatically" pane greys Continue and Back,
+#     spins, opens no outbound connection and never advances; a `system_reset` is the only way
+#     out and it leaves the wizard state unwritten on disk. `/var/db/.AppleSetupDone` exists and
+#     every `DidSee*` key is true, and the wizard still reappears after a clean shutdown.
+#   * `system_powerdown` is ignored outright - 60 s and 150 s, no response.
+#   * THE ONE WAY TO SEE A macOS 26 DESKTOP IS TO RESTART INSIDE THE SETUP RUN. Booting the
+#     disk that setup produced lands back on the wizard, or hangs. So the desktop stage here
+#     drives the wizard forward in the same boot and is the last thing that can be done with
+#     that disk.
+#   * A disk baked by this workflow still hangs when it is booted later on its own. That is the
+#     observation the note above is about, and it is why nothing downstream pulls these tags.
 #
-# The other three stages join this file when they have something to run.
+# macOS 15 is the release with the full pipeline - setup, desktop, ssh, dev - and it is the
+# only one that produces a disk which boots to a login screen and accepts a login. Use
+# macos15.yml.
+#
+# WHY THE DESKTOP JOB IS STILL HERE
+#
+# Because it is the only evidence that 26 can reach a desktop at all, and because it is what
+# would have to work before the release could be supported. Removing it would remove the
+# measurement without fixing anything.
 #
 # WHY ONE WORKFLOW
 #
@@ -20,7 +35,7 @@ name: macos26
 # produced: a form per stage, a chance per stage to type the tag wrong, and nothing in any run
 # graph recording that they are a chain at all. The chain is four stages here because macOS
 # genuinely fails in four different places - the installer, the wizard, Remote Login, the
-# toolchain - and each is worth its own job and its own timeout.
+# toolchain - and each is worth its own job and its own timeout. macOS 26 keeps two of them.
 #
 # EVERY JOB TAKES A TAG, AND THAT IS THE POINT
 #
@@ -91,33 +106,16 @@ on:
         default: ""
 
       # --- ssh / dev -------------------------------------------------------------------
+      #
+      # THERE IS NO SSH STAGE ON macOS 26. Its inputs are gone with the job: ssh_run, ssh_from,
+      # ssh_port, boot_timeout and ssh_publish_tag would be a form asking for settings that
+      # drive nothing. The reason the stage cannot exist is at the top of this file.
       publish_tag:
-        description: "the tag to publish under; empty for macos26-<stage>"
+        description: "the tag to publish under; empty for macos26-setup"
         default: ""
       desktop_publish_tag:
         description: "desktop: tag to publish under; empty for macos26-desktop"
         default: ""
-      ssh_publish_tag:
-        description: "ssh: tag to publish under; empty for macos26-ssh"
-        default: ""
-      ssh_run:
-        description: "Turn Remote Login on, prove it answers, and clean - ~40 minutes"
-        type: boolean
-        default: true
-      ssh_from:
-        description: "ssh: pull this tag instead of the desktop job's output"
-        default: ""
-      ssh_port:
-        # 2222, THE SAME PORT EVERY OTHER SYSTEM USES. It was 2223 for no reason that
-        # survives inspection: each job is its own container on its own network, so a
-        # macOS run and a Linux run forwarding 2222 are forwarding to two different
-        # loopback interfaces. The odd number only meant a reader had to remember which
-        # system was special.
-        description: "ssh: host port forwarded to the guest's sshd"
-        default: "2222"
-      boot_timeout:
-        description: "ssh: seconds to wait for the desktop, and for each boot after"
-        default: "900"
 
 concurrency:
   group: macos26-${{ github.ref }}
@@ -240,10 +238,11 @@ jobs:
       checks: write
       packages: write
     outputs:
-      # WHAT THE SSH JOB PULLS WHEN IT IS NOT GIVEN A TAG. Without this, a full run's ssh
-      # stage has no disk to start from and skips - which is what the workflow could not do
-      # before: it ended at desktop, so nothing ever turned Remote Login on and nothing ever
-      # cleaned a macOS 26 disk.
+      # WHAT THE RUN REPORTS AS ITS RESULT. There is no stage after this one to hand a tag
+      # to - see the note at the top: a macOS 26 disk does not boot back to this desktop, so
+      # publishing one would publish a disk that hangs. The output is kept because the push
+      # step still produces the tag, and a reader looking for "where did macos26-desktop go"
+      # should find the answer here rather than in the absence of a field.
       tag: ${{ inputs.desktop_publish_tag || steps.publish.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
@@ -335,119 +334,3 @@ jobs:
           tag: ${{ inputs.desktop_publish_tag || 'macos26-desktop' }}
           token: ${{ github.token }}
 
-  # ===========================================================================
-  # SSH - turn Remote Login on, prove it answers, then clean.
-  # ===========================================================================
-  #
-  # THIS JOB DID NOT EXIST. macOS 26's chain ended at desktop, so no macOS 26 disk ever had
-  # an sshd - which means no stage after it could be driven, and NO CLEAN COULD RUN AT ALL.
-  # lib/clean_disk reaches a guest over ssh; a disk with no sshd cannot be cleaned by it.
-  #
-  # It reuses macos/15/ssh.py, which is the same decision macos/26/install.py already makes:
-  # the Setup Assistant, the driver and the Recovery class are macos/15's, and macos/26 keeps
-  # only the measurements that differ.
-  ssh:
-    needs: desktop
-    if: |
-      always() && inputs.ssh_run
-      && (inputs.ssh_from != '' || needs.desktop.outputs.tag != '')
-    runs-on: ubuntu-24.04
-    timeout-minutes: 90
-    container:
-      image: ghcr.io/${{ github.repository }}:latest
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-      options: --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN
-    permissions:
-      contents: read
-      checks: write
-      packages: write
-    outputs:
-      tag: ${{ inputs.ssh_from || steps.publish.outputs.tag }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: prepare
-        uses: easydev-org/easyactions/runner-check@main
-        with:
-          kvm: true
-          disk-gb: '80'
-          token: ${{ github.token }}
-
-      - name: prepare
-        uses: easydev-org/easyactions/log-stream@main
-        with:
-          token: ${{ github.token }}
-          name: macos26-ssh-prepare
-          interval: "10"
-          command: |
-            set -euo pipefail
-            python3 lib/ci.py tags --prefix macos-
-
-      - name: pull the desktop disk
-        uses: easydev-org/easyactions/oci-pull@main
-        with:
-          tag: ${{ inputs.ssh_from || needs.desktop.outputs.tag }}
-          dest: out
-          token: ${{ github.token }}
-
-      - name: enable Remote Login
-        uses: easydev-org/easyactions/log-stream@main
-        with:
-          token: ${{ github.token }}
-          name: ssh-enable
-          interval: "15"
-          command: |
-            set -euo pipefail
-            export GITHUB_TOKEN="${{ github.token }}"
-            export SNAPSHOT_INTERVAL=1
-            export MACOS_USER=docker
-            export MACOS_PASSWORD=admin
-
-            export MACOS_RELEASE=26
-            DISK=$(ls out/*.qcow2 | head -1)
-            python3 macos/15/ssh.py \
-              --disk "$DISK" \
-              --out out/macos26-ssh.qcow2 \
-              --ssh-port "${{ inputs.ssh_port || '2222' }}" \
-              --boot-timeout "${{ inputs.boot_timeout || '900' }}"
-
-      - name: keep the recording
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos26-ssh-recording
-          path: |
-            out/install.mp4
-            out/last-frame.png
-          if-no-files-found: warn
-          retention-days: 14
-
-      - name: keep the last frame
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos26-ssh-last-frame
-          path: out/last-frame.png
-          if-no-files-found: warn
-          retention-days: 7
-
-      - name: keep the remote-login frames
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos26-ssh-remote-login-frames
-          path: out/remote-login-*.png
-          if-no-files-found: warn
-          retention-days: 7
-
-      - name: push the disk
-        if: success()
-        id: publish
-        uses: easydev-org/easyactions/oci-push@main
-        with:
-          path: out/macos26-ssh.qcow2
-          kind: macos26-ssh
-          tag: ${{ inputs.ssh_publish_tag || 'macos26-ssh' }}
-          token: ${{ github.token }}

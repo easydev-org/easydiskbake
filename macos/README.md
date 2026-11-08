@@ -1,10 +1,34 @@
 # macos/
 
+**Only 15 is a supported, fully-baked release.** 14 and 26 are kept for what they teach,
+not for what they produce.
+
+| release | setup | desktop | ssh | dev | a disk that boots on its own |
+|---|---|---|---|---|---|
+| 14 (Sonoma) | historical | - | - | - | not maintained |
+| **15 (Sequoia)** | **yes** | **yes** | **yes** | **yes** | **yes** |
+| 26 (Tahoe) | yes | yes, in the same boot only | no | no | **no - hangs** |
+
+macOS 26 measured, in the order it fails:
+
+* The wizard's "Update Mac Automatically" pane greys Continue and Back, spins, opens no
+  outbound connection and never advances. `system_reset` is the only exit, and it leaves
+  the wizard state unwritten on disk.
+* `system_powerdown` is ignored - 60 s and 150 s, no response at all.
+* `/var/db/.AppleSetupDone` exists and every `DidSee*` key is set true, and the wizard
+  still reappears after a clean shutdown. Writing them on a running system has no effect;
+  only writing them at install time (dockur's `.skipbuddy` + a pre-seeded
+  `com.apple.SetupAssistant.plist` in a `com.macos.install.skipsetup` pkg) changes anything.
+* The one way to reach a 26 desktop is to restart **inside** the setup run and drive the
+  wizard forward in the same boot. A disk baked that way still hangs when booted later, so
+  it is not a product - which is why `.github/workflows/macos26.yml` stops at `desktop`
+  and has no ssh, dev or publish-downstream stage.
+
 ```
 macos/
   14/    Sonoma
-  15/    Sequoia
-  26/    Tahoe
+  15/    Sequoia - the only release with the full pipeline
+  26/    Tahoe   - setup + desktop only, see the table above
 ```
 
 One directory per release. The reason they are separate at all is the one recorded in
@@ -57,11 +81,15 @@ Two steps are genuinely different from a Linux bake and both are already solved 
    | mechanism | verdict |
    |---|---|
    | drive Setup Assistant by OCR | works on 14 and 15; on 26 the window of opportunity is ~2s |
-   | drive Setup Assistant by measured coordinates | what `drive-coords.py` does |
-   | write `/private/var/db/.AppleSetupDone` | what `repair-setup-assistant.yml` ended on - "the marker Setup Assistant reads is unambiguous" |
+   | drive Setup Assistant by measured coordinates | what `drive-coords.py` does; what 15 and 26 use here |
+   | write `/private/var/db/.AppleSetupDone` at runtime | **does not work on 26** - the wizard reappears |
+   | write it at install time (`com.macos.install.skipsetup`) | dockur's way; the only marker approach with evidence behind it |
 
-   Prefer the marker. It needs no driver, no coordinates and no OCR, and it survives a
-   release bump, which is exactly what a per-release directory was going to be for.
+   The runtime marker was believed to be the reliable one and it is not: on macOS 26 the
+   file exists, every `DidSee*` key is true, and the wizard still comes back after a clean
+   shutdown. A marker has to be installed by a package during the install, before the first
+   boot, which is what dockur's `.skipbuddy` + pre-seeded `com.apple.SetupAssistant.plist`
+   pkg does. That is not wired up here, and it is the reason 26 has no ssh stage.
 
 ## The 18 GiB problem, which is not a bake problem but decides the output
 

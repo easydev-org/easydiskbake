@@ -1,10 +1,16 @@
 # macOS 26 Setup Assistant — measured coordinates
 
+> **macOS 26 is not a supported release here.** The coordinates below are correct and the
+> wizard can be driven with them, but the wizard never finishes, and a 26 disk does not boot
+> back to a desktop on its own. `.github/workflows/macos26.yml` therefore stops at `desktop`.
+> See `macos/README.md` for the measurements and `README.md` for the summary.
+
 Every number here was measured from a 1920x1080 screendump of a running guest, which is the
 same coordinate system a click uses. Nothing here is scaled from a 1280x800 recording.
 
 Status: **the walkthrough is complete through the Apple Account pane**. The remaining screens
-(age range onward) are recorded as they were measured; see the bottom section.
+(age range onward) are recorded as they were measured; see the bottom section. The panes
+after Apple Account are not reachable in a bake: the pane before them holds. 
 
     All coordinates are GUEST pixels at 1920x1080.
     Left = the y where the control sits; x is the horizontal centre unless noted.

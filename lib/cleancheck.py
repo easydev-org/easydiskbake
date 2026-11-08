@@ -90,7 +90,11 @@ EXPECTED = {
     # start or stop anything"). The same file drives both macOS workflows, so macos26's ssh
     # job is the same shape and this entry says so for both.
     "macos15.yml":     {"setup": None,  "desktop": None,  "ssh": False, "dev": True},
-    "macos26.yml":     {"setup": None,  "desktop": None,  "ssh": False},
+    # macOS 26 HAS NO SSH JOB AT ALL, so there is no entry for one. Its chain stops at
+    # desktop: the wizard never finishes, a reset inside it leaves the state unwritten, and
+    # the baked disk hangs when booted later - so there is no disk a clean could run on and
+    # nothing to publish. See the note at the top of .github/workflows/macos26.yml.
+    "macos26.yml":     {"setup": None,  "desktop": None},
     # android.yml BAKE MAKES AN AVD, not a disk: a directory of raw images driven by the
     # emulator, which has no sshd and is not something fstrim or trim or ReTrim can reach.
     "android.yml":     {"bake": None},
