@@ -61,11 +61,47 @@ import vm           # noqa: E402
 START_INSTALLER = (735, 425)
 OFFLINE = (1069, 590)
 
+# PINNING THE WIZARD'S LANGUAGE, WHICH NOTHING ELSE IN THIS DRIVER CAN DO.
+#
+# Calamares asks a geolocation service for the user's country and picks the interface
+# language from the answer. EndeavourOS points that at
+#
+#     /etc/calamares/modules/welcome_offline.conf
+#       geoip:
+#         style:    "xml"
+#         url:      "https://geoip.kde.org/v1/ubiquity"
+#         selector: "CountryCode"
+#
+# so the language is whatever that HTTPS request returns - and when it fails, Calamares
+# FALLS BACK TO A RANDOM LANGUAGE. Measured, same ISO, three runs:
+#
+#     local machine       Sinhala
+#     CI run 42445140647  Spanish        (`Instalador de EndeavourOS`)
+#     CI run 42454363051  Asturian       (`Açoyida` / `Siguiente`)
+#
+# Every coordinate in this file is measured on the English wizard, so a translated one
+# misses the footer completely: that Asturian run clicked (1340,873) on every pane while
+# `Siguiente` sat at 1406, never advanced past Welcome, and produced a 0 MiB disk.
+#
+# The fix is to make the probe FAIL FAST so Calamares keeps its compiled-in default, which
+# is English. Verified on a live session - with the URL below the wizard opens
+# `Welcome to the EndeavourOS Titan-Nova installer` / `American English` instead of
+# `Açoyida` / `asturianu`. `127.0.0.1:9` is the discard port: nothing listens, so the
+# connection is refused immediately rather than timing out.
+LANGUAGE_PIN_COMMAND = (
+    "sudo sed -i 's#https://geoip.kde.org/v1/ubiquity#http://127.0.0.1:9/x#' "
+    "/etc/calamares/modules/welcome_offline.conf; exit"
+)
+
+# A TERMINAL ON THIS DESKTOP, AND ITS CLOSE GADGET.
+TERMINAL_SHORTCUT = ("ctrl", "alt", "t")
+TERMINAL_CLOSE = (1402, 310)
+
 # THE FOOTER, IN ENGLISH. See the module docstring for why the language changes these
 # numbers and why English is the one CI sees. Measured on Welcome, Location, Keyboard,
 # Bootloader, Partitions, Users and Summary of this ISO.
-NEXT = (1340, 873)
-NEXT_SUMMARY = (1319, 873)
+NEXT = (1406, 873)
+NEXT_SUMMARY = (1406, 873)
 
 # THE PARTITIONS PANE: `Erase disk` is the FIRST radio button; its circle is at (566, 258).
 # The row's text is not a control, and the row below it is `Manual partitioning`.
@@ -170,6 +206,20 @@ def walk_calamares(drv: Driver, args) -> bool:
     a post-mortem and dangerous as a decision. That is the rule ubuntu-gui and kubuntu-gui
     follow, and the reason both of them are green.
     """
+    # 0. PIN THE WIZARD'S LANGUAGE BEFORE IT IS STARTED - see LANGUAGE_PIN_COMMAND.
+    #
+    #    The file is read when Calamares starts, so this has to happen first; and it is the
+    #    only step in this driver that runs a command rather than pressing a measured
+    #    coordinate, because the value it changes is inside the image, not on the screen.
+    log("pinning Calamares' language: making its geoip probe fail so it keeps English")
+    Q.key_combo(drv.q, *TERMINAL_SHORTCUT)
+    time.sleep(10.0)
+    keys.type_text(drv.q, LANGUAGE_PIN_COMMAND, per_char=0.02)
+    Q.key(drv.q, "ret")
+    time.sleep(8.0)
+    drv.look("language pinned")
+    drv.click(TERMINAL_CLOSE, "close the terminal", settle=6.0)
+
     # 1. THE WELCOME WINDOW'S `Start the Installer`, then the method dialog's `Offline`.
     #
     #    ONE CLICK ON EACH, NOT TWO, AND THE SECOND CLICK WAS THE BUG.
