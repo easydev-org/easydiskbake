@@ -53,6 +53,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 
 # THE FILE PAIR, AND THE REASON IT IS A PAIR IS IN THE MODULE DOCSTRING.
 PAIR = ("cache.img", "userdata.img")
@@ -133,6 +134,21 @@ def save(work: str, into: str) -> int:
         log(f"=== INCOMPLETE PAIR: {', '.join(missing)} missing from {into} ===")
         log("  /data is encrypted and its key is on cache.img; one without the other")
         log("  boots to a device with nothing installed")
+        return 1
+
+    # THE KEY AND THE DISK HAVE TO BE FROM THE SAME GUEST.
+    #
+    # Saving cache.img and userdata.img from different runs produces a pair that is
+    # complete and unusable - the boot reaches apexd and stops, with nothing in the log
+    # saying why, because the key in one does not open the other. The mtime is the cheapest
+    # evidence that they were written together: both are folded at save time, seconds apart.
+    cache_mtime = os.path.getmtime(os.path.join(into, "cache.img"))
+    data_mtime = os.path.getmtime(os.path.join(into, "userdata.img"))
+    if abs(cache_mtime - data_mtime) > 600:
+        log(f"=== THE PAIR IS FROM DIFFERENT RUNS ===")
+        log(f"  cache.img    {time.ctime(cache_mtime)}")
+        log(f"  userdata.img {time.ctime(data_mtime)}")
+        log("  /data's key lives on cache.img; these two do not go together")
         return 1
 
     log(f"saved {', '.join(PAIR)} -> {into}")

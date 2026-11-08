@@ -55,17 +55,27 @@ LOOPBACK = "androidboot.boot_devices=vda,vdb,vdc,vdd,vde," \
 # "the file is missing" when it is really EPERM. `su 0` elevates a single command. The
 # redirect has to be INSIDE it - `su 0 cmd > file` gives the redirect to the unprivileged
 # shell that parses the line.
+#
+# THE TIMES ARE FRACTIONS OF THE WINDOW, NOT SECONDS.
+#
+# They were seconds, calibrated for a 240 s run, and `--seconds` only changed how long the
+# emulator was left alive - so `--seconds 420` still asked for the screenshot at 206 s and
+# the extra time bought nothing. A restored /data needs longer to finish booting, and
+# run 42475590459 screenshotted a guest still in apexd-bootstrap because of exactly this.
+#
+# A fraction says "at 60% of whatever window this run has", which is the thing that was
+# meant. The probes are the ones that have to stay late; the early ones only need to be
+# clear of init's own output.
 SCRIPT = [
     # PRINTK OFF THIS TTY FIRST. console=ttyS0 with printk.devkmsg=on interleaves every
     # kernel line into the shell's output; four numbers are console, default, minimum and
     # boot-time default loglevel.
-    (5, "su 0 sh -c 'echo 1 4 1 7 > /proc/sys/kernel/printk'\n"),
-    (60, "su 0 sh -c \"logcat -b crash -d > /metadata/crash.txt\"\n"),
+    (0.02, "su 0 sh -c 'echo 1 4 1 7 > /proc/sys/kernel/printk'\n"),
+    (0.25, "su 0 sh -c \"logcat -b crash -d > /metadata/crash.txt\"\n"),
     # THE ANSWERS GO INTO FILES, AND THE FILES ARE READ OFF THE DISK.
     #
-    # THE CONSOLE IS NARROWER THAN THE COMMANDS AND TRUNCATES THEM. Line length is not
-    # free here: `su 0 sh -c "getprop init.svc.surfaceflinger > /metadata/sf.txt"` is 66
-    # characters and what arrived was
+    # THE CONSOLE IS NARROWER THAN THE COMMANDS AND TRUNCATES THEM. `su 0 sh -c "getprop
+    # init.svc.surfaceflinger > /metadata/sf.txt"` is 66 characters and what arrived was
     #
     #     u 0 sh -c "getprop init.svc.surfaceflinger > /metadata/sf.txt"
     #
@@ -77,20 +87,30 @@ SCRIPT = [
     # `nning`), so parsing it is guesswork. /metadata is a partition of cache.img, and the
     # host already reads the screenshot out of it with debugfs - the same route, applied to
     # two short text files, is exact regardless of how the console decides to draw.
-    (150, "su 0 sh -c \"getprop sys.boot_completed>/metadata/b\"\n"),
-    (160, "su 0 sh -c \"getprop init.svc.surfaceflinger>/metadata/s\"\n"),
-    (170, "su 0 sh -c \"sync\"\n"),
+    (0.60, "su 0 sh -c \"getprop sys.boot_completed>/metadata/b\"\n"),
+    (0.64, "su 0 sh -c \"getprop init.svc.surfaceflinger>/metadata/s\"\n"),
+    (0.68, "su 0 sh -c \"sync\"\n"),
     # A PICTURE THROUGH THE WHOLE GRAPHICS PATH.
-    (206, "su 0 screencap -p /metadata/shot.png\n"),
-    (220, "su 0 sh -c \"sync; ls -l /metadata/shot.png\"\n"),
-    (232, "su 0 dumpsys window displays\n"),
+    (0.82, "su 0 screencap -p /metadata/shot.png\n"),
+    (0.88, "su 0 sh -c \"sync; ls -l /metadata/shot.png\"\n"),
+    (0.94, "su 0 dumpsys window displays\n"),
 ]
 
 
 def drive(proc: subprocess.Popen, seconds: int) -> None:
+    """Type each command when `fraction * seconds` has elapsed.
+
+    A FRACTION, NOT A SECOND. These were absolute, calibrated for a 240 s run, and
+    `--seconds` only changed how long the emulator stayed alive - so a 420 s run still asked
+    for the screenshot at 206 s and the extra time bought nothing. Run 42475590459
+    screenshotted a guest still in apexd-bootstrap for exactly this reason: it had a
+    carried-over /data to decrypt and the deadline did not move with the window.
+    """
     started = time.time()
-    for at, line in SCRIPT:
-        while time.time() - started < at:
+    budget = max(seconds, 60)
+    for fraction, line in SCRIPT:
+        when = fraction * budget
+        while time.time() - started < when:
             time.sleep(0.5)
         try:
             proc.stdin.write(line.encode())

@@ -49,9 +49,13 @@ on:
         default: true
 
       # --- how long to give the guest ------------------------------------------------
+      # 260 IS ENOUGH FOR A FRESH DEVICE AND NOT FOR A RESTORED ONE. A /data carried over
+      # from a previous run has to be decrypted and its package database re-read, which was
+      # measured slower than a cold boot - run 42475590459 stopped at apexd-bootstrap with
+      # the screenshot step never reached because the guest had used the whole window.
       seconds:
         description: "boot: seconds to keep the guest up (the screen is read near the end)"
-        default: "260"
+        default: "420"
 
       # --- publish -------------------------------------------------------------------
       publish:
