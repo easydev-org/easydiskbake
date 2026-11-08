@@ -160,6 +160,17 @@ class Installer:
         have = {"".join(c for c in w[0].lower() if c.isalnum()) for w in self.words}
         return all("".join(c for c in x.lower() if c.isalnum()) in have for x in want)
 
+    def close(self) -> None:
+        """Release the QMP connection before lib/steps.py opens its own.
+
+        qemu serves one client per socket, so the YAML walk cannot start while this driver
+        still holds it - the same boundary macos/15/bake.py documents.
+        """
+        try:
+            self.screen.close()
+        except Exception:                              # noqa: BLE001
+            pass
+
     def screen_text(self) -> str:
         """Everything OCR read, as one lowercased string.
 
@@ -355,65 +366,25 @@ def main(argv: list[str]) -> int:
     try:
         drv = Installer(guest.paths.drive, work, user=args.user, password=args.password)
         if drv.wait_for_welcome(args.timeout):
-            ok = drv.walk()
-            # THE INSTALLER'S LAST ACT IS A REBOOT PROMPT. Waiting for it rather than for a
-            # fixed time means the disk is not copied while it is still being written.
-            # THE COMPLETION TEST IS THE ONE PLACE A WORD MATCH IS RIGHT.
+            # THE WALK IS A YAML FILE NOW - see steps/install.yaml, which carries the PANES
+            # table, the account fields and the map position as data.
             #
-            # Every other decision here is a position and a wait, because a wrong detector
-            # silently skips a pane. This one is a TERMINAL condition: the installer either
-            # eventually says it is finished or it does not, and matching the words it prints
-            # at the end cannot skip anything - there is nothing after it to skip.
+            # EVERYTHING AROUND IT IS UNCHANGED: the machine, the kernel and initrd, the
+            # frames, the recording, the publish, the empty-disk check. Only where the
+            # sequence is WRITTEN moved.
             #
-            # A TIMEOUT IS A FAILURE, NOT A SUCCESS. The old loop fell through to the publish
-            # step with ok still true, so a run that never finished would have flattened and
-            # pushed a half-installed disk.
-            log("waiting for the installer to finish")
-            finished = False
-            deadline = time.time() + args.timeout
-            # A SCREEN THAT HAS NOT CHANGED IN FIFTEEN MINUTES IS A DEAD RUN, NOT A SLOW ONE.
-            #
-            # ubuntu-gui has never stalled - this loop is the one part of it that has not
-            # been proved by a failure. The sibling driver, kubuntu-gui, stalled on run
-            # 42364250527 and spent eighty-seven of its ninety minutes logging one identical
-            # OCR line every twenty seconds; the timeout was the only thing that ended it.
-            # Finishing an install always changes the screen - a progress bar moves, a
-            # package name changes, a pane changes - so a plateau that long means the
-            # installer is not working and waiting longer cannot help.
-            stalled_since = time.time()
-            previous = ""
-            while time.time() < deadline:
-                # A REAL EVENT, NOT A POINTER MOVE: the session's idle timer is what puts
-                # the lock screen up, and it does not count a pointer move on a build
-                # whose screen saver ignores synthetic motion. The click lands on the
-                # progress page, where there is no control to disturb.
-                try:
-                    qmpmod.click(drv.q, 400 + (int(time.time()) % 40), 300)
-                except Exception:                  # noqa: BLE001
-                    pass
-                drv.look("finish")
-                current = drv.screen_text()
-                if current != previous:
-                    previous, stalled_since = current, time.time()
-                if drv.says("installation", "complete") or drv.says("installed", "ready"):
-                    log("=== INSTALL COMPLETE ===")
-                    finished = True
-                    break
-                if drv.says("restart", "now"):
-                    log("=== INSTALL COMPLETE (restart prompt) ===")
-                    finished = True
-                    break
-                stalled = int(time.time() - stalled_since)
-                if stalled > 900:
-                    log(f"=== THE SCREEN HAS NOT CHANGED IN {stalled}s ===")
-                    log("  the installer is not working; waiting longer will not change that")
-                    log(f"  last screen: {current[:200]}")
-                    break
-                time.sleep(20)
-            if not finished:
-                log("=== THE INSTALLER NEVER REPORTED COMPLETION ===")
-                log(f"  last screen: {' | '.join(w[0] for w in drv.words[:24])}")
-                ok = False
+            # THE QMP SOCKET IS ALREADY OPEN, so this driver is closed first: qemu serves one
+            # client per socket and steps.run_file opens its own.
+            drv.close()
+            import steps
+            walk_path = os.path.join(HERE, "steps", "install.yaml")
+            log(f"=== the walk: {os.path.basename(walk_path)} ===")
+            ok, ran = steps.run_file(
+                walk_path, guest.paths.drive, work=work,
+                user=args.user, password=args.password,
+            )
+            log(f"{len(ran)} step(s) ran" if ok
+                else f"the walkthrough failed after {len(ran)} step(s)")
     finally:
         try:
             shot = os.path.join(work, "final.ppm")
