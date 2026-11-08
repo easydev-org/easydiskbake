@@ -120,6 +120,29 @@ SCRIPT = [
 ]
 
 
+def qemu_net_args(tap: str) -> list[str]:
+    """The qemu-side tap arguments, or nothing when no tap was asked for.
+
+    THESE ARE lib/vm.py's, COPIED RATHER THAN SHARED. That module builds its argv for a
+    Guest object it owns; this one drives the emulator, whose argument handling differs in
+    one important way - anything after `-qemu` goes to qemu untouched, and that is the only
+    route to `-netdev tap`. Sharing the code would mean sharing the shape, and the shapes
+    are not the same.
+
+    The MAC and the MTU match lib/net.py's: 52:54:00:56:4d:01 is what the rest of this
+    repository hands its guests, and the MTU is the bridge's, so the guest never sends a
+    frame larger than the path it leaves on.
+    """
+    if not tap:
+        return []
+    mtu = netlib.MTU
+    return [
+        "-netdev", f"tap,id=n0,ifname={tap},script=no,downscript=no",
+        "-device", f"virtio-net-pci,netdev=n0,mac=52:54:00:56:4d:01,"
+                   f"romfile=,host_mtu={mtu}",
+    ]
+
+
 def drive(proc: subprocess.Popen, seconds: int) -> None:
     """Type each command when `fraction * seconds` has elapsed.
 
@@ -320,15 +343,32 @@ def main(argv: list[str]) -> int:
         # guest at all.
         "-shell",
         "-append-userspace-opt", LOOPBACK,
-        # THE TAP, OR NOTHING. `-net-tap` is the emulator's own option for this - it does
-        # not need to be smuggled through `-qemu` like the QMP socket does - and lib/net.py
-        # has already created the interface, the bridge, the DHCP lease and the DNAT rules
-        # by the time this runs.
-        *(["-net-tap", a.tap] if a.tap else []),
         "-feature", "RefCountPipe",
         "-feature", "VirtioVsockPipe",
         "-show-kernel",
+        # `-qemu` HANDS EVERYTHING AFTER IT TO QEMU, and that is where the tap belongs.
+        #
+        # `-net-tap` is an emulator option and it did not work here: virtio_net.ko loaded
+        # and never bound to a PCI device, so the guest had no interface, sent no
+        # DHCPDISCOVER and took no lease -
+        #
+        #     qemubr0 172.30.0.1/24 UP, qemutap0 master qemubr0 UP
+        #     dnsmasq running with dhcp-range=172.30.0.2
+        #     /var/lib/misc/dnsmasq.leases: (no lease file)
+        #
+        # The arguments below are the ones every other system in this repository uses
+        # (lib/vm.py build_args), verbatim, because they are the ones known to bind:
+        #
+        #   script=no,downscript=no  there is no /etc/qemu-ifup in a container, and qemu's
+        #                            default is to run it - which fails after the guest is
+        #                            created rather than before.
+        #   romfile= (empty)         suppresses the iPXE option ROM. A value there is read
+        #                            as a path to a firmware image.
+        #   host_mtu=                the tap is at the container's MTU (1450); virtio-net
+        #                            advertises 1500 and the guest then emits frames that
+        #                            are silently dropped. This makes the guest learn it.
         "-qemu", "-qmp", f"unix:{os.path.join(D, 'qmp.sock')},server=on,wait=off",
+        "-qemu", *qemu_net_args(a.tap),
     ]
 
     env = dict(os.environ)
