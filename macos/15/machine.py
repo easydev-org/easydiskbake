@@ -106,10 +106,28 @@ def shape(assets: dict, *, cpus: int = 4, mem_mb: int = 8192) -> vm.Shape:
         #     vmx=off               nested virtualisation confuses it
         #     vmware-cpuid-freq=on  the TSC frequency comes from this
         #     -pdpe1gb              1 GB pages are broken under this guest
+        #
+        # +invtsc IS WHAT MAKES macOS 26 BOOT AT ALL ON THIS HOST, and its absence was
+        # invisible because macOS 15 tolerates it. The symptom is a deadlock that reads as
+        # "Tahoe is slow": every vCPU at 100%, the container's block I/O counters frozen for
+        # minutes, the installer's ETA still saying "about 20 minutes remaining", and the
+        # serial output ending at
+        #
+        #     #[EB|LOG:HANDOFF TO XNU] _
+        #
+        # with no panic and no error. Fewer vCPUs only moves where it hangs - at 4 it stops
+        # around 85% of the install, at 2 it stops at first boot instead.
+        #
+        # The guest needs an INVARIANT TSC, which is constant_tsc + nonstop_tsc. This host
+        # has both (grep /proc/cpuinfo), and qemu was still not passing it: `invtsc` is not
+        # implied by the Skylake-Client-v4 model, so the guest was denied a property its
+        # hardware has. +invtsc states it, and qemu's `check` confirms the host can honour
+        # it rather than silently dropping it.
+        #
         # `check` makes qemu refuse an unsupportable set at startup rather than boot a
         # guest that panics later.
         cpu=("Skylake-Client-v4,vendor=GenuineIntel,vmx=off,"
-             "vmware-cpuid-freq=on,-pdpe1gb,"
+             "vmware-cpuid-freq=on,-pdpe1gb,+invtsc,"
              "+ssse3,+sse4.2,+popcnt,+avx,+avx2,+aes,+fma,+bmi1,+bmi2,+smep,"
              "+xsave,+xsaveopt,+xgetbv1,+movbe,+rdrand,check"),
         # dockur's configureSmp(): a topology macOS understands, not a bare count.
