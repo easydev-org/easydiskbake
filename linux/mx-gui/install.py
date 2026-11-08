@@ -55,7 +55,17 @@ import vm           # noqa: E402
 # MX Welcome is open by itself on the live desktop, and its `Install MX Linux` card at
 # (543,378) starts minstall. The installer window is (320,170)..(1570,930) and its footer
 # never moves: Close (759,889), Back (1338,889), Next/Start (1482,889).
-WELCOME_INSTALL = (543, 378)
+# THE INSTALLER'S OWN SIDEBAR ICON, NOT THE WELCOME WINDOW'S CARD.
+#
+# `MX Welcome` draws a grid of cards and `Install MX Linux` is one of them, but a press at its
+# centre - measured in CI run 42476000228 - opened `Frequently Asked Questions` in qpdfview
+# instead: the cards are close together and the press landed one row off. The desktop's OWN
+# panel icon is a single small target with nothing beside it:
+#
+#     the dock on the left edge, `Installer` at (81, 259)
+#
+# verified locally, where it opened the installer on the second press.
+INSTALLER_ICON = (81, 259)
 
 NEXT = (1482, 889)
 BACK = (1338, 889)
@@ -183,8 +193,8 @@ def walk_minstall(drv: Driver, args) -> bool:
     # The reading after the pair is a LOG LINE, not a gate: the installer's window title is
     # `MX Linux Installer`, and a title is the kind of thing a translated or re-themed build
     # can change. The empty-disk check at the end is the verdict.
-    drv.click(WELCOME_INSTALL, "MX Welcome: Install MX Linux", settle=3.0)
-    drv.click(WELCOME_INSTALL, "MX Welcome: Install MX Linux (second press)", settle=28.0)
+    drv.click(INSTALLER_ICON, "desktop: Installer", settle=3.0)
+    drv.click(INSTALLER_ICON, "desktop: Installer (second press)", settle=28.0)
     drv.look("installer")
     if "installer" not in drv.text():
         log("  (the installer window was not read - continuing on coordinates anyway)")
