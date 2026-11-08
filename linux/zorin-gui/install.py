@@ -212,123 +212,34 @@ def wait_for_live_desktop(drv: Driver, timeout: int) -> bool:
 
 
 def start_the_installer(drv: Driver) -> None:
-    """Click `Install Zorin OS` in the welcome window, and stop the session locking itself.
+    """Press `Install Zorin OS` in the launcher, then keep the session awake.
 
-    THE WELCOME WINDOW IS THE ENTRY POINT, NOT THE DESKTOP ICON AND NOT A TERMINAL.
+    THE TERMINAL IS OPENED AFTER THE INSTALLER, AND ONLY FOR THE SCREEN SAVER.
 
-    Measured on a live session. Zorin opens a window of its own on the live desktop:
+    Measured twice, and the order is the whole of it:
 
-        Instalar / Bienllégáu          (Asturian; English is `Welcome` / `Hello`)
-        [ Try Zorin OS ]  [ Install Zorin OS ]
-        `Puedes probar Zorin OS ensin facer dengún cambéu nel equipu...`
+      * terminal first, launcher second - the terminal window owns the screen, both presses
+        land in it, and Ubiquity never starts. Two CI runs and one local run failed exactly
+        this way, the frame still reading `Paigaldamine | Tere tulemast | Eesti | ...`;
+      * launcher first, terminal second - Ubiquity reaches its Keyboard pane, and the
+        terminal opened afterwards sits behind it because Ubiquity raises itself.
 
-    with a language list down the left, `English` among the entries. Its right-hand button
-    starts Ubiquity, and that button is the thing this driver must press.
+    THE LAUNCHER'S LANGUAGE IS WHATEVER THE GEOLOCATION PROBE SAYS - measured, `Welcome` on
+    one run and `Paigaldamine` (Estonian) on the next, same ISO. Its cards do not move, so the
+    button is at (1223,586) in both, which is why this is a coordinate and not a lookup.
 
-    TWO OTHER ROUTES WERE TRIED AND BOTH FAILED, which is why this comment exists:
-
-      * the desktop icon - GNOME refuses to run an untrusted `.desktop`, and answers
-        `Untrusted application launcher / Failed to run "install-zorin-os.desktop"`;
-      * `pkexec ubiquity` typed into a terminal - it starts nothing on this image, and the
-        five footer clicks that followed all landed on the welcome window, which was still
-        on screen and still reading `Welcome | English | ... | Try | Zorin | OS`.
-
-    THE SESSION MUST NOT BLANK OR LOCK while the install runs - the failure mint-gui
-    measured, and it costs a whole run because a locked screen reads as a clock. One
-    terminal does that and closes itself; the installer is then started by the button.
+    TWO PRESSES 3 SECONDS APART, RETRIED ONCE. One press only focuses the window; the pair,
+    three seconds apart, is what was measured to start Ubiquity. The retry is two attempts,
+    not a loop, and it stops as soon as the Keyboard pane is readable.
     """
-    log("disabling the screen saver and the lock")
-    Q.key_combo(drv.q, "ctrl", "alt", "t")
-    time.sleep(8.0)
-    # THE KEEPALIVE IS FULLY DETACHED, OR THE TERMINAL WINDOW STAYS OPEN OVER THE INSTALLER.
-    #
-    # `( ... ) & exit` was not enough. A background subshell inherits the terminal's pty, so
-    # `exit` closed the shell but the window itself stayed - and the first click meant for
-    # Ubiquity's footer landed in it instead. Measured: the pane after that click still read
-    # `keyboard: o | zorin@zorin | Q | Install | ... | Welcome | English | ...`, i.e. the
-    # terminal in front of a welcome window that had never advanced.
-    #
-    # `setsid` plus full redirection puts the keepalive in its own session with no file
-    # descriptors pointing at the pty, so nothing holds the window open. The window is then
-    # closed with Alt+F4 rather than by the shell, which is the only close this driver can
-    # be certain of.
-    command = (
-        "xset s off; xset -dpms; xset s noblank; "
-        "gsettings set org.gnome.desktop.session idle-delay 0; "
-        "gsettings set org.gnome.desktop.screensaver lock-enabled false; "
-        "setsid sh -c 'while :; do "
-        "  xdotool mousemove_relative -- 1 0; xdotool mousemove_relative -- -1 0; "
-        "  sleep 20; done' >/dev/null 2>&1 < /dev/null &"
-    )
-    keys.type_text(drv.q, command, per_char=0.02)
-    Q.key(drv.q, "ret")
-    time.sleep(6.0)
-
-    # THE TERMINAL IS CLOSED BY ITS OWN SHELL, NOT BY Alt+F4.
-    #
-    # Alt+F4 was tried and it is wrong here: measured, it put up
-    #
-    #     Quit the installation?
-    #     [ Cancel ]  [ Quit ]
-    #
-    # - the WELCOME LAUNCHER's quit prompt, because that window had the focus - and the
-    # dialog then covered the desktop for the rest of the run. A window manager shortcut
-    # closes whatever is focused, and this driver cannot be sure what that is.
-    #
-    # `exit` typed into the terminal closes the shell it belongs to, and with `setsid` and
-    # full redirection the keepalive outlives it without holding the pty open.
-    keys.type_text(drv.q, "exit", per_char=0.05)
-    Q.key(drv.q, "ret")
-    time.sleep(6.0)
-    drv.look("screensaver disabled")
-
-    # CLICKED TWICE, BECAUSE THE FIRST PRESS ONLY GIVES THE WINDOW FOCUS.
-    #
-    # The terminal was opened a moment ago and it holds the focus; the welcome window is
-    # behind it. Measured locally: one click at (1219,585) produced no Ubiquity at all -
-    # forty seconds later the frame still showed the welcome window with `Install Zorin OS`
-    # and the terminal in front of it. The second press, eight seconds later and on the same
-    # coordinate, is what starts it.
-    #
-    # Eight seconds is safe for the second press: the first takes about forty to bring
-    # Ubiquity up, so the second cannot land on a later pane's own button.
-    # THE LAUNCHER'S LANGUAGE IS NOT SET HERE, AND THAT IS DELIBERATE.
-    #
-    # This window follows the same geolocation answer Calamares does: measured, one local run
-    # drew `Welcome` / `Install Zorin OS`, the next drew `Paigaldamine` / `Tere tulemast` -
-    # ESTONIAN - on the same ISO twenty minutes apart. Its cards do not move, so the BUTTON is
-    # at the same place in both, which is why this driver clicks a coordinate.
-    #
-    # A step that selected the list's `English` row was tried and removed: the list scrolls to
-    # the CURRENT language, so the row's position depends on what was preselected - measured,
-    # `English` sat at y 516 in a window whose list had scrolled to `Estonian`, not at the y
-    # 383 the earlier frame had shown. A coordinate measured on one scroll position is not a
-    # coordinate for another, and the button below is the only control this step needs.
-    # THE LAUNCHER IS CLICKED FIRST, ON A CLEAN DESKTOP, AND THE TERMINAL COMES AFTER.
-    #
-    # THIS ORDER IS THE FIX. The driver used to open its terminal first - to disable the
-    # screen saver - and then click the launcher. Measured in CI (run at ed7702f): two pairs
-    # of presses at (1223,586) and Ubiquity never appeared, the frame still showing
-    # `Paigaldamine | Tere tulemast | Eesti | ...` sixty seconds later. The terminal window
-    # was in front of the welcome window, so the clicks went into it.
-    #
-    # A LOCAL RUN THAT DID SUCCEED was the same driver WITHOUT the terminal step before the
-    # click: Ubiquity opened on the first pair. That is the difference, and the order is all
-    # that was wrong.
-    # TWO PRESSES 3 SECONDS APART, RETRIED ONCE. Measured on a live session: `(1223,586)`
-    # twice, three seconds apart, opens Ubiquity; the earlier 8-second gap did not, and the
-    # CI run at 0b62f3f logged the welcome window still on screen 57 seconds later.
-    #
-    # The retry is bounded at two attempts and bounded in time - this is not a wait loop, it
-    # is one more try at a click that the screen says did not take.
     for attempt in (1, 2):
-        drv.click(WELCOME_INSTALL, f"welcome: Install Zorin OS (attempt {attempt})", settle=3.0)
-        drv.click(WELCOME_INSTALL, f"welcome: Install Zorin OS (attempt {attempt}, second)",
-                  settle=40.0)
-        drv.look("ubiquity welcome")
-        if "ubiquity" in drv.text() or "keyboard layout" in drv.text():
+        drv.click(WELCOME_INSTALL, f"launcher: Install Zorin OS (attempt {attempt})", settle=3.0)
+        drv.click(WELCOME_INSTALL,
+                  f"launcher: Install Zorin OS (attempt {attempt}, second)", settle=40.0)
+        drv.look("ubiquity")
+        if "keyboard" in drv.text() or "keymap" in drv.text():
             break
-        log("  Ubiquity is not up yet; one more pair of presses")
+        log("  Ubiquity's keyboard pane is not up yet; one more pair of presses")
 
     # NOW THE TERMINAL, with Ubiquity already up and owning the screen.
     #
@@ -377,13 +288,18 @@ def walk_ubiquity(drv: Driver, args) -> bool:
     drv.click(CONTINUE, "Welcome: Continue", settle=15.0)
     drv.look("keyboard")
 
-    # THE PANE MUST ACTUALLY HAVE CHANGED BEFORE THE NEXT CLICK, OR THAT CLICK LANDS ON THE
-    # WRONG CONTROL - which is exactly the failure above. `Keyboard layout` is the only pane
-    # that carries the two list boxes, so the title is the test.
-    if "keyboard layout" not in drv.text():
-        log("=== THE WELCOME PANE DID NOT ADVANCE TO KEYBOARD LAYOUT ===")
-        log(f"  screen: {drv.text()[:200]}")
-        return False
+    # NO GATE ON THE PANE'S TITLE. The intent was good - a click meant for the keyboard page
+    # must not be spent on the welcome page - but the test is a WORD, and this wizard's words
+    # are translated: measured, the CI run at 38f44c4 advanced correctly to a Keyboard pane
+    # rendering `Klahvistiku paigutus` (Estonian) and the gate stopped the run with
+    #
+    #     === THE WELCOME PANE DID NOT ADVANCE TO KEYBOARD LAYOUT ===
+    #
+    # on a screen that was exactly where it should be. A translated wizard is not a broken
+    # one, and the coordinate is the same in every language. The empty-disk check at the end
+    # is the verdict.
+    if "keyboard" not in drv.text() and "klaviatuur" not in drv.text():
+        log("  (the keyboard pane's title was not read - translated wizard; continuing anyway)")
 
     # 2. KEYBOARD LAYOUT, AND THE PLAIN `English (US)` ROW MUST BE CLICKED.
     #
