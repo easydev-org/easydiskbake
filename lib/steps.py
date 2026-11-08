@@ -1340,6 +1340,12 @@ def run_file(walkthrough: str, qmp_path: str, *, work: str = "",
     # menu on 26 and a text link on 15 - and a `python:` extension reads it from the driver
     # rather than from a global.
     setattr(driver, "release", str(release))
+    # THE WALKTHROUGH'S OWN VALUES, FOR THE SAME REASON. A `python:` step that types into a
+    # form needs the account the walk was given, and passing it through the step's own keys
+    # would mean inventing a vocabulary for every field. The resolved vars are attached
+    # instead, so an extension reads `driver.values["user"]` and the YAML stays data.
+    setattr(driver, "values", steps.values(
+        {"args.user": user, "args.password": password}))
 
     try:
         return walk(driver, steps,

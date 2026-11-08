@@ -96,28 +96,23 @@ steps:
   # 4. THE ACCOUNT, PANE ONE: FULL NAME AND USER NAME
   # =======================================================================================
   #
-  # THE BOXES, MEASURED. Full Name is y=480..511 (centre 495), User Name is y=546..576 (centre
-  # 561), both x=490..1429.
+  # A `python:` STEP, AND THE RUN THAT MADE IT ONE. Run 42516547644 reached this pane and its
+  # frame at t=150s reads
   #
-  # `Full Name` COPIES INTO `User Name` AS IT IS TYPED, so `User Name` is emptied by hand and
-  # typed once - measured: without that, `User Name` read `dockerdocker`.
-  - name: account - full name
-    at: [1188, 495]
-    type: "Docker User"
-    settle: 2
-
-  - name: account - user name
-    at: [1188, 561]
-    type: "{{ user }}"
-    settle: 2
-
-  # THE FOCUS-OUT IS WHAT ENABLES `Next`, AND IT IS NOT OPTIONAL.
+  #     Full Name    docker          <- the DIM PLACEHOLDER, not typed text
+  #     User Name    docker|
+  #     Next                         <- grey
   #
-  # See the file header: run 42502695338 typed both fields correctly and the footer stayed
-  # grey for forty-two minutes with the caret still in User Name. One Tab leaves the entry,
-  # which is the event the pane validates on.
-  - name: account - leave the last entry
-    key: tab
+  # - the walk had just typed `Docker User` into Full Name and nothing landed, because
+  # `type_into` is click, ctrl+a, sixty BackSpaces, then type, and THIS PANE'S ENTRIES SIT
+  # BESIDE THE ARTWORK PICKER: a ctrl+a or a BackSpace that lands on the wrong control
+  # selects the avatar and opens a GTK file chooser over the form. So the pane is CLICK AND
+  # TYPE with no clearing, which is a different action from the generic helper - see
+  # steps/panes.py.
+  #
+  # The step carries the account so the extension types what every other bake here uses.
+  - name: account name
+    python: panes:fill_account_name
     settle: 2
 
   - name: create user account
@@ -128,29 +123,15 @@ steps:
   # 5. THE ACCOUNT, PANE TWO: THE PASSWORD TWICE
   # =======================================================================================
   #
-  # PLAIN CLICKS AND TYPING - no `ctrl+a`, no forty backspaces - and ESC FIRST, ALWAYS.
-  #
-  # THIS PAGE IS NOT LIKE THE OTHERS. Measured: a click 10-12 pixels off the entry lands on
-  # the pane's artwork picker and opens `Choose Icon`, a GTK FILE CHOOSER over the installer,
-  # and every later keystroke goes into ITS search box (`adminadmin` in the frame). One Esc
-  # closes it, and it is a no-op on a pane with no dialog open.
-  #
-  # The fields start EMPTY on this pane, so nothing needs clearing.
-  - name: account password - escape any file chooser
-    key: esc
-    settle: 2
-
-  - name: account password - password
-    at: [1188, 440]
-    type: "{{ password }}"
-    settle: 2
-
-  - name: account password - confirm
-    at: [1188, 546]
-    type: "{{ password }}"
-    settle: 2
-
+  # Also `python:`, for the same measured reason plus one more: ESC FIRST, ALWAYS. If a click
+  # has already landed on the artwork picker, a GTK file chooser is up over the installer and
+  # every later keystroke goes into ITS search box - the frame that proved it read `adminadmin`
+  # in the chooser's field.
   - name: account password
+    python: panes:fill_account_password
+    settle: 2
+
+  - name: account password next
     at: [1367, 817]
     settle: 25
 
