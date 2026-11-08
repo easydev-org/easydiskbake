@@ -444,6 +444,55 @@ def test_pane_do_list() -> None:
     check(answered == ["create a mac account"], f"one pane answered, got {answered}")
 
 
+def test_waits_for_gate() -> None:
+    print("\n=== a pane file waits for its first pane before matching")
+    document = steps.Walk({
+        "name": "gated",
+        "ends": ["finder"],
+        "stuck_after": 0,
+        "waits_for": ["country"],
+        "boot_timeout": 2,
+        "boot_poll": 0.01,
+        "steps": [
+            {"name": "country", "when": ["country"], "at": [1, 1], "settle": 0},
+        ],
+    }, path="inline")
+
+    class Booting(FakeDriver):
+        """A guest that is BLACK for two looks, then shows the first pane... and leaves it."""
+
+        def __init__(self):
+            super().__init__()
+            self.looks = 0
+
+        def look(self, label="look"):
+            self.looks += 1
+            # THE PANE IS LEFT AS SOON AS IT IS CLICKED, which is what a real installer does
+            # and what this fake has to do too - otherwise the loop answers the same pane
+            # forever and the test is measuring the fake rather than the interpreter.
+            if self.clicks:
+                self.screen = "Finder File Edit"
+            elif self.looks <= 2:
+                self.screen = ""
+            else:
+                self.screen = "Select Your Country or Region"
+            return super().look(label)
+
+    driver = Booting()
+    ok, answered = steps.walk(driver, document)
+    check(ok, "the walk proceeds once the first pane appears")
+    check(answered == ["country"], f"and answers it, got {answered}")
+
+    class Never(FakeDriver):
+        def look(self, label="look"):
+            self.screen = ""
+            return super().look(label)
+
+    ok, answered = steps.walk(Never(), document)
+    check(not ok, "a guest that never shows the first pane fails, rather than matching nothing")
+    check(answered == [], "and answers nothing")
+
+
 def test_headless_needs_no_screen() -> None:
     print("\n=== a walkthrough with no GUI steps needs no QMP socket")
     headless = steps.HeadlessDriver("/tmp")
@@ -490,6 +539,7 @@ def main() -> int:
     test_ssh_step()
     test_region_is_a_crop()
     test_pane_do_list()
+    test_waits_for_gate()
     test_headless_needs_no_screen()
     test_real_files()
 

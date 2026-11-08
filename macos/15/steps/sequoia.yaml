@@ -44,6 +44,15 @@
 name: macos 15 sequoia setup assistant
 resolution: [1920, 1080]
 ends: [finder]
+# THE DISK IS STILL BOOTING WHEN THIS WALKTHROUGH STARTS, so the loop has to know how it
+# recognises the first pane. Without it the loop matches nothing against a black screen and
+# reports STUCK, which is exactly what the first CI run of the desktop stage did.
+#
+# `country` is the Setup Assistant's first pane ("Select Your Country or Region") and it is
+# what macos/15/drive_read.py waits for before its own loop.
+waits_for: [country]
+boot_timeout: 1800
+boot_poll: 10
 stuck_after: 20
 pane_limit: 3
 

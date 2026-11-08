@@ -935,6 +935,39 @@ def walk_panes(driver: Driver, steps: Walk, values: dict[str, str], *,
     """
     answered: list[str] = []
     stuck_after = float(steps.document.get("stuck_after", 20))
+
+    # A PANE FILE MUST SAY HOW IT KNOWS THE FIRST PANE HAS ARRIVED.
+    #
+    # Without this the loop looks at a machine that is still booting, matches nothing, and
+    # reports STUCK - which is what the first CI run of the desktop stage did:
+    #
+    #     === STUCK: no pane matched, and this is not the end ===
+    #       last screen:
+    #
+    # over a guest whose disk had just started. macos/15/drive_read.py has the same wait for
+    # the same reason: `wait_for("country", timeout=boot_timeout, poll=10, label="boot")`
+    # before its loop.
+    #
+    # `waits_for` is the words, and `boot_timeout` how long the disk may take to get there.
+    gates = steps.document.get("waits_for")
+    if gates:
+        words = gates if isinstance(gates, list) else [gates]
+        boot_timeout = float(steps.document.get("boot_timeout", 1800))
+        poll = float(steps.document.get("boot_poll", 10))
+        log(f"waiting up to {boot_timeout:.0f}s for {' '.join(words)}")
+        deadline = time.time() + boot_timeout
+        arrived = False
+        while time.time() < deadline:
+            driver.look("boot")
+            if all(driver.says(w) for w in words):
+                log(f"=== THE FIRST PANE IS UP: {' '.join(words)} ===")
+                arrived = True
+                break
+            time.sleep(poll)
+        if not arrived:
+            log("=== THE FIRST PANE NEVER APPEARED ===")
+            log(f"  last screen: {driver.text()[:200]}")
+            return False, answered
     # A PANE THAT KEEPS MATCHING MUST NOT BE ANSWERED FOREVER. macOS 26's Update pane greys
     # Continue and spins, and a loop that ran its handler every pass would click it every ten
     # seconds for the length of the run. Each pane is answered at most `repeat_max` times, and a
