@@ -131,9 +131,35 @@ class Driver:
         Q.click(self.q, *xy)
         time.sleep(settle)
 
-    def click_twice(self, xy, why: str, settle: float = 20.0) -> None:
-        self.click(xy, why, settle=0.8)
-        self.click(xy, f"{why} (second click)", settle=settle)
+    def double_click(self, xy, why: str, settle: float = 30.0) -> None:
+        """Two presses 80 ms apart at ONE position - a real double-click.
+
+        click_twice() IS NOT ONE AND THAT IS WHY GARUDA'S RUN FAILED. It presses, waits
+        0.8 s, then presses again: KDE's double-click interval is 400 ms, so the desktop
+        reads that as two single clicks - the first selects the icon, the second starts the
+        selection over - and the installer never opens. Measured on GhostBSD's MATE, whose
+        interval is the same size: 80 ms opens its installer, 500 ms does not.
+        """
+        log(f"double-click {xy} - {why}")
+        x, y = xy
+        Q._send(self.q, "double press", [
+            {"type": "abs", "data": {"axis": "x", "value": Q.to_abs(x, 1920)}},
+            {"type": "abs", "data": {"axis": "y", "value": Q.to_abs(y, 1080)}},
+            {"type": "btn", "data": {"down": True, "button": "left"}},
+        ])
+        time.sleep(DOUBLE_CLICK_GAP)
+        Q._send(self.q, "double release", [
+            {"type": "btn", "data": {"down": False, "button": "left"}},
+        ])
+        time.sleep(DOUBLE_CLICK_GAP)
+        Q._send(self.q, "double press 2", [
+            {"type": "btn", "data": {"down": True, "button": "left"}},
+        ])
+        time.sleep(DOUBLE_CLICK_GAP)
+        Q._send(self.q, "double release 2", [
+            {"type": "btn", "data": {"down": False, "button": "left"}},
+        ])
+        time.sleep(settle)
 
     def type_into(self, xy, value: str) -> None:
         Q.click(self.q, *xy)
@@ -188,11 +214,12 @@ def walk_calamares(drv: Driver, args) -> bool:
     What is left is the only thing that cannot lie: the button's own measured position.
     """
     # 1. THE DESKTOP ICON.
-    drv.click_twice(INSTALL_ICON, "Install Garuda Linux", settle=40.0)
+    drv.double_click(INSTALL_ICON, "Install Garuda Linux", settle=40.0)
     drv.look("calamares welcome")
     if "welcome" not in drv.text():
         log("the installer did not open on the first double-click; trying once more")
-        drv.click_twice(INSTALL_ICON, "Install Garuda Linux (second attempt)", settle=45.0)
+        drv.double_click(INSTALL_ICON, "Install Garuda Linux (second attempt)",
+                         settle=45.0)
         drv.look("calamares welcome")
     if "welcome" not in drv.text():
         log("=== THE INSTALLER DID NOT OPEN ===")
