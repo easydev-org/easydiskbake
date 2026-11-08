@@ -121,6 +121,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 #   file            used by nothing in this flow yet; kept because every other image here
 #                   carries it and its absence has cost a debugging round before.
 #   zstd + tar      the optional publish step packs the disk set.
+#   iproute2        `ip` - lib/net.py builds the bridge and the tap with it.
+#   iptables        MASQUERADE and the DNAT rules that forward 2222 -> guest:22.
+#   dnsmasq         DHCP and DNS for the guest on the bridge. This is what replaces the
+#                   emulator's userspace NAT, which gives the guest no reachable address.
+#   procps          `pkill`, which lib/net.py uses to restart dnsmasq idempotently.
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
@@ -133,6 +138,10 @@ RUN set -eux; \
         unzip \
         zstd \
         tar \
+        iproute2 \
+        iptables \
+        dnsmasq \
+        procps \
         libx11-6 libx11-xcb1 libxcb1 libxau6 libxdmcp6 libbsd0 \
         libpulse0 libasound2t64 libnss3 libnspr4 \
         libgl1 libglx-mesa0 libegl1 libgles2 \
@@ -169,7 +178,7 @@ RUN set -eux; \
     zstd --version; \
     emulator -version 2>&1 | head -1; \
     adb version | head -1; \
-    command -v emulator adb debugfs mkfs.ext4 lz4 unzip python3; \
+    command -v emulator adb debugfs mkfs.ext4 lz4 unzip python3 ip iptables dnsmasq pkill; \
     test -x "$ANDROID_SDK_ROOT/emulator/qemu/linux-x86_64/qemu-system-x86_64"; \
     test -d "$ANDROID_SDK_ROOT/emulator/lib64"
 

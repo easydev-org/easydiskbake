@@ -256,6 +256,10 @@ def main(argv: list[str]) -> int:
     p.add_argument("--artifacts", default="out")
     p.add_argument("--work", default=None)
     p.add_argument("--boot-timeout", type=int, default=900)
+    p.add_argument("--firmware", default="auto", choices=("auto", "uefi", "bios"),
+                   help="which firmware to boot the disk with: `uefi` (OVMF - what every GUI "
+                        "installer here produces), `bios` (SeaBIOS - an MBR image such as "
+                        "FreeBSD's), or `auto` to try UEFI first")
     p.add_argument("--desktop-settle", type=int, default=240,
                    help="how long a desktop image gets to paint before the frame is taken; "
                         "only used where there is no ssh session to ask")
@@ -325,6 +329,23 @@ def main(argv: list[str]) -> int:
         resolution=(width, height),
         ssh_port=args.ssh_port,
     )
+    # UEFI, BECAUSE THE DISK WAS INSTALLED THAT WAY. Measured on Zorin's own disk: booted with
+    # SeaBIOS it stopped at
+    #
+    #     SeaBIOS (version 1.17.0-debian-1.17.0-1)
+    #     Booting from Hard Disk...
+    #
+    # and never moved - the disk has a GPT with an EFI system partition and NO MBR boot code,
+    # which is exactly what every installer here produces now (lib/uefi.py attaches OVMF for
+    # the install; see its docstring for why the BIOS path was abandoned). A firmware that
+    # looks for a legacy boot sector finds nothing to run.
+    #
+    # `--firmware bios` keeps the old behaviour for a disk that really is MBR - the FreeBSD
+    # image is one - and the default is `auto`: try UEFI, and fall back to BIOS once if the
+    # frame stays at the firmware's message.
+    if args.firmware in ("uefi", "auto"):
+        import uefi
+        shape = uefi.shape_with_uefi(shape, work, kind)
     # NO CDROM. That is what makes this a test of the disk rather than of an installer.
     drives = ["-drive", f"file={disk},if=virtio,format=qcow2"]
     guest = vm.Guest(work, extra=drives, shape=shape, stdout=os.devnull)

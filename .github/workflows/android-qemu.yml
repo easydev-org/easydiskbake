@@ -56,6 +56,9 @@ on:
       seconds:
         description: "boot: seconds to keep the guest up (the screen is read near the end)"
         default: "420"
+      ssh_port:
+        description: "boot: host port forwarded to the guest's ssh port"
+        default: "2222"
 
       # --- publish -------------------------------------------------------------------
       publish:
@@ -100,7 +103,18 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-      options: --device /dev/kvm
+      # /dev/net/tun AND NET_ADMIN, BECAUSE THE GUEST'S NETWORK IS A TAP.
+      #
+      # Without them lib/net.py cannot create the bridge or the tap, and the emulator falls
+      # back to its userspace NAT - which for this guest means NO network at all:
+      #
+      #     lo 127.0.0.1/8
+      #     dummy0, ifb0, ifb1, tunl0, gre0 ...  all DOWN
+      #     ping: connect: Network is unreachable
+      #
+      # Measured on run with `options: --device /dev/kvm` alone. The macOS workflows have
+      # passed both of these since they moved off slirp for the same reason.
+      options: --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN
     permissions:
       contents: read
       checks: write
@@ -201,7 +215,18 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-      options: --device /dev/kvm
+      # /dev/net/tun AND NET_ADMIN, BECAUSE THE GUEST'S NETWORK IS A TAP.
+      #
+      # Without them lib/net.py cannot create the bridge or the tap, and the emulator falls
+      # back to its userspace NAT - which for this guest means NO network at all:
+      #
+      #     lo 127.0.0.1/8
+      #     dummy0, ifb0, ifb1, tunl0, gre0 ...  all DOWN
+      #     ping: connect: Network is unreachable
+      #
+      # Measured on run with `options: --device /dev/kvm` alone. The macOS workflows have
+      # passed both of these since they moved off slirp for the same reason.
+      options: --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN
     permissions:
       contents: read
       checks: write
