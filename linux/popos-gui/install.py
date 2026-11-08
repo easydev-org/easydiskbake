@@ -520,6 +520,10 @@ def main(argv: list[str]) -> int:
             ok, ran = steps.run_file(
                 walk_path, guest.paths.drive, work=work,
                 user=args.user, password=args.password,
+                # THE DISK IS THE FINISH SIGNAL - see the `disk_settle` step. A blind wait
+                # cannot tell a written disk from an installer that closed early, and both
+                # read as "the desktop is back".
+                disk_path=disk,
             )
             log(f"{len(ran)} step(s) ran" if ok
                 else f"the walkthrough failed after {len(ran)} step(s)")

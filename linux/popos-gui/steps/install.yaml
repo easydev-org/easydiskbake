@@ -176,13 +176,23 @@ steps:
     settle: 35
 
   # =======================================================================================
-  # 7. A MEASURED WAIT. THE PROGRESS PANE SHOWS `Extracting Files (N%)`, AND THE PERCENTAGE
-  #    IS THE ONLY TEXT ON IT - a completed disk must not depend on reading it.
+  # 7. THE INSTALL IS WRITTEN, AND THE DISK IS WHAT SAYS SO.
   # =======================================================================================
   #
-  # MEASURED: about 12 minutes. FORTY is that with room for a slower runner.
+  # THE PROGRESS PANE SHOWS `Extracting Files (N%)`, AND THE PERCENTAGE IS THE ONLY TEXT ON
+  # IT - so a completed disk must not depend on reading it. But a blind `wait` cannot tell
+  # "written" from "the installer closed early", and run 42516547644 showed exactly that
+  # ambiguity: from 20:12 onwards the screen read only the desktop (seven words, no installer
+  # window at all), which is what BOTH a finished install and a crashed one look like.
   #
-  # THE KEEP-ALIVE CLICK IS PART OF THE WAIT: a locked desktop has no installer on it.
-  - name: the install runs, as measured
-    wait: 2400
+  # So the finish is `disk_settle`, the same measurement fedora-gui now uses: an install writes
+  # gigabytes into the target qcow2 and a stopped guest writes nothing, so st_blocks is the
+  # thing that can tell slow from stopped. `disk_min_mb: 512` stops an untouched sparse image
+  # looking settled; `disk_settle: 180` covers a qcow2 flush without spending minutes after
+  # the last write. MEASURED: a completed popos disk is 3.58 GiB, so the floor is far below it.
+  - name: the install is written
+    disk_settle: 180
+    disk_min_mb: 512
+    timeout: 3600
+    poll: 20
     keep_alive: true
