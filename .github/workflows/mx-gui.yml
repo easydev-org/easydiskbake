@@ -95,15 +95,10 @@ jobs:
           interval: "10"
           command: |
             set -euo pipefail
-            URL="${{ inputs.iso_url }}"
-            SHA="${{ inputs.iso_sha256 }}"
-            if [ -z "$URL" ]; then
-              URL="https://netix.dl.sourceforge.net/project/mx-linux/Final/Xfce/MX-25.3_Xfce_x64.iso"
-              SHA="25b5ce20caeee1b0e50507291df5ac8a8211b1b9999d8dd7416da9b66ed9fbf9"
-            fi
             mkdir -p out/iso
-            ISO_URL="$URL" ISO_SHA256="$SHA" DEST="out/iso/MX-25.3_Xfce_x64.iso" \
-              python3 lib/fetch_vendor_iso.py --segments 8
+            # FROM ghcr, which is what artifacts-publish exists for: the image was fetched
+            # once, verified three ways, and pushed as `iso-mx-xfce`. This is a CDN pull.
+            python3 lib/fetch_iso.py mx-xfce "out/iso/MX-25.3_Xfce_x64.iso"
 
       - name: install through Ubiquity
         uses: easydev-org/easyactions/log-stream@main

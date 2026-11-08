@@ -100,15 +100,10 @@ jobs:
           interval: "10"
           command: |
             set -euo pipefail
-            URL="${{ inputs.iso_url }}"
-            SHA="${{ inputs.iso_sha256 }}"
-            if [ -z "$URL" ]; then
-              URL="https://mirrors.edge.kernel.org/zorinos-isos/18/Zorin-OS-18-Core-64-bit-r3.iso"
-              SHA="09959ce793b8a065b70207e46cd646b1de805fc7e0bad925ce28df6e04b7f807"
-            fi
             mkdir -p out/iso
-            ISO_URL="$URL" ISO_SHA256="$SHA" DEST="out/iso/Zorin-OS-18-Core-64-bit-r3.iso" \
-              python3 lib/fetch_vendor_iso.py --segments 8
+            # FROM ghcr, which is what artifacts-publish exists for: the image was fetched
+            # once, verified three ways, and pushed as `iso-zorin-core`. This is a CDN pull.
+            python3 lib/fetch_iso.py zorin-core "out/iso/Zorin-OS-18-Core-64-bit-r3.iso"
 
       - name: install through Ubiquity
         uses: easydev-org/easyactions/log-stream@main

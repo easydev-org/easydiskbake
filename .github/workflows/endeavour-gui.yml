@@ -99,15 +99,10 @@ jobs:
           interval: "10"
           command: |
             set -euo pipefail
-            URL="${{ inputs.iso_url }}"
-            SHA="${{ inputs.iso_sha256 }}"
-            if [ -z "$URL" ]; then
-              URL="https://mirror.alpix.eu/endeavouros/iso/EndeavourOS_Titan-Nova-2026.08.15.iso"
-              SHA="0487f46fe29e0ab2ed153ba874568cc542a0507fb6029f29ad552b36ba447393"
-            fi
             mkdir -p out/iso
-            ISO_URL="$URL" ISO_SHA256="$SHA" DEST="out/iso/EndeavourOS_Titan-Nova-2026.08.15.iso" \
-              python3 lib/fetch_vendor_iso.py --segments 8
+            # FROM ghcr, which is what artifacts-publish exists for: the image was fetched
+            # once, verified three ways, and pushed as `iso-endeavouros`. This is a CDN pull.
+            python3 lib/fetch_iso.py endeavouros "out/iso/EndeavourOS_Titan-Nova-2026.08.15.iso"
 
       - name: install through Calamares
         uses: easydev-org/easyactions/log-stream@main

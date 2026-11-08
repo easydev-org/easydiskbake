@@ -102,16 +102,10 @@ jobs:
           interval: "10"
           command: |
             set -euo pipefail
-            ISO_NAME="kubuntu-${{ inputs.release || '26.04.1' }}-desktop-amd64.iso"
-            URL="${{ inputs.iso_url }}"
-            SHA="${{ inputs.iso_sha256 }}"
-            if [ -z "$URL" ]; then
-              URL="https://cdimage.ubuntu.com/kubuntu/releases/26.04/release/$ISO_NAME"
-              SHA="831e4d4bb85098339ba43d3502cd6619b27e76daf37246a084cd68a6413090b8"
-            fi
             mkdir -p out/iso
-            ISO_URL="$URL" ISO_SHA256="$SHA" DEST="out/iso/$ISO_NAME" \
-              python3 lib/fetch_vendor_iso.py --segments 8
+            # FROM ghcr, which is what artifacts-publish exists for: the image was fetched
+            # once, verified three ways, and pushed as `iso-kubuntu-desktop`. This is a CDN pull.
+            python3 lib/fetch_iso.py kubuntu-desktop "out/iso/kubuntu-26.04.1-desktop-amd64.iso"
 
       # CALAMARES, DRIVEN BY POSITION.
       #

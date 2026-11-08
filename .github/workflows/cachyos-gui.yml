@@ -93,15 +93,10 @@ jobs:
           interval: "10"
           command: |
             set -euo pipefail
-            URL="${{ inputs.iso_url }}"
-            SHA="${{ inputs.iso_sha256 }}"
-            if [ -z "$URL" ]; then
-              URL="https://mirror.cachyos.org/ISO/desktop/260809/cachyos-desktop-linux-260809.iso"
-              SHA="959f6577f45e25ee9fd8c220fd221b08e4ea79412c7315c0f922dd6d86d5e33c"
-            fi
             mkdir -p out/iso
-            ISO_URL="$URL" ISO_SHA256="$SHA" DEST="out/iso/cachyos-desktop-linux-260809.iso" \
-              python3 lib/fetch_vendor_iso.py --segments 8
+            # FROM ghcr, which is what artifacts-publish exists for: the image was fetched
+            # once, verified three ways, and pushed as `iso-cachyos-desktop`. This is a CDN pull.
+            python3 lib/fetch_iso.py cachyos-desktop "out/iso/cachyos-desktop-linux-260809.iso"
 
       - name: install through Calamares
         uses: easydev-org/easyactions/log-stream@main

@@ -160,6 +160,86 @@ LINUX = {
 }
 
 
+# DESKTOP IMAGES - the ones the GUI bakes boot, drive, and never answer a file for.
+#
+# SEPARATE FROM LINUX, AND FOR THE SAME REASON BSD IS: the LINUX entries above are installer
+# media an answer file drives (subiquity, bsdinstall's script, nixos' console). These are
+# desktop live sessions with a graphical installer, driven by a measured coordinate and a
+# measured wait - see linux/*-gui/install.py. Keeping them apart means a GUI workflow can
+# pull its image from ghcr without ever touching a table that a file-driven bake reads.
+#
+# EVERY ENTRY CARRIES size AND sha256, both taken from the file the corresponding driver was
+# MEASURED against rather than from a vendor checksum page: for these images the question is
+# "is this the exact build whose pixels were measured", and a vendor's current page can point
+# at a newer build than the one the coordinates belong to.
+DESKTOP = {
+    "ubuntu-desktop": {
+        "url": "https://releases.ubuntu.com/26.04/ubuntu-26.04.1-desktop-amd64.iso",
+        "sha256": "601e30fbf5d97759367c632e2c33630665039b7e2158fd068403da3ccf1bda1f",
+        "size": 6482409472,
+    },
+    "kubuntu-desktop": {
+        "url": "https://cdimage.ubuntu.com/kubuntu/releases/26.04/release/"
+               "kubuntu-26.04.1-desktop-amd64.iso",
+        "sha256": "831e4d4bb85098339ba43d3502cd6619b27e76daf37246a084cd68a6413090b8",
+        "size": 5072990208,
+    },
+    "fedora-workstation": {
+        "url": "https://download.fedoraproject.org/pub/fedora/linux/releases/43/"
+               "Workstation/x86_64/iso/Fedora-Workstation-Live-43-1.6.x86_64.iso",
+        "sha256": "2a4a16c009244eb5ab2198700eb04103793b62407e8596f30a3e0cc8ac294d77",
+        "size": 2742190080,
+    },
+    "mint-cinnamon": {
+        "url": "https://mirrors.kernel.org/linuxmint/stable/22.3/"
+               "linuxmint-22.3-cinnamon-64bit.iso",
+        "sha256": "a081ab202cfda17f6924128dbd2de8b63518ac0531bcfe3f1a1b88097c459bd4",
+        "size": 3091660800,
+    },
+    "opensuse-tumbleweed-kde": {
+        "url": "https://download.opensuse.org/tumbleweed/iso/"
+               "openSUSE-Tumbleweed-KDE-Live-x86_64-Snapshot20261105-Media.iso",
+        "sha256": "cc71dd199e2160c62e235dd723f438455c8586f034e2617b4ad53e555af517d2",
+        "size": 1279537152,
+    },
+    "cachyos-desktop": {
+        "url": "https://mirror.cachyos.org/ISO/desktop/260809/"
+               "cachyos-desktop-linux-260809.iso",
+        "sha256": "959f6577f45e25ee9fd8c220fd221b08e4ea79412c7315c0f922dd6d86d5e33c",
+        "size": 3188850688,
+    },
+    "manjaro-kde": {
+        "url": "https://download.manjaro.org/kde/26.1.0/"
+               "manjaro-kde-26.1.0-260812-linux71.iso",
+        "sha256": "711b64362abe0b45348dc33bd4a2c654641e069b50ae9ae37c01771da880aa99",
+        "size": 5534201856,
+    },
+    "endeavouros": {
+        "url": "https://mirror.alpix.eu/endeavouros/iso/"
+               "EndeavourOS_Titan-Nova-2026.08.15.iso",
+        "sha256": "0487f46fe29e0ab2ed153ba874568cc542a0507fb6029f29ad552b36ba447393",
+        "size": 3898638336,
+    },
+    "zorin-core": {
+        "url": "https://mirrors.edge.kernel.org/zorinos-isos/18/"
+               "Zorin-OS-18-Core-64-bit-r3.iso",
+        "sha256": "09959ce793b8a065b70207e46cd646b1de805fc7e0bad925ce28df6e04b7f807",
+        "size": 3787948032,
+    },
+    "mx-xfce": {
+        "url": "https://netix.dl.sourceforge.net/project/mx-linux/Final/Xfce/"
+               "MX-25.3_Xfce_x64.iso",
+        "sha256": "25b5ce20caeee1b0e50507291df5ac8a8211b1b9999d8dd7416da9b66ed9fbf9",
+        "size": 2927624192,
+    },
+    "ghostbsd-mate": {
+        "url": "https://download.ghostbsd.org/releases/amd64/24.10.1/GhostBSD-24.10.1.iso",
+        "sha256": "e4e969603a3edf848db8c7fc2646f76871f0d9bd12787bc6c966250938c2c283",
+        "size": 2798032896,
+    },
+}
+
+
 # BSD INSTALLERS.
 #
 # Separate from LINUX because the media and the installers differ in kind: these are
@@ -312,7 +392,7 @@ ANDROID = {
 def all_images() -> dict:
     """Every pinned image, keyed by the tag it is published under."""
     merged = {}
-    for table in (WINDOWS, VIRTIO, LINUX, BSD, ANDROID):
+    for table in (WINDOWS, VIRTIO, LINUX, DESKTOP, BSD, ANDROID):
         for name, pin in table.items():
             merged[tag(name)] = pin
     return merged

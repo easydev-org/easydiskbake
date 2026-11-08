@@ -96,15 +96,10 @@ jobs:
           interval: "10"
           command: |
             set -euo pipefail
-            URL="${{ inputs.iso_url }}"
-            SHA="${{ inputs.iso_sha256 }}"
-            if [ -z "$URL" ]; then
-              URL="https://download.manjaro.org/kde/26.1.0/manjaro-kde-26.1.0-260812-linux71.iso"
-              SHA="711b64362abe0b45348dc33bd4a2c654641e069b50ae9ae37c01771da880aa99"
-            fi
             mkdir -p out/iso
-            ISO_URL="$URL" ISO_SHA256="$SHA" DEST="out/iso/manjaro-kde-26.1.0-260812-linux71.iso" \
-              python3 lib/fetch_vendor_iso.py --segments 8
+            # FROM ghcr, which is what artifacts-publish exists for: the image was fetched
+            # once, verified three ways, and pushed as `iso-manjaro-kde`. This is a CDN pull.
+            python3 lib/fetch_iso.py manjaro-kde "out/iso/manjaro-kde-26.1.0-260812-linux71.iso"
 
       - name: install through Calamares
         uses: easydev-org/easyactions/log-stream@main

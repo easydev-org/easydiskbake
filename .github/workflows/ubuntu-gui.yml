@@ -113,16 +113,10 @@ jobs:
           interval: "10"
           command: |
             set -euo pipefail
-            ISO_NAME="ubuntu-${{ inputs.release || '26.04.1' }}-desktop-amd64.iso"
-            URL="${{ inputs.iso_url }}"
-            SHA="${{ inputs.iso_sha256 }}"
-            if [ -z "$URL" ]; then
-              URL="https://releases.ubuntu.com/26.04/$ISO_NAME"
-              SHA="601e30fbf5d97759367c632e2c33630665039b7e2158fd068403da3ccf1bda1f"
-            fi
             mkdir -p out/iso
-            ISO_URL="$URL" ISO_SHA256="$SHA" DEST="out/iso/$ISO_NAME" \
-              python3 lib/fetch_vendor_iso.py --segments 8
+            # FROM ghcr, which is what artifacts-publish exists for: the image was fetched
+            # once, verified three ways, and pushed as `iso-ubuntu-desktop`. This is a CDN pull.
+            python3 lib/fetch_iso.py ubuntu-desktop "out/iso/ubuntu-26.04.1-desktop-amd64.iso"
 
       # THE GUI, DRIVEN BY READING IT.
       - name: install through the graphical installer

@@ -105,17 +105,10 @@ jobs:
           interval: "10"
           command: |
             set -euo pipefail
-            REL="${{ inputs.release || '24.10.1' }}"
-            ISO_NAME="GhostBSD-$REL.iso"
-            URL="${{ inputs.iso_url }}"
-            SHA="${{ inputs.iso_sha256 }}"
-            if [ -z "$URL" ]; then
-              URL="https://download.ghostbsd.org/releases/amd64/$REL/$ISO_NAME"
-              SHA="e4e969603a3edf848db8c7fc2646f76871f0d9bd12787bc6c966250938c2c283"
-            fi
             mkdir -p out/iso
-            ISO_URL="$URL" ISO_SHA256="$SHA" DEST="out/iso/$ISO_NAME" \
-              python3 lib/fetch_vendor_iso.py --segments 8
+            # FROM ghcr, which is what artifacts-publish exists for: the image was fetched
+            # once, verified three ways, and pushed as `iso-ghostbsd-mate`. This is a CDN pull.
+            python3 lib/fetch_iso.py ghostbsd-mate "out/iso/GhostBSD-24.10.1.iso"
 
       - name: install through gbi
         uses: easydev-org/easyactions/log-stream@main

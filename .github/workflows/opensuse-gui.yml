@@ -94,15 +94,10 @@ jobs:
           interval: "10"
           command: |
             set -euo pipefail
-            URL="${{ inputs.iso_url }}"
-            SHA="${{ inputs.iso_sha256 }}"
-            if [ -z "$URL" ]; then
-              URL="https://download.opensuse.org/tumbleweed/iso/openSUSE-Tumbleweed-KDE-Live-x86_64-Snapshot20261105-Media.iso"
-              SHA="cc71dd199e2160c62e235dd723f438455c8586f034e2617b4ad53e555af517d2"
-            fi
             mkdir -p out/iso
-            ISO_URL="$URL" ISO_SHA256="$SHA" DEST="out/iso/openSUSE-Tumbleweed-KDE-Live-x86_64-Snapshot20261105-Media.iso" \
-              python3 lib/fetch_vendor_iso.py --segments 8
+            # FROM ghcr, which is what artifacts-publish exists for: the image was fetched
+            # once, verified three ways, and pushed as `iso-opensuse-tumbleweed-kde`. This is a CDN pull.
+            python3 lib/fetch_iso.py opensuse-tumbleweed-kde "out/iso/openSUSE-Tumbleweed-KDE-Live-x86_64-Snapshot20261105-Media.iso"
 
       - name: install through YaST2
         uses: easydev-org/easyactions/log-stream@main
