@@ -41,11 +41,27 @@ FOOTER_BOX = (1240, 755, 1430, 845)
 # The two fills the installer draws. ENABLED is a green (about 144,206,176); DISABLED is a
 # near-neutral grey (about 137,137,137). The background is (48,48,48).
 def _is_button(r: int, g: int, b: int) -> bool:
+    """Whether this pixel is a footer button's FILL.
+
+    THREE FILLS HAVE BEEN MEASURED, and the third is the one that cost this driver:
+
+        green   (144,206,176)   Select / Next, enabled
+        grey    (137,137,137)   the same controls while disabled
+        salmon  (231,143,143)   `Erase and Install`, which is DESTRUCTIVE and is drawn in the
+                                warning colour rather than the confirm colour
+
+    The first version of this test accepted only green and grey, so the moment the drive card
+    was selected - the only thing that makes `Erase and Install` available - the locator
+    reported `NO FOOTER BUTTON ON THIS PANE` on a pane whose button was plainly on screen in
+    salmon. The test is therefore SATURATION, not hue: a fill is a colour far enough from grey,
+    or a light grey, and the card behind it is (48,48,48).
+    """
     if r > 200 and abs(r - g) < 12 and abs(r - b) < 12:
-        return False                      # white text, not the fill
-    green = 120 < g < 235 and g > r + 22 and abs(g - b) < 45
-    grey = 110 < r < 175 and abs(r - g) < 10 and abs(r - b) < 10
-    return green or grey
+        return False                      # white label text, not the fill
+    spread = max(r, g, b) - min(r, g, b)
+    if spread > 50 and max(r, g, b) > 120:
+        return True                       # green, salmon, any saturated fill
+    return 110 < r < 185 and abs(r - g) < 10 and abs(r - b) < 10   # the disabled grey
 
 
 def footer_button(driver) -> tuple | None:
