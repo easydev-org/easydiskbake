@@ -417,6 +417,20 @@ def main(argv: list[str]) -> int:
         snap.terminate()
         art.stop()
 
+    # A DISK WITH NOTHING ON IT IS NOT A SUCCESS, AND THAT WAS INVISIBLE.
+    #
+    # The caller only compresses when the walk reports success, so a driver that pressed the
+    # right coordinates on the wrong screen still "passed": endeavour-gui's run 42454363051
+    # clicked the Asturian wizard's footer at the English coordinate, never left Welcome,
+    # reported success, and uploaded `out/endeavour-gui.qcow2: 0 MiB`. The workflow was
+    # green and the artefact was empty.
+    #
+    # A written system is gigabytes; an unwritten sparse image is kilobytes. The threshold
+    # is far from both.
+    if ok and os.path.exists(disk) and os.path.getsize(disk) < 64 * 2**20:
+        log(f"=== THE DISK IS EMPTY ({os.path.getsize(disk) >> 20} MiB) - THE INSTALL DID NOT HAPPEN ===")
+        ok = False
+
     if ok and os.path.exists(disk):
         log(f"compressing {disk} -> {args.out}")
         compress.compress(disk, args.out)
