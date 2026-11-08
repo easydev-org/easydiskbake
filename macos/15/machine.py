@@ -144,32 +144,36 @@ def shape(assets: dict, *, cpus: int = 4, mem_mb: int = 8192) -> vm.Shape:
             "-rtc", "base=utc",
             # The baseboard record macOS's platform check reads.
             "-smbios", "type=2",
-            # THE SCREEN. virtio-vga takes xres/yres; vmware-svga does not, and its
-            # 1280x800 default is what put every coordinate off the edge of the screen
-            # for four runs. The numbers come from lib/opencore so the plist's
-            # Resolution and this cannot disagree.
+            # THE SCREEN. vmware-svga, NOT virtio-vga, AND THE REASON IS THE WALLPAPER.
             #
-            # VGA_DEVICE EXISTS TO SETTLE WHICH DEVICE macOS CAN ACTUALLY DRIVE.
+            # It was virtio-vga with xres/yres for a long time, because that is what
+            # dockur's configure-vga() chooses and it put the guest at exactly 1920x1080,
+            # which is the unit every coordinate in this repository is measured in.
             #
-            # On virtio-vga this guest reports, through system_profiler:
+            # What it also did was leave the wallpaper layer undrawable. Measured on a
+            # live guest, `system_profiler SPDisplaysDataType`:
             #
             #     Device ID: 0x1050          (VMware SVGA - a compatibility fallback)
             #     VRAM (Total): 7 MB
             #     Kernel Extension Info: No Kext Loaded
             #
-            # Seven megabytes cannot hold a frame at 1920x1080 (1920*1080*4 = 8.3 MB), and
-            # the wallpaper it ships with is 6016x6016, which needs 145 MB. The desktop
-            # therefore draws every window and the Dock correctly and leaves the wallpaper
-            # PURE WHITE - measured at (255,255,255) across the whole frame while the same
-            # screen's System Settings rendered normally.
+            # so macOS fell back to a 7 MB framebuffer and no accelerated driver. Windows,
+            # the Dock and the menu bar all drew correctly and the WALLPAPER ALONE came out
+            # pure white - (255,255,255) at every sample point of a frame whose System
+            # Settings window rendered normally in the same image. A 6016x6016 wallpaper
+            # needs 145 MB; seven cannot hold it.
             #
             # vmware-svga is the device Apple ships a driver for (VMwareGfx) and its
-            # vgamem_mb is settable. VGA_DEVICE lets one guest boot with it without a code
-            # change, so the two can be compared on the same disk.
+            # vgamem_mb is settable. On the same disk it reports 1920x1080 - the resolution
+            # the coordinate tables need - and the wallpaper draws. It does NOT take
+            # xres/yres, which is why they are gone from this line; that is also why the
+            # old comment here recorded four runs of coordinates landing off the edge of a
+            # 1280x800 screen, and it is worth knowing if this ever regresses to 1280x800.
+            #
+            # VGA_DEVICE still overrides it, so a guest can boot with the other device
+            # without a code change - that is how the two were compared on one disk.
             "-device", os.environ.get(
-                "VGA_DEVICE",
-                f"virtio-vga,xres={opencore.GUEST_WIDTH},"
-                f"yres={opencore.GUEST_HEIGHT}"),
+                "VGA_DEVICE", "vmware-svga,vgamem_mb=256"),
         ],
     )
 
