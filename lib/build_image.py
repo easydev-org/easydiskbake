@@ -120,6 +120,17 @@ QEMU_CHECKS = [
     ["zstd", "--version"],
     ["emulator", "-version"],
     ["adb", "version"],
+    # THE NETWORK TOOLS, WHICH lib/net.py SHELLS OUT TO AND WHICH THE IMAGE WAS MISSING.
+    #
+    # They are installed in the same apt line as lz4, and a check that asked only
+    # `command -v` inside the Dockerfile's RUN passed while the runtime image did not have
+    # them - the box that ran the emulator answered `ip: command not found` and the guest
+    # came up with no network. `_verify` runs each of these in a container of the built
+    # image, which is the thing that would have caught it.
+    ["ip", "-V"],
+    ["iptables", "--version"],
+    ["dnsmasq", "--version"],
+    ["pkill", "--version"],
     # The qemu the emulator embeds is a FILE, not a binary on PATH, so it is asked for
     # directly. mkdisks.py and run_qemu.py never call it by name - the emulator does -
     # which is exactly why a PATH-only check would pass without it.

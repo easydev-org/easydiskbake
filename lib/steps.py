@@ -363,6 +363,8 @@ class Driver:
         self.qmp_path = qmp_path
         self.disk_path = disk_path
         self.n = 0
+        self.samples = 0
+        self.ppm = None
         self.words: list[tuple] = []
 
     def look(self, label: str = "look") -> list[tuple]:
@@ -422,22 +424,29 @@ class Driver:
         """
         return (self.screen.width, self.screen.height)
 
-    def brightness(self) -> float | None:
-        """The mean grey of a fresh screendump, or None when it cannot be read.
+    def _sample(self, kind: str) -> tuple[float, int] | None:
+        """One reading of the framebuffer: (mean grey, coarse hash), or None.
 
-        EVERY 97TH PIXEL over all three channels. A fixed stride larger than any text run,
-        cheap, and it gives the same answer as reading all of them for a question about the
-        whole screen. install.py uses this number to tell a dark frame from a drawn pane.
+        BOTH FROM ONE SCREENDUMP, AND THROUGH ocr.Screen.grab(). The first version called
+        `q.execute("screendump", ...)` itself and read the file straight afterwards, with a
+        fixed filename - so the read raced the write AND every sample overwrote the previous
+        one. `wait_for_change` then compared a fingerprint with itself and reported "the
+        picture never moved" over a pane whose Continue button had visibly been clicked.
+
+        grab() already solves both: it sleeps for the write, and a failing screendump prints
+        why instead of returning nothing.
         """
         from PIL import Image
-        import io
 
-        path = os.path.join(self.work, "shots", "brightness.ppm")
+        self.samples += 1
+        path = self.screen.grab(f"sample-{self.samples:04d}-{kind}".replace(" ", "-"))
+        if not path:
+            return None
         try:
-            self.q.execute("screendump", filename=path)
-            with open(path, "rb") as fh:
-                image = Image.open(io.BytesIO(fh.read())).convert("RGB")
-        except Exception:                                  # noqa: BLE001
+            image = Image.open(path).convert("RGB")
+            pixels = image.tobytes()
+        except (OSError, ValueError) as exc:
+            log(f"  cannot read {path}: {exc}")
             return None
         finally:
             try:
@@ -445,54 +454,30 @@ class Driver:
             except OSError:
                 pass
 
-        pixels = image.tobytes()
         total = 0
         count = 0
+        digest = 0
+        # EVERY 97TH PIXEL over all three channels. A stride larger than any text run, and far
+        # finer than "the whole screen scrolled"; install.py's measurement is where the number
+        # comes from, including the run where hashing one channel made two different
+        # backgrounds identical.
         for index in range(0, len(pixels) - 2, 97 * 3):
             total += pixels[index] + pixels[index + 1] + pixels[index + 2]
             count += 3
-        return (total / count) if count else None
-
-    def fingerprint(self) -> int | None:
-        """A coarse hash of the current screen, for "did the picture change at all".
-
-        MEASURED STRIDE, NOT A FULL READ. Every 97th pixel over all three channels, which is
-        far coarser than the text on an installer pane and far finer than "the whole screen
-        scrolled". install.py's version of this is where the number comes from: hashing only
-        the red byte of every 401st pixel left two macOS backgrounds that differ in a grey-blue
-        tint indistinguishable, and run 41498618924 reported "the pane did not change" over a
-        welcome page that had replaced the recovery menu.
-
-        It reads the framebuffer directly rather than OCR: this question is about the picture,
-        and tesseract on a black screen and on a painting pane both return nothing.
-        """
-        from PIL import Image
-        import io
-
-        path = os.path.join(self.work, "shots", "fingerprint.ppm")
-        try:
-            self.q.execute("screendump", filename=path)
-        except Exception:                                  # noqa: BLE001
-            return None
-        try:
-            with open(path, "rb") as fh:
-                raw = fh.read()
-            image = Image.open(io.BytesIO(raw)).convert("RGB")
-            pixels = image.tobytes()
-        except (OSError, ValueError):
-            return None
-        finally:
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
-
-        digest = 0
-        for index in range(0, len(pixels) - 2, 97 * 3):
             digest = (digest * 131 + pixels[index]) & 0xFFFFFFFF
             digest = (digest * 131 + pixels[index + 1]) & 0xFFFFFFFF
             digest = (digest * 131 + pixels[index + 2]) & 0xFFFFFFFF
-        return digest
+        return ((total / count) if count else 0.0, digest)
+
+    def brightness(self) -> float | None:
+        """The mean grey of a fresh screendump, or None when it cannot be read."""
+        sample = self._sample("brightness")
+        return None if sample is None else sample[0]
+
+    def fingerprint(self) -> int | None:
+        """A coarse hash of the current screen, for "did the picture change at all"."""
+        sample = self._sample("fingerprint")
+        return None if sample is None else sample[1]
 
     def log(self, message: str) -> None:
         """A step module's own line, in the same shape as this module's.
@@ -593,15 +578,17 @@ def _wait_for_change(driver: Driver, step: Step) -> bool:
     changed = False
     stable = 0
     last = before
+    samples = 0
     while time.time() < deadline:
         time.sleep(settle)
         now = driver.fingerprint()
         if now is None:
             continue
+        samples += 1
         if not changed:
             if now != before:
                 changed = True
-                log(f"  {step.name}: the screen changed")
+                log(f"  {step.name}: the screen changed after {samples} sample(s)")
             continue
         # SOMETHING NEW IS HERE; now wait for it to finish drawing. Two identical fingerprints
         # in a row is the settle, because a repaint that is still going changes every frame.
@@ -614,8 +601,14 @@ def _wait_for_change(driver: Driver, step: Step) -> bool:
             stable = 0
         last = now
 
-    log(f"  {step.name}: no change in {timeout:.0f}s "
-        f"({'the picture never moved' if not changed else 'it never settled'})")
+    # SAY WHICH OF THE TWO FAILURES IT WAS, WITH THE NUMBERS. "The picture never moved" and
+    # "it moved and never settled" are different bugs, and the first real run of setup.yaml
+    # reported neither - it said "no change in 120s" over a pane whose Continue button had just
+    # been clicked, which could be a missed click, a wrong coordinate, or a fingerprint that
+    # cannot see this particular repaint. The count is what tells them apart.
+    log(f"  {step.name}: no change in {timeout:.0f}s over {samples} sample(s): "
+        f"{'the picture never moved' if not changed else 'it moved and never settled'}")
+    log(f"    brightness now {driver.brightness()}")
     return False
 
 

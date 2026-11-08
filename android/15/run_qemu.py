@@ -56,9 +56,13 @@ import time
 #     ping: connect: Network is unreachable
 #
 # virtio_net was loaded and never bound to a PCI device, because no -netdev was passed.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__)))))
-from lib import net as netlib  # noqa: E402
+_REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, _REPO)
+sys.path.insert(0, os.path.join(_REPO, "lib"))
+try:
+    import net as netlib  # noqa: E402
+except ImportError:
+    from lib import net as netlib  # noqa: E402
 
 LOOPBACK = "androidboot.boot_devices=vda,vdb,vdc,vdd,vde," \
            "pci0000:00/0000:00:01.0,pci0000:00/0000:00:02.0,pci0000:00/0000:00:03.0," \
