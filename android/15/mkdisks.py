@@ -409,20 +409,107 @@ def copy(src, dst, total: int, name: str) -> None:
     log(f"{name}: copied {(total - remaining) / 2 ** 20:.0f} MiB")
 
 
+def stage(work: str, sdk: str) -> None:
+    """Put the system image's own files where run_qemu.py expects them.
+
+    THE OUTPUT DIRECTORY HAS TO BE SELF-CONTAINED, and this is not tidiness. run_qemu.py
+    passes `-sysdir <dir>` plus explicit `-system`/`-vendor`/`-kernel`/`-ramdisk` paths,
+    and an earlier layout kept the kernel and vendor elsewhere - the emulator answered
+
+        ERROR | Invalid or missing kernel image file: /a/android-test/kernel
+
+    then, once the kernel was there but vendor was not,
+
+        exit code: -11
+
+    which is a SIGSEGV with no message at all. A directory that boots is a directory that
+    holds every file the boot names.
+
+    HARDLINKS, NOT COPIES, WHERE THE FILESYSTEM ALLOWS IT. system.img is 1.6 GB and the
+    SDK's copy is read-only and never modified here; a hardlink costs nothing and a copy
+    costs a minute and 1.6 GB on every run. `os.link` fails with EXDEV across filesystems,
+    which is the fallback's whole purpose.
+    """
+    pairs = [
+        ("kernel-ranchu", "kernel"),
+        ("system.img", "system.img"),
+        ("vendor.img", "vendor-patched.img"),
+        # AND A SECOND COPY UNDER ITS OWN NAME, WHICH IS NOT REDUNDANT.
+        #
+        # `-vendor vendor-patched.img` says which vendor image to BOOT. It does not stop
+        # the emulator looking for `vendor.img` in `-sysdir`, and when that file is
+        # missing it dies with
+        #
+        #     Segmentation fault
+        #     timeout: the monitored command dumped core
+        #
+        # before writing a single line to its log - no message, no exit code, nothing to
+        # read. Two runs were lost to this and both looked like a broken disk set rather
+        # than a missing file. The bytes are identical, so the copy costs one link.
+        ("vendor.img", "vendor.img"),
+    ]
+    for source_name, dest_name in pairs:
+        source = os.path.join(sdk, source_name)
+        dest = os.path.join(work, dest_name)
+        if not os.path.isfile(source):
+            raise SystemExit(f"=== {source} is not in the system image ===")
+        if os.path.exists(dest) and os.path.getsize(dest) == os.path.getsize(source):
+            continue
+        try:
+            os.link(source, dest)
+            log(f"{dest_name}: hardlink to {source_name}")
+        except OSError:
+            import shutil
+            shutil.copyfile(source, dest)
+            log(f"{dest_name}: copy of {source_name} "
+                f"({os.path.getsize(dest) >> 20} MiB)")
+
+
+def sdk_from_environment(api: int = 35, flavour: str = "default",
+                         abi: str = "x86_64") -> str:
+    """Where the SDK keeps the unpacked system image.
+
+    This is the same path lib/avd.py's install_system_image() writes and the AVD's
+    config.ini names in image.sysdir.1, so there is one answer to "where is the system
+    image" across the whole repository.
+    """
+    root = os.environ.get("ANDROID_SDK_ROOT") or os.environ.get("ANDROID_HOME") or ""
+    if not root:
+        return ""
+    return os.path.join(root, "system-images", f"android-{api}", flavour, abi)
+
+
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--sdk", default="/a/sysimg/x86_64")
-    p.add_argument("--out", default="/a/android-test")
+    p.add_argument("--sdk", default="",
+                   help="directory holding system.img, vendor.img and ramdisk.img; "
+                        "defaults to $ANDROID_SDK_ROOT/system-images/android-35/default/x86_64")
+    p.add_argument("--out", default="/a/android", help="where the disks are written")
     a = p.parse_args(argv)
-    os.makedirs(a.out, exist_ok=True)
 
-    build_cache(os.path.join(a.sdk, "system.img"), os.path.join(a.out, "cache.img"))
+    sdk = a.sdk or sdk_from_environment()
+    if not sdk:
+        raise SystemExit(
+            "=== NO SYSTEM IMAGE ===\n"
+            "Pass --sdk, or set ANDROID_SDK_ROOT to an SDK that has\n"
+            "system-images/android-35/default/x86_64/ unpacked into it."
+        )
+    if not os.path.isfile(os.path.join(sdk, "system.img")):
+        raise SystemExit(f"=== {sdk} has no system.img ===")
 
-    userdata_filesystem(os.path.join(a.out, "userdata.img"))
-    log(f"userdata {os.path.join(a.out, 'userdata.img')}: 8 GiB ext4")
+    work = os.path.abspath(a.out)
+    os.makedirs(work, exist_ok=True)
+    log(f"system image: {sdk}")
 
-    patch_ramdisk(os.path.join(a.sdk, "ramdisk.img"),
-                  os.path.join(a.out, "ramdisk.img"))
+    stage(work, sdk)
+    build_cache(os.path.join(sdk, "system.img"), os.path.join(work, "cache.img"))
+
+    userdata_filesystem(os.path.join(work, "userdata.img"))
+    log(f"userdata {os.path.join(work, 'userdata.img')}: 8 GiB ext4")
+
+    patch_ramdisk(os.path.join(sdk, "ramdisk.img"),
+                  os.path.join(work, "ramdisk.img"))
+    log(f"\nDISKS_READY {work}")
     return 0
 
 

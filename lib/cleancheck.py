@@ -94,6 +94,11 @@ EXPECTED = {
     # android.yml BAKE MAKES AN AVD, not a disk: a directory of raw images driven by the
     # emulator, which has no sshd and is not something fstrim or trim or ReTrim can reach.
     "android.yml":     {"bake": None},
+    # android-qemu.yml BUILDS DISKS BUT NOBODY LOGS IN TO THEM. Its guest is Android with
+    # the emulator's root console on ttyS0, not sshd, and the disk set is written by
+    # mkdisks.py rather than by an installer - there is no filesystem to trim that this
+    # repository would then be booting to check.
+    "android-qemu.yml": {"build": None, "boot": None},
 }
 
 

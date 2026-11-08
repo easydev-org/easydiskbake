@@ -1,0 +1,171 @@
+# The image that boots an Android system image as a plain qemu VM.
+#
+#     ghcr.io/easydev-org/easydiskbake:android-qemu
+#
+# WHY THIS IS ITS OWN IMAGE AND NOT THE BAKE IMAGE
+#
+# The bake image (Containerfile at the repository root) is qemux/qemu with a long list of
+# installer tooling on top. It boots Linux, BSD, Windows and macOS guests from their own
+# installers. It has the emulator's runtime libraries and adb, and nothing else Android.
+#
+# This workflow needs four things that image does not have:
+#
+#     lz4              mkdisks.py appends an fstab to the SDK ramdisk as a third legacy
+#                      LZ4 stream. MEASURED, not assumed:
+#                          $ command -v lz4        (in easydiskbake:latest)
+#                          lz4: MISSING
+#
+#     mkfs.ext4        the `metadata` and `userdata` partitions have to be real ext4.
+#                      The bake image does carry this one, so it is listed for honesty
+#                      rather than out of necessity.
+#
+#     a writable SDK   mkdisks.py reads system.img and ramdisk.img out of
+#     system image     $ANDROID_SDK_ROOT/system-images/android-35/default/x86_64/, which
+#                      this image creates and the bake image does not.
+#
+#     debugfs          the boot driver reads the screenshot back out of the `metadata`
+#                      partition after the guest writes it. Present in the bake image
+#                      too; listed because the driver calls it directly.
+#
+# Reusing the bake image would mean installing lz4 into it for every Windows, Linux, BSD
+# and macOS bake to carry, for one workflow's benefit. That is the same trade
+# android/15/Containerfile.builder already declined in the other direction.
+#
+# TWO STAGES, BECAUSE sdkmanager NEEDS A JDK AND THE RUNTIME DOES NOT
+#
+# `sdkmanager` is a Java tool. Installing openjdk-21-jre-headless in the final image would
+# add ~180 MB of runtime nothing calls after the build. The `sdk` stage does that work and
+# only its /opt/android-sdk is copied forward, so the runtime image carries the emulator,
+# adb and their shared libraries and no JVM.
+#
+# WHAT IS NOT HERE, DELIBERATELY
+#
+#   cmdline-tools   Not copied forward. It exists only so sdkmanager can run, and this
+#                   image never creates an AVD - the whole point of the flow it serves is
+#                   to boot WITHOUT one.
+#   avdmanager      Same.
+#   the emulator's  Not needed. The emulator is Google's qemu fork and ships its own
+#   own qemu        binaries under $ANDROID_SDK_ROOT/emulator/qemu/linux-x86_64/.
+#   qemux/qemu      That base image is qemu 11.1 built for installer guests. It has
+#                   qemu-img, which is ALSO not used: the emulator's own qemu-img is what
+#                   merges the qcow2 overlay the guest leaves behind, and it sits beside
+#                   the emulator.
+
+# ---------------------------------------------------------------------------
+# stage 1: the SDK. This is the only place a JVM exists.
+# ---------------------------------------------------------------------------
+FROM debian:trixie-slim AS sdk
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# unzip is for the cmdline-tools zip only; curl for the download.
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        unzip \
+        openjdk-21-jre-headless \
+        ; \
+    rm -rf /var/lib/apt/lists/*
+
+ARG CMDLINE_TOOLS=commandlinetools-linux-16111833_latest.zip
+
+ENV ANDROID_SDK_ROOT=/opt/android-sdk
+
+# TWO SDK PACKAGES AND BOTH ARE LOAD-BEARING:
+#
+#   emulator        the binary the workflow runs, plus the qemu it embeds and the
+#                   kernel-ranchu/ramdisk.img its system images are booted with
+#   platform-tools  adb. lib/emulator.py's wait_for_boot() polls
+#                   `adb shell getprop sys.boot_completed`, and emulator.stop() shuts the
+#                   guest down through `adb emu kill`.
+#
+# sdkmanager installs into $ANDROID_SDK_ROOT/emulator and .../platform-tools but does not
+# put either on PATH; that is done in the runtime stage below.
+RUN set -eux; \
+    mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"; \
+    curl -fsSL -o /tmp/cmdtools.zip \
+        "https://dl.google.com/android/repository/${CMDLINE_TOOLS}"; \
+    unzip -q /tmp/cmdtools.zip -d "$ANDROID_SDK_ROOT/cmdline-tools"; \
+    rm -f /tmp/cmdtools.zip; \
+    mv "$ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools" \
+       "$ANDROID_SDK_ROOT/cmdline-tools/latest"; \
+    yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true; \
+    "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
+        "emulator" "platform-tools" >/dev/null; \
+    rm -rf "$ANDROID_SDK_ROOT/cmdline-tools"
+
+# ---------------------------------------------------------------------------
+# stage 2: the runtime. No JVM, no cmdline-tools, everything the driver calls.
+# ---------------------------------------------------------------------------
+FROM debian:trixie-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# THE LIBRARY LIST IS COPIED FROM android/15/Containerfile.builder, WHICH IS THE ONE THAT
+# HAS ACTUALLY RUN THE EMULATOR. It is not derived from `ldd`: the emulator dlopen()s its
+# Qt and GL backends, so ldd on the launcher binary does not name them, and a missing one
+# shows up as a linker error several steps away from the package that should have provided
+# it.
+#
+#   lz4             mkdisks.py's ramdisk step. See the header - this is the reason the
+#                   image exists.
+#   e2fsprogs       mkfs.ext4 for the metadata and userdata partitions, and debugfs for
+#                   reading the screenshot back out of metadata afterwards.
+#   python3         mkdisks.py and run_qemu.py.
+#   file            used by nothing in this flow yet; kept because every other image here
+#                   carries it and its absence has cost a debugging round before.
+#   zstd + tar      the optional publish step packs the disk set.
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        file \
+        python3 \
+        e2fsprogs \
+        lz4 \
+        zstd \
+        tar \
+        libx11-6 libx11-xcb1 libxcb1 libxau6 libxdmcp6 libbsd0 \
+        libpulse0 libasound2t64 libnss3 libnspr4 \
+        libgl1 libglx-mesa0 libegl1 libgles2 \
+        libgtk-3-0t64 libxcb-render0 libxcb-shape0 libxcb-xfixes0 libxcb-randr0 \
+        libxkbfile1 libxkbcommon0 \
+        ; \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=sdk /opt/android-sdk /opt/android-sdk
+
+ENV ANDROID_SDK_ROOT=/opt/android-sdk \
+    ANDROID_HOME=/opt/android-sdk \
+    ANDROID_AVD_HOME=/opt/android-avd
+
+# ON PATH THE SAME WAY lib/emulator.build_args() FINDS THEM: through shutil.which().
+# `test -x /opt/android-sdk/emulator/emulator` passes with a PATH that omits the directory;
+# `command -v emulator` does not. That distinction has already cost one publish run.
+ENV PATH="$ANDROID_SDK_ROOT/emulator:$ANDROID_SDK_ROOT/platform-tools:$PATH"
+
+RUN mkdir -p "$ANDROID_AVD_HOME"
+
+# A BUILD-TIME SELF-CHECK, EVERY ENTRY A TOOL THE FLOW CALLS BY NAME.
+#
+# This is the check that would have caught the missing lz4 before a CI run did, which is
+# why it asks each one to print its version rather than merely exist: a wrapper script on
+# PATH passes `command -v` and fails on use.
+RUN set -eux; \
+    python3 --version; \
+    lz4 --version 2>&1 | head -1; \
+    mkfs.ext4 -V 2>&1 | head -1; \
+    debugfs -V 2>&1 | head -1; \
+    tar --version | head -1; \
+    zstd --version; \
+    emulator -version 2>&1 | head -1; \
+    adb version | head -1; \
+    command -v emulator adb debugfs mkfs.ext4 lz4 python3; \
+    test -x "$ANDROID_SDK_ROOT/emulator/qemu/linux-x86_64/qemu-system-x86_64"; \
+    test -d "$ANDROID_SDK_ROOT/emulator/lib64"
+
+ENTRYPOINT []
+CMD ["/bin/bash"]

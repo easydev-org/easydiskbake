@@ -1,0 +1,281 @@
+name: android-qemu
+
+# Android: turn the pinned AOSP system image into bootable disks, then boot them as a
+# plain qemu VM and photograph the result.
+#
+#     fetch the system image
+#         └─> build the disks (mkdisks.py)
+#               └─> boot them (run_qemu.py) ──> screen.png
+#
+# WHY THIS IS A SEPARATE WORKFLOW FROM android.yml
+#
+# android.yml builds an AVD: it pulls a packed AVD from ghcr, starts `emulator -avd`, and
+# publishes an AVD archive. That artifact is a directory of Android images only the
+# emulator's AVD path can consume.
+#
+# This one does not use an AVD at all. It takes the system image's own system.img and
+# vendor.img - which are GPT disks - and supplies the three things a bare qemu boot needs
+# and the SDK does not ship as installable parts:
+#
+#     cache.img     system, metadata, super, vbmeta and boot, as GPT partitions
+#     userdata.img  an ext4 /data
+#     ramdisk.img   the SDK ramdisk plus an fstab naming those five
+#
+# which android/15/mkdisks.py builds and android/15/run_qemu.py boots. The output is a set
+# of disks a VM can start, not an AVD. Both workflows exist on purpose: they answer
+# different questions about the same upstream image, and until this one has run
+# repeatedly the other is the one with the history.
+#
+# THE IMAGE IS src:HERE, NOT THE BAKE IMAGE
+#
+# The bake image has no `lz4` (measured: `command -v lz4` -> MISSING), and mkdisks.py
+# needs it to append the fstab as a third legacy LZ4 stream. So this runs in
+# android/15/Containerfile.qemu, which carries the emulator, adb, lz4 and e2fsprogs and
+# nothing the other platforms would have to pull.
+#
+# MANUAL ONLY. It boots a guest for minutes and downloads 746 MB when the runner is cold.
+
+on:
+  workflow_dispatch:
+    inputs:
+      # --- what to run ---------------------------------------------------------------
+      build_run:
+        description: "Build the disks from the system image"
+        type: boolean
+        default: true
+      boot_run:
+        description: "Boot the disks and photograph the screen"
+        type: boolean
+        default: true
+
+      # --- how long to give the guest ------------------------------------------------
+      seconds:
+        description: "boot: seconds to keep the guest up (the screen is read near the end)"
+        default: "260"
+
+      # --- publish -------------------------------------------------------------------
+      publish:
+        description: "Push the disk set to ghcr as android-15-qemu"
+        type: boolean
+        default: false
+      publish_tag:
+        description: "the tag to push; empty for android-15-qemu"
+        default: ""
+
+concurrency:
+  group: android-qemu-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ===========================================================================
+  # BUILD - the system image becomes a set of disks.
+  # ===========================================================================
+  build:
+    if: inputs.build_run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/${{ github.repository }}:android-qemu
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # KVM IS NOT FOR THE DOWNLOAD, IT IS FOR THE BOOT JOB. runner-check is asked here
+      # anyway, because a runner without /dev/kvm that gets as far as the boot job has
+      # already spent the download and the disk build discovering it.
+      - name: prepare
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '40'
+          token: ${{ github.token }}
+
+      - name: show the pin
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: android-qemu-pin
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/android_pin.py
+
+      # THE SYSTEM IMAGE IS AN INPUT, AND IT IS THE ONLY THING FETCHED FROM GOOGLE.
+      #
+      # android/15/fetch_sysimg.py installs it into $ANDROID_SDK_ROOT and verifies the
+      # sha1 from lib/images.py - the same pin publish_android.py uses, so this flow and
+      # the AVD flow can never be looking at different upstream files.
+      - name: fetch the system image
+        id: sysimg
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: android-qemu-sysimg
+          interval: "15"
+          command: |
+            set -euo pipefail
+            # 'sysimg.log', NOT 'out.txt' - a FILE CALLED out.txt BESIDE A DIRECTORY
+            # CALLED out/ IS A TRAP, and this workflow has both.
+            python3 android/15/fetch_sysimg.py | tee sysimg.log
+            # THE DIRECTORY COMES FROM THE SCRIPT, NOT FROM A SECOND GUESS HERE.
+            # lib/avd.py owns the layout (.../system-images/android-<api>/<flavour>/<abi>)
+            # and a copy of that rule in YAML is a copy that goes stale.
+            grep '^SYSTEM_IMAGE_DIR=' sysimg.log | cut -d= -f2- > sdk.txt
+            test -s sdk.txt
+
+      - name: build the disks
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: android-qemu-disks
+          interval: "15"
+          command: |
+            set -euo pipefail
+            SDK=$(cat sdk.txt)
+            echo "system image: $SDK"
+            python3 android/15/mkdisks.py --sdk "$SDK" --out out/disks
+
+      # THE DISK SET IS THE ARTIFACT OF THIS JOB. It is uploaded even on failure, because a
+      # mkdisks.py that got as far as writing cache.img has something worth inspecting -
+      # whether the copy out of super landed on non-zero bytes is the question every
+      # offset bug in this file has answered wrongly and quietly.
+      - name: upload the disks
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-qemu-disks
+          path: |
+            out/disks/cache.img
+            out/disks/userdata.img
+            out/disks/ramdisk.img
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: push the disk set
+        if: success() && inputs.publish
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/disks/cache.img
+          kind: android-15-qemu
+          tag: ${{ inputs.publish_tag || 'android-15-qemu' }}
+          token: ${{ github.token }}
+
+  # ===========================================================================
+  # BOOT - start the disks and read the verdict off the guest.
+  # ===========================================================================
+  boot:
+    needs: build
+    if: |
+      always() && inputs.boot_run && needs.build.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/${{ github.repository }}:android-qemu
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '40'
+          token: ${{ github.token }}
+
+      # THE BOOT JOB GETS ITS OWN COPY OF THE SYSTEM IMAGE, because a second job starts on
+      # a second runner. It is the same pinned file, verified the same way; the alternative
+      # - passing 1.6 GB of system.img between jobs through an artifact - is slower and
+      # gains nothing.
+      - name: fetch the system image
+        id: sysimg
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: android-qemu-boot-sysimg
+          interval: "15"
+          command: |
+            set -euo pipefail
+            python3 android/15/fetch_sysimg.py | tee sysimg.log
+            grep '^SYSTEM_IMAGE_DIR=' sysimg.log | cut -d= -f2- > sdk.txt
+            test -s sdk.txt
+
+      # ARTIFACTS DO NOT PRESERVE THE DIRECTORY LAYOUT DEPENDABLY ENOUGH TO BOOT FROM, so
+      # the disks are rebuilt here from the same system image rather than downloaded. It
+      # costs about a minute and removes a class of failure - a missing kernel, a vendor
+      # image that silently did not upload - that presents as a SIGSEGV with no message.
+      - name: build the disks
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: android-qemu-boot-disks
+          interval: "15"
+          command: |
+            set -euo pipefail
+            python3 android/15/mkdisks.py --sdk "$(cat sdk.txt)" --out out/disks
+
+      # NO `set -e` AROUND THE VERDICT ON PURPOSE. run_qemu.py exits non-zero when the
+      # boot did not complete, and the log it leaves is what the failure has to be read
+      # from - killing the step early would upload the screenshots but not the reason.
+      - name: boot it and photograph the screen
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: android-qemu-boot
+          interval: "15"
+          command: |
+            set -uo pipefail
+            python3 android/15/run_qemu.py \
+              --dir out/disks \
+              --seconds "${{ inputs.seconds || '260' }}" \
+              --evidence out/screen.png
+            status=$?
+            echo "run_qemu exited $status"
+            exit $status
+
+      # THE PICTURE IS THE PROOF. Everything else this workflow prints is a log line that
+      # a boot which stopped early produces just as readily.
+      - name: keep the screen
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-qemu-screen
+          path: |
+            out/screen.png
+            out/disks/run.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: the verdict
+        if: always()
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: android-qemu-verdict
+          interval: "10"
+          command: |
+            set -euo pipefail
+            echo "=== android-qemu ==="
+            if [ -f out/screen.png ]; then
+              echo "screen: $(stat -c %s out/screen.png) bytes"
+              # A PNG HEADER IS THE CLAIM. A truncated file, or a debugfs export that
+              # found nothing, is not a screenshot however the run described itself.
+              head -c 8 out/screen.png | od -An -tx1
+            else
+              echo "no screenshot was produced"
+            fi
+            if [ -f out/disks/run.log ]; then
+              echo "--- the guest's last words ---"
+              grep -v vqParseGuestToHostRequestLocked out/disks/run.log | tail -20
+            fi

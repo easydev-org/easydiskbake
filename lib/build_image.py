@@ -1,17 +1,24 @@
-"""Build the bake image and the Android builder image, and push both.
+"""Build the bake image, the Android builder image and the Android qemu image, and push all three.
 
-    python3 lib/build_image.py                 # both
+    python3 lib/build_image.py                 # all three
     python3 lib/build_image.py --only bake     # just the bake image
 
-TWO IMAGES, TWO PURPOSES
+THREE IMAGES, THREE PURPOSES
 
     <repo>:latest           the bake image: qemu, xorriso, swtpm, OVMF, ffmpeg,
                             wimlib, aria2, oras, python3
     <repo>:android-builder  cmdline-tools, a JRE, unzip, zstd - and nothing that boots
+    <repo>:android-qemu     the emulator, adb, lz4, e2fsprogs and a system image - the
+                            tools that turn an AOSP system image into bootable disks
 
 They are separate because the second is 1.5 GB of SDK and JDK that only one workflow
 calls, and the bake image is pulled by every bake. Combining them would make every
 Windows bake carry an Android SDK it never opens.
+
+android-qemu is separate for a measured reason rather than a tidy one: the bake image has
+no `lz4`, and mkdisks.py needs it to append an fstab to the SDK ramdisk as a third legacy
+LZ4 stream. Adding lz4 to the bake image would put a tool every other platform's bake
+never calls into the image they all pull.
 
 WHY THE BUILD IS A SCRIPT
 
@@ -85,6 +92,31 @@ BUILDER_CHECKS = [
     ["sh", "-c", "command -v avdmanager"],
 ]
 
+# What android-qemu carries. EVERY ENTRY IS A TOOL android/15/mkdisks.py OR
+# android/15/run_qemu.py CALLS BY NAME, and the list exists because the reason this image
+# exists at all is a tool the bake image turned out not to have:
+#
+#     $ command -v lz4        in ghcr.io/easydev-org/easydiskbake:latest
+#     lz4: MISSING
+#
+# A build that installs the wrong package name still starts, still pushes, and fails
+# twenty minutes into the workflow with `FileNotFoundError: lz4`. Asking each binary for
+# its version at build time turns that into a failed image build.
+QEMU_CHECKS = [
+    ["python3", "--version"],
+    ["lz4", "--version"],
+    ["mkfs.ext4", "-V"],
+    ["debugfs", "-V"],
+    ["zstd", "--version"],
+    ["emulator", "-version"],
+    ["adb", "version"],
+    # The qemu the emulator embeds is a FILE, not a binary on PATH, so it is asked for
+    # directly. mkdisks.py and run_qemu.py never call it by name - the emulator does -
+    # which is exactly why a PATH-only check would pass without it.
+    ["ls", "-l", "/opt/android-sdk/emulator/qemu/linux-x86_64/qemu-system-x86_64"],
+    ["ls", "-d", "/opt/android-sdk/emulator/lib64"],
+]
+
 
 def _build(image: str, tag: str, dockerfile: str, *, stamp: str | None) -> None:
     log(f"building {image}:{tag}")
@@ -128,8 +160,8 @@ def _push(image: str, tags: list[str]) -> None:
 
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--only", choices=["bake", "android"], default=None,
-                   help="build one image instead of both")
+    p.add_argument("--only", choices=["bake", "android", "qemu"], default=None,
+                   help="build one image instead of all three")
     args = p.parse_args(argv)
 
     registry = os.environ.get("REGISTRY", "ghcr.io")
@@ -152,6 +184,11 @@ def main(argv: list[str]) -> int:
             _build(image, "android-builder", "android/15/Containerfile.builder", stamp=None)
             _verify(image, "android-builder", BUILDER_CHECKS)
             _push(image, ["android-builder"])
+
+        if args.only in (None, "qemu"):
+            _build(image, "android-qemu", "android/15/Containerfile.qemu", stamp=None)
+            _verify(image, "android-qemu", QEMU_CHECKS)
+            _push(image, ["android-qemu"])
 
         log("IMAGE_READY")
         return 0

@@ -17,12 +17,13 @@ on:
   workflow_dispatch:
     inputs:
       only:
-        description: "Build one image instead of both"
+        description: "Build one image instead of all three"
         type: choice
         options:
           - both
           - bake
           - android
+          - qemu
         default: both
 
 jobs:
