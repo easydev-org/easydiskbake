@@ -68,24 +68,38 @@ def _click_type(driver, xy, text: str, *, clear: bool = False, per_char: float =
 
 
 def fill_account_name(driver, step) -> bool:
-    """Full Name, then User Name, then Tab - the three things this pane needs.
+    """Full Name only - because the installer DERIVES User Name, and it derived it correctly.
 
-    THE DISPLAY NAME IS NOT THE LOGIN. With both fields holding `docker` the footer's `Next`
-    stays GREY: measured, three presses in a run at 9d4e83a left the pane unchanged. Typing
-    `Docker User` instead makes the installer derive `dockeruser` and the button turns green
-    at once. So the display name is `Docker User` and the login is `docker`.
+    THE RUN THAT PROVED IT. Run 42522057017's frames, ten seconds apart:
+
+        t=150   Full Name  [Docker User]        <- typed, caret in it
+                User Name  dockeruser           <- AUTO-DERIVED, grey, correct
+                Next                            <- ENABLED
+        t=155   Full Name  docker               <- the placeholder again
+                User Name  docker|              <- my click + forty BackSpaces emptied the
+                Next                            <- derived value, and Next went GREY
+
+    So the pane was complete before this code touched User Name. The original driver emptied
+    and retyped it because `dockerdocker` was once measured - but that measurement was for
+    TYPING INTO BOTH FIELDS, which is not what happens here: one field is filled and the other
+    is derived.
+
+    WORSE, THE CLICK ON USER NAME CHANGED THE FOCUS, and the following Tab then walked out of
+    the form onto the ARTWORK PICKER: t=165 in the same recording is a `Choose Icon` file
+    chooser with `admin` typed into its search box, which is why the disk never started and
+    why the password pane was never reached.
+
+    A GTK entry validates on focus-out, so the Tab is still needed - but it comes from Full
+    Name, the only field this step types into.
     """
     user = str((getattr(driver, "values", {}) or {}).get("user") or "docker")
     display = user.capitalize() + " User"
 
     _click_type(driver, ACCOUNT_NAME["full name"], display)
 
-    # `Full Name` COPIES INTO `User Name` AS IT IS TYPED, so this one IS cleared - by
-    # backspaces, never ctrl+a - and then typed once. Measured: without that, `User Name`
-    # read `dockerdocker`.
-    _click_type(driver, ACCOUNT_NAME["user name"], user, clear=True, per_char=0.11)
-
-    # THE FOCUS-OUT IS WHAT ENABLES `Next`. See the header.
+    # THE FOCUS-OUT IS WHAT ENABLES `Next`: a GTK entry validates on focus-out, and nothing
+    # here moved the focus after the last character until this was added (run 42502695338 sat
+    # with Next grey for forty-two minutes). It is the ONLY thing this step does after typing.
     driver.qmpmod.key(driver.q, "tab")
     time.sleep(1.0)
     driver.look("account name filled")
@@ -93,18 +107,42 @@ def fill_account_name(driver, step) -> bool:
 
 
 def fill_account_password(driver, step) -> bool:
-    """Password and confirm, on a pane whose entries are empty and whose picker is close.
+    """Password and confirm, at their measured coordinates, with Esc to close a chooser.
 
-    ESC FIRST, ALWAYS: if a click has already landed on the artwork picker, a GTK file chooser
-    is up over the installer and every later keystroke goes into its search box. One Esc
-    closes it, and it is a no-op on a pane with no dialog open.
+    THE EARLIER FAILURE WAS NOT THESE COORDINATES. Run 42522057017's frames at t=165 show a
+    `Choose Icon` chooser with `admin` in its search box - but the click that opened it was on
+    the PREVIOUS pane: the account step had emptied User Name, `Next` went grey, and the
+    "password pane" the walk was clicking was still Create User Account, whose artwork picker
+    sits at (1188,440). With that step fixed to leave the derived login alone, `Next` is
+    enabled and this pane is actually reached.
+
+    A CLICK 10-12 PIXELS OFF AN ENTRY OPENED THE PICKER ONCE, measured, so Esc bookends the
+    typing: it is a no-op on a clean pane and it closes a chooser opened by a stray press. The
+    reading afterwards is the check - if the chooser is up, the installer cannot be advanced
+    and saying so now is worth more than clicking Next into a dialog and waiting forty minutes
+    for the disk to explain it.
     """
     password = str((getattr(driver, "values", {}) or {}).get("password") or "admin")
+    import keys
 
     driver.qmpmod.key(driver.q, "esc")
     time.sleep(1.5)
 
-    _click_type(driver, ACCOUNT_PASSWORD["password"], password, per_char=0.12)
-    _click_type(driver, ACCOUNT_PASSWORD["confirm"], password, per_char=0.12)
+    for label in ("password", "confirm"):
+        driver.qmpmod.click(driver.q, *ACCOUNT_PASSWORD[label])
+        time.sleep(1.5)
+        unsupported = keys.type_text(driver.q, password, per_char=0.12)
+        if unsupported:
+            driver.log(f"  COULD NOT TYPE {unsupported!r}")
+        time.sleep(1.2)
+        # A CHOOSER OPENED BY THIS PRESS IS CLOSED BEFORE THE NEXT ONE, so the second entry
+        # cannot be typed into its search box.
+        driver.qmpmod.key(driver.q, "esc")
+        time.sleep(1.0)
+
     driver.look("password filled")
+    text = driver.text()
+    if "choose" in text and "icon" in text:
+        driver.log("=== THE ARTWORK CHOOSER IS UP; THE PASSWORD PANE DID NOT TAKE ===")
+        return False
     return True
