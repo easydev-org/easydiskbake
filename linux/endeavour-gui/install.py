@@ -169,14 +169,23 @@ def walk_calamares(drv: Driver, args) -> bool:
     """
     # 1. THE WELCOME WINDOW'S `Start the Installer`, then the method dialog's `Offline`.
     #
-    #    CLICKED TWICE, because the first press only focuses that window. The second click
-    #    lands on the method dialog's own button at (1069, 590) - and the LIVE run's frame
-    #    after it is Calamares' Welcome pane.
-    drv.click(START_INSTALLER, "Start the Installer", settle=6.0)
-    drv.click(START_INSTALLER, "Start the Installer (second click)", settle=25.0)
+    #    ONE CLICK ON EACH, NOT TWO, AND THE SECOND CLICK WAS THE BUG.
+    #
+    #    The driver pressed `Start the Installer` twice: the first opened the method dialog,
+    #    and the second - a second later, on the SAME coordinate - landed on the Welcome
+    #    window behind it, whose row at that height is `Latest release info`. That opened
+    #    Firefox on a 404 page, which then covered everything: run 4244... logged
+    #
+    #        installing: 2026-08-15 | a | (c) | 404 | | | Discovery | x | Firefox | Privacy
+    #
+    #    for the rest of its life. A coordinate is only right for the screen it was measured
+    #    on, and the screen had changed between the two presses.
+    #
+    #    So: press once, wait for the dialog, press the dialog's own button once, wait for
+    #    Calamares. Nothing is read to decide whether to press.
+    drv.click(START_INSTALLER, "Start the Installer", settle=20.0)
     drv.look("method dialog")
-    drv.click(OFFLINE, "Offline", settle=4.0)
-    drv.click(OFFLINE, "Offline (second click)", settle=45.0)
+    drv.click(OFFLINE, "Offline", settle=55.0)
     drv.look("calamares welcome")
     if "welcome" not in drv.text():
         log("=== THE INSTALLER DID NOT OPEN ===")
