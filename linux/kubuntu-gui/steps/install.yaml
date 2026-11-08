@@ -1,0 +1,179 @@
+# Kubuntu's Calamares: the panes that need more than one click, as a sequence.
+#
+#     python3 lib/steps.py linux/kubuntu-gui/steps/install.yaml --qmp /work/drive.sock.qmp
+#
+# WHAT THIS REPLACES
+#
+# linux/kubuntu-gui/install.py's walk_calamares(). install.py keeps the machine, the kernel
+# and initrd, the frames, the recording and the publish.
+#
+# WHY TWO OF THE STEPS ARE `python:` AND THE REST ARE `at:`
+#
+# `advance()` IS NOT A CLICK AND MUST NOT BECOME ONE. It presses Next, looks, and if the pane
+# did not change it tries again and then Alt+N - Calamares binds Alt+N to Next on every pane.
+# That is three measured attempts with a reading between them, and the reading decides whether
+# to TRY AGAIN, not WHERE to click: every click in it is the same measured coordinate. Writing
+# it as three `at:` steps would make the retry unconditional, and on this wizard a second
+# unconditional click is a LIABILITY - Calamares advances in one to two seconds, so two clicks
+# 0.8 s apart land the second on the NEXT pane's Next and skip a pane entirely. That is the
+# measured reason the retry is conditional, and it is exactly the kind of thing `python:` is
+# for.
+#
+# `settle_pane()` is the other: it waits for a pane to finish repainting before the account
+# form is typed into it. Both live in panes.py beside this file, which is where a measured
+# exception belongs.
+
+name: kubuntu-gui - the Calamares walk
+resolution: [1920, 1080]
+
+vars:
+  user:
+    from: args.user
+    default: docker
+  password:
+    from: args.password
+    default: admin
+
+steps:
+  # =======================================================================================
+  # 1. THE LIVE DESKTOP'S OWN INSTALL BUTTON
+  # =======================================================================================
+  #
+  # Two presses: the first is spent giving the window focus. `repeat` is that shape.
+  - name: install kubuntu on the live desktop
+    at: [1326, 841]
+    repeat: [2, 0.8]
+    settle: 25
+
+  # =======================================================================================
+  # 2..5. THE FOUR PANES THAT ONLY NEED NEXT
+  # =======================================================================================
+  #
+  # NO MARKERS HERE, DELIBERATELY. These four panes are only distinguished by their content,
+  # and the words that name them live in the SIDEBAR where they are always true. So the
+  # question is the stronger one: did the content area change at all? That check is inside
+  # advance(), because it needs a reading before and after.
+  - name: welcome
+    python: panes:advance
+    settle: 12
+
+  - name: location
+    python: panes:advance
+    settle: 12
+
+  - name: keyboard
+    python: panes:advance
+    settle: 12
+
+  - name: customize
+    python: panes:advance
+    settle: 12
+
+  # =======================================================================================
+  # 6. ERASE THE DISK
+  # =======================================================================================
+  #
+  # The radio is not followed by a repaint, so it is clicked and the pane is then left by the
+  # footer; there is nothing to confirm between those two.
+  - name: partitions - erase the disk
+    at: [208, 73]
+    settle: 4
+
+  - name: partitions
+    python: panes:advance
+    settle: 15
+
+  # =======================================================================================
+  # 7. THE ACCOUNT FORM. FIVE CLICKS AT FIVE MEASURED POSITIONS.
+  # =======================================================================================
+  #
+  # NOTHING IS SEARCHED FOR. The numbers came from a CI frame, and the file that used to
+  # record why is worth keeping here: the first version of these was measured on a WINDOWED
+  # installer and every one of them landed on blank panel when CI ran the same wizard
+  # full-screen.
+  #
+  #      name     (296, 52)      password  (296, 254)
+  #      login    (296, 120)     confirm   (500, 254)
+  #      host     (296, 188)
+  #
+  # `host` is `kubuntu` and not the user name: it is the disk's identity, and it is the one
+  # field this driver fills with a literal.
+  - name: users - full name
+    at: [296, 52]
+    type: "{{ user }}"
+    settle: 2
+  - name: users - login name
+    at: [296, 120]
+    type: "{{ user }}"
+    settle: 2
+  - name: users - host name
+    at: [296, 188]
+    type: kubuntu
+    settle: 2
+  - name: users - password
+    at: [296, 254]
+    type: "{{ password }}"
+    settle: 2
+  - name: users - confirm password
+    at: [500, 254]
+    type: "{{ password }}"
+    settle: 3
+
+  # THE `Log in automatically without asking for the password.` CHECKBOX, whose box is 18 px
+  # left of where its label starts at x=221. Ticking it is what lets the launch stage reach a
+  # desktop instead of a greeter - measured, kubuntu's launch screenshot is the KDE desk
+  # rather than the login screen, while zorin's (no such option) is the greeter.
+  - name: log in automatically
+    at: [203, 297]
+    settle: 3
+
+  - name: users
+    python: panes:advance
+    settle: 15
+
+  # =======================================================================================
+  # 8. SUMMARY -> INSTALL, THEN THE CONFIRMATION DIALOG'S OWN BUTTON
+  # =======================================================================================
+  #
+  # TWO CLICKS AT TWO MEASURED POSITIONS. NOTHING IS LOOKED UP, AND NO CHECK GATES EITHER.
+  #
+  # Three runs in a row stopped here because a check could not read the modal:
+  #
+  #   run 42364250527  looked for the button label, found it in the Summary's PROSE, and
+  #                    clicked a sentence at (896, 424) - the install never started
+  #   run 42371430501  looked for "confirm", which is neither the title nor the button
+  #   run 42372430467  looked for "install now" and tesseract returned only the Summary text
+  #                    BEHIND the modal - the dialog was there, at (1058, 535), on the frame
+  #                    the run uploaded
+  #
+  # The lesson is the rule this driver follows everywhere: THE SCREEN IS READ TO DECIDE
+  # WHETHER A STEP WORKED, NEVER WHETHER TO TAKE IT.
+  #
+  # The `Install` on Summary is the SAME FOOTER POSITION as every Next above - Calamares
+  # only changes its colour and its word.
+  - name: summary - install
+    at: [1757, 1058]
+    settle: 12
+
+  - name: the confirmation dialog's install now
+    at: [1058, 535]
+    settle: 25
+
+  # =======================================================================================
+  # 9. WAIT FOR THE FINISH, BY THE PANE GOING AWAY
+  # =======================================================================================
+  #
+  # "finish" IS NOT A MARKER. Calamares' sidebar lists every pane including the last, so the
+  # word "Finish" is on screen from the welcome pane onwards - the first version of this loop
+  # would have declared success the instant the sidebar was drawn. (It happened not to fire
+  # only because that run's UI was Asturian and the word was "Fin", which is luck rather than
+  # design.)
+  #
+  # THE MARKER IS THE SUMMARY PANE GOING AWAY: copying begins when Calamares leaves it, and
+  # from then on the sidebar no longer highlights it. That is what `panes:finish` waits for,
+  # and it also carries the stall detector - a screen that has not changed in fifteen minutes
+  # is a dead run, not a slow one. Run 42364250527 spent eighty-seven of its ninety minutes
+  # showing the same Summary text, one identical OCR line every twenty seconds.
+  - name: the installer finishes
+    python: panes:finish
+    timeout: 5400

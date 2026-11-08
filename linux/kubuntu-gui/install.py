@@ -177,6 +177,17 @@ class Driver:
         Q.click(self.q, *xy)
         time.sleep(settle)
 
+    def close(self) -> None:
+        """Release the QMP connection before lib/steps.py opens its own.
+
+        qemu serves one client per socket, so the YAML walk cannot start while this driver
+        still holds it - the same boundary macos/15/bake.py documents.
+        """
+        try:
+            self.screen.close()
+        except Exception:                              # noqa: BLE001
+            pass
+
     def click_twice(self, xy, why: str, settle: float = 12.0) -> None:
         """Click, then click again. The first may only give the window focus."""
         self.click(xy, why, settle=0.8)
@@ -541,7 +552,25 @@ def main(argv: list[str]) -> int:
         if not wait_for_live_desktop(drv, args.timeout):
             log("=== THE LIVE DESKTOP NEVER APPEARED ===")
         else:
-            ok = walk_calamares(drv, args)
+            # THE WALK IS A YAML FILE NOW - see steps/install.yaml. The three steps that
+            # need a READING between attempts (advance, and the finish loop with its stall
+            # detector) are `python:` extensions in steps/panes.py beside it, which is where
+            # a measured exception belongs.
+            #
+            # THE QMP SOCKET IS ALREADY OPEN, so this driver is closed first: qemu serves one
+            # client per socket and steps.run_file opens its own.
+            drv.close()
+            import steps
+            walk_path = os.path.join(HERE, "steps", "install.yaml")
+            log(f"=== the walk: {os.path.basename(walk_path)} ===")
+            ok, ran = steps.run_file(
+                walk_path, guest.paths.drive, work=work,
+                # THIS DRIVER'S ACCOUNT OPTION IS --full-name, not --user: the display name
+                # and the login are the same string here, which is not true on popos.
+                user=args.full_name, password=args.password,
+            )
+            log(f"{len(ran)} step(s) ran" if ok
+                else f"the walkthrough failed after {len(ran)} step(s)")
     finally:
         try:
             ppm = os.path.join(work, "final.ppm")
