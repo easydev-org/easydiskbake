@@ -363,6 +363,27 @@ def build_args(work: str, extra: list[str] | None = None,
         "-vnc", f"{shape.vnc_bind}:{shape.vnc_display}",
         "-device", "qemu-xhci,id=xhci",
         "-device", "usb-tablet,bus=xhci.0",
+        # A USB KEYBOARD, BECAUSE NOT EVERY GUEST READS THE PS/2 ONE.
+        #
+        # QMP's `input-send-event` delivers a key press to whatever keyboard device the guest
+        # has bound. Every guest here has a PS/2 keyboard through qemu's default i8042
+        # emulation, and that is what the Calamares, Ubiquity, Flutter and Anaconda drivers
+        # have always typed into successfully.
+        #
+        # NOT THIS ONE. Measured on MX-25.3's `minstall` under Xfce: a click on an entry field
+        # followed by QMP keystrokes left the field unchanged, and `keys.type_text` returned
+        # `unsupported: []`, so the characters had mapped to qcodes correctly - the events were
+        # being produced and not arriving. A triple-click followed by typing did nothing
+        # either. The same keystrokes sent by `xdotool` from a terminal INSIDE the guest put
+        # `admin` into the password field at once. That is a guest whose GTK entries take input
+        # from the HID device and not from the legacy i8042 path.
+        #
+        # So there is a USB HID keyboard next to the tablet, on the same xHCI controller, and
+        # every guest now has both: the PS/2 one it may have been using and the USB one it may
+        # need. A guest that binds only one binds the one it wants; a guest that binds both
+        # gets every event twice, which is why this is a device and not a replacement - see
+        # the driver note below.
+        "-device", "usb-kbd,bus=xhci.0",
         "-monitor", f"unix:{paths.monitor},server=on,wait=off",
         "-qmp", f"unix:{paths.drive},server=on,wait=off",
         "-qmp", f"unix:{paths.record},server=on,wait=off",
