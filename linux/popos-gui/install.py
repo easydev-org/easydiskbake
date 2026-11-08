@@ -300,21 +300,21 @@ def walk_installer(drv: Driver, args) -> bool:
     # THE KEYBOARD REACHES THEM REGARDLESS: the installer keeps the focus in its form, so Tab
     # from the field that was last typed into walks the remaining controls in order - password,
     # confirm, then the footer's Next. The two entries start empty.
-    log("filling the account password with Tab from the form (the entries start empty)")
-    Q.click(drv.q, *ACCOUNT_NAME["user name"])
-    time.sleep(1.2)
-    Q.key(drv.q, "tab")
-    time.sleep(1.0)
-    unsupported = keys.type_text(drv.q, args.password, per_char=0.12)
-    if unsupported:
-        log(f"  COULD NOT TYPE {unsupported!r}")
+    log("filling the account password (the entries start empty)")
+    # ESC FIRST, ALWAYS. If a press on this pane lands on the artwork picker - measured, a
+    # 12-pixel error is enough - a GTK file chooser opens over the installer and every later
+    # keystroke goes into ITS search box. One Esc closes it, and it is a no-op on a pane with
+    # no dialog open.
+    Q.key(drv.q, "esc")
     time.sleep(1.5)
-    Q.key(drv.q, "tab")
-    time.sleep(1.0)
-    unsupported = keys.type_text(drv.q, args.password, per_char=0.12)
-    if unsupported:
-        log(f"  COULD NOT TYPE {unsupported!r}")
-    time.sleep(1.5)
+    for label, spot in (("password", ACCOUNT_PASSWORD["password"]),
+                        ("confirm", ACCOUNT_PASSWORD["confirm"])):
+        Q.click(drv.q, *spot)
+        time.sleep(1.5)
+        unsupported = keys.type_text(drv.q, args.password, per_char=0.12)
+        if unsupported:
+            log(f"  COULD NOT TYPE {unsupported!r}")
+        time.sleep(1.2)
     drv.look("password filled")
     drv.click(SELECT, "Create User Account: Next", settle=25.0)
     drv.look("drive encryption")
