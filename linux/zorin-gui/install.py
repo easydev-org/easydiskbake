@@ -240,19 +240,46 @@ def start_the_installer(drv: Driver) -> None:
     log("disabling the screen saver and the lock")
     Q.key_combo(drv.q, "ctrl", "alt", "t")
     time.sleep(8.0)
+    # THE KEEPALIVE IS FULLY DETACHED, OR THE TERMINAL WINDOW STAYS OPEN OVER THE INSTALLER.
+    #
+    # `( ... ) & exit` was not enough. A background subshell inherits the terminal's pty, so
+    # `exit` closed the shell but the window itself stayed - and the first click meant for
+    # Ubiquity's footer landed in it instead. Measured: the pane after that click still read
+    # `keyboard: o | zorin@zorin | Q | Install | ... | Welcome | English | ...`, i.e. the
+    # terminal in front of a welcome window that had never advanced.
+    #
+    # `setsid` plus full redirection puts the keepalive in its own session with no file
+    # descriptors pointing at the pty, so nothing holds the window open. The window is then
+    # closed with Alt+F4 rather than by the shell, which is the only close this driver can
+    # be certain of.
     command = (
         "xset s off; xset -dpms; xset s noblank; "
         "gsettings set org.gnome.desktop.session idle-delay 0; "
         "gsettings set org.gnome.desktop.screensaver lock-enabled false; "
-        "( for i in $(seq 1 1080); do "
-        "  xdotool mousemove_relative -- 1 0 2>/dev/null; "
-        "  xdotool mousemove_relative -- -1 0 2>/dev/null; "
-        "  sleep 20; done ) >/dev/null 2>&1 & "
-        "exit"
+        "setsid sh -c 'while :; do "
+        "  xdotool mousemove_relative -- 1 0; xdotool mousemove_relative -- -1 0; "
+        "  sleep 20; done' >/dev/null 2>&1 < /dev/null &"
     )
     keys.type_text(drv.q, command, per_char=0.02)
     Q.key(drv.q, "ret")
-    time.sleep(8.0)
+    time.sleep(6.0)
+
+    # THE TERMINAL IS CLOSED BY ITS OWN SHELL, NOT BY Alt+F4.
+    #
+    # Alt+F4 was tried and it is wrong here: measured, it put up
+    #
+    #     Quit the installation?
+    #     [ Cancel ]  [ Quit ]
+    #
+    # - the WELCOME LAUNCHER's quit prompt, because that window had the focus - and the
+    # dialog then covered the desktop for the rest of the run. A window manager shortcut
+    # closes whatever is focused, and this driver cannot be sure what that is.
+    #
+    # `exit` typed into the terminal closes the shell it belongs to, and with `setsid` and
+    # full redirection the keepalive outlives it without holding the pty open.
+    keys.type_text(drv.q, "exit", per_char=0.05)
+    Q.key(drv.q, "ret")
+    time.sleep(6.0)
     drv.look("screensaver disabled")
 
     # CLICKED TWICE, BECAUSE THE FIRST PRESS ONLY GIVES THE WINDOW FOCUS.
