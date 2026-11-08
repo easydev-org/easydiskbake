@@ -289,9 +289,36 @@ def walk_installer(drv: Driver, args) -> bool:
     #
     # So one long settle, then the press. `encrypt` in the reading is only logged: if the pane
     # is not up the press misses and the run will say so at the empty-disk check.
-    log("letting the encryption pane settle, then choosing `Don't Encrypt`")
-    time.sleep(10.0)
-    drv.look("encryption pane")
+    # THE PASSWORD PAGE'S `Next` IS PRESSED UNTIL THE FOOTER CHANGES, WHICH IS THE ONLY
+    # RELIABLE WAY TO KNOW THE ENCRYPTION PANE IS UP.
+    #
+    # Measured on three runs: the log read `drive encryption: Workspaces | Applications | ...
+    # | u | Oo` - i.e. NOTHING of the pane - and then pressed (1091,817), which on the
+    # password page is empty space beside `Next`. The window lost focus and the installer
+    # closed, leaving a bare desktop and a 0 MiB disk.
+    #
+    # `Next` at (1367,817) is safe to press twice from the password page, but NOT from the
+    # encryption pane: there that coordinate is `Encrypt`, which would encrypt the disk. So
+    # the check has to distinguish them, and the distinguishing fact is a BUTTON, not a
+    # sentence: the encryption pane is the only one with a button whose label starts
+    # `Don't`. `drv.text()` includes button labels, and that is what is tested here.
+    #
+    # This is a click guard, not a pane detector for its own sake: it exists because the
+    # alternative is a press that closes the installer, which has now happened three times.
+    for attempt in (1, 2, 3):
+        current = drv.text()
+        if "don't" in current or "dont" in current or "encrypt" in current:
+            log(f"  the encryption pane is up (attempt {attempt})")
+            break
+        log(f"  still on the password pane; pressing Next again ({attempt})")
+        drv.click(SELECT, "Create User Account: Next (again)", settle=25.0)
+        drv.look("drive encryption")
+    else:
+        log("=== THE ENCRYPTION PANE NEVER APPEARED ===")
+        log(f"  screen: {drv.text()[:200]}")
+        return False
+
+    log("choosing `Don't Encrypt` (the pane defaults to Encrypt)")
     drv.click(DONT_ENCRYPT, "Drive Encryption: Don't Encrypt", settle=35.0)
     drv.look("installing")
 
