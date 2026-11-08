@@ -182,10 +182,19 @@ def expose_uplink(ssh_port: int) -> None:
 
 
 def start_novnc(port: int, vnc: int) -> None:
-    """Serve the noVNC page, detached, so it outlives this process being replaced by qemu."""
+    """Serve the noVNC page, detached, so it outlives this process being replaced by qemu.
+
+    A MISSING websockify IS NOT A FAILURE TO START. The guest is the product; the browser page
+    is how you look at it. A run without the page still has VNC on 5900, which is a real way to
+    reach it, so this says what is missing and continues rather than taking the VM down over a
+    console script.
+    """
     web = "/usr/share/novnc"
     if not os.path.isdir(web):
         log(f"! no {web}; the VM is reachable on VNC port {vnc} and nowhere else")
+        return
+    if not shutil.which("websockify"):
+        log(f"! websockify is not installed; the VM is reachable on VNC port {vnc} only")
         return
 
     argv = ["websockify", "--web", web, str(port), f"127.0.0.1:{vnc}"]
