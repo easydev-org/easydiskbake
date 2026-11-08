@@ -102,11 +102,25 @@ def fill_account_name(driver, step) -> bool:
     chooser with `admin` typed into its search box, which is why the disk never started and
     why the password pane was never reached.
 
-    A GTK entry validates on focus-out, so the Tab is still needed - but it comes from Full
-    Name, the only field this step types into.
+    THE PANE IS WAITED FOR FIRST, for the same reason the password pane is (run 42535359047
+    typed a password into this form because it had not settled): `Full Name` is on this pane
+    and nowhere else, and typing into a card that has not drawn yet lands nowhere.
     """
     user = str((getattr(driver, "values", {}) or {}).get("user") or "docker")
     display = user.capitalize() + " User"
+
+    deadline = time.time() + float(step.get("timeout", 90))
+    seen = ""
+    while time.time() < deadline:
+        driver.look("account pane")
+        seen = driver.text()
+        if "full name" in seen and "user name" in seen:
+            break
+        time.sleep(2.0)
+    else:
+        driver.log("=== THE ACCOUNT PANE NEVER ARRIVED ===")
+        driver.log(f"  last screen: {seen[:200]}")
+        return False
 
     _click_type(driver, ACCOUNT_NAME["full name"], display)
 
@@ -120,26 +134,44 @@ def fill_account_name(driver, step) -> bool:
 
 
 def fill_account_password(driver, step) -> bool:
-    """Password and confirm, at their measured coordinates, with Esc to close a chooser.
+    """The password twice, on the pane that actually says Choose Account Password.
 
-    THE EARLIER FAILURE WAS NOT THESE COORDINATES. Run 42522057017's frames at t=165 show a
-    `Choose Icon` chooser with `admin` in its search box - but the click that opened it was on
-    the PREVIOUS pane: the account step had emptied User Name, `Next` went grey, and the
-    "password pane" the walk was clicking was still Create User Account, whose artwork picker
-    sits at (1188,440). With that step fixed to leave the derived login alone, `Next` is
-    enabled and this pane is actually reached.
+    THE PANE MUST BE UP BEFORE ANY KEY IS SENT, AND THE READING IS THE CHECK.
 
-    A CLICK 10-12 PIXELS OFF AN ENTRY OPENED THE PICKER ONCE, measured, so Esc bookends the
-    typing: it is a no-op on a clean pane and it closes a chooser opened by a stray press. The
-    reading afterwards is the check - if the chooser is up, the installer cannot be advanced
-    and saying so now is worth more than clicking Next into a dialog and waiting forty minutes
-    for the disk to explain it.
+    Run 42535359047's log is the reason:
+
+        look after the footer: ... | Install | Pop!_OS | 24.04 | LTS | Choose |      (the pane)
+        look password filled:  ... | Full | Name | adminadm                            (the ACCOUNT)
+
+    - the click that was meant to leave the account name pane was still settling, so the
+    account pane came back with `adminadm` typed into Full Name and the password boxes never
+    received anything. The step then reported success, because all it checked for was a file
+    chooser, and `Drive Encryption` was clicked on a pane that was not there. The disk never
+    started and the run ended at 0 MiB.
+
+    SO THIS WAITS FOR THE PANE BY ITS OWN WORD - `Choose Account Password` appears nowhere else
+    on this installer - and refuses to type until it is up. `until` on a word is the same
+    mechanism every other walk here uses for the same purpose, and it is a reading that
+    decides WHEN to type, not where.
     """
     password = str((getattr(driver, "values", {}) or {}).get("password") or "admin")
     import keys
 
-    driver.qmpmod.key(driver.q, "esc")
-    time.sleep(1.5)
+    # WAIT FOR THE PANE. The card draws in well under a second once Next has taken, so this is
+    # bounded tightly; if it never arrives the step fails here with the screen in the log
+    # instead of typing a password into the account form.
+    deadline = time.time() + float(step.get("timeout", 90))
+    seen = ""
+    while time.time() < deadline:
+        driver.look("password pane")
+        seen = driver.text()
+        if "account password" in seen or "confirm password" in seen:
+            break
+        time.sleep(2.0)
+    else:
+        driver.log("=== THE PASSWORD PANE NEVER ARRIVED ===")
+        driver.log(f"  last screen: {seen[:200]}")
+        return False
 
     for label in ("password", "confirm"):
         driver.qmpmod.click(driver.q, *ACCOUNT_PASSWORD[label])
@@ -153,5 +185,11 @@ def fill_account_password(driver, step) -> bool:
     text = driver.text()
     if "choose" in text and "icon" in text:
         driver.log("=== THE ARTWORK CHOOSER IS UP; THE PASSWORD PANE DID NOT TAKE ===")
+        return False
+    # THE PANE MUST STILL BE THE PASSWORD PANE. If it went back to the account form, the typing
+    # above went somewhere it must not have, and saying so now is the whole point.
+    if "full name" in text and "account password" not in text:
+        driver.log("=== THE ACCOUNT FORM IS UP, NOT THE PASSWORD PANE ===")
+        driver.log(f"  last screen: {text[:200]}")
         return False
     return True
