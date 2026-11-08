@@ -42,33 +42,46 @@ anything that needs a macOS disk.
 ### Running one: the macOS appliance image
 
 `image-build.yml` with `only: appliance` builds `ghcr.io/easydev-org/easydiskbake:macos15-appliance`,
-a container that **is** a macOS 15 machine - the baked `macos15-ssh` disk, the recovery
-image and the OpenCore assets are all inside it, so its first start never touches the
-network:
+a container that **is** a macOS 15 machine. The image carries the boot environment - Apple's
+recovery image, OpenCore, the firmware - and **you choose which disk it boots**:
 
 ```sh
-docker run --rm -it \
-    --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN \
-    -p 6080:6080 -p 2222:2222 -p 5900:5900 \
-    -v macos15-data:/data \
-    ghcr.io/easydev-org/easydiskbake:macos15-appliance
+docker build -f macos/15/Containerfile.appliance -t easydiskbake:macos15-appliance .
+```
+
+```sh
+# no disk at all: the firmware boots OpenCore into Recovery
+docker run --rm -it --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN \
+    -p 6080:6080 -v macos15-data:/data ghcr.io/easydev-org/easydiskbake:macos15-appliance
+
+# or one of the three published stages
+docker run ... macos15-appliance --disk setup     # the installer, Recovery onwards
+docker run ... macos15-appliance --disk desktop   # stopped at the Setup Assistant
+docker run ... macos15-appliance --disk ssh       # a finished machine, Remote Login on
 ```
 
 ```
 http://localhost:6080/vnc.html      the guest's screen
-ssh -p 2222 docker@localhost        password: admin
+ssh -p 2222 docker@localhost        password: admin   (only with --disk ssh)
 ```
 
-The volume holds the joined base disk, a qcow2 overlay backing onto it, and the OpenCore
-work tree; qemu boots the overlay, so the base stays byte-identical to what the image
-shipped. Delete the volume and the next start is a factory boot.
+`--disk` also takes a published tag, so an older disk such as
+`macos15-base-20261104-010259` boots without editing anything. `VM_DISK` is the same choice for
+a compose file.
+
+The image is about 900 MiB and builds in seconds; a disk is pulled once onto the volume and
+reused. The volume holds the pulled base, a qcow2 overlay backing onto it, and the OpenCore work
+tree; qemu boots the overlay, so the base stays byte-identical to what was published. A
+`--disk setup` gets the plain drive rather than `discard=unmap`, because an installer that
+honours TRIM immediately loses the snapshot it is about to switch to - that is the macos26 run
+which dropped 17 GiB mid-install and froze at "About 48 minutes remaining".
 
 Network is the same single mode every bake here uses - a tap on a bridge with dnsmasq,
-MASQUERADE and DNAT (`lib/net.py`), never qemu's `-netdev user`. KVM is required; there is
-no software-emulation fallback, for the reason `lib/vm.py` gives. qemu is PID 1.
+MASQUERADE and DNAT (`lib/net.py`), never qemu's `-netdev user`. KVM is required; there is no
+software-emulation fallback, for the reason `lib/vm.py` gives. qemu is PID 1.
 
-It is not built by `only: both`: it is 16 GiB, takes about a quarter of an hour, and only
-someone who wants to run macOS pulls it.
+It is not built by `only: both`: it pulls 870 MiB of assets and only someone who wants to run
+macOS pulls it.
 
 ## Layout
 

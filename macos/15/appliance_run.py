@@ -270,20 +270,23 @@ def main(argv: list[str]) -> int:
     assets = opencore.build("15", work)
     log(f"identity {assets['identity']['serial']} / {assets['identity']['mac']}")
 
-    # THE DISK, IN ONE OF THREE WAYS, IN THE ORDER A USER MEANS THEM.
+    # THE DISK, IN ONE OF THREE WAYS, AND "none" MEANS NONE.
     #
-    #   --disk none     no disk at all, and the firmware boots OpenCore into Recovery
-    #   --disk <name>   pulled from this repository's package onto the volume, once
-    #   (no --disk)     a disk baked into the image, if the image has one
+    #   --disk none       no disk at all; the firmware boots OpenCore into Recovery
+    #   --disk <name>     pulled from this repository's package onto the volume, once
+    #   nothing given     a disk baked into the image, if the image has one
     #
-    # The baked-in case is checked last on purpose: an explicit choice must win over whatever
-    # the image happens to carry, or someone with the old 16 GiB image could not boot their own
-    # shell of choice out of it.
+    # THE THIRD CASE IS THE LEGACY ONE and it is last on purpose, but it is NOT reached by
+    # "none": a person who typed `--disk none` asked for Recovery, and giving them the baked
+    # disk because the image happened to carry one would be answering a different question.
+    # The empty default is what an image with a disk baked in falls back to.
     base = ""
-    if a.disk and a.disk != appliance.NO_DISK:
+    if a.disk == appliance.NO_DISK:
+        log("no disk, as asked")
+    elif a.disk:
         base = appliance.pull_disk_named(a.disk, a.data)
-    elif a.disk == appliance.NO_DISK:
-        base = join_base(a.assets, a.data) if _has_baked_disk(a.assets) else ""
+    elif _has_baked_disk(a.assets):
+        base = join_base(a.assets, a.data)
 
     if base:
         log(f"base {base} ({os.path.getsize(base) >> 20} MiB)")
