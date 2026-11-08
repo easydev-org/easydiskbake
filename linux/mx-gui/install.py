@@ -226,46 +226,24 @@ def walk_minstall(drv: Driver, args) -> bool:
         drv.click(NEXT, f"{label}: Next (defaults kept)", settle=18.0)
         drv.look(f"after {label}")
 
-    # 6. DEFAULT USER LOGIN, TYPED BY `xdotool` INSIDE THE GUEST.
+    # 6. DEFAULT USER LOGIN. THREE FIELDS, AND QMP'S KEYBOARD NOW REACHES THEM.
     #
-    # QMP'S KEYBOARD DOES NOT REACH THIS PAGE'S ENTRY FIELDS. Measured on a live session: a
-    # click on the login field, then `input-send-event` keystrokes - `unsupported: []`, so the
-    # characters mapped fine - left the field unchanged, and so did a triple-click followed by
-    # typing. The same keystrokes delivered by `xdotool` from a terminal in the guest put
-    # `admin` into the password fields immediately (sixteen dots for four characters typed
-    # four times). Whatever grabs those entries, it is not the QMP keyboard device.
+    # THIS USED TO BE DONE WITH `xdotool` FROM A TERMINAL, because QMP keystrokes did not
+    # arrive at these entries - measured: a click on the field, then `input-send-event`
+    # keystrokes, left it unchanged while `keys.type_text` reported `unsupported: []`, and a
+    # triple-click followed by typing did nothing either.
     #
-    # THAT IS WHY CI RUN 42476000228 SAT HERE. Its log said
+    # The cause was a missing device, not a missing technique: this guest's GTK entries take
+    # input from the HID keyboard, and lib/vm.py attached only a USB tablet. With `usb-kbd`
+    # beside it the same QMP keystrokes fill the field at once - measured on a live session,
+    # `docker` appeared in `Default user login name` with no terminal involved.
     #
-    #     [mx-gui 11:52:22] filling the default user account
-    #     [mx-gui 11:52:37]   account filled: ... Create | a | swap | file ...
-    #
-    # - the page never changed, because nothing was typed - and then it waited out its
-    # timeout on a disk that was already being written.
-    #
-    # SO: ONE TERMINAL, ONE LINE, AND `xdotool type` WITH A DELAY. `--repeat` on BackSpace
-    # empties a field, and `ctrl+a` is deliberately NOT used: measured, this dialog's
-    # password entries treat it as literal input and the field ended up holding
-    # `ctrl+aadmin`.
-    log("filling the default user account with xdotool, inside the guest")
-    Q.key_combo(drv.q, "ctrl", "alt", "t")
-    time.sleep(9.0)
-    fill = (
-        f"xdotool mousemove {ACCOUNT['login'][0]} {ACCOUNT['login'][1]} click 1; sleep 0.5; "
-        f"xdotool key --repeat 40 BackSpace; xdotool type --delay 80 {args.user}; sleep 0.5; "
-        f"xdotool mousemove {ACCOUNT['password'][0]} {ACCOUNT['password'][1]} click 1; "
-        f"sleep 0.5; xdotool key --repeat 40 BackSpace; "
-        f"xdotool type --delay 80 {args.password}; sleep 0.5; "
-        f"xdotool mousemove {ACCOUNT['confirm'][0]} {ACCOUNT['confirm'][1]} click 1; "
-        f"sleep 0.5; xdotool key --repeat 40 BackSpace; "
-        f"xdotool type --delay 80 {args.password}"
-    )
-    keys.type_text(drv.q, fill, per_char=0.010)
-    Q.key(drv.q, "ret")
-    time.sleep(20.0)
-    keys.type_text(drv.q, "exit", per_char=0.05)
-    Q.key(drv.q, "ret")
-    time.sleep(6.0)
+    # So the terminal is gone from this step: the driver types the way every other driver
+    # here does.
+    log("filling the default user account")
+    drv.clear_and_type(ACCOUNT["login"], args.user)
+    drv.clear_and_type(ACCOUNT["password"], args.password)
+    drv.clear_and_type(ACCOUNT["confirm"], args.password)
     drv.look("account filled")
     drv.click(NEXT, "Default User Login: Next", settle=25.0)
     drv.look("after the account")
