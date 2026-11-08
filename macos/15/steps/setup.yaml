@@ -76,8 +76,13 @@ steps:
   # So the wait is for the ROWS, by name. The four labels are text that appears nowhere else
   # in this sequence, which is what makes them a fair thing to wait for - and this is a
   # `until`, not a `when`: it blocks until the menu is up, it does not choose anything.
+  #
+  # THE REGION IS THE RECOVERY WINDOW, not the whole frame. The menu is a fixed panel; reading
+  # it alone is faster and it cannot match a word somewhere else on the screen. (x0, y0, x1, y1)
+  # in frame pixels, and the words still come back with absolute coordinates.
   - name: wait for the recovery menu
     until: [disk, utility]
+    region: [800, 460, 1300, 560]
     timeout: 900
     poll: 10
 
@@ -132,6 +137,7 @@ steps:
   # the Erase button is never found - the sweep inside ends when the sheet's words appear.
   - name: erase the target as APFS
     python: setup_panes:erase_the_disk
+    region: [700, 380, 1300, 640]
     expect_any:
       - [erase, complete]
       - [main, created]
@@ -143,6 +149,7 @@ steps:
   # the menu never left, it was covered - so it is an `until` on the rows.
   - name: the recovery menu is back
     until: [reinstall, macos]
+    region: [800, 300, 1300, 360]
     timeout: 300
     poll: 5
 

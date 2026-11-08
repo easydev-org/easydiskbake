@@ -79,6 +79,7 @@ STEP_KEYS = {
     "expect",      # words that must appear afterwards; a mismatch fails the step
     "expect_any",  # a list of word-sets, any one of which passes
     "until",       # words that end a wait loop
+    "region",      # (x0, y0, x1, y1) to crop before reading, for `until`/`expect`
     "until_dark",  # wait until the screen goes black - the installer's own start signal
     "timeout",     # seconds the `until` loop may run
     "poll",        # seconds between looks in the `until` loop
@@ -364,7 +365,44 @@ class Driver:
         self.n += 1
         ppm = self.screen.grab(f"{self.n:03d}-{label}".replace(" ", "-"))
         self.words = self.screen.text(ppm) if ppm else []
+        self.ppm = ppm
         log(f"look {label}: {len(self.words)} words :: "
+            f"{' | '.join(w[0] for w in self.words[:16])}")
+        return self.words
+
+    def look_at(self, region, label: str = "look") -> list[tuple]:
+        """Read ONE RECTANGLE of the screen, which is what makes a wait cheap and reliable.
+
+        WHY A REGION AND NOT THE WHOLE FRAME. Three measured reasons, and the third is the one
+        that decides whether a `until` works at all:
+
+            speed        the whole 1920x1080 frame costs seconds; the title strip this asks
+                         about is a twentieth of it and tesseract returns in well under a
+                         second, which is the difference between a 10-second poll and a
+                         1-second one.
+
+            noise        a pane's body is full of words that belong to other steps. Waiting
+                         for "disk" on the disk-utility screen matches the sidebar, the
+                         toolbar and the help text; waiting for it in the strip where the
+                         dialog's title is drawn matches once.
+
+            the answer   a phrase like "Erase process is complete" is only true in the sheet
+                         that reports it. Anywhere else on that screen the same words are a
+                         sentence in a paragraph, and a driver that matched the sentence
+                         clicks prose - which is what run 42364250527 did at (896, 424).
+
+        `region` is (x0, y0, x1, y1) in frame pixels and the words come back with ABSOLUTE
+        coordinates, because the caller may click what it found.
+        """
+        self.n += 1
+        ppm = self.screen.grab(f"{self.n:03d}-{label}".replace(" ", "-"))
+        if not ppm:
+            self.words = []
+            self.ppm = None
+            return []
+        self.words = self.screen.text_in(ppm, region)
+        self.ppm = ppm
+        log(f"look {label} in {tuple(region)}: {len(self.words)} words :: "
             f"{' | '.join(w[0] for w in self.words[:16])}")
         return self.words
 
@@ -595,6 +633,19 @@ def _run_until_dark(driver: Driver, step: Step) -> bool:
     return False
 
 
+def _read(driver: Driver, step: Step, label: str = "look") -> list[tuple]:
+    """One look, cropped to the step's `region` when it has one.
+
+    THE SINGLE PLACE THE CROP IS APPLIED, so `until`, `expect` and `sweep` cannot disagree about
+    whether they were reading a region or the whole screen. That disagreement is exactly the
+    bug where a `until` matched a sentence in a paragraph on the other half of the frame.
+    """
+    region = step.get("region")
+    if region:
+        return driver.look_at(region, label)
+    return driver.look(label)
+
+
 def _run_until(driver: Driver, step: Step) -> bool:
     """Wait until the step's `until` words are on screen, or its timeout expires.
 
@@ -610,7 +661,7 @@ def _run_until(driver: Driver, step: Step) -> bool:
     deadline = time.time() + timeout
 
     while time.time() < deadline:
-        driver.look(step.name)
+        _read(driver, step, step.name)
         if all(driver.says(w) for w in words):
             return True
         if step["keep_alive"]:
@@ -949,7 +1000,7 @@ def walk(driver: Driver, steps: Walk, *, overrides: dict[str, str] | None = None
         # the words it was measured to produce is a failure with the screen in the log, which
         # is what every driver here learned to do after skipping a pane silently.
         if here["expect"] or here["expect_any"]:
-            driver.look(f"{here.name} - after")
+            _read(driver, here, f"{here.name} - after")
             matched = _expect_matches(driver, here["expect"], here["expect_any"])
             if matched:
                 ran.append(here.name)

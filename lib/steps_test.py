@@ -97,8 +97,8 @@ def walk_of(steps_list: list[dict], **extra) -> steps.Walk:
     return steps.Walk(document, path="inline")
 
 
-def run(document, screen: str = "", **kwargs):
-    driver = FakeDriver(screen)
+def run(document, screen: str = "", driver=None, **kwargs):
+    driver = driver or FakeDriver(screen)
     return driver, steps.walk(driver, document, **kwargs)
 
 
@@ -371,6 +371,39 @@ def test_ssh_step() -> None:
         session.ssh = real
 
 
+def test_region_is_a_crop() -> None:
+    print("\n=== `region` reads a crop, and the words it matches are the crop's")
+    seen: list[tuple] = []
+
+    class CropDriver(FakeDriver):
+        def __init__(self, screen: str) -> None:
+            super().__init__(screen)
+            self.regions: list[tuple] = []
+
+        def look_at(self, region, label="look"):
+            self.regions.append(tuple(region))
+            return super().look(label)
+
+    # THE POINT: the words are only in the crop. A whole-frame read would match them too, so
+    # the assertion is that look_at was used AND that the step succeeded.
+    walk = walk_of([
+        {"name": "wait for the sheet", "until": ["erase", "complete"],
+         "region": [700, 380, 1300, 640], "timeout": 2, "poll": 0},
+    ])
+    driver = CropDriver("Erase process is complete")
+    ok, _ran = run(walk, screen="Erase process is complete", driver=driver)
+    check(ok, "the step succeeded")
+    check(driver.regions == [(700, 380, 1300, 640)],
+          f"the crop was used, got {driver.regions}")
+
+    # Without a region the whole frame is read, so a driver with no look_at still works.
+    plain = walk_of([
+        {"name": "wait for the sheet", "until": ["erase"], "timeout": 2, "poll": 0},
+    ])
+    ok, _ran = run(plain, screen="Erase process")
+    check(ok, "a step with no region reads the whole frame")
+
+
 def test_headless_needs_no_screen() -> None:
     print("\n=== a walkthrough with no GUI steps needs no QMP socket")
     headless = steps.HeadlessDriver("/tmp")
@@ -415,6 +448,7 @@ def main() -> int:
     test_pane_limit()
     test_mixed_is_refused()
     test_ssh_step()
+    test_region_is_a_crop()
     test_headless_needs_no_screen()
     test_real_files()
 
