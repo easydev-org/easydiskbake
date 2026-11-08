@@ -1,0 +1,160 @@
+# A macOS 15 virtual machine that starts from one command.
+#
+#     docker build -f macos/15/Containerfile.appliance -t easydiskbake:macos15-appliance .
+#     docker run --rm -it \
+#         --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN \
+#         -p 6080:6080 -p 2222:2222 -p 5900:5900 \
+#         -v macos15-data:/data \
+#         easydiskbake:macos15-appliance
+#
+#     http://localhost:6080/vnc.html        the guest's screen
+#     ssh -p 2222 docker@localhost          password: admin
+#
+# WHAT "ONE COMMAND" MEANS HERE
+#
+# Everything the boot needs is inside the image and nothing is downloaded at start:
+#
+#     /assets/recovery.dmg      Apple's recovery image; the APFS driver is extracted from it
+#     /assets/opencore/*        OpenCore, the LongQT template, OVMF_CODE, OVMF_VARS
+#     /assets/disk/part-*       macos15-ssh, a finished install, split into 4 GiB parts
+#     /assets/disk/parts.json   each part's sha256 and the whole disk's
+#
+# A start with no network at all still boots. That is the whole point of baking the assets in
+# rather than pulling them: the first start is not allowed to depend on ghcr, and it is not
+# allowed to spend fifteen minutes downloading before anything appears on screen.
+#
+# WHY THE BAKE IMAGE IS THE BASE AND NOT A BARE DEBIAN
+#
+# The tooling is already there, already pinned and already checked by the root Containerfile's
+# build-time self-test: qemu 11.1 with KVM, 7z (the OpenCore template is an ISO9660 image with
+# a Joliet name table), mtools (mformat/mcopy build the 200 MiB ESP), unzip, aria2, python3,
+# tesseract. Re-deriving that list here is the mistake the root Containerfile documents at
+# length under sshpass - one fact in two places drifts.
+#
+# WHAT IS ADDED: websockify and the noVNC page, because this image serves a screen to a
+# browser and the bake image only ever wrote a VNC stream to a file.
+#
+# WHY THE DISK IS SPLIT, AND THE ACTUAL NUMBER BEHIND IT
+#
+# Not because ghcr refuses a layer over 10 GB. It does not, for the uploads this repository
+# does: macos15-setup is published as ONE 27.57 GiB oras layer and still serves. Measured
+# from the registry's manifests - see lib/disk_parts.py, which carries the sizes.
+#
+# What has never been measured is a COPY layer over 10 GB, and a COPY is what an image build
+# takes. Every image here is tooling, tens of megabytes; betting a 16 GiB disk on the one
+# number GitHub documents as a failure ("The Container registry has a 10 GB size limit for
+# each layer") is a bet that costs a full rebuild when it loses. Four 4 GiB parts cost one
+# join on first start and nothing else.
+#
+# THE BUILD NEEDS THE NETWORK AND THE RUN DOES NOT.
+#
+# The build pulls six artifacts from this repository's own ghcr package, through lib/iso.py,
+# with the token in $GITHUB_TOKEN. There is no vendor URL and no mirror: a missing tag fails
+# the build with the tag named, which is lib/iso.py's stated rule for the whole repository.
+#
+# BUILD IT WITH SECRETS, NOT ARGS. a `docker build --build-arg GITHUB_TOKEN=...` bakes the
+# token into the image history; `--secret` does not.
+#
+#     echo "$GITHUB_TOKEN" | docker build \
+#         --secret id=ghcr_token,src=/dev/stdin \
+#         -f macos/15/Containerfile.appliance -t easydiskbake:macos15-appliance .
+
+# ---------------------------------------------------------------------------
+# stage 1: fetch the assets. This stage has the token; the final image does not.
+# ---------------------------------------------------------------------------
+FROM ghcr.io/easydev-org/easydiskbake:latest AS assets
+
+# BuildKit mount for the credential. Nothing here is persisted into a layer.
+RUN --mount=type=secret,id=ghcr_token \
+    --mount=type=cache,target=/root/.cache/appliance \
+    set -eux; \
+    if [ -f /run/secrets/ghcr_token ]; then \
+        ISO_USER="${GITHUB_ACTOR:-SilverMelon233}"; \
+        export ISO_USER; \
+        export ISO_PASSWORD="$(cat /run/secrets/ghcr_token)"; \
+    fi; \
+    export REPO=/repo; \
+    cd /repo; \
+    python3 macos/15/appliance.py fetch --out /assets
+
+# THE SELF-CHECK IS ON THE BYTES, NOT ON THE DOCKERFILE.
+#
+# It asks appliance.check() to re-read the manifest, confirm every part still hashes to what
+# parts.json says, and confirm the four pinned assets carry the sha256 in lib/images.py. A
+# build that quietly copied a stale recovery image, or half a disk, fails here - in minutes -
+# instead of on the user's machine as a guest that stops at a prohibited sign.
+RUN set -eux; \
+    export REPO=/repo; \
+    cd /repo; \
+    python3 macos/15/appliance.py check --assets /assets; \
+    du -sh /assets; \
+    ls -l /assets /assets/opencore /assets/disk | head -40
+
+# ---------------------------------------------------------------------------
+# stage 2: the appliance.
+# ---------------------------------------------------------------------------
+FROM ghcr.io/easydev-org/easydiskbake:latest
+
+# websockify serves the noVNC page and bridges it to qemu's VNC port. The base image already
+# carries /usr/share/novnc (it is a dependency of nothing else here, so it costs nothing);
+# websockify itself is the one package this image adds.
+#
+# --break-system-packages because this is Debian trixie with a PEP 668 managed environment,
+# and the alternative - a venv - buys nothing for one console script that nothing else imports.
+RUN set -eux; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        python3-websockify \
+        ; \
+    rm -rf /var/lib/apt/lists/*
+
+# THE ENTRY POINT IS EXPECTED TO BE EMPTY - the root Containerfile clears it because GitHub
+# Actions runs a container job as `docker run <image> <command>` and the qemux base's
+# entrypoint starts a VM. That is exactly what THIS image wants back.
+COPY --from=assets /assets /assets
+
+# /ASSETS IS READ-ONLY AT RUN TIME.
+#
+# The disk is the artifact; a start that could write there would be a start whose second boot
+# differs from its first. The entry point joins the parts onto /data and boots an overlay, so
+# nothing under /assets is ever opened for writing. The image itself is read-only anyway - this
+# states the intent where a reader will look for it.
+RUN set -eux; \
+    test -f /assets/recovery.dmg; \
+    test -f /assets/opencore/macos.rom; \
+    test -f /assets/disk/parts.json; \
+    mkdir -p /data /repo; \
+    chmod 0755 /assets /assets/disk
+
+# The runtime needs the drivers and the asset helpers, and it reads them from /repo the way
+# every stage in this repository does. Only the Python is copied - not the workflows, not the
+# other platforms - so the image's /repo is the half the boot actually imports.
+COPY lib /repo/lib
+COPY macos/15 /repo/macos/15
+
+ENV REPO=/repo \
+    ASSETS=/assets \
+    DATA=/data \
+    VM_MEM=8192 \
+    VM_CPUS=4 \
+    VM_SSH_PORT=2222 \
+    VM_RDP_PORT=3389 \
+    VM_NOVNC_PORT=6080
+
+# THE VOLUME IS THE GUEST'S DISK. Named, it survives `docker rm`; anonymous, it does not.
+# Declared so a run without -v keeps its writes somewhere a reader can find, and so `docker
+# image inspect` says the image expects one.
+VOLUME ["/data"]
+
+EXPOSE 6080 5900 2222 3389
+
+# A START WITH NO KVM MUST FAIL, NOT DEGRADE. The entry point checks /dev/kvm before anything
+# else and lib/vm.py passes -enable-kvm unconditionally; there is no TCG path to fall back to.
+# This check is here so a misconfigured `docker run` fails at the top of the log rather than
+# inside qemu.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD pgrep -f qemu-system-x86_64 >/dev/null || exit 1
+
+# qemu IS PID 1. The entry point execs it, so a signal sent to the container reaches the guest
+# and there is no supervisor process to keep alive. See macos/15/appliance_run.py.
+ENTRYPOINT ["python3", "/repo/macos/15/appliance_run.py"]
