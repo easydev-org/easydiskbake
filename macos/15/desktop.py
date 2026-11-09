@@ -298,6 +298,19 @@ def main(argv: list[str]) -> int:
             )
             log(f"{len(ran)} step(s) answered" if ok
                 else f"the walkthrough failed after {len(ran)} step(s)")
+            # A WALKTHROUGH THAT DID NOT FINISH IS NOT A STAGE THAT CONTINUES.
+            #
+            # This read `ok, ran = ...` and then only logged it, so a walk that stopped on an
+            # unanswered pane still went on to wait_for_desktop(). That wait is a WALLPAPER
+            # test: it says "something that looks like a desktop is on screen", and a wizard
+            # left one pane from the end is a machine whose desktop is exactly what it will
+            # never show - or worse, a guest that happens to be drawing one anyway. Either way
+            # the stage could succeed and publish a disk that never finished setup.
+            #
+            # The walkthrough knows whether it finished; this is the line that has to believe it.
+            if not ok:
+                arrived = False
+                return 2
         else:
             log("=== the Setup Assistant: drive_read.py ===")
             try:
