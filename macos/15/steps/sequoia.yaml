@@ -55,7 +55,25 @@ ends_region_scale: 3
 #
 # `country` is the Setup Assistant's first pane ("Select Your Country or Region") and it is
 # what macos/15/drive_read.py waits for before its own loop.
-waits_for: [country]
+# ANY KNOWN PANE IS A VALID STARTING POINT. A desktop stage can resume from wherever an earlier
+# run stopped - a persistent volume makes that the normal case, not the exception - so waiting
+# for the wizard's FIRST page would spin forever on a screen that is already six panes in.
+waits_for:
+  - [country, region]
+  - [transfer, data]
+  - [spoken, languages]
+  - [accessibility, individual]
+  - [data, privacy]
+  - [create, mac, account]
+  - [sign, in, to, your, apple, account]
+  - [terms, conditions]
+  - [location, services]
+  - [time, zone]
+  - [analytics, improve]
+  - [screen, report]
+  - [look, appearance]
+  - [welcome, mac]
+  - [keyboard, select]
 boot_timeout: 1800
 boot_poll: 10
 stuck_after: 20

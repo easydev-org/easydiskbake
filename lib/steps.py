@@ -1074,21 +1074,41 @@ def walk_panes(driver: Driver, steps: Walk, values: dict[str, str], *,
     # `waits_for` is the words, and `boot_timeout` how long the disk may take to get there.
     gates = steps.document.get("waits_for")
     if gates:
-        words = gates if isinstance(gates, list) else [gates]
+        # `waits_for` IS A LIST OF ALTERNATIVES, NOT ONE PHRASE.
+        #
+        # A desktop stage does not always start at the wizard's first page. It can resume from
+        # any pane - an earlier run may have answered the first six and stopped on Terms, which
+        # is exactly what a persistent volume produces. Requiring the FIRST pane then waits
+        # forever on a screen that is already several panes in:
+        #
+        #     [steps] waiting up to 1800s for country
+        #     [steps] look boot: 206 words :: Terms | and | Conditions | ...
+        #     ... every twelve seconds until the timeout
+        #
+        # So each entry may be a phrase or a list of phrases, and ANY of them means the wizard
+        # is up. The walk then starts matching panes from wherever it actually is.
+        alternatives: list[list[str]] = []
+        for entry in (gates if isinstance(gates, list) else [gates]):
+            alternatives.append(entry if isinstance(entry, list) else [str(entry)])
+
         boot_timeout = float(steps.document.get("boot_timeout", 1800))
         poll = float(steps.document.get("boot_poll", 10))
-        log(f"waiting up to {boot_timeout:.0f}s for {' '.join(words)}")
+        shown = " or ".join(" ".join(a) for a in alternatives)
+        log(f"waiting up to {boot_timeout:.0f}s for {shown}")
         deadline = time.time() + boot_timeout
         arrived = False
         while time.time() < deadline:
             driver.look("boot")
-            if all(driver.says(w) for w in words):
-                log(f"=== THE FIRST PANE IS UP: {' '.join(words)} ===")
-                arrived = True
+            for words in alternatives:
+                if all(driver.says(w) for w in words):
+                    log(f"=== A PANE IS UP: {' '.join(words)} ===")
+                    arrived = True
+                    break
+            if arrived:
                 break
             time.sleep(poll)
         if not arrived:
-            log("=== THE FIRST PANE NEVER APPEARED ===")
+            log("=== NO KNOWN PANE APPEARED ===")
             log(f"  last screen: {driver.text()[:200]}")
             return False, answered
     # A PANE THAT KEEPS MATCHING MUST NOT BE ANSWERED FOREVER. macOS 26's Update pane greys
