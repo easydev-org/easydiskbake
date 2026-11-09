@@ -98,7 +98,7 @@ steps:
   # 2. WELCOME. The footer here is the smallest the window ever is.
   # =======================================================================================
   - name: welcome
-    at: [1003, 573]
+    at: [1324, 835]
     settle: 15
 
   # =======================================================================================
@@ -106,11 +106,11 @@ steps:
   #    and every character this walk types is ASCII.
   # =======================================================================================
   - name: locale
-    at: [1003, 573]
+    at: [1324, 835]
     settle: 15
 
   - name: keyboard
-    at: [1003, 573]
+    at: [1324, 835]
     settle: 15
 
   # =======================================================================================
@@ -118,35 +118,35 @@ steps:
   #    NixOS' module writes root's password from the account's.
   # =======================================================================================
   - name: users - full name
-    at: [860, 300]
+    at: [1050, 330]
     type: "{{ user }}"
     settle: 2
   - name: users - login name
-    at: [860, 350]
+    at: [1050, 380]
     type: "{{ user }}"
     settle: 2
   - name: users - host name
-    at: [860, 400]
+    at: [1050, 430]
     type: nixos
     settle: 2
   - name: users - password
-    at: [860, 470]
+    at: [1050, 500]
     type: "{{ password }}"
     settle: 2
   - name: users - confirm password
-    at: [860, 520]
+    at: [1050, 550]
     type: "{{ password }}"
     settle: 3
 
   - name: users
-    at: [1003, 573]
+    at: [1324, 835]
     settle: 18
 
   # `admin` is shorter than the pane's eight-character minimum, and `allowWeakPasswords: true`
   # means Calamares asks rather than refuses. The confirmation is answered whether or not it
   # is read: the point is blank space on the pane underneath when no dialog is up.
   - name: accept the weak password, if it is asked
-    at: [1003, 573]
+    at: [1324, 835]
     settle: 6
     optional: true
 
@@ -158,12 +158,12 @@ steps:
   # confirmation - the same defence Manjaro's Office Suite and CachyOS' Bootloader needed,
   # where a highlight that looked like a selection was not one.
   - name: choose gnome
-    at: [860, 360]
+    at: [1000, 400]
     settle: 4
     optional: true
 
   - name: packagechooser
-    at: [1003, 573]
+    at: [1324, 835]
     settle: 15
 
   # =======================================================================================
@@ -174,7 +174,7 @@ steps:
   # the sequence between the package chooser and partitioning. It is informational: its
   # `qmlLabel` is `Unfree software` and it offers no choice, only its footer.
   - name: unfree notes
-    at: [1003, 573]
+    at: [1324, 835]
     settle: 12
 
   # =======================================================================================
@@ -182,7 +182,7 @@ steps:
   #    /boot - so `Erase disk` is the preselected layout and the click confirms it.
   # =======================================================================================
   - name: partition
-    at: [1003, 573]
+    at: [1324, 835]
     settle: 18
 
   # =======================================================================================
@@ -192,7 +192,7 @@ steps:
   #    step after it.
   # =======================================================================================
   - name: summary - install
-    at: [1003, 573]
+    at: [1324, 835]
     settle: 25
 
   # =======================================================================================
