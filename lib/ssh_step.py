@@ -385,8 +385,26 @@ def main(argv: list[str]) -> int:
             #
             # THE FIRST TWO GO OVER THE BRIDGE ADDRESS, which is what the walk's own `ssh:`
             # steps used and what every bake in this repository uses.
+            # THE PROOF COMMAND HAS TO BE SHELL-AGNOSTIC, BECAUSE ssh RUNS IT IN THE
+            # ACCOUNT'S OWN LOGIN SHELL.
+            #
+            # This used to be `uname -a; (cat /etc/os-release || true) | head -3`, which is
+            # POSIX and is not fish. On bsd-ghostbsd-mate the account's shell IS fish, and the
+            # run that proved ssh works still failed on the last command:
+            #
+            #     ssh: id -un; hostname -> 0
+            #       docker
+            #       docker-ghostbsd
+            #     ssh: uname -> 127
+            #       fish: command substitutions not allowed here
+            #
+            # - a subshell is not a fish construct. So the command is now plain words and one
+            # `sh -c`, which every shell here can pass to /bin/sh: bash, zsh, fish, and
+            # FreeBSD's own. The `2>/dev/null` lives inside that `sh`, so no shell along the
+            # way has to understand it.
             status, output = session.ssh(
-                args.ssh_port, "uname -a; (cat /etc/os-release || true) | head -3",
+                args.ssh_port,
+                "uname -a; sh -c 'cat /etc/os-release 2>/dev/null | head -3'",
                 user=walk_user)
             note(f"ssh: uname -> {status}")
             for line in (output or "").splitlines()[:6]:

@@ -38,22 +38,29 @@ vars:
   user:
     from: args.user
     default: docker
-  # THE ACCOUNT THIS DISK ACTUALLY HAS, AND IT IS NOT `docker`.
+  # THE ACCOUNT THIS DISK HAS IS `docker`, AND THAT USED TO BE FALSE.
   #
-  # Measured on run 42577663888's own recording, the lightdm greeter's title bar after the
-  # password was typed and refused:
+  # This file carried `ssh_user: DOCKERdocker` for a year, measured from run 42577663888, whose
+  # lightdm title bar read
   #
   #     DOCKERdocker-Standard-PC-Q35-ICH9-2009
-  #     Invalid password, please try again
   #
-  # That title bar IS this desktop's hostname, and the hostname is what install.yaml's
-  # `who are you - host name` step types. The field had already been seeded with the
-  # capitalised full name (`DOCKER`) by the time the walk typed into it, so the walk's
-  # `docker` was appended to it - the same mechanism that produced `dockerdocker` on
-  # openSUSE.
+  # That disk was real, and it was built by a broken install.yaml: Ubiquity seeds the login name
+  # from the full name (`DOCKER`), the walk then typed `docker` into the SAME field, and the two
+  # concatenated. The computer-name field had been corrupted the same way.
   #
-  # So the login name on these disks is `DOCKERdocker`, and ssh has to ask for that one.
-  ssh_user: DOCKERdocker
+  # THE INSTALL IS FIXED AND THE ACCOUNT WITH IT. install.yaml now types `Docker User`, which
+  # derives a clean `docker`, and it clears the computer-name field instead of appending to it.
+  # Rebuilt from that file, the disk's own terminal reads
+  #
+  #     docker@docker:~$
+  #
+  # and that is the whole contradiction with the number below: the override described a disk
+  # this repository no longer makes. Measured on run 42637751665's own failed-wait frame, the
+  # terminal is `docker@docker:~$`, sshd is `active`, and the stage still asked ssh for
+  # `DOCKERdocker` - so the only thing wrong with it was this line.
+  #
+  # Removed. The account is the one every other Linux image here has.
 
 steps:
 

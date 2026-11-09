@@ -162,6 +162,27 @@ steps:
     at: [700, 377]
     type: "{{ user }}"
     settle: 2
+
+  # THE LOGIN NAME IS DERIVED FROM THE NAME ABOVE, AND TYPING INTO IT APPENDS.
+  #
+  # MEASURED ON THE REAL ISO IN A LOCAL KVM POD (2026-11-09). This pane is the only one in
+  # this repository where a field is not empty when the walk reaches it: typing `docker` into
+  # `What is your name?` makes Calamares fill `What name do you want to use to log in?` with
+  # `docker` already. The old step then typed `docker` into it as well, and the frame read
+  #
+  #     What is your name?          docker
+  #     What name ... to log in?    dockerdocker          <- the old bug, in the field itself
+  #
+  # `dockerdocker` is a legal user name, so nothing failed at this pane; the install went on
+  # and the account it created was not the one the ssh stage logs in as. THE FIX IS TO CLEAR
+  # THE FIELD FIRST and then type, the same three presses the mint host-name fix uses.
+  - name: users - login name, select all
+    at: [700, 429]
+    key: ctrl+a
+    settle: 1
+  - name: users - login name, clear it
+    key: backspace
+    settle: 1
   - name: users - login name
     at: [700, 429]
     type: "{{ user }}"
@@ -174,19 +195,19 @@ steps:
     settle: 3
 
   - name: users - password
-    at: [700, 498]
+    at: [700, 494]
     type: "{{ password }}"
     settle: 2
   - name: users - repeat password
-    at: [900, 498]
+    at: [900, 494]
     type: "{{ password }}"
     settle: 2
   - name: users - administrator password
-    at: [700, 610]
+    at: [700, 603]
     type: "{{ password }}"
     settle: 2
   - name: users - administrator repeat password
-    at: [900, 610]
+    at: [900, 603]
     type: "{{ password }}"
     settle: 3
 
