@@ -83,6 +83,28 @@ def main(argv: list[str]) -> int:
 
     paths = vm.Paths(a.work)
     paths.clear()          # a stale socket answers nothing; see the module docstring
+
+    # THE NETWORK IS PART OF THE MACHINE, AND LEAVING IT OUT COSTS A WALKTHROUGH.
+    #
+    # qemu's tap needs a bridge, a DHCP server and MASQUERADE, and lib/net.py builds all three.
+    # Without them the guest boots with no address, and macOS answers that by putting up
+    #
+    #     How Do You Connect?
+    #
+    # before the Setup Assistant will continue - which is exactly where the first local run of
+    # this script stopped, four panes in, with lib/steps.py reporting STUCK on a pane no
+    # walkthrough handler knows because the machine never had a network to reach it with.
+    #
+    # guest.start() calls net.up() for the same reason; this entry point is not a Guest, so it
+    # has to say so itself.
+    import net
+
+    log("=== network: tap on a bridge, dnsmasq, MASQUERADE ===")
+    net.up(ssh_port=shape.ssh_port, rdp_port=shape.rdp_port)
+    shape.tap_ifname = shape.tap_ifname or net.TAP
+    shape.tap_mac = shape.tap_mac or net.GUEST_MAC
+    shape.net_mtu = shape.net_mtu or net.MTU
+
     args = vm.build_args(a.work, extra, shape)
 
     console = os.path.join(a.work, "console.log")
