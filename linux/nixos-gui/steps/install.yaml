@@ -142,34 +142,34 @@ steps:
   # an eight-character password into the name fields and never got past this pane.
   # =======================================================================================
   - name: users - what is your name
-    at: [837, 377]
+    at: [700, 377]
     type: "{{ user }}"
     settle: 2
   - name: users - login name
-    at: [837, 429]
+    at: [700, 429]
     type: "{{ user }}"
     settle: 2
 
   # THE TICK COMES OFF FIRST, BEFORE EITHER PASSWORD IS TYPED, so the pane's own validation
   # never has a reason to mark the fields red.
   - name: users - allow a short password
-    at: [630, 534]
+    at: [630, 532]
     settle: 3
 
   - name: users - password
-    at: [837, 494]
+    at: [700, 498]
     type: "{{ password }}"
     settle: 2
   - name: users - repeat password
-    at: [837, 525]
+    at: [900, 498]
     type: "{{ password }}"
     settle: 2
   - name: users - administrator password
-    at: [837, 602]
+    at: [700, 610]
     type: "{{ password }}"
     settle: 2
   - name: users - administrator repeat password
-    at: [837, 634]
+    at: [900, 610]
     type: "{{ password }}"
     settle: 3
 
