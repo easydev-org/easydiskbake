@@ -101,9 +101,19 @@ steps:
     key: ctrl+alt+t
     settle: 10
 
+  # `systemctl enable` IS NOT `systemctl start`, AND ONLY THE SECOND ONE OPENS PORT 22.
+  #
+  # Runs 42573078551 and 42577844686 (opensuse) both show a Konsole whose install had
+  # clearly worked - `Created symlink /etc/systemd/system/multi-user.target.wants/
+  # sshd.service` - and NOTHING after it. `enable --now` was supposed to start the unit as
+  # well as enable it, and the recording never showed whether it did; `tail -5` cut the
+  # answer off, so the stage waited ten minutes against a port that may never have opened.
+  #
+  # So the three actions are separate and each one reports: enable (boot), restart (now),
+  # is-active (the answer). `tail -12` so the status line survives in the recording.
   - name: install sshd
     run: |
-      echo {{ password }} | sudo -S sh -c "dnf install -y openssh-server && systemctl enable --now sshd" 2>&1 | tail -5
+      echo {{ password }} | sudo -S sh -c "dnf install -y openssh-server && systemctl enable sshd; systemctl restart sshd; systemctl is-active sshd" 2>&1 | tail -12
     terminal_wait: 0
     settle: 90
 
