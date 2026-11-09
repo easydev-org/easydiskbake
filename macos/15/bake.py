@@ -352,6 +352,11 @@ class Baker:
             self.args.steps, self.guest_paths().drive,
             work=self.work, user=self.args.user, password=self.args.password,
             disk_path=self.disk, release=self.args.release,
+            # THE FRAME DIRECTORY THIS STAGE'S OWN SNAPSHOTTER WRITES, so a `python:` step that
+            # asks install.py "has the wizard appeared" is asking about these frames and not a
+            # directory it guessed. bake.py sets shots = frames/shots below, and
+            # installer_panes() reads exactly that.
+            frames=self.frames,
         )
         log(f"{len(ran)} step(s) answered" if ok
             else f"the walkthrough failed after {len(ran)} step(s)")

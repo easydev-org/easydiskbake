@@ -1333,7 +1333,8 @@ def run_file(walkthrough: str, qmp_path: str, *, work: str = "",
              user: str = "docker", password: str = "admin",
              disk_path: str | None = None, ssh_port: int = 2222,
              start_at: str = "", stop_before: str = "",
-             release: str = "15", log_prefix: str = "") -> tuple[bool, list[str]]:
+             release: str = "15", frames: str = "",
+             log_prefix: str = "") -> tuple[bool, list[str]]:
     """Walk a YAML file against a running guest, from Python rather than from the CLI.
 
     THIS IS HOW A STAGE JOINS ITS YAML WITHOUT GIVING UP WHAT IT ALREADY DOES. macos/15/bake.py
@@ -1369,6 +1370,12 @@ def run_file(walkthrough: str, qmp_path: str, *, work: str = "",
     # menu on 26 and a text link on 15 - and a `python:` extension reads it from the driver
     # rather than from a global.
     setattr(driver, "release", str(release))
+    # THE STAGE'S FRAME DIRECTORY, for a python: step that asks the stage's own snapshotter a
+    # question. NEW: None when the caller did not say, and such a step falls back to
+    # <work>/frames - which is right for a standalone run and wrong for a CI stage, because
+    # bake.py keeps its frames somewhere else and install.py reads them to decide whether the
+    # wizard has appeared. See macos/15/steps/setup_panes.py._recovery().
+    setattr(driver, "frames_dir", frames or "")
     # THE WALKTHROUGH'S OWN VALUES, FOR THE SAME REASON. A `python:` step that types into a
     # form needs the account the walk was given, and passing it through the step's own keys
     # would mean inventing a vocabulary for every field. The resolved vars are attached

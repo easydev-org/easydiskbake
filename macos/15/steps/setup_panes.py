@@ -85,11 +85,23 @@ def _recovery(driver):
     `disk_path` MATTERS TOO. install.py's installer_panes() watches the target qcow2 grow,
     because that is the only thing that can tell "copying 12 GB" from "hung" while the screen is
     black.
+
+    `frames` IS THE STAGE'S OWN FRAME DIRECTORY, NOT ONE DERIVED FROM THE WORK DIRECTORY.
+    installer_panes() asks `assistant.reached_assistant(frames/shots)` whether the wizard has
+    appeared, and that is how the copy ends early instead of waiting out the disk. When the path
+    is wrong the check is silently false and the run takes the other branch:
+
+        === THE SETUP ASSISTANT IS ON SCREEN ===      <- the frame directory was right
+        === THE DISK HAS STOPPED GROWING ===          <- it was not
+
+    Those are the two ways this stage can end, and only the first publishes a disk sitting on
+    the wizard. So the directory comes from the driver when the stage set one, and bake.py owns
+    it (`out/frames`).
     """
     import install
 
-    frames = os.path.join(driver.work, "frames")
-    os.makedirs(frames, exist_ok=True)
+    frames = getattr(driver, "frames_dir", "") or os.path.join(driver.work, "frames")
+    os.makedirs(os.path.join(frames, "shots"), exist_ok=True)
     qmp_path = getattr(driver, "qmp_path", "")
     if not qmp_path:
         raise RuntimeError(
