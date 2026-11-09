@@ -1527,8 +1527,19 @@ def run_file(walkthrough: str, qmp_path: str, *, work: str = "",
 
     needs_screen = bool(steps.panes) or any(
         s["at"] or s["double"] or s["expect"] or s["expect_any"] or s["until"]
-        or s["until_any"] or s["disk_settle"] or s["until_dark"] or s["wait_for_change"] or s["sweep"] or s["when"]
-        or s["unless"]
+        or s["until_any"] or s["disk_settle"] or s["until_dark"] or s["wait_for_change"]
+        or s["sweep"] or s["when"] or s["unless"]
+        # `run:` AND `key` NEED A SCREEN TOO, AND FORGETTING THEM WAS A CRASH.
+        #
+        # `run:` presses ctrl+alt+t to open the guest's own terminal and types into it; `key`
+        # sends a keystroke. Both need the QMP connection that a Driver has and a
+        # HeadlessDriver does not. The ssh stage's walk is nothing but `run:`, `require_ssh:`
+        # and `ssh:`, so it was classified headless and died on the first step with
+        #
+        #     AttributeError: 'HeadlessDriver' object has no attribute 'key'
+        #
+        # - measured on run 42555862172, which is the run that found this.
+        or s["run"] or s["key"]
         for s in steps.steps)
 
     if needs_screen:
@@ -1613,7 +1624,8 @@ def main(argv: list[str]) -> int:
     # half of a walkthrough untestable anywhere but a running guest. See HeadlessDriver.
     needs_screen = bool(steps.panes) or any(
         s["at"] or s["double"] or s["expect"] or s["expect_any"] or s["until"]
-        or s["until_any"] or s["disk_settle"] or s["when"] or s["unless"] for s in steps.steps)
+        or s["until_any"] or s["disk_settle"] or s["when"] or s["unless"]
+        or s["run"] or s["key"] for s in steps.steps)
     if needs_screen and not args.qmp:
         log("FAILED: this walkthrough has GUI steps; --qmp is required")
         return 1
