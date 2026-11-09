@@ -63,10 +63,20 @@ steps:
   # is luck rather than a guarantee: the same image on a slower runner can land on lightdm.
   #
   # `optional` for exactly that reason: on the desktop it is a click on the wallpaper and a
-  # typed password that goes nowhere, and on a greeter it is the login. MATE's lightdm puts
-  # the password box under the user tile, which on 1920x1080 is (960,640).
+  # typed password that goes nowhere, and on a greeter it is the login.
+  #
+  # THE BOX IS NOT IN THE MIDDLE - IT IS AT THE LEFT, AND (960,640) WAS THE WALLPAPER.
+  #
+  # Measured on run 42573082305's own recording, the frame at t=20:
+  #
+  #     user tile      `docker`, rounded panel at x=88..432
+  #     password box   white field   x=101..418  y=554..583   centre (259, 568)
+  #
+  # LightDM on MATE anchors this greeter top-left, not centred, so the press at (960,640)
+  # landed on a mountain. The typed password went nowhere, the greeter timed out, and the
+  # screen was black for the rest of the run.
   - name: greeter - the password box
-    at: [960, 640]
+    at: [259, 568]
     settle: 2
     optional: true
 
@@ -77,12 +87,37 @@ steps:
 
   - name: greeter - submit
     key: ret
-    settle: 12
+    settle: 20
     optional: true
 
-  - name: open the terminal
-    key: ctrl+alt+t
-    settle: 10
+  # MATE HAS NO ctrl+alt+t BY DEFAULT, AND THIS IS THE PROOF.
+  #
+  # t=120 of the same recording is a MATE desktop with `docker's Home` on it - the login had
+  # worked all along - and t=210 is BLACK: the screensaver had taken the screen while the
+  # walk pressed a shortcut MATE does not bind. The terminal never opened.
+  #
+  # So the screen is woken first, and then the terminal is opened the way MATE actually does
+  # it: the `Applications` menu at the top left, then `System Tools` -> `Terminal`. Both
+  # presses are measured from that same frame (the menu bar runs along y=12).
+  - name: wake the screen
+    key: esc
+    settle: 4
+
+  - name: wake the screen again
+    key: esc
+    settle: 3
+
+  - name: open the applications menu
+    at: [72, 12]
+    settle: 5
+
+  - name: system tools
+    at: [120, 60]
+    settle: 4
+
+  - name: terminal
+    at: [160, 120]
+    settle: 12
 
   - name: install sshd
     run: |

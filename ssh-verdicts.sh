@@ -1,36 +1,30 @@
 #!/usr/bin/env bash
-# Print the ssh stage's verdict for every -gui distribution, from its check run.
+# Print the ssh stage's verdict for every -gui distribution, for ONE commit.
 #
-#     ./ssh-verdicts.sh            # the latest run of each workflow
-#     ./ssh-verdicts.sh 42573025571 ...
+#     ./ssh-verdicts.sh 4776f66b      # the check runs for that commit
+#     ./ssh-verdicts.sh               # the newest commit that has ssh check runs
 #
-# WHY A SCRIPT. The ssh stage is thirteen workflows whose names follow one pattern, and the
-# question "which of them pass" is asked after every round of fixes. Reading it out of
-# `gh run list` by hand means thirteen commands and thirteen chances to read the wrong run.
+# WHY BY COMMIT AND NOT BY WORKFLOW. Each workflow is dispatched several times while a fix is
+# being tested, and `gh run list --workflow=X --limit 1` returns the NEWEST run - which is
+# often a cancelled duplicate, so the table fills with `cancelled` and says nothing about the
+# code. A commit's check runs are the set that was actually asked to run, one per job.
 set -uo pipefail
-
-WORKFLOWS="ubuntu-gui kubuntu-gui zorin-gui mint-gui mx-gui cachyos-gui manjaro-gui \
-endeavour-gui fedora-gui opensuse-gui popos-gui nixos-gui ghostbsd-mate"
 
 export https_proxy="${https_proxy:-http://mihomo.develop.svc.cluster.local:7890}"
 export http_proxy="${http_proxy:-http://mihomo.develop.svc.cluster.local:7890}"
+REPO="${REPO:-easydev-org/easydiskbake}"
 
-if [ "$#" -gt 0 ]; then
-    RUNS="$*"
-else
-    RUNS=""
-    for wf in $WORKFLOWS; do
-        rid=$(gh run list --workflow="$wf.yml" --limit 1 --json databaseId -q '.[0].databaseId' 2>/dev/null)
-        [ -n "$rid" ] && RUNS="$RUNS $rid"
-    done
+sha="${1:-}"
+if [ -z "$sha" ]; then
+    sha=$(gh api "repos/$REPO/commits?per_page=1" --jq '.[0].sha' | cut -c1-8)
 fi
 
-printf '%-16s %-12s %-9s %s\n' WORKFLOW RUN CONCLUSION VERDICT
-for rid in $RUNS; do
-    wf=$(gh run view "$rid" --json workflowName -q .workflowName 2>/dev/null)
-    state=$(gh run view "$rid" --json status,conclusion -q '"\(.status)/\(.conclusion // "-")"' 2>/dev/null)
-    verdict=$(gh run view "$rid" --log 2>/dev/null \
-        | grep -o 'VERDICT \(PASS\|FAIL\).*' | tail -1)
-    [ -z "$verdict" ] && verdict="-"
-    printf '%-16s %-12s %-9s %s\n' "$wf" "$rid" "$state" "$verdict"
-done
+printf 'commit %s\n' "$sha"
+printf '%-20s %-11s %-9s %s\n' JOB STATE RESULT VERDICT
+gh api "repos/$REPO/commits/$sha/check-runs?per_page=100" \
+    --jq '.check_runs[] | select(.name|endswith("-ssh")) | [.name, .status, (.conclusion // "-"), ((.output.text // "") | split("\n") | map(select(test("VERDICT|ssh: [0-9.]+:2222|PREROUTING jumps"))) | last // "-")] | @tsv' \
+    | sort | while IFS=$'\t' read -r name state result verdict; do
+        # The log line carries a stream prefix; keep only the interesting tail.
+        verdict=$(printf '%s' "$verdict" | sed 's/.*\] *//')
+        printf '%-20s %-11s %-9s %s\n' "$name" "$state" "$result" "$verdict"
+    done

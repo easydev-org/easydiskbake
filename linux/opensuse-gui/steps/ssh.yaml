@@ -38,6 +38,22 @@ vars:
   user:
     from: args.user
     default: docker
+  # THE ACCOUNT THIS DISK ACTUALLY HAS, WHICH IS NOT THE ONE THE WALK WAS GIVEN.
+  #
+  # YaST derives the login name from the full name as it is typed - and this walk types into
+  # BOTH fields (install.yaml, `local user - full name` and `local user - user name`). By the
+  # time the second press lands, YaST has already filled User Name with `docker`, so the walk's
+  # `docker` is appended to it. Measured on run 42573078551's own recording, the terminal's
+  # prompt after a successful install:
+  #
+  #     dockerdocker@localhost:~>
+  #
+  # and the install itself worked - `openssh is already installed`, `Created symlink
+  # /etc/systemd/system/multi-user.target.wants/sshd.service` - so sshd was up and `ssh docker@`
+  # was answered `Permission denied` for an account that does not exist.
+  #
+  # It is openSUSE's YaST behaviour and nobody else's, so it lives here.
+  ssh_user: dockerdocker
 
 steps:
 
