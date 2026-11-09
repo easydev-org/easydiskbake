@@ -284,6 +284,19 @@ jobs:
           interval: "20"
           command: |
             set -euo pipefail
+            # WHICH CPU IS THIS RUNNER, AND DOES IT HAVE x86-64-v3? ______________________
+            #
+            # CachyOS compiles its packages for x86-64-v3, whose floor is AVX2. A guest whose
+            # cpu model lacks AVX2 gets `KERNEL PANIC! Attempted to kill init!
+            # exitcode=0x00000004` - reproduced exactly in a local pod by starting the SAME
+            # disk with `-cpu qemu64`, while `-cpu host` on the same disk reaches the greeter
+            # in 10 seconds. The number is printed here because the install, launch and ssh
+            # jobs are three separate runners and only one of them has ever panicked.
+            echo "=== runner cpu ==="
+            lscpu | sed -n '1,14p'
+            echo "=== x86-64-v3 flags (need avx2) ==="
+            grep -o -m1 -w -E 'avx2|avx512f|bmi2|fma' /proc/cpuinfo | sort -u | tr '\n' ' '
+            echo
             python3 lib/ssh_step.py \
               --tag "${{ inputs.ssh_from || needs.bake.outputs.tag || 'linux-cachyos-gui' }}" \
               --kind cachyos-gui \
