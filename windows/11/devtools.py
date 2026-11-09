@@ -69,6 +69,9 @@ import vm  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
+# THE WALKTHROUGH THIS STAGE RUNS. Beside the stage, for the same reason as ssh.py's.
+WALK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "steps", "dev.yaml")
+
 SSH_PORT = 2222
 SSH_USER = "docker"
 SSH_PASSWORD = os.environ.get("WINDOWS_ADMIN_PASSWORD", "admin")
@@ -102,21 +105,13 @@ def log(msg: str) -> None:
 #     === Microsoft.DotNet.SDK.10 already installed ===
 #     candidate: C:\Program Files\dotnet\dotnet.exe exists=False
 #
-# So "is it installed" is now answered by windows/11/probe.ps1, which looks for the
-# executable the next stage uses. winget is still what INSTALLS; it is no longer what
-# decides whether to.
-PACKAGES = [
-    ("Microsoft.VisualStudio.2022.BuildTools", "17.14.44",
-     "--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools "
-     "--includeRecommended",
-     "MSVC, the Windows SDK and CMake, from a version whose manifest knows this OS",
-     "msvc"),
-    ("Microsoft.WindowsSDK.10.0.26100", None, None, "the SDK on its own", "winsdk"),
-    ("Microsoft.DotNet.SDK.10", None, None, "the .NET SDK, which VCTools does not include",
-     "dotnet"),
-    ("Microsoft.PowerShell", None, None,
-     "PowerShell 7; last because its MSI can drop the ssh session", "pwsh"),
-]
+# THE PACKAGE LIST AND ITS PROBES LIVED HERE and are windows/11/steps/dev.yaml now, beside the
+# steps that run them. What is left of the reasoning is the part a reader needs while reading
+# this file: winget INSTALLS, and it is not what decides whether to - run 41778185290 skipped
+# the .NET SDK because `winget list` matched a different package whose id shared a prefix, and
+# nothing was on disk.
+#
+# windows/11/probe.ps1 is still here for the steps that ask a package about itself.
 
 
 def ssh_base() -> list[str]:
@@ -176,62 +171,6 @@ def probe(name: str) -> tuple[bool, str]:
     return (result.returncode == 0, detail)
 
 
-def installed_packages() -> dict[str, str]:
-    """Which packages are present, by asking each one's own probe.
-
-    WHY WINGET IS NOT ASKED. It answered for run 41778185290 and was wrong in the one way
-    that matters: `Microsoft.DotNet.SDK.10` matched a two-segment prefix in a list that
-    contained some other Microsoft.DotNet package, so the SDK was skipped and the stage
-    ended with `DOTNET_MISSING`. A second opinion from the same source is the same answer;
-    this asks the disk.
-    """
-    found: dict[str, str] = {}
-    for pid, _v, _o, _w, probe_name in PACKAGES:
-        present, detail = probe(probe_name)
-        if present:
-            found[pid] = detail
-    return found
-
-
-def install_package(pid: str, version: str | None, override: str | None) -> int:
-    """Install one package.
-
-    A package with an --override cannot also take --accept-package-agreements: override
-    replaces winget's own switch set. And the override string cannot survive being passed
-    through ssh -> cmd -> winget, where the quotes are eaten - so the whole command is
-    written to a .bat, copied up, and run by path. Same reasoning as the msvc check.
-    """
-    base = ["winget", "install", "--id", pid, "--exact", "--source", "winget"]
-    if version:
-        base += ["--version", version]
-
-    if override:
-        script = ("@echo off\r\n"
-                  + " ".join(base)
-                  + " --accept-source-agreements --disable-interactivity"
-                  + f' --override "{override}"'
-                  + "\r\n")
-        local = os.path.join(HERE, f"install-{pid.replace('.', '-')}.bat")
-        with open(local, "w", newline="") as fh:
-            fh.write(script)
-        remote = f"C:/Users/{SSH_USER}/install-{pid.replace('.', '-')}.bat"
-        try:
-            scp_to(local, remote)
-        finally:
-            os.unlink(local)
-        command = 'cmd /c "' + remote.replace("/", "\\") + '"'
-    else:
-        command = " ".join(base + ["--accept-source-agreements",
-                                   "--accept-package-agreements",
-                                   "--disable-interactivity"])
-
-    result = ssh_run(command, timeout=INSTALL_TIMEOUT)
-    for line in (result.stdout or "").splitlines()[-6:]:
-        if line.strip():
-            log(f"    {line[:150]}")
-    return result.returncode
-
-
 def wait_for_ssh(seconds: int, why: str = "") -> bool:
     import socket
 
@@ -247,94 +186,6 @@ def wait_for_ssh(seconds: int, why: str = "") -> bool:
         time.sleep(5)
     log(f"sshd stopped answering{': ' + why if why else ''}")
     return False
-
-
-def verify() -> bool:
-    """Prove the toolchain works: a compiled program, a dotnet version, pwsh.
-
-    Not the winget exit codes. An installer's exit code says a program ran.
-    """
-    failures = []
-
-    # THE MACHINE IS ASKED, NOT WINGET. See installed_packages() for the run that made
-    # this necessary: winget listed an SDK that was not on disk.
-    log("asking the machine what is installed")
-    present = installed_packages()
-    for pid, _v, _o, _w, probe_name in PACKAGES:
-        detail = present.get(pid, "")
-        log(f"  {pid:45} {detail if detail else 'MISSING'}")
-        if pid not in present:
-            failures.append(pid)
-
-    log("pwsh")
-    result = ssh_run("pwsh -v", timeout=300)
-    text = (result.stdout or "") + (result.stderr or "")
-    # pwsh -v prints "PowerShell 7.6.9", not a bare number, and ssh's host-key warning
-    # arrives on stderr AFTER the real answer - so the whole output is searched rather
-    # than the last line.
-    if not re.search(r"PowerShell [0-9]+[.][0-9]+", text):
-        failures.append("pwsh")
-        log("  no version in the output")
-    else:
-        log(f"  {[l for l in text.splitlines() if 'PowerShell ' in l][0].strip()}")
-
-    log("dotnet")
-    # A VERSION STRING WAS NOT ENOUGH, AND IN RUN 41775507806 IT WAS EMPTY.
-    #
-    # The check was
-    #
-    #     ssh> "C:\Program Files\dotnet\dotnet.exe" --version
-    #       no version in the output
-    #
-    # with winget listing Microsoft.DotNet.SDK.10 as installed. `dotnet --version` writes its
-    # error to stderr and exits non-zero when no SDK is beside the muxer, and merging the two
-    # streams over ssh is how that became "nothing came back". An empty answer cannot be
-    # acted on, so this now runs a script that prints the path, the sdk directory, both exit
-    # codes, and then builds and runs a console app - a dev disk exists to compile things,
-    # and an SDK that lists a version but cannot restore is not a toolchain.
-    script = os.path.join(HERE, "dotnet-check.ps1")
-    if not os.path.isfile(script):
-        raise SystemExit(f"{script} is missing; the dotnet check cannot run without it")
-    remote = f"C:/Users/{SSH_USER}/dotnet-check.ps1"
-    scp_to(script, remote)
-    result = ssh_run(
-        f"powershell -NoProfile -ExecutionPolicy Bypass -File {remote}", timeout=1800)
-    out = (result.stdout or "") + (result.stderr or "")
-    for line in out.splitlines():
-        text = line.strip()
-        if text and not text.startswith("Warning: Permanently added"):
-            log(f"    {text[:150]}")
-    if "DOTNET_OK" in out:
-        log("  built and ran a console application")
-    else:
-        failures.append("dotnet")
-
-    log("compiling and running a C program")
-    script = os.path.join(HERE, "msvc-check.ps1")
-    if not os.path.isfile(script):
-        raise SystemExit(f"{script} is missing; the compiler check cannot run without it")
-    remote = f"C:/Users/{SSH_USER}/msvc-check.ps1"
-    scp_to(script, remote)
-    result = ssh_run(
-        f"powershell -NoProfile -ExecutionPolicy Bypass -File {remote}", timeout=900)
-    out = (result.stdout or "") + (result.stderr or "")
-    # EVERY LINE, not the last six: the script reports where vswhere looked, what it found,
-    # whether vcvars exists and the cl exit code, and truncating that left only a verdict
-    # with no way to tell which part failed.
-    for line in out.splitlines():
-        text = line.strip()
-        if text and not text.startswith("Warning: Permanently added"):
-            log(f"    {text[:150]}")
-    if "COMPILE_OK" in out:
-        log("  compiled and ran: hello-from-msvc")
-    else:
-        failures.append("compile+run")
-
-    if failures:
-        log(f"FAILED: {', '.join(failures)}")
-        return False
-    log("VERIFIED: SDK, MSVC and .NET SDK present and working")
-    return True
 
 
 def main(argv: list[str]) -> int:
@@ -432,24 +283,25 @@ def main(argv: list[str]) -> int:
         if not wait_for_ssh(args.boot_timeout, "the disk may not be the one ssh.py made"):
             return 1
 
-        present = installed_packages()
-        for pid, version, override, why, probe_name in PACKAGES:
-            if pid in present:
-                log(f"=== {pid} already installed ({present[pid]}) ===")
-                continue
-            log(f"=== {pid} ===")
-            log(f"  {why}")
-            code = install_package(pid, version, override)
-            if code != 0:
-                # NOT FATAL BY ITSELF. winget answers non-zero for a package that
-                # installed but wants a restart, and the verification below asks the
-                # machine directly - which is the claim that matters.
-                log(f"  winget returned {code}; the machine is asked below")
-            # Some MSIs restart a service or the guest. PowerShell 7 did.
-            if not wait_for_ssh(300, pid):
-                log(f"  continuing, but sshd is not answering after {pid}")
-
-        if not verify():
+        # THE TOOLCHAIN IS A FILE NOW: windows/11/steps/dev.yaml.
+        #
+        # What stood here - skip the packages that are already present, install the rest in
+        # order, re-check sshd after each because an MSI can restart it, then verify - was
+        # four measurements and no decision. The measurements belong beside the numbers they
+        # produced; the decision ("does this stage pass?") stays here.
+        #
+        # THE WALK RUNS OVER SSH, so it takes the headless driver lib/steps.py builds when a
+        # file has no GUI steps. This stage never touches the screen: the disk arrived with a
+        # working sshd, and everything it does is a command.
+        log(f"=== the walkthrough: {os.path.relpath(WALK, REPO)} ===")
+        import steps as stepslib
+        ok_walk, ran = stepslib.run_file(
+            WALK, qmp_path="", work=work, ssh_port=SSH_PORT,
+            user=SSH_USER, password=SSH_PASSWORD, release="11",
+        )
+        log(f"{len(ran)} step(s) answered" if ok_walk
+            else f"the walkthrough failed after {len(ran)} step(s)")
+        if not ok_walk:
             return 1
 
         # CLEANING IS ITS OWN WORKFLOW STEP, so this stage can be asked to skip it.

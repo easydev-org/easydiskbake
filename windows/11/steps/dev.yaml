@@ -1,0 +1,200 @@
+# Windows 11 stage three: a developer toolchain on THIS disk, and a compiler that runs.
+#
+#     python3 lib/steps.py windows/11/steps/dev.yaml --qmp /work/drive.sock.qmp --ssh-port 2222
+#
+# WHAT THIS STAGE IS FOR, AND WHY IT IS FOUR PACKAGES AND THREE PROOFS
+#
+# The disk's job is to compile things. "The SDK installed" and "the toolchain works" are
+# different claims, and only the second one matters to whoever boots it - so the last three
+# steps here build and run a C program through vcvars64, build and run a console app through
+# the .NET SDK, and print the pwsh version. Each is a script copied in and run by path,
+# because a verification that has to be quoted through ssh -> cmd -> program is a verification
+# nobody can read when it fails.
+#
+# WHY A PINNED WINGET VERSION ON THE BUILD TOOLS
+#
+# Two other routes were tried and both failed, and the comments where these numbers came from
+# are in windows/11/devtools.py. In short: 17.9.7's manifest caps the supported OS at
+# 10.0.22000 and this guest is 10.0.26200, so every component is "not applicable" and the
+# installer exits 1 while printing a version range that reads like a configuration problem;
+# and aka.ms/vs/17/release/vs_BuildTools.exe extracted an empty directory. 17.14.44's manifest
+# has no such cap.
+#
+# WHY THE BUILD TOOLS INSTALL IS A SCRIPT AND THE OTHER THREE ARE NOT
+#
+# Its --override carries a workload list, spaces and quotes. A package with an --override also
+# cannot take --accept-package-agreements - override replaces winget's own switch set - and the
+# override string does not survive being passed through ssh and cmd, where the quotes are eaten.
+# So the whole command is written to a .bat on the host, copied up, and run by path: the same
+# answer as the C and .NET checks below, for the same reason.
+#
+# THE REST HAVE NO OVERRIDE AND ARE PLAIN `ssh:` STEPS, so a failure names the package.
+
+name: windows 11 - dev toolchain
+resolution: [1920, 1080]
+
+vars:
+  user:
+    from: args.user
+    default: docker
+  password:
+    from: args.password
+    default: admin
+
+ssh_user: docker
+ssh_port: 2222
+
+# 25 minutes each is not generous, it is measured: the BuildTools installer alone takes most of
+# it, and a timeout that fires during a successful install is indistinguishable from a failure.
+steps:
+  # THE ARRIVAL CHECK IS SSHD, NOT A DESKTOP. The stage before this one already proved the disk
+  # reaches a desktop and answers ssh; what this stage needs is the service, and a TCP banner is
+  # a better answer than a picture.
+  - name: wait for sshd
+    require_ssh: true
+    ssh_probe: echo ok
+    timeout: 900
+
+  # --- 1. THE TOOLCHAIN ----------------------------------------------------------------
+  #
+  # The Build Tools, pinned, with the VCTools workload. The Windows SDK and CMake come with the
+  # workload, which is why they are not installed separately here.
+  - name: install the build tools
+    script: |
+      @echo off
+      winget install --id Microsoft.VisualStudio.2022.BuildTools --exact --source winget --version 17.14.44 --accept-source-agreements --disable-interactivity --quiet --wait --norestart --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+    script_shell: cmd
+    script_name: install-buildtools.bat
+    timeout: 3600
+    optional: true
+
+  - name: install the windows sdk
+    ssh: winget install --id Microsoft.WindowsSDK.10.0.26100 --exact --source winget --accept-source-agreements --accept-package-agreements --disable-interactivity
+    timeout: 2400
+    optional: true
+
+  - name: install the dotnet sdk
+    ssh: winget install --id Microsoft.DotNet.SDK.10 --exact --source winget --accept-source-agreements --accept-package-agreements --disable-interactivity
+    timeout: 2400
+    optional: true
+
+  # POWERSHELL 7 IS LAST, AND THAT IS NOT ALPHABETICAL. Its MSI can drop the ssh session it is
+  # running over, so anything after it would be the thing that disappeared.
+  - name: install powershell 7
+    ssh: winget install --id Microsoft.PowerShell --exact --source winget --accept-source-agreements --accept-package-agreements --disable-interactivity
+    timeout: 2400
+    optional: true
+
+  # THE SERVICE SURVIVES AN INSTALLER THAT RESTARTED IT, OR THE NEXT STEP FAILS FOR A REASON
+  # THAT READS LIKE A BROKEN DISK.
+  - name: wait for sshd again
+    require_ssh: true
+    ssh_probe: echo ok
+    timeout: 600
+
+  # --- 2. THE PROOFS, WHICH ARE THE POINT ----------------------------------------------
+  #
+  # A winget exit code says an installer ran. These three ask the machine.
+  #
+  # THE C PROGRAM GOES THROUGH vcvars64, because cl.exe is not on PATH without it - which is
+  # exactly the difference between "the SDK is on disk" and "a compiler works".
+  - name: build and run a C program
+    script: |
+      $ErrorActionPreference = 'Continue'
+      $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+      Write-Output "vswhere: $vswhere"
+      if (-not (Test-Path $vswhere)) {
+        Write-Output "VSWHERE_MISSING"
+        exit 1
+      }
+      $root = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+      Write-Output "installation: $root"
+      if (-not $root) {
+        Write-Output "VCTOOLS_MISSING"
+        exit 1
+      }
+      $vcvars = Join-Path $root 'VC\Auxiliary\Build\vcvars64.bat'
+      Write-Output "vcvars: $vcvars"
+      if (-not (Test-Path $vcvars)) {
+        Write-Output "VCVARS_MISSING"
+        exit 1
+      }
+      $dir = Join-Path $env:TEMP 'msvc-check'
+      New-Item -ItemType Directory -Force -Path $dir | Out-Null
+      $src = Join-Path $dir 'hello.c'
+      Set-Content -Path $src -Value '#include <stdio.h>' -Encoding ASCII
+      Add-Content -Path $src -Value 'int main(void){ printf("hello-from-msvc\n"); return 0; }' -Encoding ASCII
+      $bat = Join-Path $dir 'build.bat'
+      Set-Content -Path $bat -Value "@call `"$vcvars`"" -Encoding ASCII
+      Add-Content -Path $bat -Value "cl /nologo `"$src`" /Fe:`"$dir\hello.exe`"" -Encoding ASCII
+      Add-Content -Path $bat -Value "exit /b %ERRORLEVEL%" -Encoding ASCII
+      & cmd /c $bat
+      $clcode = $LASTEXITCODE
+      Write-Output "cl exit: $clcode"
+      if ($clcode -ne 0) { Write-Output "COMPILE_FAILED"; exit 1 }
+      $exe = Join-Path $dir 'hello.exe'
+      if (-not (Test-Path $exe)) { Write-Output "NO_EXE"; exit 1 }
+      & $exe
+      if ($LASTEXITCODE -ne 0) { Write-Output "RUN_FAILED"; exit 1 }
+      Write-Output "COMPILE_OK"
+    script_shell: powershell
+    script_name: msvc-check.ps1
+    timeout: 900
+    optional: true
+
+  # A VERSION STRING WAS NOT ENOUGH, AND IN RUN 41775507806 IT WAS EMPTY. `dotnet --version`
+  # writes its error to stderr and exits non-zero when no SDK sits beside the muxer, and merging
+  # the two streams over ssh is how that became "nothing came back". So this builds and runs a
+  # console app - an SDK that lists a version but cannot restore is not a toolchain.
+  - name: build and run a dotnet app
+    script: |
+      $ErrorActionPreference = 'Continue'
+      $dotnet = Join-Path $env:ProgramFiles 'dotnet\dotnet.exe'
+      Write-Output "dotnet: $dotnet"
+      Write-Output "exists: $(Test-Path $dotnet)"
+      if (-not (Test-Path $dotnet)) {
+        $onPath = Get-Command dotnet -ErrorAction SilentlyContinue
+        Write-Output "on path: $($onPath.Source)"
+        if (-not $onPath) { Write-Output "DOTNET_MISSING"; exit 1 }
+        $dotnet = $onPath.Source
+      }
+      $sdks = & $dotnet --list-sdks 2>&1
+      Write-Output "sdks:"
+      $sdks | ForEach-Object { Write-Output "  $_" }
+      if (-not $sdks) { Write-Output "NO_SDK"; exit 1 }
+      $dir = Join-Path $env:TEMP 'dotnet-check'
+      if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
+      New-Item -ItemType Directory -Force -Path $dir | Out-Null
+      & $dotnet new console --output $dir --force 2>&1 | ForEach-Object { Write-Output "  $_" }
+      $newcode = $LASTEXITCODE
+      Write-Output "new exit: $newcode"
+      if ($newcode -ne 0) { Write-Output "TEMPLATE_FAILED"; exit 1 }
+      & $dotnet run --project $dir 2>&1 | ForEach-Object { Write-Output "  $_" }
+      $runcode = $LASTEXITCODE
+      Write-Output "run exit: $runcode"
+      if ($runcode -ne 0) { Write-Output "BUILD_FAILED"; exit 1 }
+      Write-Output "DOTNET_OK"
+    script_shell: powershell
+    script_name: dotnet-check.ps1
+    timeout: 1800
+    optional: true
+
+  # pwsh -v prints "PowerShell 7.6.9", not a bare number, so the shell checks the shape rather
+  # than the exit code alone.
+  - name: prove powershell 7
+    ssh: powershell -Command "pwsh -v"
+    timeout: 300
+    optional: true
+
+  # THE THREE PACKAGES THAT ARE NOT PROVEN BY A SCRIPT. Winget listing them is not the claim -
+  # the disk is - so this asks each one's own directory to exist, which is the cheapest check
+  # that cannot be answered by winget's index.
+  - name: prove the windows sdk
+    ssh: powershell -Command "if (Test-Path 'C:\Program Files (x86)\Windows Kits\10\Include') { Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\Include' -Name } else { 'SDK_MISSING' }"
+    timeout: 120
+    optional: true
+
+  - name: note what the toolchain reports
+    ssh: powershell -Command "'SDK=' + (Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\Include' -Name -ErrorAction SilentlyContinue | Select-Object -Last 1) + ' DOTNET=' + ((& 'C:\Program Files\dotnet\dotnet.exe' --version) 2>&1)"
+    timeout: 180
+    optional: true

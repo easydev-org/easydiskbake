@@ -81,7 +81,7 @@ def log(message: str) -> None:
 
 
 def ssh(port: int, command: str, timeout: int = 30, host: str | None = None,
-        user: str | None = None) -> tuple[int, str]:
+        user: str | None = None, password: str | None = None) -> tuple[int, str]:
     """Run one command in the guest. Returns (exit status, combined output).
 
     `host` IS HOW THE "ANOTHER CONTAINER" PROOF IS MADE. Everything in this repository
@@ -106,7 +106,7 @@ def ssh(port: int, command: str, timeout: int = 30, host: str | None = None,
     if not shutil.which("sshpass"):
         return 127, "sshpass is not installed"
     argv = [
-        "sshpass", "-p", SSH_PASSWORD,
+        "sshpass", "-p", password or SSH_PASSWORD,
         "ssh", "-p", str(port),
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
@@ -122,6 +122,45 @@ def ssh(port: int, command: str, timeout: int = 30, host: str | None = None,
         result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         return 124, f"the command did not finish in {timeout}s"
+    except OSError as exc:
+        return 126, str(exc)
+    return result.returncode, (result.stdout + result.stderr).strip()
+
+
+def scp(local: str, remote: str, *, port: int = 2222, timeout: int = 300,
+        user: str | None = None, host: str | None = None,
+        password: str | None = None) -> tuple[int, str]:
+    """Copy one local file to the guest. Returns (exit status, combined output).
+
+    WHY THIS IS IN session.py AND NOT IN A STAGE. windows/11/devtools.py had its own `scp_to`
+    because a 190-line PowerShell script cannot be typed at a keyboard and had to be a file.
+    That is not a Windows fact - it is a fact about any stage whose guest work is a script,
+    and a walkthrough that can only say `ssh:` cannot express it. So the client lives here,
+    beside ssh(), with the same host/password/port rules.
+
+    `user` and `host` are the same pair ssh() takes and for the same reasons: the account on
+    the disk may not be the default one, and the "another container" proof needs an address
+    that is not the bridge's.
+    """
+    if not shutil.which("sshpass"):
+        return 127, "sshpass is not installed"
+    argv = [
+        "sshpass", "-p", password or SSH_PASSWORD,
+        "scp",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "GlobalKnownHostsFile=/dev/null",
+        "-o", "LogLevel=ERROR",
+        "-o", "ConnectTimeout=10",
+        "-o", "PreferredAuthentications=password",
+        "-o", "PubkeyAuthentication=no",
+        "-P", str(port),
+        local, f"{user or SSH_USER}@{host or SSH_HOST}:{remote}",
+    ]
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return 124, f"the copy did not finish in {timeout}s"
     except OSError as exc:
         return 126, str(exc)
     return result.returncode, (result.stdout + result.stderr).strip()

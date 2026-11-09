@@ -98,6 +98,10 @@ WINGET_SETTLE_SECONDS = 120
 WINGET_PACKAGE = "Microsoft.OpenSSH.Preview"
 
 # The account the answer file creates.
+# THE WALKTHROUGH THIS STAGE RUNS. Beside the stage, because the numbers in it were measured
+# on this guest - see the file's own header for why each one is what it is.
+WALK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "steps", "ssh.yaml")
+
 GUEST_USER = "docker"
 GUEST_PASSWORD = os.environ.get("WINDOWS_ADMIN_PASSWORD", "admin")
 
@@ -221,6 +225,11 @@ def qcode_for(ch: str) -> str:
 def type_text(kb: Keyboard, text: str) -> None:
     """Type `text`, using shift for the characters that need it.
 
+    STILL NEEDED BY THE LOCK SCREEN, which is the one thing this stage still types at a
+    keyboard: the walkthrough below handles the desktop, but a guest that boots to a password
+    field has no ssh and no walkthrough to run. The other callers - the winget line and the
+    sshd statements - are steps in windows/11/steps/ssh.yaml now.
+
     THREE KINDS OF CHARACTER, and the first version handled one:
 
         lowercase, digits      one key, no modifier
@@ -229,38 +238,18 @@ def type_text(kb: Keyboard, text: str) -> None:
 
     The uppercase case was missing, and it is not cosmetic: a winget package id is
     "Microsoft.OpenSSH.Preview", so five of its characters were unmappable and the
-    command could not be typed at all. The failure would have been "no qcode for 'M'"
-    after the Run dialog was already open.
+    command could not be typed at all.
+
+    150 MILLISECONDS PER KEY, AND 60 WAS DROPPING THEM. PSReadLine redraws the line it is
+    editing on every keystroke and coalesces them below about that; run 41997580476 typed
+    `winget install` and the guest received `get install`.
     """
-    # VALIDATE FIRST, THEN SEND. Typing half a command and only then discovering that the
-    # next character has no key leaves the guest with a partial line at a prompt - which
-    # the following Enter would then run.
     control = [ch for ch in text if ch in "\r\n\t"]
     if control:
         raise ValueError(
             f"cannot type {control[0]!r}; sendkey has no such key, so split the command "
             f"and join with ';'"
         )
-
-    # 150 MILLISECONDS PER KEY, AND 60 WAS DROPPING THEM.
-    #
-    # Run 41997580476 typed
-    #
-    #     winget install --id Microsoft.OpenSSH.Preview --exact --source winget ...
-    #
-    # and the guest's own console, quoted in the failure, shows what arrived:
-    #
-    #     get install --id Microsoft.OpenSSH.Preview --exact --sou
-    #
-    # `w`, `in` and the tail are missing - dropped, not mistyped. PowerShell's PSReadLine
-    # redraws the line it is editing on every keystroke, and at 60 ms between keys it
-    # coalesces them: the character is not queued and never appears. The prompt came back,
-    # the command ran as `get`, and the machine reported - correctly - that OpenSSH was not
-    # installed.
-    #
-    # The same class of failure the comment above records for upper case: the command is
-    # only as good as the slowest character that survives. 150 ms is under PSReadLine's
-    # redraw time on this guest with margin, and it costs 1.6 s on a 105-character command.
     for ch in text:
         if ch.isupper() and ch.isalpha():
             qmpmod.key_combo(kb.q, "shift", ch.lower())
@@ -269,303 +258,6 @@ def type_text(kb: Keyboard, text: str) -> None:
         else:
             qmpmod.key(kb.q, qcode_for(ch))
         time.sleep(0.15)
-
-
-# THE INSTALL. One line, because it is typed.
-#
-#   --exact                    without it a search for "Microsoft.OpenSSH.Preview" can
-#                              resolve to a different package whose id merely contains it
-#   --disable-interactivity    no progress UI, so the screenshot afterwards shows a prompt
-#                              rather than a spinner that never ends
-#   --accept-*-agreements      the two prompts that would otherwise wait for a keypress
-WINGET_INSTALL = (
-    "winget install --id Microsoft.OpenSSH.Preview --exact --source winget "
-    "--accept-source-agreements --accept-package-agreements --disable-interactivity"
-)
-
-
-def configure_guest() -> list[str]:
-    """The settings a VM needs and a workstation does not.
-
-    WHY THIS EXISTS AT ALL
-
-    Every one of these is something this pipeline has been hurt by, in a run, rather than
-    something a tuning guide suggests:
-
-        the screen going dark      windows/11/ssh.py already carries a "lit for sixty seconds
-                                   is a lock page" workaround because Windows blanks the
-                                   display after a minute of no input, and lib/desktop.py
-                                   cannot tell a blank screen from a failed boot. The
-                                   workaround treats the symptom; this removes the cause.
-
-        a restart at the wrong hour  Windows Update's default is to install and reboot. A
-                                   bake that takes ninety minutes is inside that window,
-                                   and the failure looks like a guest that died.
-
-        hiberfil.sys               one file the size of the machine's RAM - 6 GiB of
-                                   incompressible memory image on a disk that is zstd-
-                                   compressed before it is handed out.
-
-        a restore point            System Restore is on by default and keeps a shadow copy
-                                   of every change. A disk built once and never rolled back
-                                   does not need several GiB of its own previous state.
-
-        the preinstalled apps      Xbox, Bing News, Solitaire, the music player: a few GiB,
-                                   several background services, and none of them usable
-                                   without a Microsoft account.
-
-    EVERY STATEMENT IS ONE LINE. Each is typed at a keyboard into PowerShell, so a
-    multi-line script is not an option and `;` joins the parts of a group. Each is allowed
-    to fail: a missing app package is not a reason to throw away a baked disk.
-
-    WHAT IS DELIBERATELY NOT TOUCHED
-
-        pagefile.sys               removing it makes a 6 GiB guest run out of memory under
-                                   a C++ build, and that failure is a crash, not an error
-        the Visual Studio payload  the disk exists to compile things
-    """
-    winlogon = r"HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\System"
-    wu = r"HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU"
-    store = r"HKLM:\SOFTWARE\Policies\Microsoft\WindowsStore"
-
-    bloat = [
-        "Xbox", "BingNews", "BingWeather", "GetHelp", "Getstarted",
-        "Microsoft3DViewer", "MicrosoftOfficeHub", "MicrosoftSolitaireCollection",
-        "MicrosoftStickyNotes", "MinecraftUWP", "MixedReality.Portal",
-        "OneConnect", "People", "SkypeApp", "WindowsFeedbackHub", "WindowsMaps",
-        "WindowsSoundRecorder", "ZuneMusic", "ZuneVideo",
-    ]
-
-    statements = [
-        # --- power: the screen never sleeps, the machine never hibernates ---------------
-        #
-        # BOTH PLANS. `-ac` is mains and `-dc` is battery; a VM has no battery, so Windows
-        # decides for itself which plan applies and it is not always the same one.
-        "powercfg /change monitor-timeout-ac 0",
-        "powercfg /change standby-timeout-ac 0",
-        "powercfg /change hibernate-timeout-ac 0",
-        "powercfg /change monitor-timeout-dc 0",
-        "powercfg /change standby-timeout-dc 0",
-        # THE HIBERNATION FILE IS THE MACHINE'S RAM ON DISK, and a memory image is the one
-        # thing zstd cannot shrink.
-        "powercfg -h off",
-
-        # --- no restart in the middle of a bake ---------------------------------------
-        #
-        # NoAutoRebootWithLoggedOnUsers is the one that matters for a logged-on guest: by
-        # default Windows still scans, downloads and installs, and only the restart is
-        # suppressed. AUOptions=2 is "notify before download", which stops the install too.
-        f"New-Item -Path '{wu}' -Force | Out-Null",
-        f"Set-ItemProperty -Path '{wu}' -Name NoAutoRebootWithLoggedOnUsers -Value 1 -Force",
-        f"Set-ItemProperty -Path '{wu}' -Name AUOptions -Value 2 -Force",
-        f"New-Item -Path '{store}' -Force | Out-Null",
-        f"Set-ItemProperty -Path '{store}' -Name AutoDownload -Value 2 -Force",
-
-        # --- no restore points or shadow copies ---------------------------------------
-        "Disable-ComputerRestore -Drive C: -ErrorAction SilentlyContinue",
-        "vssadmin delete shadows /all /quiet",
-
-        # --- hide the lock/logon credential UI, now that AutoLogon is what logs in ------
-        f"New-Item -Path '{winlogon}' -Force | Out-Null",
-        f"Set-ItemProperty -Path '{winlogon}' -Name DisableLockWorkstation -Value 1 -Force",
-    ]
-
-    for name in bloat:
-        # -AllUsers twice: the package is PROVISIONED for new accounts and INSTALLED for
-        # the current one. Removing only the installed copy leaves it to come back at the
-        # next account creation.
-        statements.append(
-            f"Get-AppxPackage -AllUsers *{name}* -ErrorAction SilentlyContinue | "
-            f"Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue"
-        )
-        statements.append(
-            f"Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue | "
-            f"Where-Object DisplayName -like *{name}* | "
-            f"Remove-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue"
-        )
-
-    # OneDrive is a separate install, not an Appx, and it starts at logon.
-    statements += [
-        "Stop-Process -Name OneDrive -Force -ErrorAction SilentlyContinue",
-        "Start-Process "
-        r"$env:SystemRoot\SysWOW64\OneDriveSetup.exe "
-        "-ArgumentList /uninstall -Wait -ErrorAction SilentlyContinue",
-    ]
-    return statements
-
-
-def apply_guest_settings(port: int) -> None:
-    """Run configure_guest() in the guest over ssh, and report what took.
-
-    EACH STATEMENT IS SENT IN THE SAME SSH SESSION, joined by `;`, because 55 separate
-    connections to a fresh Windows is 55 handshakes and 55 chances to be rate-limited by
-    sshd. PowerShell is the shell on the other end - sshd on Windows starts cmd.exe, which
-    runs `powershell -Command` in turn.
-
-    A STATEMENT THAT FAILS DOES NOT STOP THE REST. That is deliberate and it is what
-    `-ErrorAction SilentlyContinue` is for: a package that is not present on this build is
-    not a reason to ship a disk with its screen set to blank after a minute. What is
-    reported instead is the RESULT, read back afterwards - the power timeouts and the
-    absence of hiberfil.sys are things that either took or did not.
-
-    THE VERDICT IS AT THE END AND IT IS THE SAME SHAPE AS EVERY OTHER STAGE HERE: ask the
-    guest, not the exit code.
-    """
-    import session
-
-    # EVERY STATEMENT IS WRAPPED IN `powershell -Command`, AND IT WAS NOT BEFORE.
-    #
-    # configure_guest() returns POWERSHELL - `New-Item -Path 'HKLM:\...'`,
-    # `Set-ItemProperty ...`, `Disable-ComputerRestore ...` - and session.ssh hands its
-    # string to sshd, whose default shell on Windows is cmd.exe. So every one of the 55
-    # statements was executed as a cmd command and every one of them failed the same way:
-    #
-    #     'New-Item' is not recognized as an internal or external command,
-    #     operable program or batch file.
-    #
-    # The docstring above has said "sshd on Windows starts cmd.exe, which runs
-    # `powershell -Command` in turn" since it was written; the code never did that part.
-    #
-    # IT WENT UNNOTICED BECAUSE `install ssh` FAILED FIRST. Until the winget typing bug was
-    # fixed (60ms per key, dropped characters, `winget` arrived as `get`), this stage never
-    # got far enough to run a single one of these statements - run 41997580476 and every
-    # run before it stopped at OpenSSH. Run 42020047027 is the first to reach it, and it
-    # reported 55 skipped statements in as many seconds.
-    #
-    # The DISM line further down is NOT wrapped, deliberately: it is a cmd command.
-    log(f"  {len(configure_guest())} statements")
-    for statement in configure_guest():
-        status, out = session.ssh(
-            port, f'powershell -Command "{statement}"', timeout=120)
-        if status != 0:
-            # Worth a line: this is the only place a wrong policy path shows up, and a
-            # silent skip turns "the screen still blanks" into a mystery later.
-            detail = (out or "").strip().splitlines()
-            log(f"    skipped ({status}): {statement[:60]}"
-                + (f"  <- {detail[-1][:80]}" if detail else ""))
-
-    # DISM REWRITES THE COMPONENT STORE AND TAKES MINUTES. Its own timeout, because the
-    # 120 seconds above is for a powercfg that returns instantly.
-    log("  compacting the component store (several minutes)")
-    status, out = session.ssh(
-        port, "DISM /Online /Cleanup-Image /StartComponentCleanup /ResetBase", timeout=1800)
-    tail = [l.strip() for l in (out or "").splitlines() if l.strip()][-4:]
-    for line in tail:
-        log(f"    {line[:100]}")
-    if status != 0:
-        log(f"    DISM exited {status}; the disk is still usable, just larger")
-
-    # READ BACK WHAT CAN BE READ BACK. These three are the ones whose failure is invisible
-    # until a later stage, and each is a single value.
-    probe = (
-        "powershell -Command \""
-        "$m = (powercfg /query SCHEME_CURRENT SUB_VIDEO VIDEOIDLE 2>$null | "
-        "Select-String 'Current AC Power Setting').ToString().Split(':')[-1].Trim(); "
-        "$s = (powercfg /query SCHEME_CURRENT SUB_SLEEP STANDBYIDLE 2>$null | "
-        "Select-String 'Current AC Power Setting').ToString().Split(':')[-1].Trim(); "
-        "'MONITOR=' + $m + ' STANDBY=' + $s + ' HIBER=' + "
-        "(Test-Path C:\\hiberfil.sys)\""
-    )
-    status, out = session.ssh(port, probe, timeout=180)
-    log(f"  power: {(out or '').strip()[:160]}")
-    if "MONITOR=0x00000000" in (out or "") and "STANDBY=0x00000000" in (out or ""):
-        log("  the screen and the machine will not time out")
-    else:
-        log("  the power settings did not all take; the disk is published anyway, but a")
-        log("  later stage may have to wake a blank screen")
-
-
-def configure_sshd() -> list[str]:
-    """The PowerShell statements that make sshd usable, one line each.
-
-    Each is typed, so each is a single statement. `;` joins them into one command line at
-    the call site, which is what PowerShell expects and what the keyboard can produce.
-    """
-    cfg = r"C:\ProgramData\ssh\sshd_config"
-    return [
-        # The service is installed but Manual; nothing starts it at boot.
-        "Set-Service sshd -StartupType Automatic",
-        # Password sign-in is commented out in the shipped config. The bake's account has a
-        # password (the answer file sets one) and key auth needs a key this stage does not
-        # have, so password it is.
-        f"(Get-Content '{cfg}') -replace '^#?\\s*PasswordAuthentication\\s+.*', "
-        f"'PasswordAuthentication yes' | Set-Content '{cfg}'",
-        # The shipped config has Port commented out, which means 22. It is set explicitly
-        # so the value is readable afterwards rather than inferred.
-        f"(Get-Content '{cfg}') -replace '^#?\\s*Port\\s+.*', "
-        f"'Port {GUEST_SSH_PORT}' | Set-Content '{cfg}'",
-        "Start-Service sshd",
-        # The default inbound rule is created by the package but points at 22; a new one
-        # for the port actually configured is what makes it reachable.
-        "New-NetFirewallRule -Name sshd-%d -DisplayName 'OpenSSH %d' -Enabled True "
-        "-Direction Inbound -Protocol TCP -Action Allow -LocalPort %d "
-        "-ErrorAction SilentlyContinue | Out-Null" % (
-            GUEST_SSH_PORT, GUEST_SSH_PORT, GUEST_SSH_PORT),
-        # A listener, asked of the guest rather than read off a picture.
-        f"Get-NetTCPConnection -State Listen -LocalPort {GUEST_SSH_PORT} "
-        "-ErrorAction SilentlyContinue | Select-Object -First 1 LocalPort",
-    ]
-
-
-def open_powershell(kb: Keyboard) -> None:
-    """Get to a PowerShell prompt from the desktop.
-
-    Esc first: a Start menu, a notification or an update overlay swallows the Win+R that
-    follows, and the symptom is that the command lands nowhere. Measured on the
-    easysandbox bake, which recorded exactly that.
-    """
-    log("Esc, then Win+R")
-    kb.key("esc", settle=1.0)
-    kb.combo("meta_l", "r", settle=3.0)
-    kb.shot("run-dialog")
-    log("typing powershell")
-    type_text(kb, "powershell")
-    kb.key("ret", settle=12.0)
-    kb.shot("powershell")
-
-
-def install(kb: Keyboard) -> bool:
-    """winget install, then wait 120 seconds and ask the machine whether it worked.
-
-    THE VERDICT IS THE GUEST'S, NOT THE SCREEN'S. See WINGET_SETTLE_SECONDS for the run
-    that made it so: winget prints a prompt whether it installed anything, and this stage
-    acted on a prompt that meant failure. So the fixed wait comes first, and then one
-    command asks for the file winget would have created and the service it would have
-    registered. Both must answer.
-    """
-    log(f"winget install {WINGET_PACKAGE}")
-    type_text(kb, WINGET_INSTALL)
-    kb.key("ret", settle=5.0)
-
-    log(f"waiting {WINGET_SETTLE_SECONDS}s for winget to finish")
-    time.sleep(WINGET_SETTLE_SECONDS)
-    kb.shot("winget")
-
-    # ASKED OF THE GUEST. Test-Path and Get-Service are the two facts configure_sshd()
-    # needs before it can do anything, so checking them here means a failed install stops
-    # the stage at the sentence that says so instead of four red errors later.
-    probe = (
-        f"Test-Path 'C:\\ProgramData\\ssh\\sshd_config'; "
-        "(Get-Service sshd -ErrorAction SilentlyContinue).Status"
-    )
-    log("asking the guest whether OpenSSH is installed")
-    type_text(kb, probe)
-    kb.key("ret", settle=8.0)
-    shot = kb.shot("winget-verify")
-    text = ocr(shot) if shot else ""
-
-    # True and Running, or the install did not take. A missing service prints nothing on
-    # the second statement, so the absence of "Running" is itself the answer.
-    installed = "True" in text and "Running" in text
-    if not installed:
-        log("=== OPENSSH DID NOT INSTALL ===")
-        log("  the prompt came back but C:\\ProgramData\\ssh\\sshd_config is absent or")
-        log("  the sshd service is not registered, so nothing below can work")
-        if text:
-            log(f"  the guest said: {text[:300]}")
-        return False
-    log("OpenSSH is installed and sshd is Running")
-    return True
 
 
 def ocr(path: str) -> str:
@@ -694,35 +386,43 @@ def main(argv: list[str]) -> int:
             log("the guest did not reach a desktop")
             return 1
 
-        open_powershell(kb)
-        if not install(kb):
-            return 1
-
-        log("configuring sshd")
-        for statement in configure_sshd():
-            type_text(kb, statement)
-            kb.key("ret", settle=3.0)
-        kb.shot("sshd-configured")
-
-        log("checking that sshd answers on the host's port %d" % HOST_SSH_PORT)
-        if not wait_for_ssh(HOST_SSH_PORT):
-            log("sshd did not answer")
-            kb.shot("no-ssh")
-            return 1
-
-        # THE GUEST SETTINGS GO OVER SSH, NOT AT THE KEYBOARD.
+        # THE SEQUENCE IS A FILE NOW: windows/11/steps/ssh.yaml.
         #
-        # configure_guest() is 55 statements and DISM alone runs for minutes. Typed one at
-        # a time that is a hundred keystrokes of settle and a keyboard that has to be
-        # woken for each - and the whole stage exists to hand the disk on, not to prove a
-        # keyboard works. ssh is already up on this line.
+        # What was here - open PowerShell, type the winget line, type six sshd statements,
+        # wait for the port, push 55 guest settings - was 300 lines of measurements of THIS
+        # guest and not one decision. The measurement belongs somewhere a reader can see it
+        # beside the number it produced; the decision ("does this stage pass?") stays here.
         #
-        # NONE OF IT IS FATAL. A bloatware package that is not installed, a policy key that
-        # lives somewhere else on this build - `-ErrorAction SilentlyContinue` and a check
-        # that reads the RESULT rather than the exit code, because a disk that boots and
-        # answers ssh is the thing being sold here.
-        log("configuring the guest for a VM, over ssh")
-        apply_guest_settings(HOST_SSH_PORT)
+        # THE WALKTHROUGH CANNOT MAKE THE KEYBOARD. `Keyboard` owns the QMP socket and the
+        # screenshots, and a second client cannot open one (qemu accepts ONE), so the steps
+        # that type are given this stage's own driver rather than opening their own. That is
+        # the `driver=` argument below, and it is why this is not a `subprocess` call to
+        # lib/steps.py's CLI.
+        log(f"=== the walkthrough: {os.path.relpath(WALK, REPO)} ===")
+        import steps as stepslib
+        parsed = stepslib.load(WALK)
+        # `q=kb.q` IS NOT AN OPTIMISATION. qemu accepts ONE client on a QMP socket, and the
+        # Keyboard above already holds it - it had to, to wake the lock screen before ssh
+        # existed. A Driver that opened its own would block on the greeting and read as a hung
+        # guest, which is the same single-client rule the macOS ssh extensions had to learn.
+        #
+        # The Driver does not close a socket it did not open (`_do_action`'s python: steps are
+        # the same rule), so `stage.close()` is a no-op here and `kb.close()` still owns it.
+        stage = stepslib.driver_for(
+            guest.paths.drive, work=work,
+            ssh_port=HOST_SSH_PORT, width=1920, height=1080, q=kb.q)
+        try:
+            ok_walk, ran = stepslib.walk_with(
+                parsed, stage, ssh_port=HOST_SSH_PORT,
+                user=GUEST_USER, password=GUEST_PASSWORD,
+            )
+        finally:
+            stage.close()
+        log(f"{len(ran)} step(s) answered" if ok_walk
+            else f"the walkthrough failed after {len(ran)} step(s)")
+        if not ok_walk:
+            kb.shot("walkthrough-failed")
+            return 1
 
         # CLEANING IS ITS OWN WORKFLOW STEP, so this stage can be asked to skip it.
         #

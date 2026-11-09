@@ -207,6 +207,44 @@ def main() -> int:
     check("no desktop pane matches another pane's screen", "macos/15/steps/sequoia.yaml",
           matrix_ok)
 
+    # --- windows: the two stages that were Python are files now ---------------------------
+    #
+    # THE BASE STAGE NEEDS NO WALKTHROUGH, and that is not an omission: Windows installs from
+    # answer/Autounattend.xml, which setup itself consumes in three passes (windowsPE,
+    # specialize, oobeSystem). There is no pane to answer and no sequence to type, so a YAML
+    # file for it would be an empty list pretending to be a driver.
+    #
+    # WHAT WAS PYTHON WAS THE PART THAT IS A SEQUENCE: open PowerShell, type the winget line,
+    # type the sshd statements, wait for the port, push the guest settings; then install four
+    # packages and prove three of them work. Both stages still start a machine and publish a
+    # disk - that stays in Python - and both call lib/steps.py now.
+    win_ssh = read("windows/11/ssh.py")
+    win_dev = read("windows/11/devtools.py")
+    check("windows ssh is driven by ssh.yaml", "windows/11/ssh.py",
+          'steps/ssh.yaml' in win_ssh and "stepslib.load(WALK)" in win_ssh)
+    check("windows dev is driven by dev.yaml", "windows/11/devtools.py",
+          'steps/dev.yaml' in win_dev and "stepslib.run_file(" in win_dev)
+    # THE KEYBOARD AND THE WALK SHARE ONE SOCKET. qemu accepts one client, so a Driver that
+    # opened its own would block on the greeting and read as a hung guest.
+    check("the windows walk reuses the keyboard's QMP connection", "windows/11/ssh.py",
+          "q=kb.q" in win_ssh)
+    # `true` IS NOT A WINDOWS COMMAND. session.wait_for_ssh's own docstring records run
+    # 41844808248 losing fifteen minutes to an sshd that was working.
+    win_ssh_walk = load_yaml("windows/11/steps/ssh.yaml")
+    win_dev_walk = load_yaml("windows/11/steps/dev.yaml")
+    gates = [s for s in (win_ssh_walk.get("steps") or []) if s.get("require_ssh")]
+    check("the windows sshd waits use a probe cmd.exe has", "windows/11/steps/ssh.yaml",
+          bool(gates) and all(s.get("ssh_probe") == "echo ok" for s in gates))
+    dev_gates = [s for s in (win_dev_walk.get("steps") or []) if s.get("require_ssh")]
+    check("the dev stage's sshd waits use the same probe", "windows/11/steps/dev.yaml",
+          bool(dev_gates) and all(s.get("ssh_probe") == "echo ok" for s in dev_gates))
+    # PSReadLine DROPS KEYSTROKES BELOW ~150 ms, measured: run 41997580476 typed
+    # `winget install` and the guest received `get install`. Every typing step says so.
+    typers = [s for s in (win_ssh_walk.get("steps") or []) if s.get("type")]
+    check("every windows typing step uses the measured 150 ms gap",
+          "windows/11/steps/ssh.yaml",
+          bool(typers) and all(float(s.get("type_gap", 0)) >= 0.15 for s in typers))
+
     # --- report ------------------------------------------------------------------------
     width = max(len(label) for label, _path, _ok in checks)
     failures = 0

@@ -44,6 +44,10 @@ class FakeDriver:
         self.looks = 0
         self.words: list[tuple] = []
         self.q = None
+        # `script:` WRITES ITS BODY NEXT TO THE DRIVER'S WORK, the same place a stage's frames
+        # and crops go, so the fake needs one.
+        import tempfile
+        self.work = tempfile.mkdtemp(prefix="steps-test-")
 
         class _Mod:
             @staticmethod
@@ -563,7 +567,9 @@ def test_real_files() -> None:
                      "bsd/ghostbsd/steps/gbi.yaml",
                      "macos/15/steps/sequoia.yaml",
                      "macos/15/steps/setup.yaml",
-                     "macos/15/steps/ssh.yaml"):
+                     "macos/15/steps/ssh.yaml",
+                     "windows/11/steps/ssh.yaml",
+                     "windows/11/steps/dev.yaml"):
         path = os.path.join(here, relative)
         try:
             walk = steps.load(path)
@@ -571,6 +577,122 @@ def test_real_files() -> None:
             check(False, f"{relative}: {exc}")
             continue
         check(len(walk.steps) > 5, f"{relative}: {len(walk.steps)} steps")
+
+
+def test_require_ssh_probe() -> None:
+    """`require_ssh` must pass the walkthrough's probe, not always the POSIX `true`.
+
+    `true` IS NOT A WINDOWS COMMAND, and session.wait_for_ssh's own docstring records run
+    41844808248 losing its whole fifteen-minute budget to an sshd that was answering
+    perfectly. A guest whose shell is cmd.exe says `ssh_probe: echo ok`.
+    """
+    print("\n=== require_ssh carries the walkthrough's probe")
+    import session
+
+    seen: list[tuple] = []
+    real = session.wait_for_ssh
+
+    def fake(port, seconds, note=None, settle=10, probe="true", user=None):
+        seen.append((port, probe, user))
+        return True
+
+    document = steps.Walk({
+        "name": "probe",
+        "steps": [
+            {"name": "posix", "require_ssh": True, "timeout": 30},
+            {"name": "windows", "require_ssh": True, "ssh_probe": "echo ok", "timeout": 30},
+        ],
+    }, path="inline")
+
+    session.wait_for_ssh = fake
+    try:
+        ok, ran = steps.walk(FakeDriver(), document, ssh_port=2222)
+    finally:
+        session.wait_for_ssh = real
+    check(ok, "both waits pass")
+    check(seen[0][1] == "true", f"the default stays `true`, got {seen[0][1]!r}")
+    check(seen[1][1] == "echo ok", f"the file's probe is used, got {seen[1][1]!r}")
+
+
+def test_type_gap_reaches_the_keys() -> None:
+    """`type_gap` must reach keys.type_text, because 40 ms drops characters on Windows.
+
+    Measured on run 41997580476: `winget install` arrived as `get install`, the prompt came
+    back, and the machine reported - correctly - that OpenSSH was not installed.
+    """
+    print("\n=== type_gap reaches the keystrokes")
+    import keys
+
+    gaps: list[float] = []
+    real = keys.type_text
+
+    def fake(q, text, per_char=0.03, **kwargs):
+        gaps.append(per_char)
+        return []
+
+    document = steps.Walk({
+        "name": "gaps",
+        "steps": [
+            {"name": "fast", "type": "abc"},
+            {"name": "slow", "type": "abc", "type_gap": 0.15},
+        ],
+    }, path="inline")
+
+    keys.type_text = fake
+    try:
+        steps.walk(FakeDriver(), document)
+    finally:
+        keys.type_text = real
+    # `type:` (no `at:`) HAS ITS OWN DEFAULT, 100 ms, because it types into whatever already
+    # has focus rather than into a field just clicked; `run:` uses 40 ms. What this asserts is
+    # that the FILE can override whichever default applies.
+    check(gaps and abs(gaps[0] - 0.1) < 1e-9, f"the type: default is 100 ms, got {gaps}")
+    check(len(gaps) > 1 and abs(gaps[1] - 0.15) < 1e-9,
+          f"the file's 150 ms is used, got {gaps}")
+
+
+def test_scp_and_script_steps() -> None:
+    """`scp:` copies a file in; `script:` writes one, copies it, and runs it by path.
+
+    BOTH EXIST FOR THE SAME MEASURED REASON. windows/11/devtools.py's own docstring: a
+    Visual Studio --override cannot survive ssh -> cmd -> winget, where the quotes are eaten,
+    so the line is written to a .bat and run by path. A vocabulary that cannot say that would
+    keep the whole stage in Python for the sake of one copy.
+    """
+    print("\n=== scp: copies in, script: writes and runs by path")
+    import session
+
+    copied: list[tuple] = []
+    ran: list[tuple] = []
+    real_scp, real_ssh = session.scp, session.ssh
+
+    def fake_scp(local, remote, **kwargs):
+        copied.append((local, remote))
+        return 0, ""
+
+    def fake_ssh(port, command, timeout=30, **kwargs):
+        ran.append(command)
+        return 0, "out"
+
+    document = steps.Walk({
+        "name": "files",
+        "steps": [
+            {"name": "copy", "scp": ["windows/11/probe.ps1", "C:/Users/docker/probe.ps1"]},
+            {"name": "bat", "script": "@echo off\r\nver", "script_shell": "cmd",
+             "script_name": "x.bat"},
+        ],
+    }, path="inline")
+
+    session.scp, session.ssh = fake_scp, fake_ssh
+    driver = FakeDriver()
+    try:
+        ok, ran_steps = steps.walk(driver, document, ssh_port=2222)
+    finally:
+        session.scp, session.ssh = real_scp, real_ssh
+    check(ok, f"both steps pass, ran={ran_steps}")
+    check(len(copied) == 2, f"both copied a file, got {copied}")
+    check(copied[0][1].endswith("probe.ps1"), f"the stated remote path is used: {copied[0]}")
+    check(any("cmd /c" in c for c in ran), f"a .bat runs through cmd /c, got {ran}")
 
 
 def test_ssh_matchers_on_their_frames() -> None:
@@ -627,6 +749,9 @@ def main() -> int:
     test_headless_needs_no_screen()
     test_real_files()
     test_ssh_matchers_on_their_frames()
+    test_require_ssh_probe()
+    test_type_gap_reaches_the_keys()
+    test_scp_and_script_steps()
 
     print()
     if FAILED:

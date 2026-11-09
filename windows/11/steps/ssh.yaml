@@ -1,0 +1,199 @@
+# Windows 11 stage two: put OpenSSH on THIS disk, prove it answers, then configure the guest.
+#
+#     python3 lib/steps.py windows/11/steps/ssh.yaml --qmp /work/drive.sock.qmp --ssh-port 2222
+#
+# WHAT THIS REPLACES, AND WHY THE FILE IS THIS SHAPE
+#
+# windows/11/ssh.py was 1126 lines and about 300 of them were the sequence: warm the lock
+# screen, open PowerShell, type the winget line, type six sshd statements, wait for the port,
+# push 55 guest settings, read the power settings back. None of that is logic - every one of
+# them is a measurement of this guest - and it is the part that changed most often.
+#
+# THE HALF THAT STAYS IN PYTHON IS THE HALF THAT RUNS A MACHINE: copying the disk, building the
+# qemu command line, the fresh OVMF variable store, swtpm, compressing the result. Those are
+# `lib/vm.py` and `lib/compress.py` facts, not walkthrough steps.
+#
+# WINDOWS IS NOT A POSIX SHELL, AND THREE NUMBERS HERE ARE DIFFERENT BECAUSE OF IT:
+#
+#   type_gap: 0.15    PSReadLine redraws on every keystroke and drops them below ~150 ms.
+#                     Measured on run 41997580476: `winget install` arrived as `get install`,
+#                     the prompt came back, and the machine reported - correctly - that
+#                     OpenSSH was not installed. 40 ms - the POSIX floor - is not enough here.
+#   ssh_probe         `true` is the POSIX builtin every other guest has. cmd.exe says
+#                     "'true' is not recognized as an internal or external command", which is
+#                     run 41844808248 losing fifteen minutes to an sshd that was working.
+#   the shell         sshd on Windows starts cmd.exe, which is why every PowerShell statement
+#                     is wrapped in `powershell -Command "..."` and every guest setting is
+#                     prefixed. That is a fact about this guest, so it is written here rather
+#                     than re-derived at every call site (which is how configure_guest() ran
+#                     55 straight failures for one stage).
+#
+# WHY THE GUEST SETTINGS ARE ONE STEP OF MANY STATEMENTS
+#
+# They are 55 statements and DISM alone runs for minutes. Typed one at a time that is a
+# hundred keystrokes of settle and a keyboard woken for each - and ssh is already up by then,
+# which is the whole point of doing them after `require_ssh`. The `run:` step types them into
+# a PowerShell session only for the ones that have no ssh channel yet (configure_sshd); the
+# rest go over ssh, one `ssh:` step each, so a failure names the statement.
+
+name: windows 11 - ssh
+resolution: [1920, 1080]
+
+vars:
+  user:
+    from: args.user
+    default: docker
+  password:
+    from: args.password
+    default: admin
+
+# The account the answer file creates, and the port the host's forward points at.
+# lib/vm.build_args() forwards host 2222 -> guest 22, so sshd has to be on 22.
+ssh_user: docker
+ssh_port: 2222
+
+steps:
+  # --- 1. THE KEYBOARD, WHICH IS THE ONLY CHANNEL UNTIL SSHD EXISTS --------------------
+  #
+  # Windows blanks its display after a minute of no input, and lib/desktop.py cannot tell a
+  # blank screen from a failed boot. The stage that produced this disk already stopped at a
+  # desktop, so this wakes what went dark rather than waiting for one to appear.
+  - name: wake the screen
+    key: esc
+    settle: 5
+  - name: wake the screen again
+    key: esc
+    settle: 3
+
+  # WIN+R, THEN THE SHELL. Esc first is not cosmetic: a Start menu, a notification or an
+  # update overlay swallows the chord that follows, and the symptom is a command that lands
+  # nowhere.
+  - name: open the run dialog
+    key: meta_l+r
+    settle: 3
+
+  # THE LINE IS TYPED, SO IT IS ONE LINE. `--exact` stops a search for
+  # Microsoft.OpenSSH.Preview resolving to a package whose id merely contains it;
+  # --disable-interactivity means the screenshot afterwards shows a prompt rather than a
+  # spinner that never ends; the two --accept-* switches answer the prompts that would
+  # otherwise wait for a keypress.
+  - name: type powershell
+    type: powershell
+    # THE SAME 150 ms AS THE LONGER LINES. `powershell` is eleven lowercase characters and 40 ms
+    # would probably survive it, but a typing speed is a property of this guest's PSReadLine,
+    # not of the string being typed - and a file where one step is faster than the others is a
+    # file that invites someone to lower the others to match.
+    type_gap: 0.15
+    settle: 2
+  - name: open powershell
+    key: ret
+    settle: 14
+
+  # THE INSTALL, AND A FIXED WAIT RATHER THAN A POLL FOR THE PROMPT.
+  #
+  # Run 41587909137 is why. The previous version watched the screen for "PS C:\...>" to come
+  # back and called that success - winget prints that prompt whether it installed the package
+  # or not, so the stage went on to configure a service that did not exist:
+  #
+  #     Get-Content : Cannot find path 'C:\ProgramData\ssh\sshd_config'
+  #     Start-Service : Cannot find any service with service name 'sshd'
+  #
+  # 120 seconds, because the measured installs are 51 and 54 seconds and winget's first-run
+  # metadata refresh has been seen to add most of a minute. Whether it worked is asked of the
+  # machine below, not of the screen.
+  - name: install openssh
+    type: winget install --id Microsoft.OpenSSH.Preview --exact --source winget --accept-source-agreements --accept-package-agreements --disable-interactivity
+    type_gap: 0.15
+    settle: 2
+  - name: run the install
+    key: ret
+    settle: 120
+
+  # --- 2. SSHD, WHICH STILL HAS TO BE CONFIGURED AT THE KEYBOARD -----------------------
+  #
+  # The service is installed but Manual (nothing starts it at boot), password auth is
+  # commented out in the shipped config, and the default firewall rule points at 22 while the
+  # forward expects 22 - set explicitly so the value is readable afterwards rather than
+  # inferred.
+  #
+  # Each statement is typed, so each is one line. `;` joins them into one command line, which
+  # is what PowerShell expects and what the keyboard can produce.
+  - name: configure sshd
+    type: Set-Service sshd -StartupType Automatic; (Get-Content 'C:\ProgramData\ssh\sshd_config') -replace '^#?\s*PasswordAuthentication\s+.*', 'PasswordAuthentication yes' | Set-Content 'C:\ProgramData\ssh\sshd_config'; (Get-Content 'C:\ProgramData\ssh\sshd_config') -replace '^#?\s*Port\s+.*', 'Port 22' | Set-Content 'C:\ProgramData\ssh\sshd_config'; Start-Service sshd; New-NetFirewallRule -Name sshd-22 -DisplayName 'OpenSSH 22' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 -ErrorAction SilentlyContinue | Out-Null; Get-NetTCPConnection -State Listen -LocalPort 22 -ErrorAction SilentlyContinue | Select-Object -First 1 LocalPort
+    type_gap: 0.15
+    settle: 2
+  - name: run the sshd configuration
+    key: ret
+    settle: 25
+
+  # THE DAEMON, ASKED OF THE PORT RATHER THAN READ OFF A PICTURE. The probe is `echo ok`
+  # because this guest's shell is cmd.exe, where `true` does not exist.
+  - name: wait for sshd
+    require_ssh: true
+    ssh_probe: echo ok
+    timeout: 600
+
+  # --- 3. THE GUEST SETTINGS, WHICH ARE CHEAP ONCE THERE IS A SHELL --------------------
+  #
+  # Every one of these is something this pipeline was hurt by, in a run, rather than a tuning
+  # guide's suggestion: the display blanking after a minute (which lib/desktop.py cannot
+  # distinguish from a failed boot), Windows Update rebooting a disk mid-stage, OneDrive and
+  # the restore points filling a 40 GiB disk.
+  #
+  # EACH IS ITS OWN STEP SO THE FAILURE NAMES THE STATEMENT. sshd on Windows starts cmd.exe,
+  # which is why the value is `powershell -Command "..."` - configure_guest() returns
+  # PowerShell and a stage that hands that string straight to sshd runs it as cmd, which is
+  # how 55 statements all failed in one second on run 42020047027.
+  #
+  # NOT FATAL, ANY OF THEM. A policy key that lives elsewhere on this build is not a reason to
+  # publish nothing; what matters is read back at the end.
+  - name: do not blank the screen
+    ssh: powershell -Command "powercfg /change monitor-timeout-ac 0; powercfg /change monitor-timeout-dc 0; powercfg /change standby-timeout-ac 0; powercfg /change standby-timeout-dc 0"
+    timeout: 120
+    optional: true
+  - name: no hibernation file
+    ssh: powershell -Command "powercfg -h off"
+    timeout: 120
+    optional: true
+  - name: hold windows update
+    ssh: powershell -Command "New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' -Force | Out-Null; Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' -Name NoAutoRebootWithLoggedOnUsers -Value 1 -Type DWord -Force; Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' -Name NoAutoUpdate -Value 1 -Type DWord -Force"
+    timeout: 120
+    optional: true
+  - name: turn off restore points
+    ssh: powershell -Command "Disable-ComputerRestore -Drive 'C:\' -ErrorAction SilentlyContinue"
+    timeout: 180
+    optional: true
+
+  # DISM REWRITES THE COMPONENT STORE AND TAKES MINUTES, so it gets its own timeout. It is a
+  # cmd command and therefore NOT wrapped in powershell -Command, which is the one statement in
+  # this file that is not.
+  - name: compact the component store
+    ssh: DISM /Online /Cleanup-Image /StartComponentCleanup /ResetBase
+    timeout: 1800
+
+  # --- 4. READ BACK WHAT CAN BE READ BACK ---------------------------------------------
+  #
+  # These three are the ones whose failure is invisible until a later stage, and each is a
+  # single value. A switch that looks right on a screenshot is not the same fact as a timeout
+  # that is zero.
+  - name: prove the power settings took
+    ssh: powershell -Command "$m = (powercfg /query SCHEME_CURRENT SUB_VIDEO VIDEOIDLE 2>$null | Select-String 'Current AC Power Setting').ToString().Split(':')[-1].Trim(); $s = (powercfg /query SCHEME_CURRENT SUB_SLEEP STANDBYIDLE 2>$null | Select-String 'Current AC Power Setting').ToString().Split(':')[-1].Trim(); 'MONITOR=' + $m + ' STANDBY=' + $s + ' HIBER=' + (Test-Path C:\hiberfil.sys)"
+    timeout: 180
+
+  - name: prove sshd is automatic
+    ssh: powershell -Command "(Get-Service sshd).StartupType"
+    timeout: 60
+
+  - name: prove sshd is listening
+    ssh: powershell -Command "(Get-NetTCPConnection -State Listen -LocalPort 22 | Select-Object -First 1).LocalPort"
+    timeout: 60
+
+  - name: prove the account can log in
+    ssh: whoami
+    timeout: 60
+
+  # THE DISK'S OWN VERSION, because the next stage's toolchain has to match it and a Windows
+  # build number is the only thing that says which SDKs will install here.
+  - name: prove the build
+    ssh: powershell -Command "[System.Environment]::OSVersion.Version.ToString()"
+    timeout: 60

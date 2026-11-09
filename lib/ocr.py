@@ -47,14 +47,19 @@ import qmp as qmpmod
 class Screen:
     """A guest's framebuffer and pointer, through one QMP socket."""
 
-    def __init__(self, qmp_path, workdir=".", width=1280, height=800):
+    def __init__(self, qmp_path, workdir=".", width=1280, height=800, q=None):
         os.environ.setdefault("SCREEN_W", str(width))
         os.environ.setdefault("SCREEN_H", str(height))
         # qmp.py reads the geometry at import time, so the values have to be in the
         # environment before the module is used.
         qmpmod.SCREEN_W = width
         qmpmod.SCREEN_H = height
-        self.q = qmpmod.QMP(qmp_path)
+        # `q` IS AN ALREADY-OPEN CONNECTION, AND qemu ACCEPTS ONE CLIENT PER SOCKET.
+        #
+        # A stage that has one - windows/11/ssh.py's Keyboard, which had to type before ssh
+        # existed - cannot have the screen open a second: the second connect blocks on the
+        # greeting and reads as a hung guest. Passing it in is how the two share.
+        self.q = q if q is not None else qmpmod.QMP(qmp_path)
         self.workdir = workdir
         self.width = width
         self.height = height

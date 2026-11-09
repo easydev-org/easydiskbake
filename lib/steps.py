@@ -82,8 +82,14 @@ STEP_KEYS = {    "name",        # required: what the log calls this step
     "run",         # a shell line, typed into the guest's own terminal
     "ssh",         # a command run over ssh IN THE GUEST - see _do_action
     "require_ssh", # wait for sshd before the steps that use it
+    "ssh_probe",   # the command that wait runs; 'true' is not a Windows command
     "terminal_wait",  # seconds to wait for the terminal after `run` opens it
     "line_gap",    # seconds between the lines of a multi-line `run`
+    "type_gap",    # seconds between keystrokes; 0.04 suits a POSIX shell, 0.15 a Windows one
+    "scp",         # ["local-file", "remote-path"] - copy a script in, before running it
+    "script",      # a body written on the host, copied in, and run by path
+    "script_shell",  # the interpreter that runs `script`: "cmd", "powershell", "sh"
+    "script_name",   # the file name `script` is written as
     "settle",      # seconds to wait after the action
     "wait",        # seconds to wait with nothing clicked
     "expect",      # words that must appear afterwards; a mismatch fails the step
@@ -127,8 +133,9 @@ STEP_KEYS = {    "name",        # required: what the log calls this step
 # THE KEYS AN ACTION INSIDE `do` MAY CARRY. A pane's actions are the same vocabulary as a
 # sequence step minus the pane machinery: they cannot wait for the screen, because the pane
 # already decided that, and they cannot be a pane themselves.
-ACTION_ONLY_KEYS = {"at", "double", "type", "clear", "key", "run", "ssh", "keep_alive",
-                    "settle", "terminal_wait", "timeout", "modifier"}
+ACTION_ONLY_KEYS = {"at", "double", "type", "clear", "key", "run", "ssh", "scp", "script",
+                    "script_shell", "script_name", "keep_alive",
+                    "settle", "terminal_wait", "timeout", "modifier", "type_gap"}
 
 # Steps that wait for something to happen rather than doing something. `expect` does not apply
 # to these: they already have their own condition, and a second one would be a second opinion
@@ -137,7 +144,8 @@ WAIT_STEPS = {"until", "until_any", "wait", "wait_for_change", "until_dark", "di
 
 # Everything above that actually drives the guest. A step with none of these is a check, and
 # a check that does nothing is reported rather than run.
-ACTION_KEYS = {"at", "double", "type", "key", "run", "ssh", "require_ssh", "sweep",
+ACTION_KEYS = {"at", "double", "type", "key", "run", "ssh", "scp", "script", "require_ssh",
+               "sweep",
                "at_window", "at_bottom"}
 
 
@@ -363,7 +371,7 @@ class HeadlessDriver:
 class Driver:
     def __init__(self, qmp_path: str, work: str, *, width: int = 1920,
                  height: int = 1080, socket_timeout: int = 180,
-                 disk_path: str | None = None) -> None:
+                 disk_path: str | None = None, q=None) -> None:
         import ocr
         import qmp as qmpmod
 
@@ -377,7 +385,7 @@ class Driver:
                 raise StepError(f"no QMP socket at {qmp_path} after {socket_timeout}s")
             time.sleep(1)
 
-        self.screen = ocr.Screen(qmp_path, shots, width=width, height=height)
+        self.screen = ocr.Screen(qmp_path, shots, width=width, height=height, q=q)
         self.q = self.screen.q
         self.work = work
         # KEPT FOR A `python:` STEP, NOT USED HERE.
@@ -885,7 +893,8 @@ def _run_until_disk_settles(driver: Driver, step: Step) -> bool:
     return False
 
 
-def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222) -> None:
+def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
+               password: str | None = None) -> None:
     """Everything a step does, in the order that makes one step one action.
 
     Separated from walk() because the pane loop and the sequence loop must do exactly the same
@@ -912,8 +921,17 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222) -> None:
     if step["require_ssh"]:
         import session
         seconds = int(step.get("timeout", 600))
+        # THE PROBE IS NOT `true` ON EVERY GUEST. session.wait_for_ssh's own docstring records
+        # why: a Windows guest runs cmd.exe, where `true` is
+        #
+        #     'true' is not recognized as an internal or external command
+        #
+        # and run 41844808248 spent its whole fifteen-minute budget on a Windows sshd that was
+        # answering perfectly. A walkthrough whose guest is not a POSIX shell says so with
+        # `ssh_probe: echo ok`.
+        probe = str(step.get("ssh_probe", "true"))
         log(f"  waiting up to {seconds}s for sshd on port {ssh_port}")
-        if not session.wait_for_ssh(ssh_port, seconds, user=login):
+        if not session.wait_for_ssh(ssh_port, seconds, user=login, probe=probe):
             # A FRAME BEFORE FAILING, because the question that follows is always "what was
             # on screen". The ssh stage's first failures had nothing to look at, and the
             # answer - a lock screen, an empty terminal, a sudo prompt - was only visible in
@@ -943,7 +961,8 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222) -> None:
         import session
         command = str(step["ssh"])
         timeout = int(step.get("timeout", 120))
-        status, output = session.ssh(ssh_port, command, timeout=timeout, user=login)
+        status, output = session.ssh(ssh_port, command, timeout=timeout, user=login,
+                                     password=password)
         log(f"  ssh: {command} -> {status}")
         for line in (output or "").splitlines()[:40]:
             log(f"    {line}")
@@ -951,6 +970,93 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222) -> None:
         # said whether it worked, and a word on a screen is a weaker answer than a return code.
         if status != 0 and not step["optional"]:
             raise StepError(f"{step.name}: the command exited {status}")
+        return
+
+    # --- script: A BODY WRITTEN ON THE HOST, COPIED IN, RUN BY PATH --------------------
+    #
+    # THIS EXISTS BECAUSE A COMMAND THAT SURVIVES ssh -> cmd -> PROGRAM IS A NARROW THING.
+    # windows/11/devtools.py says it plainly: a Visual Studio install takes an --override with
+    # spaces and quotes, and by the time it has been through ssh and cmd the quotes are gone.
+    # Its answer - write the line to a .bat, copy it up, run it by path - is not a Windows
+    # quirk, it is what any guest needs when a command is too fragile to quote.
+    #
+    #     - name: install the build tools
+    #       script: |
+    #         @echo off
+    #         winget install --id Microsoft.VisualStudio.2022.BuildTools --exact ...
+    #       script_shell: cmd
+    #       timeout: 3600
+    #
+    # The body is written with CRLF endings and no BOM, because cmd.exe reads a .bat byte for
+    # byte and a stray \r is a command name.
+    if step["script"]:
+        import session
+        body = str(step["script"])
+        shell = str(step.get("script_shell", "powershell"))
+        name = str(step.get("script_name") or f"{step.index}-{abs(hash(body)) % 10**6}.ps1")
+        if shell == "cmd" and not name.endswith((".bat", ".cmd")):
+            name += ".bat"
+        if shell in ("powershell", "pwsh") and not name.endswith(".ps1"):
+            name += ".ps1"
+        if shell == "sh" and not name.endswith(".sh"):
+            name += ".sh"
+        local = os.path.join(driver.work, name)
+        body = body.replace("\r\n", "\n").replace("\n", "\r\n") if shell == "cmd" else body
+        with open(local, "w", newline="") as fh:
+            fh.write(body)
+        remote = f"C:/Users/{login or 'docker'}/{name}"
+        if shell == "sh":
+            remote = f"/tmp/{name}"
+        timeout = int(step.get("timeout", 1800))
+        status, output = session.scp(local, remote, port=ssh_port, timeout=300, user=login,
+                                     password=password)
+        if status != 0:
+            log(f"  scp: {name} -> {remote} -> {status}")
+            if not step["optional"]:
+                raise StepError(f"{step.name}: the copy exited {status}")
+            return
+        if shell == "cmd":
+            command = 'cmd /c "' + remote.replace("/", "\\") + '"'
+        elif shell in ("powershell", "pwsh"):
+            command = (f'powershell -NoProfile -ExecutionPolicy Bypass -File '
+                       f'"{remote}"')
+        else:
+            command = f"sh {remote}"
+        status, output = session.ssh(ssh_port, command, timeout=timeout, user=login,
+                                     password=password)
+        log(f"  script {name} ({shell}) -> {status}")
+        for line in (output or "").splitlines()[:40]:
+            log(f"    {line[:150]}")
+        if status != 0 and not step["optional"]:
+            raise StepError(f"{step.name}: the script exited {status}")
+        return
+
+    # --- scp: A FILE INTO THE GUEST, BECAUSE SOME WORK IS NOT TYPEABLE -----------------
+    #
+    # `ssh:` can run any one command; it cannot carry a 190-line script. windows/11/devtools.py
+    # has needed that since it was written - its own docstring says so ("a script is a FILE:
+    # written on the host, copied with scp, run by path") - and it re-derived the client in
+    # its own module. A walkthrough that could not express it would have to keep the stage in
+    # Python for the sake of one copy.
+    #
+    #     - name: copy the compiler check in
+    #       scp: [windows/11/msvc-check.ps1, C:/Users/docker/msvc-check.ps1]
+    if step["scp"]:
+        import session
+        pair = step["scp"]
+        if not isinstance(pair, list) or len(pair) != 2:
+            raise StepError(f"{step.name}: `scp` is [local, remote]")
+        local, remote = (str(v) for v in pair)
+        if not os.path.isabs(local):
+            local = os.path.join(REPO, local)
+        timeout = int(step.get("timeout", 300))
+        status, output = session.scp(local, remote, port=ssh_port, timeout=timeout,
+                                     user=login)
+        log(f"  scp: {local} -> {remote} -> {status}")
+        for line in (output or "").splitlines()[:10]:
+            log(f"    {line}")
+        if status != 0 and not step["optional"]:
+            raise StepError(f"{step.name}: the copy exited {status}")
         return
 
     if step["double"]:
@@ -1170,7 +1276,13 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222) -> None:
     # Continue had not been clicked yet.
     elif step["at"] is None and step["type"] is not None:
         import keys as keysmod
-        unsupported = keysmod.type_text(driver.q, str(step["type"]), per_char=0.1)
+        # THE SAME `type_gap` AS THE `at:`+`type:` BRANCH AND THE `run:` BRANCH. Three places
+        # type, and a speed that only some of them honour is a trap: windows/11/steps/ssh.yaml
+        # types eleven characters here (`powershell` into the Run dialog) and a hundred into
+        # the prompt, and PSReadLine drops them below ~150 ms either way.
+        unsupported = keysmod.type_text(
+            driver.q, str(step["type"]),
+            per_char=float(step.get("type_gap", 0.1)))
         if unsupported:
             log(f"  COULD NOT TYPE {unsupported!r}")
         time.sleep(settle)
@@ -1228,7 +1340,14 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222) -> None:
             # open for `hold` seconds precisely because of this - and the command arrived as
             # `export DEBIAN_FRONTEND+NONINTERACTIVE: APT_GET UPDATE`. 40 ms leaves room for
             # the chord AND the character, and a 130-character line is still five seconds.
-            unsupported = keys.type_text(driver.q, line, per_char=0.04)
+            # `type_gap` IS A MEASURED NUMBER PER FAMILY, NOT A PREFERENCE. 40 ms is the floor
+            # for a POSIX shell (lib/keys.type_text explains). A Windows guest's PSReadLine
+            # redraws the line it is editing on every keystroke and coalesces them below about
+            # 150 ms - measured on run 41997580476, where `winget install` arrived as
+            # `get install`: the w, the `in` and the tail were dropped, the prompt came back,
+            # and the machine correctly reported that OpenSSH was not installed.
+            unsupported = keys.type_text(
+                driver.q, line, per_char=float(step.get("type_gap", 0.04)))
             if unsupported:
                 log(f"  COULD NOT TYPE {unsupported!r} on line {index + 1}")
             driver.qmpmod.key(driver.q, "ret")
@@ -1314,7 +1433,7 @@ def _run_python(driver: Driver, step: Step, walk_path: str) -> bool:
 
 
 def walk_panes(driver: Driver, steps: Walk, values: dict[str, str], *,
-               ssh_port: int = 2222) -> tuple[bool, list[str]]:
+               ssh_port: int = 2222, password: str | None = None) -> tuple[bool, list[str]]:
     """The macOS shape: look at the screen, run the one pane that matches, look again.
 
     THE END IS A WORD, NOT A RAN OUT OF PANES. macos/15/drive_read.py ends on `finder`, which is
@@ -1565,7 +1684,7 @@ def walk_panes(driver: Driver, steps: Walk, values: dict[str, str], *,
                     _do_action(driver, Step(dict(action, name=f"{here.name} #{position + 1}"),
                                             step.index), ssh_port=ssh_port)
             else:
-                _do_action(driver, here, ssh_port=ssh_port)
+                _do_action(driver, here, ssh_port=ssh_port, password=password)
 
             counts[here.name] = counts.get(here.name, 0) + 1
             answered.append(here.name)
@@ -1592,6 +1711,7 @@ def walk_panes(driver: Driver, steps: Walk, values: dict[str, str], *,
 
 
 def walk(driver: Driver, steps: Walk, *, overrides: dict[str, str] | None = None,
+         password: str | None = None,
          start_at: str = "", stop_before: str = "",
          ssh_port: int = 2222) -> tuple[bool, list[str]]:
     """Run the walkthrough. Returns (ok, the names of the steps that ran).
@@ -1713,7 +1833,7 @@ def walk(driver: Driver, steps: Walk, *, overrides: dict[str, str] | None = None
             continue
 
         # --- the action ------------------------------------------------------------------
-        _do_action(driver, here, ssh_port=ssh_port)
+        _do_action(driver, here, ssh_port=ssh_port, password=password)
 
         # --- the verdict, and it only ever produces one ---------------------------------
         #
@@ -1746,6 +1866,49 @@ def walk(driver: Driver, steps: Walk, *, overrides: dict[str, str] | None = None
             ran.append(here.name)
 
     return True, ran
+
+
+def driver_for(qmp_path: str, *, work: str = "", width: int = 1920, height: int = 1080,
+               disk_path: str | None = None, ssh_port: int = 2222,
+               q=None) -> "Driver":
+    """A Driver another stage can hand to `walk_with`.
+
+    WHY A STAGE PASSES ITS OWN DRIVER INSTEAD OF LETTING run_file OPEN ONE. qemu accepts ONE
+    client on a QMP socket, so a stage that already holds a connection - windows/11/ssh.py does,
+    through its Keyboard - cannot have a walk open a second one: it would block on the greeting
+    and look like a hung guest. That is the same single-client rule the macos ssh extensions
+    had to learn (`Recovery(q=...)`, `dismiss_keyboard_assistant(q=...)`).
+
+    `q` IS THE CONNECTION THE STAGE ALREADY HOLDS, and passing it is the normal case for a
+    stage that had to type before ssh existed. windows/11/ssh.py opens a Keyboard to wake the
+    lock screen, and that Keyboard IS the socket - handing it in means the walk and the stage
+    share one client, which is the only thing qemu permits.
+
+    The caller owns the result and closes it; `walk_with` deliberately does not.
+    """
+    driver = Driver(qmp_path, work or ".", width=width, height=height, disk_path=disk_path,
+                    q=q)
+    return driver
+
+
+def walk_with(steps: Walk, driver: "Driver", *, values: dict[str, str] | None = None,
+              ssh_port: int = 2222, user: str = "docker",
+              password: str = "admin", frames: str = "",
+              start_at: str = "", stop_before: str = "") -> tuple[bool, list[str]]:
+    """Walk `steps` against `driver` - the half of run_file that does not open a connection.
+
+    The same split macOS needed: the stage keeps everything that starts a machine and
+    publishes a disk, and the walk is the part in YAML. `run_file` is this plus a Driver of
+    its own.
+    """
+    setattr(driver, "release", str(steps.document.get("release", "15")))
+    setattr(driver, "frames_dir", frames or "")
+    overrides = {"args.user": user, "args.password": password}
+    if values:
+        overrides.update(values)
+    setattr(driver, "values", steps.values(overrides))
+    return walk(driver, steps, overrides=overrides, start_at=start_at,
+                stop_before=stop_before, ssh_port=ssh_port, password=password)
 
 
 def run_file(walkthrough: str, qmp_path: str, *, work: str = "",
@@ -1830,7 +1993,8 @@ def run_file(walkthrough: str, qmp_path: str, *, work: str = "",
             overrides.update(extra_vars)
         return walk(driver, steps,
                     overrides=overrides,
-                    start_at=start_at, stop_before=stop_before, ssh_port=ssh_port)
+                    start_at=start_at, stop_before=stop_before, ssh_port=ssh_port,
+                    password=password)
     finally:
         driver.close()
 
