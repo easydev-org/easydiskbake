@@ -90,6 +90,9 @@ STEP_KEYS = {    "name",        # required: what the log calls this step
     "script",      # a body written on the host, copied in, and run by path
     "script_shell",  # the interpreter that runs `script`: "cmd", "powershell", "sh"
     "script_name",   # the file name `script` is written as
+    "share_mount",   # start the host's smbd for a directory, and mount it in the guest
+    "share_dir",     # the host directory to share (default ~/shared)
+    "share_family",  # which client the guest uses: macos, windows, linux
     "settle",      # seconds to wait after the action
     "wait",        # seconds to wait with nothing clicked
     "expect",      # words that must appear afterwards; a mismatch fails the step
@@ -134,7 +137,8 @@ STEP_KEYS = {    "name",        # required: what the log calls this step
 # sequence step minus the pane machinery: they cannot wait for the screen, because the pane
 # already decided that, and they cannot be a pane themselves.
 ACTION_ONLY_KEYS = {"at", "double", "type", "clear", "key", "run", "ssh", "scp", "script",
-                    "script_shell", "script_name", "keep_alive",
+                    "script_shell", "script_name", "share_mount", "share_dir",
+                    "share_family", "keep_alive",
                     "settle", "terminal_wait", "timeout", "modifier", "type_gap"}
 
 # Steps that wait for something to happen rather than doing something. `expect` does not apply
@@ -144,8 +148,8 @@ WAIT_STEPS = {"until", "until_any", "wait", "wait_for_change", "until_dark", "di
 
 # Everything above that actually drives the guest. A step with none of these is a check, and
 # a check that does nothing is reported rather than run.
-ACTION_KEYS = {"at", "double", "type", "key", "run", "ssh", "scp", "script", "require_ssh",
-               "sweep",
+ACTION_KEYS = {"at", "double", "type", "key", "run", "ssh", "scp", "script", "share_mount",
+               "require_ssh", "sweep",
                "at_window", "at_bottom"}
 
 
@@ -1041,6 +1045,43 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
             log(f"    {line[:150]}")
         if status != 0 and not step["optional"]:
             raise StepError(f"{step.name}: the script exited {status}")
+        return
+
+    # --- share_mount: A HOST DIRECTORY THE GUEST CAN READ AND WRITE -------------------
+    #
+    # TWO THINGS IN ONE STEP, because one without the other is not a fact anyone can check:
+    # the host starts serving the directory, and the guest mounts it and is asked to read
+    # something. A step that only started smbd would pass while a guest that cannot mount it
+    # fails four steps later for a reason that looks like a broken disk.
+    #
+    # WHY SMB IS THE PROTOCOL FOR BOTH GUESTS. lib/hostshare.py has the long version; the
+    # short one is that Windows has no 9p driver at all (virtio-win closed the request as
+    # not-planned) and macOS 9p is read-only (mount_9p takes -r and nothing else). SMB is what
+    # both speak natively, read and write, with nothing installed.
+    #
+    # THE LINUX FAMILY USES 9p, which IS its kernel's own client - see lib/hostshare.py's
+    # mount_commands for the three command lines.
+    if step["share_mount"]:
+        import hostshare
+        import session
+
+        directory = str(step.get("share_dir") or hostshare.DEFAULT_DIR)
+        family = str(step.get("share_family") or "macos")
+        if not hostshare.start(directory):
+            if not step["optional"]:
+                raise StepError(f"{step.name}: the host could not serve {directory}")
+            log(f"  {step.name}: the share did not start, and the step is optional")
+            return
+
+        command = hostshare.mount_commands(user=login or "docker")[family]
+        timeout = int(step.get("timeout", 180))
+        status, output = session.ssh(ssh_port, command, timeout=timeout, user=login,
+                                    password=password)
+        log(f"  mount: {command[:100]} -> {status}")
+        for line in (output or "").splitlines()[:10]:
+            log(f"    {line[:150]}")
+        if status != 0 and not step["optional"]:
+            raise StepError(f"{step.name}: the guest could not mount the share")
         return
 
     # --- scp: A FILE INTO THE GUEST, BECAUSE SOME WORK IS NOT TYPEABLE -----------------

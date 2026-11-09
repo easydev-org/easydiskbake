@@ -25,10 +25,10 @@ driver, and SMB is the only one they share:
                to be writable cannot use it. virtiofs needs Apple's driver and a Linux-only
                virtiofsd.
 
-    Linux      kernel 9p works, and IS used here - see `for linux` below.
-
 SMB is what both Windows and macOS speak natively, read and write, with no driver and no
-extra process. `smbd` is already in this image (Containerfile installs samba), which is why
+extra process. Linux is not covered by this module: it would use qemu's virtio-9p, which is
+a different device with a different mount, and a step that claimed to do "the share" on all
+three would have silently done nothing on one of them. `smbd` is already in this image (Containerfile installs samba), which is why
 this is a config file and a process rather than a new dependency.
 
 WHAT CHANGED SINCE THE LAST SMB CODE IN THIS REPOSITORY
@@ -201,27 +201,27 @@ def stop() -> None:
 def mount_commands(host: str = "", user: str = "docker") -> dict[str, str]:
     """What a guest types to mount this share, per family.
 
-    THE PATHS ARE THE SAME ON EVERY GUEST (`~/shared`), which is what the user asked for and
-    what makes a bootstrap script portable between the two disks. What differs is the client:
+    THE PATH IS THE SAME ON BOTH GUESTS (`~/shared`), which is what was asked for and what
+    makes a bootstrap script portable between the two disks. What differs is the client:
 
         macOS      mount_smbfs, into a directory the account owns. A network mount cannot be
-                   put at a path that does not exist, so the step makes it first.
-        Windows    `net use` takes a DRIVE LETTER or a UNC path; the drive letter mapped to a
-                   directory via `net use Z: \\\\host\\share`. There is no ~ in cmd, so the
-                   path is spelled out.
-        Linux      9p, which is the kernel's own client - no daemon, no credential.
+                   put at a path that does not exist, so the command makes it first.
+        Windows    `net use` maps a UNC path to a DRIVE LETTER, and there is no `~` in cmd, so
+                   the local directory is spelled out and the share lands on Z:.
 
-    `guest ok = yes` means no password, so the commands carry none.
+    `guest ok = yes` means no password, so neither command carries one.
+
+    LINUX IS DELIBERATELY ABSENT. It would use qemu's virtio-9p instead - the kernel's own
+    client, no daemon - but that is a different device with a different mount, and mixing the
+    two behind one name would be a step that silently did nothing on one of the three. Linux
+    gets its own step when it is wanted; nothing here pretends to cover it.
     """
     host = host or net.BRIDGE_IP
     return {
         "macos": (f"mkdir -p ~/shared && "
                   f"mount_smbfs //guest@{host}/{SHARE_NAME} ~/shared"),
-        "windows": (f'mkdir "C:\\Users\\{user}\\shared" 2>nul & '
-                    f'net use Z: \\\\{host}\\{SHARE_NAME} /persistent:no'),
-        "linux": (f"mkdir -p ~/shared && "
-                  f"sudo mount -t 9p -o trans=virtio,version=9p2000.L,access=any "
-                  f"{SHARE_NAME} ~/shared"),
+        "windows": (f'if not exist "C:\\Users\\{user}\\shared" mkdir "C:\\Users\\{user}\\shared"'
+                    f' & net use Z: \\\\{host}\\{SHARE_NAME} /persistent:no'),
     }
 
 

@@ -652,6 +652,67 @@ def test_type_gap_reaches_the_keys() -> None:
           f"the file's 150 ms is used, got {gaps}")
 
 
+def test_share_mount_step() -> None:
+    """`share_mount:` starts the host's smbd and hands the guest its mount command.
+
+    THE FAILURE THIS GUARDS IS A SILENT ONE. The host can start a server that the guest cannot
+    reach, and the stage would then fail four steps later for a reason that looks like a broken
+    disk. So the step refuses to continue when the share did not start - and this checks that
+    it does, rather than logging and carrying on.
+    """
+    print("\n=== share_mount starts the host server, or fails the step")
+    import hostshare
+    import session
+
+    started: list[str] = []
+    mounted: list[str] = []
+    real_start, real_ssh = hostshare.start, session.ssh
+
+    def fake_start(directory, **kwargs):
+        started.append(directory)
+        return True
+
+    def fake_ssh(port, command, timeout=30, **kwargs):
+        mounted.append(command)
+        return 0, "ok"
+
+    def fake_start_broken(directory, **kwargs):
+        started.append(directory)
+        return False
+
+    document = steps.Walk({
+        "name": "share",
+        "steps": [{"name": "mount", "share_mount": True, "share_family": "windows"}],
+    }, path="inline")
+
+    hostshare.start, session.ssh = fake_start, fake_ssh
+    try:
+        ok, ran = steps.walk(FakeDriver(), document, ssh_port=2222)
+    finally:
+        hostshare.start, session.ssh = real_start, real_ssh
+    check(ok, f"the step passes when the host serves the directory, ran={ran}")
+    check(len(started) == 1, f"the host was asked to serve once, got {started}")
+    check(any("net use" in c for c in mounted),
+          f"the windows client command reached the guest, got {mounted}")
+
+    # AND A SHARE THAT DID NOT START IS NOT A STEP THAT CARRIES ON.
+    document2 = steps.Walk({
+        "name": "share",
+        "steps": [{"name": "mount", "share_mount": True, "share_family": "macos"}],
+    }, path="inline")
+    hostshare.start = fake_start_broken
+    failed = False
+    try:
+        steps.walk(FakeDriver(), document2, ssh_port=2222)
+    except steps.StepError:
+        # A STEP THAT CANNOT DO ITS JOB RAISES, and `walk` lets it out - the same shape as a
+        # failed `ssh:` or a pane that never matched. Carrying on would be the silent version.
+        failed = True
+    finally:
+        hostshare.start = real_start
+    check(failed, "a share the host could not serve stops the walk")
+
+
 def test_scp_and_script_steps() -> None:
     """`scp:` copies a file in; `script:` writes one, copies it, and runs it by path.
 
@@ -753,6 +814,7 @@ def main() -> int:
     test_require_ssh_probe()
     test_type_gap_reaches_the_keys()
     test_scp_and_script_steps()
+    test_share_mount_step()
 
     print()
     if FAILED:

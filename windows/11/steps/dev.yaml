@@ -198,3 +198,28 @@ steps:
     ssh: powershell -Command "'SDK=' + (Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\Include' -Name -ErrorAction SilentlyContinue | Select-Object -Last 1) + ' DOTNET=' + ((& 'C:\Program Files\dotnet\dotnet.exe' --version) 2>&1)"
     timeout: 180
     optional: true
+
+  # --- 3. THE HOST DIRECTORY, SO A GUEST CAN READ A FILE THAT DID NOT EXIST WHEN IT WAS BUILT
+  #
+  # Same step as macOS's, same reason: a file put on the host after the disk was published has
+  # to be visible inside the guest without rebuilding it. SMB is the protocol because it is the
+  # only one both guests speak natively - see lib/hostshare.py for why 9p cannot be it (Windows
+  # has no driver; macOS's client is read-only).
+  #
+  # WINDOWS MOUNTS IT ON Z: AND ALSO NAMES A DIRECTORY AT C:\Users\docker\shared. `net use`
+  # wants a drive letter or a UNC path, and a bootstrap script that had to know which of those
+  # it got would be a script with a branch in it. Both point at the share, so a script can use
+  # whichever spelling it was written with.
+  #
+  # THE MOUNT IS NOT PERSISTENT (`/persistent:no`) ON PURPOSE. A published disk must not carry
+  # a mapping to a server that only exists while this container does - Windows would try to
+  # reconnect on the next boot and block on an address with nothing behind it.
+  - name: mount the host share
+    share_mount: true
+    share_family: windows
+    timeout: 180
+
+  # A MOUNT THAT REPORTS SUCCESS AND A DIRECTORY THAT IS EMPTY ARE DIFFERENT FACTS.
+  - name: prove the share is readable and writable
+    ssh: cmd /c "dir Z:\ & echo written-by-windows > Z:\from-guest.txt & type Z:\from-guest.txt"
+    timeout: 120
