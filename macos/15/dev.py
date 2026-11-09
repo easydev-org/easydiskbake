@@ -89,6 +89,8 @@ def wait_for_ssh(port: int, seconds: int = 180) -> bool:
     """
     import socket
 
+    import session
+
     deadline = time.time() + seconds
     while time.time() < deadline:
         try:
@@ -100,11 +102,22 @@ def wait_for_ssh(port: int, seconds: int = 180) -> bool:
         except OSError:
             time.sleep(10)
             continue
-        probe = run(port, "echo DEV_SSH_OK", timeout=60)
-        if "DEV_SSH_OK" in (probe.stdout or ""):
+        # session.ssh, NOT A LOCAL `run()` HELPER. This file had one - sshpass and four options,
+        # rebuilt here - and it was deleted with the rest of the brew code, which left
+        # `wait_for_ssh` calling a name that no longer existed:
+        #
+        #     NameError: name 'run' is not defined
+        #
+        # raised after the recovery image and OpenCore had both been fetched, so the stage spent
+        # its first minute on work that could not finish. lib/session.py is the shared client and
+        # takes the password explicitly, which is what the WINDOWS_ADMIN_PASSWORD/MACOS_PASSWORD
+        # difference needs anyway.
+        status, output = session.ssh(port, "echo DEV_SSH_OK", timeout=60,
+                                     user=SSH_USER, password=SSH_PASSWORD)
+        if status == 0 and "DEV_SSH_OK" in (output or ""):
             log("the account logs in")
             return True
-        log(f"  sshd is up but the login failed: {(probe.stderr or '').strip()[:160]}")
+        log(f"  sshd is up but the login failed: {(output or '').strip()[:160]}")
         time.sleep(10)
     return False
 

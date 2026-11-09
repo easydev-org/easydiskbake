@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 import textwrap
 
 # The name the person uses, and the names this writes.
@@ -307,14 +308,19 @@ def write_launcher(where: str, family: str) -> str:
 
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--write", metavar="DIR", help="write both launchers into DIR")
+    p.add_argument("--write", metavar="DIR", help="write the launcher into DIR (needs --family)")
+    p.add_argument("--family", choices=("macos", "windows"),
+                   help="which launcher --write should write")
     p.add_argument("--macos-plist", metavar="LAUNCHER", help="print the LaunchAgent")
     p.add_argument("--windows-task", metavar="LAUNCHER", help="print the schtasks script")
     args = p.parse_args(argv)
 
     if args.write:
-        for family, path in write_launchers(args.write).items():
-            print(f"{family}: {path}")
+        # --write NEEDS --family, because the launcher has ONE NAME on both disks and two
+        # different bodies - so two files cannot share one path.
+        if not args.family:
+            p.error("--write needs --family")
+        print(write_launcher(args.write, args.family))
         return 0
     if args.macos_plist:
         print(macos_plist(args.macos_plist))
