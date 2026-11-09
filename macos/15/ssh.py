@@ -291,6 +291,7 @@ def main(argv: list[str]) -> int:
                 # account, not about creating one.
                 user=GUEST_USER, password=os.environ.get("MACOS_PASSWORD", "admin"),
                 ssh_port=args.ssh_port, release="15",
+                frames=frames,
             )
             log(f"{len(ran)} step(s) answered" if ok
                 else f"the walkthrough failed after {len(ran)} step(s)")

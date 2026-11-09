@@ -291,6 +291,10 @@ def main(argv: list[str]) -> int:
             ok, ran = stepslib.run_file(
                 args.steps, guest.paths.drive, work=os.path.dirname(frames) or ".",
                 user=args.user, password=args.password, release=args.release,
+                # THE STAGE'S OWN FRAME DIRECTORY, for the same reason bake.py passes it: a
+                # python: step that asks this stage's snapshotter a question must ask about
+                # the frames this stage writes, not a directory it guessed.
+                frames=frames,
             )
             log(f"{len(ran)} step(s) answered" if ok
                 else f"the walkthrough failed after {len(ran)} step(s)")

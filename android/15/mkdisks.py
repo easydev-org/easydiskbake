@@ -848,8 +848,23 @@ NETWORK_RC = b"""\
 # The `ranchu-net` service is defined in /vendor/etc/init/hw/init.ranchu.rc with
 # `disabled`, and AOSP starts it only when ro.boot.qemu.virtiowifi=1 - a condition this
 # guest does not meet. Starting it here, on an event init cannot miss, is the whole change.
+# OUR OWN SERVICE, WITH THE SAME BINARY AND THE SAME DOMAIN.
+#
+# `start ranchu-net` proved the SDK's service runs (status 127 from inside the script) but
+# its stdio goes nowhere, so the reason is invisible. A service declared here can say
+# `stdio_to_kmsg` and put the script's own errors in the kernel log. It executes the same
+# goldfish_setup_exec file, so the domain is identical.
+service eth0up /vendor/bin/init.ranchu-net.sh
+    class late_start
+    user root
+    group root wakelock wifi net_admin
+    oneshot
+    disabled
+    stdio_to_kmsg
+    seclabel u:r:goldfish_setup:s0
+
 on late-init
-    start ranchu-net
+    start eth0up
 """
 
 
