@@ -190,8 +190,39 @@ steps:
     at: [965, 347]
     type: "{{ display_name }}"
     settle: 2
-  - name: who are you - host name
+  # THE COMPUTER NAME FIELD IS ALREADY FILLED BY UBUNTU, AND APPENDING TO IT CORRUPTS IT.
+  #
+  # Measured on this image in a local run on 2026-11-09. When the pane opens, Ubiquity has
+  # already put `docker-Standard-PC-Q35-ICH9-2009` in `Your computer's name`. The walk then
+  # clicked it once and typed `docker`, and the field read
+  #
+  #     docker-Standockerdard-F
+  #
+  # - `docker` INSERTED INTO the middle of the existing text, not appended and not replacing
+  # it. `type_into` does ctrl+a and 24 backspaces before typing, so the select-all did not
+  # take on this field; what did happen is the insertion point landing inside the string.
+  #
+  # A CORRUPTED COMPUTER NAME IS NOT COSMETIC. Ubiquity derives the login name from the name
+  # fields, and the disk that ships from here is the one whose LightDM shows `DOCKER` and
+  # rejects `admin`. This is the leading explanation for mint's ssh stage failing on a disk
+  # whose password this walk had set.
+  #
+  # SO THE FIELD IS CLEARED PROPERLY FIRST: click, select all, and DELETE, as separate steps
+  # with a settle after each, then type. That is three steps instead of one because the
+  # one-step form is what produced the corruption.
+  - name: who are you - host name, select all
     at: [877, 375]
+    settle: 2
+
+  - name: who are you - host name, clear it
+    key: ctrl+a
+    settle: 2
+
+  - name: who are you - host name, delete the selection
+    key: backspace
+    settle: 2
+
+  - name: who are you - host name
     type: "{{ user }}"
     settle: 2
   - name: who are you - password
