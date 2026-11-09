@@ -36,11 +36,18 @@ for path in (REPO, os.path.join(REPO, "lib"), os.path.join(REPO, "macos", "15"))
         sys.path.insert(0, path)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# THE INSTALLER SITS ONE LEVEL UP, BESIDE THE STAGE, NOT IN steps/. `HERE` is
+# macos/15/steps/ because that is where the extensions live; the script it copies is
+# macos/15/xcode-install.sh, which is where a reader looks for a stage's shell code.
+STAGE_DIR = os.path.dirname(HERE)
 
 # WHERE THE .XIP WAITS BETWEEN THE TWO STEPS. The work directory is the stage's own, so a
 # resumed run finds it and iso.fetch_url verifies it instead of downloading again.
 XIP_NAME = "Xcode.xip"
-SCRIPT_NAME = "install-xcode.sh"
+# THE NAME ON THE DISK IS `xcode-install.sh`; the name it is copied AS can be anything, but
+# two names for one file is how this failed the first time - the copy was looking for
+# install-xcode.sh, which has never existed.
+SCRIPT_NAME = "xcode-install.sh"
 
 
 def log(message: str) -> None:
@@ -106,36 +113,79 @@ def copy_xcode(driver, step) -> bool:
     log(f"copying {xip} ({expected >> 20} MiB) -> {remote_xip}")
     # 3600 s: 2.7 GiB over a forwarded port is minutes, and a timeout that fires during a
     # working transfer is indistinguishable from a hung one.
-    status, out = session.scp(xip, remote_xip, port=port, timeout=3600,
-                              user=user, password=password)
-    if status != 0:
-        log(f"=== THE COPY FAILED (exit {status}) ===")
-        for line in (out or "").splitlines()[:10]:
-            log(f"    {line}")
+    # A 2.7 GiB scp OVER A FORWARDED PORT DOES NOT SUCCEED ONCE.
+    #
+    # This repository already learned that for ghcr pulls - iso.py's BLOB_RETRIES exists because
+    # run 41481670715 lost a 10.5 GiB transfer at 3.2 GiB. A single scp has the same shape and
+    # no resume, so a drop means starting again. Three attempts, and the size is checked after
+    # each: scp exits 0 on a transfer that it *thinks* completed, and comparing bytes is the
+    # only thing that distinguishes that from a full copy.
+    attempts = 3
+    for attempt in range(1, attempts + 1):
+        status, out = session.scp(xip, remote_xip, port=port, timeout=3600,
+                                  user=user, password=password)
+        if status != 0:
+            log(f"=== THE COPY FAILED (exit {status}), attempt {attempt}/{attempts} ===")
+            for line in (out or "").splitlines()[:6]:
+                log(f"    {line}")
+            continue
+        got = _remote_size(port, user, password, remote_xip)
+        if got == expected:
+            log(f"  the guest has all {expected >> 20} MiB")
+            break
+        log(f"  the guest has {got if got is not None else '?'} of {expected} bytes; "
+            f"retrying ({attempt}/{attempts})")
+    else:
+        log("=== THE COPY DID NOT ARRIVE IN FULL ===")
         return False
 
     # THE INSTALLER SCRIPT GOES WITH IT, so the guest runs the file the repository holds.
-    local_script = os.path.join(HERE, SCRIPT_NAME)
+    local_script = os.path.join(STAGE_DIR, SCRIPT_NAME)
+    if not os.path.isfile(local_script):
+        log(f"=== THE INSTALLER IS NOT IN THE REPOSITORY: {local_script} ===")
+        log("  it is macos/15/xcode-install.sh - beside the stage, not in steps/")
+        return False
     remote_script = f"/Users/{user}/{SCRIPT_NAME}"
     log(f"copying {local_script} -> {remote_script}")
     status, out = session.scp(local_script, remote_script, port=port, timeout=300,
                               user=user, password=password)
     if status != 0:
         log(f"=== THE SCRIPT COPY FAILED (exit {status}) ===")
+        for line in (out or "").splitlines()[:10]:
+            log(f"    {line}")
+        # 255 IS ssh's OWN "THE CONNECTION FAILED", not scp's "the file did not arrive", and
+        # the two want different investigations. The xip copy two lines above returned 0, so
+        # either that transfer was faster than 2.7 GiB over a forwarded port can be - which
+        # means it did not really happen - or sshd stopped accepting after it.
+        #
+        # So ask the guest, rather than guessing: is it still reachable, and is the xip there?
+        try:
+            import session as _session
+            status2, out2 = _session.ssh(port, f"ls -l /Users/{user}/Xcode.xip; df -h /",
+                                         timeout=60, user=user, password=password)
+            log(f"  the guest after the failed copy: ssh -> {status2}")
+            for line in (out2 or "").splitlines()[:6]:
+                log(f"    {line[:150]}")
+        except Exception as exc:                    # noqa: BLE001
+            log(f"  could not ask the guest: {exc}")
         return False
 
-    # AND THE SIZE, READ BACK FROM THE GUEST. `stat -f%z` is BSD's syntax, which is what
-    # macOS has; GNU's `stat -c` is not present.
-    status, out = session.ssh(port, f"stat -f%z {remote_xip}", timeout=120, user=user,
-                              password=password)
-    got = (out or "").strip().splitlines()[-1:] or [""]
-    try:
-        got_bytes = int(got[0].strip())
-    except (ValueError, IndexError):
-        log(f"=== COULD NOT READ THE SIZE BACK: {out!r} ===")
-        return False
-    if got_bytes != expected:
-        log(f"=== THE COPY IS SHORT: {got_bytes} of {expected} bytes ===")
-        return False
-    log(f"  the guest has {got_bytes >> 20} MiB, which matches the host")
     return True
+
+
+def _remote_size(port: int, user: str, password: str, remote: str) -> int | None:
+    """The size of a file in the guest, or None.
+
+    `stat -f%z` IS BSD'S SYNTAX, which is what macOS has; GNU's `stat -c` is not present there.
+    """
+    import session
+
+    status, out = session.ssh(port, f"stat -f%z {remote}", timeout=120, user=user,
+                              password=password)
+    if status != 0:
+        return None
+    lines = (out or "").strip().splitlines()
+    try:
+        return int(lines[-1].strip()) if lines else None
+    except ValueError:
+        return None
