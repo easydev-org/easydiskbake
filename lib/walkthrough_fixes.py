@@ -98,6 +98,18 @@ def main() -> int:
           "macos/15/steps/ssh.yaml", "unless" in toggler)
     check("the pane is read before the toggle is pressed",
           "macos/15/steps/ssh.yaml", "the remote login pane is up" in ssh_steps)
+    # THE RESULT HAS TO BE THERE BEFORE ITS ROW IS CLICKED, and this is the check that run
+    # 42584262403 failed on: the click went out while the sidebar was still filtering, landed
+    # on the row's future position, and the pane never swapped. A settle() is a guess about how
+    # long a filter takes.
+    check("the search result is waited for before its row is clicked",
+          "macos/15/steps/ssh.yaml", "the remote login result is on screen" in ssh_steps)
+    # AND THE ROW IS CLICKED AGAIN IF THE PANE DID NOT SWAP. macOS 15 draws this as a sheet on
+    # one run and an inline sidebar row on the next; the retry is conditional on the pane's own
+    # words, so a machine that never swaps is still a failure.
+    retry = ssh_steps.get("open the remote login pane again") or {}
+    check("the row click is retried when the pane did not open",
+          "macos/15/steps/ssh.yaml", "unless" in retry)
     # THE SEARCH FIELD IS CLEARED AS PART OF TYPING, not by a separate click. Two steps means
     # the typing one has no `at:` and takes the type-into-focus branch, which clears nothing -
     # and System Settings remembers the last query, so a second run searched for

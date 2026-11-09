@@ -35,14 +35,25 @@ import steps as stepslib
 
 WALK = os.path.join(REPO, "macos", "15", "steps", "ssh.yaml")
 
+# (label, path, expected result per matcher) - the expectations are NOT one flag shared by
+# every matcher, because the frames separate them: the inline sidebar frame HAS the result row
+# and does NOT have the pane, which is precisely the state that lost run 42584262403.
 FRAMES = [
-    # (label, path, pane is up, switch is on)
-    ("sheet with the switch OFF", os.path.join(REPO, "testdata", "ssh",
-                                              "remote-login-3-pane.png"), True, False),
-    ("sheet with the switch ON", os.path.join(REPO, "testdata", "ssh",
-                                             "remote-login-5-full-disk-access.png"), True, True),
-    ("No Results, no sheet", os.path.join(REPO, "testdata", "ssh", "search-no-results.png"),
-     False, False),
+    ("sheet with the switch OFF",
+     os.path.join(REPO, "testdata", "ssh", "remote-login-3-pane.png"),
+     {"result": True, "pane": True, "switch": False}),
+    ("sheet with the switch ON",
+     os.path.join(REPO, "testdata", "ssh", "remote-login-5-full-disk-access.png"),
+     {"result": True, "pane": True, "switch": True}),
+    ("No Results, no sheet",
+     os.path.join(REPO, "testdata", "ssh", "search-no-results.png"),
+     {"result": False, "pane": False, "switch": False}),
+    # THE SIDEBAR SHAPE, from run 42584262403 - the frame that lost the ssh stage. macOS 15
+    # draws System Settings' search result as a floating sheet on one run and as an inline
+    # sidebar row on the next, and this is the inline one.
+    ("inline result, sidebar",
+     os.path.join(REPO, "testdata", "ssh", "sidebar-result.png"),
+     {"result": True, "pane": False, "switch": False}),
 ]
 
 
@@ -94,17 +105,19 @@ def matches(name: str, driver: FrameDriver) -> bool:
 
 
 def main() -> int:
-    if not all(os.path.isfile(path) for _, path, _, _ in FRAMES):
+    if not all(os.path.isfile(path) for _, path, _ in FRAMES):
         print("=== SKIPPED: the measured ssh frames are not in testdata/ssh ===")
         print("  fetch them with:")
         print("    gh run download 42473082131 -n macos15-ssh-remote-login-frames -D testdata/ssh")
         return 0
 
     failures = 0
-    for name, which in (("the remote login pane is up", 2), ("the switch reads on", 3)):
+    for name, key in (("the remote login result is on screen", "result"),
+                      ("the remote login pane is up", "pane"),
+                      ("the switch reads on", "switch")):
         print(f"=== {name}")
         for row in FRAMES:
-            label, path, expected = row[0], row[1], row[which]
+            label, path, expected = row[0], row[1], row[2][key]
             hit = matches(name, FrameDriver(path))
             if hit == expected:
                 print(f"  ok   {label:28} {'PASS' if hit else 'miss'}")

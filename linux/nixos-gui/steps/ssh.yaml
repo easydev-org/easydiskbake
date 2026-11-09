@@ -32,18 +32,6 @@ name: linux-nixos-gui - sshd
 resolution: [1920, 1080]
 
 vars:
-  # THE ACCOUNT THIS DISK LOGS IN WITH, WHICH IS NOT ALWAYS `user`.
-  #
-  # The console login types this, so it has to be the name the DISK has - the same one
-  # `ssh_user` gives ssh, when a file declares one. mint's tty3 shows it plainly:
-  #
-  #     DOCKERdocker-Standard-PC-Q35-ICH9-2009 login:
-  #
-  # and typing `docker` there fails. Defaults to `user` so a file that does not care is
-  # unchanged.
-  console_user:
-    from: args.user
-    default: docker
   password:
     from: args.password
     default: admin
@@ -98,6 +86,37 @@ steps:
     settle: 5
     optional: true
 
+  # THE USER TILE FIRST: GDM ASKS WHO, THEN FOR THE PASSWORD.
+  #
+  # THIS IS THE WHOLE ROOT CAUSE, MEASURED ON A LOCAL KVM GUEST (Zorin, 2026-11-09).
+  #
+  # What the greeter shows before anything is clicked is a USER CHOOSER, not a password
+  # prompt:
+  #
+  #     [ (avatar)  docker ]        <- a rounded tile at x=800..1115, y=448..528
+  #     Not listed?
+  #
+  # The password entry does not exist until that tile is clicked. Every earlier attempt
+  # clicked (936,628) or (960,627) - the entry's position on the SECOND screen - while the
+  # FIRST screen was showing, so the click landed on empty wallpaper, the typing went to no
+  # widget, and the recording showed a greeter that "ignored the keyboard".
+  #
+  # Proven by doing both clicks in one session on that guest: after the tile click the entry
+  # appeared, five bullets went into it (`admin`), Return logged in, and `ctrl+alt+t` then
+  # produced a `docker@docker:~$` terminal. Frame by frame:
+  #
+  #     click (960,488)      -> the entry appears
+  #     click (960,627)      -> caret in it
+  #     type admin           -> ●●●●●
+  #     Return               -> "Welcome to Zorin OS 18"
+  #
+  # (960,488) is the tile's centre on 1920x1080; it is the same rounded tile every GDM here
+  # draws, which is why one coordinate serves the four images that use GDM.
+  - name: greeter - the user tile
+    at: [960, 488]
+    settle: 4
+    optional: true
+
   - name: greeter - the password box
     at: [936, 628]
     type: "{{ password }}"
@@ -108,44 +127,6 @@ steps:
   - name: greeter - submit
     key: ret
     settle: 12
-    optional: true
-
-  # A TEXT CONSOLE, BECAUSE THIS GREETER DOES NOT TAKE SYNTHETIC KEYS.
-  #
-  # PROVEN ON ZORIN, 2026-11-09: run 42585057176's zorin walk went greeter -> this console
-  # block -> `install sshd`, and its verdict is PASS with `ssh: id/hostname -> 0:
-  # ['docker','docker']` and the PREROUTING jump in the log. mint is the control that shows the
-  # keyboard itself is fine - its LightDM answers `Invalid password, please try again` - while
-  # on this image the entry keeps its placeholder `Password` and never shows a bullet.
-  #
-  # Ctrl+Alt+F3 does not go through the greeter at all: every Linux here runs a getty on
-  # tty3, and a login there is a shell. The greeter steps stay above it, so a disk that
-  # autologins - or whose greeter does accept input - is unaffected.
-  #
-  # ALL OF IT IS `optional`, because a disk that already has a shell needs none of it.
-  - name: console - switch to tty3
-    key: ctrl+alt+f3
-    settle: 10
-    optional: true
-
-  - name: console - the login name
-    type: "{{ console_user }}"
-    settle: 3
-    optional: true
-
-  - name: console - the login name's Return
-    key: ret
-    settle: 4
-    optional: true
-
-  - name: console - the password
-    type: "{{ password }}"
-    settle: 3
-    optional: true
-
-  - name: console - the password's Return
-    key: ret
-    settle: 10
     optional: true
 
   # =======================================================================================

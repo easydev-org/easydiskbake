@@ -127,107 +127,6 @@ def type_line(q, text: str, per_char: float = 0.002) -> None:
     ])
 
 
-def _declares_serial(walk: str) -> bool:
-    """Whether this distribution's ssh.yaml asks for the serial line."""
-    try:
-        import yaml
-        with open(walk, encoding="utf-8") as fh:
-            doc = yaml.safe_load(fh) or {}
-    except (OSError, Exception):                   # noqa: BLE001
-        return False
-    return bool(doc.get("serial"))
-
-
-def _serial_install(walk: str, ser, *, note, finish, password: str,
-                    ssh_port: int) -> int:
-    """Log in on the guest's serial getty and run the file's `serial_run` lines.
-
-    THE COMMANDS COME FROM THE DISTRIBUTION'S OWN FILE. `serial_run` is a list of shell
-    lines, and each is written to the console followed by a carriage return. Nothing here
-    decides what to install - that is ghostbsd's `sysrc sshd_enable=YES` in its own YAML.
-
-    THE WAITS ARE THE INTERFACE, the same argument lib/serial.py makes: a serial console is
-    a character stream, and waiting for a prompt string is reading a screen in text form. A
-    package install gets longer than a one-line rc.conf change, and the file says which is
-    which with a `wait:` per line.
-    """
-    import session
-
-    try:
-        import yaml
-        with open(walk, encoding="utf-8") as fh:
-            doc = yaml.safe_load(fh) or {}
-    except Exception as exc:                        # noqa: BLE001
-        note(f"=== THE WALK CANNOT BE READ: {exc} ===")
-        return finish(2)
-
-    login = str(doc.get("serial_login") or doc.get("serial_user") or "docker")
-    lines = doc.get("serial_run") or []
-    if not lines:
-        note("=== serial: true BUT NO serial_run LINES ===")
-        return finish(2)
-
-    # THE FILE IS A TEMPLATE, SO SUBSTITUTE IT THE WAY steps.py DOES.
-    #
-    # `{{ password }}` was typed at the console LITERALLY on run B62C6B6's ghostbsd, because
-    # this path read the YAML and sent the strings without resolving the variables the same
-    # file declares under `vars:`. The console answered `su: Sorry` for a command that had
-    # never contained the password at all.
-    def subst(text: str) -> str:
-        out = str(text)
-        for key, spec in (doc.get("vars") or {}).items():
-            value = spec.get("default", "") if isinstance(spec, dict) else spec
-            out = out.replace("{{ " + key + " }}", str(value))
-            out = out.replace("{{" + key + "}}", str(value))
-        return out
-
-    note(f"  serial: logging in as {login}")
-    ser.say(subst(login), wait=3.0)
-    ser.say(subst(password), wait=4.0)
-
-    for entry in lines:
-        if isinstance(entry, str):
-            command, wait = subst(entry), 20.0
-        else:
-            command = subst(entry.get("run") or "")
-            wait = float(entry.get("wait", 20.0))
-        if not command:
-            continue
-        note(f"  serial: {command[:100]}")
-        ser.say(command, wait=wait)
-
-    if not session.wait_for_ssh(ssh_port, 600, note=note):
-        note("=== THE GUEST DID NOT ANSWER ON THE FORWARDED PORT ===")
-        return finish(1)
-
-    status, output = session.ssh(ssh_port, "uname -a; hostname")
-    note(f"ssh: uname -> {status}")
-    for line in (output or "").splitlines()[:4]:
-        note(f"  {line}")
-    if status != 0:
-        return finish(1)
-
-    import net
-    external = net.external_addresses()
-    if not external:
-        note("=== NO EXTERNAL ADDRESS: the port is not reachable from another container ===")
-        return finish(1)
-    reached = []
-    for address in external:
-        status, out = session.ssh(ssh_port, "echo reached-on-this-address; id -un",
-                                  host=address)
-        note(f"ssh: {address}:{ssh_port} -> {status}")
-        for line in (out or "").splitlines()[:2]:
-            note(f"  {line}")
-        if status == 0 and "reached-on-this-address" in (out or ""):
-            reached.append(address)
-    if not reached:
-        note("=== THE GUEST ANSWERS ON THE BRIDGE BUT NOT ON A ROUTABLE ADDRESS ===")
-        return finish(1)
-    note(f"ssh: {ssh_port} answers on {', '.join(reached)}")
-    return finish(0)
-
-
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--disk", default=None, help="a local qcow2")
@@ -438,22 +337,6 @@ def main(argv: list[str]) -> int:
                 return finish(2)
             note(f"=== the walk: {os.path.join(root, 'steps', 'ssh.yaml')} ===")
 
-            # A DISK WITH A SERIAL GETTY IS INSTALLED OVER THE SERIAL LINE.
-            #
-            # GhostBSD's console log ends with
-            #
-            #     FreeBSD/amd64 (docker-ghostbsd) (ttyu0)
-            #     login:
-            #
-            # - a getty waiting on the serial line, which is the one transport in this
-            # repository that never touches the desktop. The YAML declares it with
-            # `serial: true` and carries the commands in `serial_run`, so nothing about
-            # WHICH commands run is decided here.
-            if _declares_serial(walk):
-                note("  this walk declares a serial console; installing over ttyu0")
-                return _serial_install(walk, ser, note=note, finish=finish,
-                                       password=args.password,
-                                       ssh_port=args.ssh_port)
             # THE ACCOUNT THIS DISK ACTUALLY CARRIES, READ FROM ITS OWN FILE.
             #
             # It defaults to --user, which is `docker` - the account every answer-file install

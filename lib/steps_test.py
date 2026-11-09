@@ -593,12 +593,14 @@ def test_ssh_matchers_on_their_frames() -> None:
     against a daemon the PREVIOUS run had left listening.
     """
     import ssh_frames_test
-    if not all(os.path.isfile(path) for _, path, _, _ in ssh_frames_test.FRAMES):
+    if not all(os.path.isfile(path) for _, path, _ in ssh_frames_test.FRAMES):
         print("  skip ssh matchers: the measured frames are not in testdata/ssh")
         return
-    for name, which in (("the remote login pane is up", 2), ("the switch reads on", 3)):
+    for name, key in (("the remote login result is on screen", "result"),
+                      ("the remote login pane is up", "pane"),
+                      ("the switch reads on", "switch")):
         for row in ssh_frames_test.FRAMES:
-            label, path, expected = row[0], row[1], row[which]
+            label, path, expected = row[0], row[1], row[2][key]
             hit = ssh_frames_test.matches(name, ssh_frames_test.FrameDriver(path))
             if hit != expected:
                 FAILED.append(f"{name}: {label} read {'PASS' if hit else 'miss'}, "

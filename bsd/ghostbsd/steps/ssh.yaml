@@ -31,53 +31,6 @@ name: bsd-ghostbsd-mate - sshd
 
 resolution: [1920, 1080]
 
-# THIS IMAGE HAS A SERIAL GETTY, AND THAT IS THE TRANSPORT THIS FILE USES.
-#
-# Its console log ends with
-#
-#     FreeBSD/amd64 (docker-ghostbsd) (ttyu0)
-#
-#     login:
-#
-# - a getty waiting on the serial line. That is the one channel in this repository that does
-# not touch the desktop at all, and on this image the desktop is where everything went wrong:
-# run 42573082305's recording is LightDM at (259,568), a `docker` login that DID work, a MATE
-# desktop at t=120, and then BLACK at t=210 because the screensaver took the screen while the
-# walk pressed a shortcut MATE does not bind (`ctrl+alt+t`). The terminal never opened.
-#
-# So `serial: true` sends this file down `lib/ssh_step.py`'s serial path, which types the
-# lines below into ttyu0 after the getty's `login:`. The `steps:` walk underneath is kept for
-# a disk that has no serial console - it is still the description of how this image would be
-# driven through its desktop.
-#
-# FREEBSD HAS NO sudo HERE, AND `su -m root` REFUSED THE PASSWORD.
-#
-# Run b62c6b6's console shows the serial login working - `login: docker`, the password taken -
-# and then
-#
-#     su: Sorry
-#
-# for `su -m root`. The comment in install.yaml claims the installer sets root's password to
-# the same one, and that is not what the disk does.
-#
-# SO THE SERIAL GETTY IS ASKED FOR root DIRECTLY. FreeBSD's installer gives root a password
-# (it asks for one), the getty on ttyu0 offers `login:` to root like anyone else, and a root
-# shell needs no su at all. `sshd_enable` and `service sshd` are then plain rc.conf and rc.d
-# commands, which is this distribution's own shape and nobody else's.
-serial: true
-serial_login: root
-serial_run:
-  - run: "{{ password }}"
-    wait: 6
-  - run: sysrc sshd_enable=YES
-    wait: 12
-  - run: service sshd restart || service sshd start
-    wait: 25
-  - run: service sshd status
-    wait: 12
-  - run: sockstat -4 -l | grep sshd || true
-    wait: 10
-
 vars:
   password:
     from: args.password

@@ -139,11 +139,60 @@ steps:
     modifier: meta_l
     settle: 10
 
+  # THE RESULT HAS TO BE ON SCREEN BEFORE THE ROW IS CLICKED.
+  #
+  # This was a single `at: [703, 336]` with `settle: 12`, and run 42584262403 lost the stage to
+  # it. The log says the click went out at 09:47:23 - and the recording's frames show the
+  # sidebar still filtering at that moment, with the "Remote Login" row arriving afterwards.
+  # The click landed on the row's future position while the list was empty, the detail pane
+  # stayed on "Sign in", and the gate below waited out its 97 seconds and failed.
+  #
+  # A `settle:` is a guess about how long a filter takes; a wait for the result is the fact.
+  #
+  # THE LIST HAS A 'Sharing' HEADER AND THE ROW UNDER IT, and that pair is what the wait reads
+  # for - not the words in the search field above them, which say 'remote login' whether or not
+  # the list has produced anything.
+  #
+  # THE CROP COVERS BOTH SHAPES, because macOS 15 draws this two ways and both are in the
+  # recordings here: run 42473082131 got a SHEET ('Remote Login: off ... allow full disk access
+  # for remote users'), run 42584262403 got the row INLINE in the sidebar ('Sharing' header,
+  # 'Remote Login' beneath it). The rectangle is the sidebar strip joined to the sheet's body,
+  # and the four frames say it separates cleanly:
+  #
+  #                       sharing+remote      allow full disk access
+  #     sheet, off             -                       HIT
+  #     sheet, on              -                       HIT
+  #     inline row            HIT                      -
+  #     No Results             -                       -
+  #
+  # so either group means the result is there, and No Results satisfies neither.
+  - name: the remote login result is on screen
+    until_any:
+      - [sharing, remote]
+      - [allow, full, disk, access]
+    region: [590, 240, 1210, 720]
+    scale: 2
+    timeout: 90
+    poll: 2
+
   # THE RESULT ROW. The list puts "Sharing" as a header and "Remote Login" under it, and the
   # pane has to finish swapping - that swap is a whole page of layout, and a click that
   # arrives first selects the sidebar item while the right side still shows Sharing's
   # overview, putting every later click on a list row.
   - name: open the remote login pane
+    at: [703, 336]
+    settle: 12
+
+  # ...AND IT IS CLICKED AGAIN IF THE PANE DID NOT SWAP.
+  #
+  # The gate below is the real check, and on run 42584262403 it failed with the row visibly
+  # present - the click had gone out too early. A second click costs two seconds and turns
+  # that failure into a retry; the gate still decides, so a machine that never swaps is still
+  # a failure and not a silent success.
+  - name: open the remote login pane again
+    unless: [allow, full, disk, access]
+    region: [726, 300, 1200, 715]
+    scale: 2
     at: [703, 336]
     settle: 12
 
