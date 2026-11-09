@@ -138,16 +138,22 @@ steps:
   # collected (280 opened once, 306 opened once, the rest did nothing) describe where the
   # caption of one control ends and the caption of the next begins.
   - name: erase - open the sheet
-    click_word: erase
-    # THE BAND COVERS BOTH LAYOUTS THAT HAVE BEEN MEASURED. Disk Utility centres its
-    # window and the window's height follows the detail pane's table, which follows the DISK:
-    # Erase's caption sat at y=297 for a 68.72 GB target and y=336 for a 137.44 GB one. The
-    # band spans 270..355 so either reading lands inside it, and the glyph offset is applied
-    # to whatever y the caption actually has.
-    region: [1240, 270, 1350, 355]
-    region_at: [1920, 1080]
-    scale: 2
-    word_dy: 17
+    # ONE COORDINATE, MEASURED ON THE 128G DISK THE WORKFLOW ACTUALLY BAKES.
+    #
+    # The control is the GLYPH, not the caption under it. Measured on this run's own frame
+    # (137.44 GB, which is a 128G qcow2) by reading the toolbar's OCR boxes:
+    #
+    #     'Erase' caption centre (1290, 336)
+    #     '=)'    glyph   centre (1288, 315)   <- the button
+    #
+    # Clicking the caption does nothing - verified on a 64G disk too, where the same two boxes
+    # sit 37 pixels higher (caption 299, glyph 277) because Disk Utility centres its window and
+    # the window's height follows the detail pane's table, which follows the disk size.
+    #
+    # THAT IS WHY THE DISK SIZE IS FIXED HERE AND NOT A VARIABLE: 128G is what the workflow
+    # passes, so the toolbar is where it was measured. A 64G bake would put this button 37
+    # pixels higher and this coordinate would miss - which is what the local pod was doing.
+    at: [1290, 315]
     settle: 6
     expect_any:
       - [erase, deleted]
