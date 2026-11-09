@@ -271,6 +271,8 @@ def main(argv: list[str]) -> int:
                         "(a userspace NAT that gives the guest no reachable network)")
     p.add_argument("--ssh-port", type=int, default=2222,
                    help="host port forwarded to the guest's ssh port")
+    p.add_argument("--adb-port", type=int, default=5554,
+                   help="the emulator's adb port; adb does not see the device without one")
     a = p.parse_args(argv)
     D = os.path.abspath(a.dir)
 
@@ -313,6 +315,24 @@ def main(argv: list[str]) -> int:
         # the slot the fstab's by-name paths resolve against.
         "-cache", os.path.join(D, "cache.img"),
         "-datadir", D,
+        # `-port 5554` IS WHAT MAKES adb WORK, AND ITS ABSENCE IS WHY EVERY EARLIER RUN
+        # LOGGED `Unable to connect to adb daemon on port: 5037`.
+        #
+        # The emulator only registers with the adb server when it is given a port. Without
+        # one it starts, boots, and is invisible to adb forever:
+        #
+        #     $ adb devices
+        #     List of devices attached
+        #     (empty)
+        #
+        # WITH it, the device appears ten seconds into the boot:
+        #
+        #     --- t=10s ---
+        #     emulator-5554   device
+        #
+        # and `adb shell` runs in u:r:shell:s0, which is the domain that CAN read
+        # /system/bin/ip - the thing init's goldfish_setup domain may not do.
+        "-port", str(a.adb_port),
         "-no-window", "-no-audio", "-no-boot-anim", "-no-snapshot", "-no-metrics",
         "-gpu", "swiftshader_indirect",
         "-memory", "4096", "-cores", "4",

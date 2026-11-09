@@ -101,6 +101,7 @@ STEP_KEYS = {    "name",        # required: what the log calls this step
     "keep_alive",  # click harmlessly between polls, for a guest that blanks its own screen
     "require",     # fail the whole walkthrough if this step did not run
     "optional",    # a step that may be skipped without failing the run
+    "once",        # a pane answered at most ONCE, for a pane that starts a slow process
     "repeat",      # (count, settle) for a footer button pressed the same way N times
     "sweep",       # a band of clicks at one x, stopping when the sheet opens
     "wait_for_change",  # until the screen stops looking like it did before
@@ -1182,14 +1183,24 @@ def walk_panes(driver: Driver, steps: Walk, values: dict[str, str], *,
             if not matched:
                 continue
 
-            if counts.get(here.name, 0) >= repeat_max:
+            # `once` IS FOR A PANE WHOSE ANSWER TAKES LONGER THAN A PASS.
+            #
+            # The account pane answers by going to "Creating account..." for a minute with
+            # Continue greyed out. A loop that looks again before it finishes sees the same
+            # pane and runs the `do` list a second time - typing the account name into fields
+            # that already hold it. Measured on a live guest: three passes, and the form was
+            # unusable afterwards. `pane_limit` alone is not enough, because the pane is
+            # legitimately up for a while; `once` says "I have answered this, wait it out".
+            limit = 1 if here["once"] else repeat_max
+            if counts.get(here.name, 0) >= limit:
                 # A PANE THAT HAS BEEN ANSWERED ITS LIMIT IS TREATED AS "NOTHING MATCHED".
                 #
                 # It must NOT set ran_one: that flag means "a pane was answered, go round
                 # again", and setting it here is what made this loop spin forever - the
                 # update pane matched, was refused, and the stuck timer was never consulted
                 # because the loop always took the `if ran_one: continue` branch.
-                log(f"  {here.name}: seen {repeat_max} times and still up; not clicking again")
+                log(f"  {here.name}: answered {counts.get(here.name, 0)} time(s); "
+                    f"not clicking again")
                 idle_since = idle_since or time.time()
                 break
 
