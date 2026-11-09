@@ -1177,7 +1177,12 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222) -> None:
         for index, line in enumerate(body.splitlines()):
             if not line.strip():
                 continue
-            unsupported = keys.type_text(driver.q, line, per_char=0.02)
+            # 40 ms is the measured floor for a SHELL COMMAND with shift-heavy text. At 20 ms
+            # the guest lost shift releases - see lib/keys.type_text, which holds each chord
+            # open for `hold` seconds precisely because of this - and the command arrived as
+            # `export DEBIAN_FRONTEND+NONINTERACTIVE: APT_GET UPDATE`. 40 ms leaves room for
+            # the chord AND the character, and a 130-character line is still five seconds.
+            unsupported = keys.type_text(driver.q, line, per_char=0.04)
             if unsupported:
                 log(f"  COULD NOT TYPE {unsupported!r} on line {index + 1}")
             driver.qmpmod.key(driver.q, "ret")

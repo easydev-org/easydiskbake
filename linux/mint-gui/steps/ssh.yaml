@@ -56,8 +56,17 @@ steps:
   #
   # `optional` because a disk that DOES autologin never shows this page, and on one of those
   # the click lands on the desktop and the typing goes to nothing that matters.
+  # LIGHTDM DRAWS A COMPACT GREETER IN THE TOP-LEFT CORNER, AND (960,640) MISSED IT.
+  #
+  # Measured on run 42573050688's own recording (mint) and run 42573082305's (ghostbsd), the
+  # password entry's white interior is x=96..423, y=550..587 - a centre of (259, 568). The
+  # press at (960,640) landed on wallpaper, so the typed password went nowhere and the greeter
+  # answered `Invalid password, please try again` on the next frame.
+  #
+  # GDM (fedora, ubuntu, kubuntu, cachyos...) centres its entry at (936,628), which is why the
+  # same constant worked there and only the LightDM images failed.
   - name: greeter - the password box
-    at: [960, 640]
+    at: [259, 568]
     settle: 2
     optional: true
 

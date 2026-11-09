@@ -74,7 +74,7 @@ def for_text(text: str) -> list[tuple[str, object]]:
     return out
 
 
-def type_text(q, text: str, per_char: float = 0.15) -> list[str]:
+def type_text(q, text: str, per_char: float = 0.15, hold: float = 0.02) -> list[str]:
     """Type what CAN be typed and return the characters that could not.
 
     THE OTHER TWO FUNCTIONS IN THIS MODULE REFUSE; THIS ONE REPORTS. `for_text()` raises on
@@ -101,6 +101,34 @@ def type_text(q, text: str, per_char: float = 0.15) -> list[str]:
     150 ms BETWEEN KEYS, matching windows/11/ssh.py: a wizard that validates as it is typed
     drops characters at 30, and the caller's own 0.4 s is for forms that repaint on every
     keystroke. This default is for a shell prompt.
+
+    `hold` IS WHY A SHIFTED CHARACTER CAN BE FOLLOWED BY A LOWERCASE ONE.
+
+    Every shifted character here is `key_combo(q, "shift", <key>)`, and that used to send
+    shift down, the key down and up, and shift up as ONE `input-send-event` request. At the
+    20 ms gap the ssh stage types its install commands with, the guest's input stack dropped
+    the shift RELEASE often enough that the modifier stayed down - and from that character on
+    every keystroke arrived shifted.
+
+    Measured on run 42573056391's own recording (mx-gui), the command this stage typed:
+
+        export DEBIAN_FRONTEND=NONINTERACTIVE; apt-get update && apt-get install ...
+        export DEBIAN_FRONTEND+NONINTERACTIVE; APT_GET UPDATE && apt-get install ...
+
+    the second line being what arrived: `=` became `+` (shift+equal), `-` became `_`
+    (shift+minus), and the lowercase words came out upper case. The shell answered
+
+        sh: 1: export: DEBIAN_FRONTEND+NONINTERACTIVE: bad variable name
+
+    and nothing was installed. THE SAME BUG BUILT A WRONG ACCOUNT on the same round: mint's
+    installer derives the login name from the full name, and the full name had been typed as
+    `DOCKER` - its lightdm title bar on run 42573050688 reads
+    `DOCKERdocker-Standard-PC-Q35-ICH9-2009`.
+
+    So a shifted character is sent as TWO requests with `hold` seconds between the press and
+    the release. 20 ms is long enough for the guest to read the modifier down before the key
+    and to see it come back up, and short enough that a 120-character line is still a few
+    seconds.
     """
     import time as _time
 
@@ -113,9 +141,9 @@ def type_text(q, text: str, per_char: float = 0.15) -> list[str]:
             continue
         try:
             if ch.isupper() and ch.isalpha():
-                qmpmod.key_combo(q, "shift", ch.lower())
+                qmpmod.key_combo(q, "shift", ch.lower(), hold=hold)
             elif ch in SHIFTED:
-                qmpmod.key_combo(q, "shift", SHIFTED[ch])
+                qmpmod.key_combo(q, "shift", SHIFTED[ch], hold=hold)
             else:
                 qmpmod.key(q, qcode_for(ch))
         except (KeyError, ValueError):
@@ -125,7 +153,8 @@ def type_text(q, text: str, per_char: float = 0.15) -> list[str]:
     return unsupported
 
 
-def type_into(q, text: str, per_char: float = 0.03, sleep=None) -> None:
+def type_into(q, text: str, per_char: float = 0.03, sleep=None,
+              hold: float = 0.02) -> None:
     """Send `text` to a QMP connection one keystroke at a time.
 
     `per_char` is the gap between keystrokes. 0.03s is what the Windows stage uses for a
@@ -139,7 +168,10 @@ def type_into(q, text: str, per_char: float = 0.03, sleep=None) -> None:
     wait = sleep or _time.sleep
     for kind, payload in for_text(text):
         if kind == "combo":
-            qmpmod.key_combo(q, *payload)          # type: ignore[arg-type]
+            # A CHORD IS HELD FOR A MOMENT, for the reason type_text documents: sending the
+            # modifier's down and up in one request loses the release on a guest whose input
+            # stack is slower than the request, and every later character arrives shifted.
+            qmpmod.key_combo(q, *payload, hold=hold)   # type: ignore[arg-type]
         else:
             qmpmod.key(q, payload)                 # type: ignore[arg-type]
         wait(per_char)
