@@ -392,14 +392,31 @@ def main() -> int:
     #
     # Without --scope they land in two different trees, and a launcher that named a path would
     # be right about one of them.
-    win_dev_text = read("windows/11/steps/dev.yaml")
-    for pkg, step_name in (("Python.Python.3.13", "install python"),
+    # ALL SEVEN, because "install to the system" is a property of the stage and not of the
+    # three that happened to be ambiguous. The four others were machine-only already - naming
+    # the scope says so at the call site instead of leaving a reader to check a manifest.
+    for pkg, step_name in (("Microsoft.VisualStudio.2022.BuildTools", "install the build tools"),
+                           ("Microsoft.WindowsSDK.10.0.26100", "install the windows sdk"),
+                           ("Microsoft.DotNet.SDK.10", "install the dotnet sdk"),
+                           ("Microsoft.PowerShell", "install powershell 7"),
+                           ("Python.Python.3.13", "install python"),
                            ("OpenJS.NodeJS.LTS", "install node"),
                            ("Git.Git", "install git")):
         step = next((s for s in (win_dev_walk.get("steps") or [])
                      if s.get("name") == step_name), {})
+        body = str(step.get("ssh") or step.get("script") or "")
         check(f"{step_name} pins machine scope", "windows/11/steps/dev.yaml",
-              pkg in str(step.get("ssh") or "") and "--scope machine" in str(step.get("ssh") or ""))
+              pkg in body and "--scope machine" in body)
+
+    # POWERShell IS THE ONE WHERE THE SCOPE PICKS A DIFFERENT FILE, not just a different tree.
+    # Its first three installers are msix (per-user Appx, no `pwsh` on the machine PATH) and the
+    # wix/MSI variant comes after them - so dropping the flag would leave `pwsh -v` failing
+    # while the package is genuinely installed for that account.
+    pwsh = next((s for s in (win_dev_walk.get("steps") or [])
+                 if s.get("name") == "install powershell 7"), {})
+    check("powershell installs the MSI, not the per-user msix",
+          "windows/11/steps/dev.yaml",
+          "--scope machine" in str(pwsh.get("ssh") or ""))
 
     # AND IT ONLY WORKS BECAUSE THE ANSWER FILE TURNS UAC OFF. `elevatesSelf` means a UAC prompt
     # when the session is not already elevated, and a prompt over ssh is a dialog nobody can

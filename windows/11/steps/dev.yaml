@@ -62,26 +62,40 @@ steps:
   - name: install the build tools
     script: |
       @echo off
-      winget install --id Microsoft.VisualStudio.2022.BuildTools --exact --source winget --version 17.14.44 --accept-source-agreements --disable-interactivity --quiet --wait --norestart --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+      winget install --id Microsoft.VisualStudio.2022.BuildTools --exact --source winget --scope machine --version 17.14.44 --accept-source-agreements --disable-interactivity --quiet --wait --norestart --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
     script_shell: cmd
     script_name: install-buildtools.bat
     timeout: 3600
     optional: true
 
   - name: install the windows sdk
-    ssh: winget install --id Microsoft.WindowsSDK.10.0.26100 --exact --source winget --accept-source-agreements --accept-package-agreements --disable-interactivity
+    ssh: winget install --id Microsoft.WindowsSDK.10.0.26100 --exact --source winget --scope machine --accept-source-agreements --accept-package-agreements --disable-interactivity
     timeout: 2400
     optional: true
 
   - name: install the dotnet sdk
-    ssh: winget install --id Microsoft.DotNet.SDK.10 --exact --source winget --accept-source-agreements --accept-package-agreements --disable-interactivity
+    ssh: winget install --id Microsoft.DotNet.SDK.10 --exact --source winget --scope machine --accept-source-agreements --accept-package-agreements --disable-interactivity
     timeout: 2400
     optional: true
 
   # POWERSHELL 7 IS LAST, AND THAT IS NOT ALPHABETICAL. Its MSI can drop the ssh session it is
   # running over, so anything after it would be the thing that disappeared.
+  # `--scope machine` IS NOT COSMETIC HERE - IT PICKS A DIFFERENT INSTALLER.
+  #
+  # Microsoft.PowerShell ships FIVE installers and the msix ones are listed first:
+  #
+  #     Platform: Windows.Universal, InstallerType: msix     x64, x86, arm64
+  #     Architecture: x64,           InstallerType: wix, Scope: machine
+  #
+  # winget takes the first that fits, so without --scope this installs the MSIX: an Appx
+  # package under the user's profile, registered per-user, and NOT on the machine PATH as
+  # `pwsh`. The step after this one asks `pwsh -v` and would report a toolchain with no
+  # PowerShell 7 on it - while the package is genuinely installed for the account that ran it.
+  #
+  # `--scope machine` selects the wix/MSI variant instead, which lands in
+  # C:\Program Files\PowerShell\7 and puts pwsh on the machine PATH. Same id, different file.
   - name: install powershell 7
-    ssh: winget install --id Microsoft.PowerShell --exact --source winget --accept-source-agreements --accept-package-agreements --disable-interactivity
+    ssh: winget install --id Microsoft.PowerShell --exact --source winget --scope machine --accept-source-agreements --accept-package-agreements --disable-interactivity
     timeout: 2400
     optional: true
 
