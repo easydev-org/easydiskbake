@@ -316,14 +316,20 @@ def configure_network(port: int, seconds: int) -> bool:
     A device that never appears is not a failure of this step - it is reported and the boot
     continues, because the screenshot and the boot verdict do not depend on the network.
     """
+    # THE DEVICE HAS TO BE ENUMERATED, NOT JUST REACHABLE. `adb shell true` prints nothing
+    # on success AND on failure, so the presence of the serial in `adb devices` is the test
+    # that actually distinguishes them.
     deadline = time.time() + max(seconds * 0.5, 90)
+    live = False
     while time.time() < deadline:
-        if adb(port, "shell", "true", timeout=10) == "":
-            # an empty answer from `true` is success; `not found` is not
+        devices = adb(port, "devices", timeout=10)
+        if f"emulator-{port}\tdevice" in devices:
+            live = True
             break
         time.sleep(5)
-    else:
-        print(f"[run_qemu] adb device emulator-{port} never appeared", flush=True)
+    if not live:
+        print(f"[run_qemu] adb device emulator-{port} never appeared; "
+              f"the network step is skipped", flush=True)
         return False
 
     print(f"[run_qemu] adb device emulator-{port} is up", flush=True)
@@ -490,6 +496,11 @@ def main(argv: list[str]) -> int:
                                 stdout=fh, stderr=subprocess.STDOUT, env=env)
         started = time.time()
         threading.Thread(target=drive, args=(proc, a.seconds), daemon=True).start()
+        # THE NETWORK GOES IN WHILE THE GUEST IS STILL BOOTING, from a thread of its own.
+        # Doing it after the emulator is killed would be too late, and doing it inline would
+        # hold up the console script that reads the boot state.
+        threading.Thread(target=configure_network, args=(a.adb_port, a.seconds),
+                         daemon=True).start()
         try:
             while time.time() - started < a.seconds and proc.poll() is None:
                 time.sleep(5)

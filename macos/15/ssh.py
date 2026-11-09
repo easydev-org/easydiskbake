@@ -418,7 +418,7 @@ def wait_for_desktop(guest: vm.Guest, frames: str, timeout: int) -> bool:
 KEYBOARD_ASSISTANT_QUIT = (1228, 826)
 
 
-def dismiss_keyboard_assistant(guest: vm.Guest) -> bool:
+def dismiss_keyboard_assistant(guest: vm.Guest, q=None) -> bool:
     """Click Quit on the "Keyboard Setup Assistant" dialog, if it is up.
 
     THIS DIALOG EATS THE NEXT KEYSTROKE, WHICH IS WHY sshd WAS NEVER ENABLED.
@@ -470,7 +470,13 @@ def dismiss_keyboard_assistant(guest: vm.Guest) -> bool:
     #
     # A click on a machine with no dialog is harmless - that point is wallpaper - so three is
     # free when the dialog is absent and enough when it arrives late.
-    q = qmpmod.QMP(kb_work)
+    # `q=` IS THE SAME SHARING RULE AS enable_remote_login()'S, AND THIS IS THE CALL THAT MADE
+    # IT NECESSARY. qemu's -qmp unix:... accepts ONE client, so a walkthrough that holds the
+    # socket and calls enable_remote_login(q=...) still hung here: this function opened a
+    # SECOND connection for the three Quit clicks, which got no greeting and blocked. The
+    # caller that passes one owns its lifetime; otherwise open one and close it.
+    owned = q is None
+    q = q or qmpmod.QMP(kb_work)
     try:
         for attempt in range(3):
             log(f"  clicking Quit on the Keyboard Setup Assistant at "
@@ -652,7 +658,7 @@ def enable_remote_login(guest: vm.Guest, q=None) -> None:
     # THE DIALOG OWNS THE KEYBOARD, so it is dismissed again here rather than trusting that
     # the earlier attempt was early enough. The earlier one runs right after unlock(); this
     # one runs right before the first Spotlight chord, which is the moment that matters.
-    dismiss_keyboard_assistant(guest)
+    dismiss_keyboard_assistant(guest, q=q)
 
     # `q=` IS FOR A CALLER THAT ALREADY HOLDS THE SOCKET, AND PASSING IT IS NOT OPTIONAL THERE.
     #
