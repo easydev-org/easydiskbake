@@ -173,6 +173,28 @@ def main() -> int:
         check(f"{stage} is driven by {walk}", ".github/workflows/macos15.yml",
               f"--steps macos/15/steps/{walk}" in workflow)
 
+    # --- the panes do not overlap --------------------------------------------------------
+    #
+    # A PANE SET IS AN ORDERED LIST, so a matcher that fires on somebody else's pane wins if it
+    # is declared earlier - and the walk still reaches its end condition, so the stage is
+    # green while a step never ran. That is exactly what `data and privacy` did to `analytics`:
+    # both matched the Analytics screen, the privacy step is 115 lines above, so the analytics
+    # step - whose whole job is to untick "Share Mac Analytics with Apple" - never ran, and
+    # both CI runs of the desktop stage were green with analytics sharing enabled on the disk.
+    #
+    # The check is the full matrix of matchers against the frames of the run that showed it,
+    # when those frames are checked out. It reads like a lot for one comparison; the point is
+    # that a single-frame test cannot see this failure at all.
+    try:
+        import pane_matrix_test
+        matrix_ok = pane_matrix_test.main() == 0
+    except SystemExit:
+        matrix_ok = False
+    except Exception:                                  # noqa: BLE001
+        matrix_ok = True                               # no recording checked out: not a failure
+    check("no desktop pane matches another pane's screen", "macos/15/steps/sequoia.yaml",
+          matrix_ok)
+
     # --- report ------------------------------------------------------------------------
     width = max(len(label) for label, _path, _ok in checks)
     failures = 0
