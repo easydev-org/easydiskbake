@@ -103,6 +103,21 @@ for pair in "macos15-setup:macos/15/steps/setup.yaml:sequence" \
       echo "  FAIL  $walk: no 'THE END' in this stage's log - the walk did not finish"
       FAILED=1
     fi
+    # AND THE PANES THAT MUST HAVE RUN, SPECIFICALLY. Reaching the end is not enough: both CI
+    # runs of the desktop stage before this change reached Finder while the ANALYTICS step had
+    # never executed, because `data and privacy` matched that screen first and won on order.
+    # The disk shipped with "Share Mac Analytics with Apple" ticked and every job was green.
+    #
+    # A pane that is always offered and answers something worth asserting belongs here. The
+    # names are the `- name:` of the pane, which is what the walk logs as `=== <name>`.
+    for needed in analytics "data and privacy"; do
+      if printf '%s' "$text" | grep -q "=== $needed\$"; then
+        echo "  ok    $walk: the '$needed' pane was answered"
+      else
+        echo "  FAIL  $walk: the '$needed' pane never ran - the stage may still be green"
+        FAILED=1
+      fi
+    done
     continue
   fi
 
