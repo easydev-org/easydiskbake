@@ -39,12 +39,6 @@ on:
         description: "Install NixOS GNOME through Calamares"
         type: boolean
         default: true
-      iso_url:
-        description: "ISO URL (empty for the pinned image)"
-        default: ""
-      iso_sha256:
-        description: "ISO sha256 (empty for the pinned value)"
-        default: ""
       disk_size:
         description: "guest disk size"
         default: "64G"
@@ -117,6 +111,18 @@ jobs:
             set -euo pipefail
             python3 lib/ci.py tags --prefix iso-
 
+      # FROM ghcr, AND ONLY FROM ghcr - the same rule every other GUI bake follows.
+      #
+      # The image is pinned in lib/images.py's DESKTOP table, which is the ONE table
+      # artifacts-publish.py reads, so `gh workflow run artifacts-publish.yml
+      # -f which=iso-nixos-graphical` is what puts it in the package. lib/fetch_iso.py pulls
+      # that tag and re-checks the size and the sha256 against the pin; a tag that is not
+      # published fails with the command that publishes it rather than quietly downloading
+      # 3.7 GiB from a host nobody chose.
+      #
+      # THERE IS NO `iso_url` OVERRIDE, DELIBERATELY. An input that downloads from an
+      # arbitrary URL is a second source of truth for "which bytes did this bake run
+      # against", and this repository's whole caching design exists to have exactly one.
       - name: fetch the graphical ISO
         uses: easydev-org/easyactions/log-stream@main
         with:
@@ -126,15 +132,7 @@ jobs:
           command: |
             set -euo pipefail
             mkdir -p out/iso
-            URL="${{ inputs.iso_url }}"
-            if [ -n "$URL" ]; then
-              echo "using the URL given: $URL"
-              curl -fL --retry 3 -o out/iso/nixos-graphical.iso "$URL"
-            else
-              # FROM ghcr, THE SAME AS EVERY OTHER GUI BAKE: fetched once, verified, pushed
-              # as :iso-nixos-graphical. A missing tag names the command that publishes it.
-              python3 lib/fetch_iso.py nixos-graphical "out/iso/nixos-graphical.iso"
-            fi
+            python3 lib/fetch_iso.py nixos-graphical "out/iso/nixos-graphical.iso"
 
       - name: install through Calamares
         uses: easydev-org/easyactions/log-stream@main
