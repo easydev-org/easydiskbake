@@ -12,10 +12,12 @@
 #
 #     terminal    ctrl+alt+t, the session's own emulator
 #     install    DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server
-#     enable     systemctl enable --now ssh
-#     firewall   no firewall is installed on this image
+#     enable     update-rc.d ssh enable; service ssh start   (SysVinit, not systemd)
+#     firewall   ufw IS installed, and its default policy DROPS port 22
 #
-# Debian family, but MX is antiX-based: it uses sysvinit for some units and no ufw, so the enable is `systemctl ... || service` rather than systemctl alone.
+# Debian family, but MX is antiX-based: it boots SysVinit, so the service is enabled with
+# `update-rc.d` and started with `service`, not `systemctl --now`. See the note on the install
+# step, which is where `--now` refused.
 #
 # THE THREE ACTIONS ARE THE SAME EVERYWHERE, WHICH IS WHY THE SHAPE IS THE SAME:
 #
@@ -133,7 +135,7 @@ steps:
   # that does boot systemd.
   - name: install sshd
     run: |
-      echo {{ password }} | sudo -S sh -c "export DEBIAN_FRONTEND=noninteractive; apt-get update -o DPkg::Lock::Timeout=600 && apt-get install -y -o DPkg::Lock::Timeout=600 openssh-server && update-rc.d ssh enable; service ssh start; service ssh status" 2>&1 | tail -12
+      echo {{ password }} | sudo -S sh -c "export DEBIAN_FRONTEND=noninteractive; apt-get update -o DPkg::Lock::Timeout=600 && apt-get install -y -o DPkg::Lock::Timeout=600 openssh-server && update-rc.d ssh enable; service ssh start; ufw allow 22/tcp; ufw status | head -6; service ssh status" 2>&1 | tail -16
     terminal_wait: 0
     settle: 120
 
