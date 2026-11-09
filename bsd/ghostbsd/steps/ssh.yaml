@@ -50,16 +50,30 @@ resolution: [1920, 1080]
 # a disk that has no serial console - it is still the description of how this image would be
 # driven through its desktop.
 #
-# FREEBSD HAS NO sudo: this is `su -m root`, and `sshd_enable` is an rc.conf knob rather than
-# a systemd unit - both facts of this distribution and nowhere else's.
+# FREEBSD HAS NO sudo HERE, AND `su -m root` REFUSED THE PASSWORD.
+#
+# Run b62c6b6's console shows the serial login working - `login: docker`, the password taken -
+# and then
+#
+#     su: Sorry
+#
+# for `su -m root`. The comment in install.yaml claims the installer sets root's password to
+# the same one, and that is not what the disk does.
+#
+# SO THE SERIAL GETTY IS ASKED FOR root DIRECTLY. FreeBSD's installer gives root a password
+# (it asks for one), the getty on ttyu0 offers `login:` to root like anyone else, and a root
+# shell needs no su at all. `sshd_enable` and `service sshd` are then plain rc.conf and rc.d
+# commands, which is this distribution's own shape and nobody else's.
 serial: true
-serial_login: docker
+serial_login: root
 serial_run:
-  - run: echo {{ password }} | su -m root -c "sysrc sshd_enable=YES"
-    wait: 20
-  - run: echo {{ password }} | su -m root -c "service sshd restart || service sshd start"
+  - run: "{{ password }}"
+    wait: 6
+  - run: sysrc sshd_enable=YES
+    wait: 12
+  - run: service sshd restart || service sshd start
     wait: 25
-  - run: echo {{ password }} | su -m root -c "service sshd status"
+  - run: service sshd status
     wait: 12
   - run: sockstat -4 -l | grep sshd || true
     wait: 10

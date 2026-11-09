@@ -167,15 +167,29 @@ def _serial_install(walk: str, ser, *, note, finish, password: str,
         note("=== serial: true BUT NO serial_run LINES ===")
         return finish(2)
 
+    # THE FILE IS A TEMPLATE, SO SUBSTITUTE IT THE WAY steps.py DOES.
+    #
+    # `{{ password }}` was typed at the console LITERALLY on run B62C6B6's ghostbsd, because
+    # this path read the YAML and sent the strings without resolving the variables the same
+    # file declares under `vars:`. The console answered `su: Sorry` for a command that had
+    # never contained the password at all.
+    def subst(text: str) -> str:
+        out = str(text)
+        for key, spec in (doc.get("vars") or {}).items():
+            value = spec.get("default", "") if isinstance(spec, dict) else spec
+            out = out.replace("{{ " + key + " }}", str(value))
+            out = out.replace("{{" + key + "}}", str(value))
+        return out
+
     note(f"  serial: logging in as {login}")
-    ser.say(login, wait=3.0)
-    ser.say(password, wait=4.0)
+    ser.say(subst(login), wait=3.0)
+    ser.say(subst(password), wait=4.0)
 
     for entry in lines:
         if isinstance(entry, str):
-            command, wait = entry, 20.0
+            command, wait = subst(entry), 20.0
         else:
-            command = str(entry.get("run") or "")
+            command = subst(entry.get("run") or "")
             wait = float(entry.get("wait", 20.0))
         if not command:
             continue
