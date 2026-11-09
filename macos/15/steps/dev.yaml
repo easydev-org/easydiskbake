@@ -9,14 +9,17 @@
 # coordinates, no frames to read. That is the entire reason the stages are ordered
 # desktop -> ssh -> dev.
 #
-# WHAT IS HERE, AND THE ONE THING THAT IS NOT A PACKAGE
+# WHAT IS HERE, AND THE ORDER, WHICH IS NOT ALPHABETICAL
 #
-#     Homebrew      macOS ships none, and without one the disk cannot install anything later
-#     git node     the two a runner reaches for first
-#     python3      the system one is fine; the formula is the one with a working pip
-#     cmake jq gh  the three `brew install` lines that make a runner feel normal
-#     Xcode        the one asset that CANNOT come from Apple, and the reason this file is
-#                  shaped the way it is - see below
+#     Xcode         FIRST, because Homebrew's installer checks for a compiler and its fallback
+#                   is `sudo xcode-select --install` - a GUI prompt nobody can click over ssh
+#     Homebrew      macOS ships no package manager; without one the disk cannot install
+#                   anything later
+#     git node      from Homebrew, because the system git is a stub and the system python3's
+#     python        pip refuses to write (externally-managed-environment) - see section 4
+#     cmake jq gh
+#
+# WHY XCODE IS NOT `brew install --cask xcode`
 #
 # WHY XCODE IS NOT `brew install --cask xcode`
 #
@@ -72,26 +75,89 @@ steps:
     require_ssh: true
     timeout: 900
 
-  # --- 2. HOMEBREW, WHICH IS THE PREREQUISITE RATHER THAN ONE OF THE ENTRIES -----------
+  # --- 2. XCODE FIRST, BECAUSE HOMEBREW NEEDS A COMPILER AND WILL TRY TO POP A DIALOG -----
   #
-  # macOS ships no package manager. Homebrew is what the ecosystem uses, and a disk
-  # without one cannot install anything else later - which is why it is first and why the
+  # Homebrew's installer checks for the command line tools and, finding none, runs
+  #
+  #     sudo xcode-select --install
+  #
+  # which is a GUI prompt. Over ssh there is nobody to click it, so the install script waits
+  # and the stage times out with no clue why. Xcode ships the same tools (its clang IS the
+  # toolchain), so putting it first means `xcode-select -p` already answers when Homebrew
+  # looks.
+  #
+  # IT ALSO PUTS THE BEST FAILURE FIRST. A bad .xip stops the stage in ten minutes instead of
+  # after forty minutes of brew.
+  #
+  # Fetched and verified on the host, then copied in. The sha1 is Apple's own number for this
+  # build (see lib/xcode_asset.py); a byte that differs stops the step before 2.7 GiB has been
+  # moved into a guest.
+  #
+  # THE DESTINATION IS THE USER'S HOME, not /tmp: this is a 2.7 GiB file on a disk that is
+  # about to be published, and the step after it deletes the .xip once the app is expanded.
+  - name: fetch xcode on the host
+    python: macos_dev_asset:fetch_xcode
+
+  - name: copy xcode into the guest
+    python: macos_dev_asset:copy_xcode
+
+  # EXPANDING AND SELECTING IS ONE SCRIPT BECAUSE IT IS ONE OPERATION. `xip -x` prints nothing
+  # for twenty minutes, `xcodebuild -license accept` must come before anything asks Xcode a
+  # question, and `-runFirstLaunch` installs the SDKs (another ten). Split into steps, a
+  # failure in the middle leaves a selected Xcode with no SDK - which answers --version and
+  # cannot build, the worst of both.
+  - name: expand and select xcode
+    script: |
+      #!/bin/bash
+      # THE PASSWORD IS AN ARGUMENT BECAUSE SUDO OVER SSH HAS NO TTY. See the note in
+      # install-xcode.sh: `sudo` on this channel answers "a password is required" and the
+      # expand/move/select step is where that would first bite.
+      bash /Users/{{ user }}/install-xcode.sh /Users/{{ user }}/Xcode.xip '{{ password }}' /Applications /Users/{{ user }}/xcode-expand
+    script_shell: sh
+    script_name: run-xcode-install.sh
+    timeout: 7200
+
+  # THE .XIP IS 2.7 GiB AND THE DISK IS PUBLISHED. Leaving it behind makes every later artifact
+  # bigger for a file nothing reads again.
+  - name: remove the xip
+    ssh: rm -f /Users/{{ user }}/Xcode.xip && df -h / | tail -1
+    timeout: 300
+
+  # --- 3. HOMEBREW, WHICH IS THE PREREQUISITE RATHER THAN ONE OF THE ENTRIES -------------
+  #
+  # macOS ships no package manager. Homebrew is what the ecosystem uses, and a disk without
+  # one cannot install anything else later - which is why it is here at all and why the
   # installer's own "already installed" path is relied on rather than guarded against: it
   # exits 0 and says so.
   #
-  # THE PATH IS SET ON EVERY USE. The installer writes /opt/homebrew/bin (arm64) or
-  # /usr/local/bin (x86_64) into a shell profile, and a `ssh host command` shell does not
-  # source one, so brew is "not found" in every step below unless the path is prefixed.
+  # THE INSTALLER IS RUN AS THE ACCOUNT, NOT AS ROOT, and on this architecture it writes
+  # /usr/local - which it must be allowed to create. `NONINTERACTIVE=1` stops the two
+  # questions it would otherwise ask (confirm, and press Return); the CLT question cannot be
+  # asked because Xcode answered it above.
+  #
+  # IT IS NOT STARTED WHEN THE TOOLS ARE ALREADY PRESENT, because the installer's fallback for
+  # a missing compiler is exactly the dialog this stage cannot answer.
   - name: install homebrew
     script: |
       #!/bin/bash
       set -uo pipefail
-      if [ -x /opt/homebrew/bin/brew ] || [ -x /usr/local/bin/brew ]; then
-        echo "brew is already installed"
-        /opt/homebrew/bin/brew --version 2>/dev/null || /usr/local/bin/brew --version
-        exit 0
+      for candidate in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+        if [ -x "$candidate" ]; then
+          echo "brew is already installed at $candidate"
+          "$candidate" --version
+          exit 0
+        fi
+      done
+
+      # THE DEVELOPER DIRECTORY HAS TO RESOLVE OR HOMEBREW WILL TRY TO INSTALL THE TOOLS.
+      if ! xcode-select -p >/dev/null 2>&1; then
+        echo "=== xcode-select -p DOES NOT ANSWER; HOMEBREW WOULD ASK FOR A GUI ==="
+        exit 1
       fi
-      NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" 2>&1 | tail -20
+      echo "developer dir: $(xcode-select -p)"
+
+      NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" 2>&1 | tail -25
+
       for candidate in /opt/homebrew/bin/brew /usr/local/bin/brew; do
         if [ -x "$candidate" ]; then
           echo "brew at $candidate"
@@ -105,19 +171,35 @@ steps:
     script_name: install-homebrew.sh
     timeout: 2400
 
-  # --- 3. THE PACKAGES, ONE STEP PER FORMULA SO THE FAILURE NAMES IT -------------------
+  # --- 4. THE PACKAGES, ONE STEP PER FORMULA SO THE FAILURE NAMES IT ---------------------
   #
-  # The exported path is the same on every line for the reason above. `brew install` is
-  # idempotent - a second run says "already installed" and exits 0 - so a resumed bake
-  # costs nothing here.
+  # NODE AND PYTHON COME FROM HOMEBREW, AND THAT IS A DECISION RATHER THAN A DEFAULT.
+  #
+  #   the system python3   ships with the command line tools and its pip refuses to write:
+  #                        `error: externally-managed-environment`, and installing into it
+  #                        needs sudo. A runner that cannot `pip install` is not a runner.
+  #   the system git       is a stub that forwards to the same tools, so it exists but is not
+  #                        the one `brew` manages - and a second `git` on PATH is how two
+  #                        answers to "which git" start.
+  #
+  # So both are formulas, which is also what makes them upgradable on the published disk.
+  #
+  # THE PATH IS PREFIXED ON EVERY USE, AND THAT IS NOT COSMETIC. The installer writes
+  # /opt/homebrew/bin into a shell profile and a `ssh host command` shell does not source one,
+  # so without this prefix `python3` resolves to /usr/bin/python3 and `--version` still
+  # succeeds. A check that only asked for a version number would pass on the wrong interpreter;
+  # `prove the toolchain` asks `command -v` for the path.
+  #
+  # `brew install` is idempotent - a second run says "already installed" and exits 0 - so a
+  # resumed bake costs nothing here.
   - name: install git
-    ssh: export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; brew install git && git --version
+    ssh: export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; brew install git && command -v git && git --version
     timeout: 1800
   - name: install node
-    ssh: export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; brew install node && node --version && npm --version
+    ssh: export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; brew install node && command -v node && node --version && npm --version
     timeout: 1800
   - name: install python
-    ssh: export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; brew install python && python3 --version && pip3 --version
+    ssh: export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; brew install python && command -v python3 && python3 --version && pip3 --version
     timeout: 1800
   - name: install cmake
     ssh: export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; brew install cmake && cmake --version
@@ -129,46 +211,48 @@ steps:
     ssh: export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; brew install gh && gh --version
     timeout: 900
 
-  # --- 4. XCODE, WHICH IS THE ONLY ASSET THAT CANNOT COME FROM APPLE ------------------
-  #
-  # Fetched and verified on the host, then copied in. The sha1 is Apple's own number for
-  # this build (see lib/xcode_asset.py); a byte that differs stops the step before 2.7 GiB
-  # has been moved into a guest.
-  #
-  # THE DESTINATION IS THE USER'S HOME, not /tmp, because this is a 2.7 GiB file on a disk
-  # that is about to be published - and the step after it deletes the .xip once the app is
-  # expanded.
-  - name: fetch xcode on the host
-    python: macos_dev_asset:fetch_xcode
-
-  - name: copy xcode into the guest
-    python: macos_dev_asset:copy_xcode
-
-  # EXPANDING AND SELECTING IS ONE SCRIPT BECAUSE IT IS ONE OPERATION. `xip -x` prints
-  # nothing for twenty minutes, `xcodebuild -license accept` must come before anything asks
-  # Xcode a question, and `-runFirstLaunch` installs the SDKs (another ten minutes). Split
-  # into steps, a failure in the middle leaves a selected Xcode with no SDK, which answers
-  # --version and cannot build - the worst of both.
-  - name: expand and select xcode
-    script: |
-      #!/bin/bash
-      set -uo pipefail
-      bash /Users/docker/install-xcode.sh /Users/docker/Xcode.xip /Applications /Users/docker/xcode-expand
-    script_shell: sh
-    script_name: run-xcode-install.sh
-    timeout: 7200
-
-  # THE .XIP IS 2.7 GiB AND THE DISK IS PUBLISHED. Leaving it behind makes every later
-  # artifact bigger for a file nothing reads again.
-  - name: remove the xip
-    ssh: rm -f /Users/docker/Xcode.xip && df -h / | tail -1
-    timeout: 300
 
   # --- 5. THE PROOFS ------------------------------------------------------------------
   #
   # A brew exit code says an installer ran. These ask the disk.
+  #
+  # THE CHECK IS THE PATH, NOT THE VERSION, AND THAT IS THE WHOLE POINT OF THIS STEP.
+  # `/usr/bin/python3` exists on every macOS and answers `--version` perfectly - it is the
+  # one Xcode's command line tools install, and its pip refuses to write. A stage that only
+  # printed a version number would report success while leaving a disk whose python cannot
+  # install anything. So every tool has to resolve UNDER the Homebrew prefix.
   - name: prove the toolchain
-    ssh: export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; for t in git node npm python3 pip3 cmake jq gh; do printf '%s ' "$t"; command -v "$t" || { echo MISSING; exit 1; }; done
+    script: |
+      #!/bin/bash
+      set -uo pipefail
+      export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH
+      bad=0
+      for t in git node npm python3 pip3 cmake jq gh; do
+        path=$(command -v "$t" 2>/dev/null || true)
+        if [ -z "$path" ]; then
+          echo "MISSING  $t"
+          bad=1
+          continue
+        fi
+        case "$path" in
+          /opt/homebrew/*|/usr/local/*)
+            echo "ok       $t -> $path"
+            ;;
+          *)
+            echo "WRONG    $t -> $path (not from Homebrew)"
+            bad=1
+            ;;
+        esac
+      done
+      if [ "$bad" -ne 0 ]; then
+        echo "=== THE TOOLCHAIN IS NOT THE ONE HOMEBREW INSTALLED ==="
+        exit 1
+      fi
+      python3 --version
+      node --version
+      echo "TOOLCHAIN_OK"
+    script_shell: sh
+    script_name: prove-toolchain.sh
     timeout: 300
 
   - name: prove xcode is selected

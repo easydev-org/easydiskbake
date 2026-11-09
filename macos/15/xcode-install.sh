@@ -27,9 +27,24 @@
 # than sharing the expansion's.
 set -uo pipefail
 
-XIP=${1:?usage: install-xcode.sh <path to .xip>}
-DEST=${2:-/Applications}
-WORK=${3:-/Users/$(id -un)/xcode-expand}
+XIP=${1:?usage: install-xcode.sh <path to .xip> <password> [dest] [work]}
+# SUDO OVER SSH HAS NO TTY, AND THAT IS NOT A DETAIL - IT IS THE FIRST THING THAT FAILS.
+#
+# session.ssh is `sshpass ... ssh host command` with no terminal, so sudo cannot prompt:
+#
+#     sudo: no tty present and no askpass program specified
+#     sudo: a password is required
+#
+# lib/macclean.py already carries this lesson from run 42390179102, where it cost an
+# otherwise-green stage its publish. The same `-S` + stdin form is used here, in one variable
+# so a command cannot be written that forgets it.
+ADMIN_PASSWORD=${2:?usage: install-xcode.sh <path to .xip> <password> [dest] [work]}
+DEST=${3:-/Applications}
+WORK=${4:-/Users/$(id -un)/xcode-expand}
+
+sudo_() {
+  printf '%s\n' "$ADMIN_PASSWORD" | sudo -S -p '' "$@"
+}
 
 if [ ! -f "$XIP" ]; then
   echo "no xip at $XIP"
@@ -63,20 +78,20 @@ else
 fi
 
 echo "moving to $DEST"
-sudo rm -rf "$DEST/Xcode.app"
-if ! sudo mv "$WORK/Xcode.app" "$DEST/Xcode.app"; then
+sudo_ rm -rf "$DEST/Xcode.app"
+if ! sudo_ mv "$WORK/Xcode.app" "$DEST/Xcode.app"; then
   echo "=== COULD NOT MOVE Xcode.app INTO $DEST ==="
   exit 1
 fi
 
 # THE QUARANTINE FLAG IS WHAT MAKES GATEKEEPER PROMPT. It is set because the file came from
 # the network, and a dialog has nobody to answer it over ssh.
-sudo xattr -dr com.apple.quarantine "$DEST/Xcode.app" 2>/dev/null || true
+sudo_ xattr -dr com.apple.quarantine "$DEST/Xcode.app" 2>/dev/null || true
 
 # `xcode-select -s` IS THE SWITCH, and it fails silently-ish when the path is wrong, so the
 # result is read back rather than assumed.
 echo "selecting $DEST/Xcode.app"
-sudo xcode-select -s "$DEST/Xcode.app/Contents/Developer" || exit 1
+sudo_ xcode-select -s "$DEST/Xcode.app/Contents/Developer" || exit 1
 selected=$(xcode-select -p)
 echo "xcode-select -p: $selected"
 case "$selected" in
@@ -88,12 +103,12 @@ esac
 # license exits with a message about the agreement, and every later check would read that as
 # a broken toolchain.
 echo "accepting the license"
-sudo xcodebuild -license accept 2>&1 | tail -2
+sudo_ xcodebuild -license accept 2>&1 | tail -2
 
 echo "installing the bundled platform packages (about ten minutes)"
-sudo xcodebuild -runFirstLaunch 2>&1 | tail -5
+sudo_ xcodebuild -runFirstLaunch 2>&1 | tail -5
 
-sudo DevToolsSecurity -enable 2>&1 | tail -1
+sudo_ DevToolsSecurity -enable 2>&1 | tail -1
 
 # AND THE CLAIM THAT MATTERS: it compiles. A selected Xcode with no SDK answers --version.
 echo "verifying"

@@ -297,6 +297,50 @@ def main() -> int:
     check("the dev stage compiles something with swift", "macos/15/steps/dev.yaml",
           "prove swift compiles" in names)
 
+    # XCODE IS INSTALLED BEFORE HOMEBREW, AND THAT ORDER IS THE WHOLE REASON THE STAGE RUNS.
+    #
+    # Homebrew's installer checks for a compiler and, finding none, runs
+    #
+    #     sudo xcode-select --install
+    #
+    # which is a GUI prompt. Over ssh there is nobody to click it, so the install script waits
+    # and the stage times out with no clue why. Xcode ships the same tools, so putting it
+    # first means `xcode-select -p` already answers when Homebrew looks.
+    order = [n for n in names if n in ("expand and select xcode", "install homebrew")]
+    check("xcode is installed before homebrew looks for a compiler",
+          "macos/15/steps/dev.yaml",
+          order == ["expand and select xcode", "install homebrew"])
+
+    # SUDO OVER SSH HAS NO TTY, SO EVERY PRIVILEGED CALL HAS TO BE HANDED THE PASSWORD.
+    #
+    #     sudo: no tty present and no askpass program specified
+    #     sudo: a password is required
+    #
+    # lib/macclean.py carries this lesson already (run 42390179102); the Xcode installer is
+    # where it would bite next, and it needs it six times.
+    xcode_sh = read("macos/15/xcode-install.sh")
+    check("the xcode installer upgrades sudo for a tty-less channel",
+          "macos/15/xcode-install.sh",
+          "sudo -S -p ''" in xcode_sh
+          and all(("sudo_" + rest) in xcode_sh or ("sudo_" + rest) == "sudo_"
+                  for rest in (" rm -rf", " mv ", " xcode-select", " xcodebuild",
+                               " DevToolsSecurity")))
+    check("no bare sudo survives in the xcode installer", "macos/15/xcode-install.sh",
+          not any(line.strip().startswith("sudo ")
+                  for line in xcode_sh.splitlines()))
+
+    # THE PROOF ASKS WHERE A TOOL IS, NOT WHAT VERSION IT ANSWERS.
+    #
+    # /usr/bin/python3 exists on every macOS and prints a version - it is the one the command
+    # line tools install, and its pip refuses to write. A check that only read a version number
+    # would pass on a disk whose python cannot install anything.
+    toolchain = next((s for s in (mac_dev_walk.get("steps") or [])
+                      if s.get("name") == "prove the toolchain"), {})
+    body = str(toolchain.get("script") or "")
+    check("the toolchain proof checks the path, not the version",
+          "macos/15/steps/dev.yaml",
+          "command -v" in body and "/opt/homebrew/*" in body)
+
     # --- report ------------------------------------------------------------------------
     width = max(len(label) for label, _path, _ok in checks)
     failures = 0
