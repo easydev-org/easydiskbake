@@ -319,19 +319,23 @@ jobs:
       # three disks first and then running it stages kernel/system/vendor around them
       # without touching cache.img or userdata.img. Restoring afterwards would mean the
       # disks were built for a fresh device and then partly overwritten.
+      # `oci-pull` IS THE REPOSITORY'S OWN ACTION FOR THIS, and every other workflow uses it.
+      # The tag is a single tar of the three disks.
       - name: pull the disk set
         if: inputs.ssh_from != ''
-        uses: easydev-org/easyactions/log-stream@main
+        uses: easydev-org/easyactions/oci-pull@main
         with:
+          tag: ${{ inputs.ssh_from || needs.disks.outputs.tag }}
+          dest: out
           token: ${{ github.token }}
-          name: android-qemu-ssh-pull
-          interval: "15"
-          command: |
-            set -euo pipefail
-            python3 lib/ci.py pull "${{ inputs.ssh_from }}" out/android-15-disks.tar.zst
-            mkdir -p out/disks
-            tar -xf out/android-15-disks.tar.zst -C out/disks
-            ls -la out/disks
+
+      - name: unpack the disk set
+        if: inputs.ssh_from != ''
+        run: |
+          set -euo pipefail
+          mkdir -p out/disks
+          tar -xf out/android-15-disks.tar.zst -C out/disks
+          ls -la out/disks
 
       - name: build the disks
         uses: easydev-org/easyactions/log-stream@main
@@ -342,6 +346,24 @@ jobs:
           command: |
             set -euo pipefail
             python3 android/15/mkdisks.py --sdk "$(cat sdk.txt)" --out out/disks
+
+      # THE SSH PAYLOAD IS BUILT HERE, NOT SHIPPED IN THE IMAGE.
+      #
+      # It is eight Termux packages resolved through Termux's own Packages index - 4 MiB
+      # compressed - and android/15/termux_ssh.py is what assembles them into the prefix
+      # sshd looks for (/data/data/com.termux/files/usr, which is compiled into the binary).
+      # Building it here rather than publishing it means a Termux rebuild is picked up on
+      # the next run instead of failing with a 404 on a stale filename.
+      - name: build the ssh payload
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: android-qemu-ssh-payload
+          interval: "15"
+          command: |
+            set -euo pipefail
+            python3 android/15/termux_ssh.py --out out/termux-ssh.tar.zst
+            ls -la out/termux-ssh.tar.zst
 
       # ---- LAUNCH ------------------------------------------------
       # The phase, not a job: it starts the guest, configures the network over adb, installs

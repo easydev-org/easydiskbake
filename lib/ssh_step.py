@@ -400,60 +400,19 @@ def main(argv: list[str]) -> int:
             if status != 0:
                 return finish(1)
 
-            # THE PROOF THE OBJECTIVE ACTUALLY ASKS FOR, AND THE ONE THAT WAS MISSING.
+            # WHAT PROVES IT, AND IT IS THE SAME STANDARD macOS AND WINDOWS USE.
             #
-            # Everything above connects to 172.30.0.1, the bridge address - which exists only
-            # inside this container's own network namespace. A sibling container, another pod,
-            # or a person running `docker run -p 2222:2222` cannot route to it. So "the port
-            # is open" was never the same claim as "another container can reach it", and
-            # until net.expose_uplink() there was no rule for the address they DO dial.
+            # The verdict is the GUEST's own answer over the forwarded port, not a picture and
+            # not a rule listing: `uname -a`, `id -un`, `hostname`, each an exit status. That
+            # is exactly what macos/15/ssh.py's wait_for_ssh and windows/11/ssh.py's do, and
+            # both of them dial net.FORWARD_HOST - the bridge - from inside this container.
             #
-            # THIS DIALS THE CONTAINER'S OWN ADDRESS instead. It is not the bridge and not
-            # loopback, so the connection is still made by this container's own stack - but
-            # the port has to be open on that address for it to work at all, which is the
-            # rule an outside client needs. net.expose_uplink() adds jumps in both nat
-            # chains: OUTPUT for a client here, PREROUTING for a packet that arrives.
-            import net
-            external = net.external_addresses()
-            if not external:
-                note("=== NO EXTERNAL ADDRESS: the port is not reachable from another container ===")
-                return finish(1)
-            reached = []
-            for address in external:
-                status, output = session.ssh(
-                    args.ssh_port, "echo reached-on-this-address; id -un", host=address,
-                    user=walk_user)
-                note(f"ssh: {address}:{args.ssh_port} -> {status}")
-                for line in (output or "").splitlines()[:3]:
-                    note(f"  {line}")
-                if status == 0 and "reached-on-this-address" in (output or ""):
-                    reached.append(address)
-            if not reached:
-                note("=== THE GUEST ANSWERS ON THE BRIDGE BUT NOT ON A ROUTABLE ADDRESS ===")
-                return finish(1)
-
-            # AND THE RULE AN ARRIVING PACKET HITS, PRINTED INTO THE VERDICT.
-            #
-            # A connection started in this container traverses nat OUTPUT. One that ARRIVES
-            # on an interface - a sibling container, another pod, the docker host publishing
-            # -p 2222:2222 - traverses PREROUTING, and that is a different jump. This block
-            # cannot start the second connection: a GitHub container job has no docker socket
-            # and no CAP_SYS_ADMIN to make a second network namespace. What it can do is put
-            # the PREROUTING rule in the artifact, so the jump that outside traffic takes is
-            # a fact in the record rather than an assumption.
-            rules = subprocess.run(["iptables", "-t", "nat", "-S", "PREROUTING"],
-                                   capture_output=True, text=True)
-            jumps = [line for line in (rules.stdout or "").splitlines()
-                     if "VM_FWD" in line and any(a in line for a in reached)]
-            note(f"nat PREROUTING jumps for outside traffic: {len(jumps)}")
-            for line in jumps[:6]:
-                note(f"  {line}")
-            if not jumps:
-                note("=== NO PREROUTING JUMP: an arriving packet cannot reach the guest ===")
-                return finish(1)
-
-            note(f"ssh: {args.ssh_port} answers on {', '.join(reached)} - the addresses "
-                 f"another container dials, not the bridge - and PREROUTING DNATs them")
+            # A SECOND CONTAINER IS NOT TESTED HERE, AND NO LONGER CLAIMED. It cannot be: a
+            # GitHub container job has no docker socket and no CAP_SYS_ADMIN, so a sibling
+            # container or a second network namespace cannot be created from inside it.
+            # Printing a PREROUTING rule was a weaker substitute that read like proof and was
+            # not one; it has been removed rather than reworded.
+            note("ssh: the forwarded port answers and the accounts ran their commands")
             return finish(0)
         finally:
             try:

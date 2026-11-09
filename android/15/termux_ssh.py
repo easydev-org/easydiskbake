@@ -197,9 +197,22 @@ def main(argv: list[str]) -> int:
         raise SystemExit(f"=== {links} symlinks survived cp -rL; adb push will refuse them ===")
 
     files_count = sum(len(fs) for _, _, fs in os.walk(flat))
-    with tarfile.open(a.out, "w:zst") as tf:
+
+    # TAR, THEN zstd AS A SEPARATE PROCESS. `tarfile.open(..., "w:zst")` needs Python 3.14;
+    # this repository runs 3.13, where it raises
+    #
+    #     CompressionError: unknown compression type 'zst'
+    #
+    # after every package has already been downloaded - the worst possible place to find out.
+    plain = a.out + ".tar"
+    with tarfile.open(plain, "w") as tf:
         for name in sorted(os.listdir(flat)):
             tf.add(os.path.join(flat, name), arcname=name)
+    packed = subprocess.run(["zstd", "-19", "-f", plain, "-o", a.out],
+                            capture_output=True, text=True)
+    os.unlink(plain)
+    if packed.returncode != 0:
+        raise SystemExit(f"=== zstd failed: {packed.stderr[:300]} ===")
     size = os.path.getsize(a.out) >> 20
     log(f"{files_count} files, {size} MiB -> {a.out}")
 

@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import shlex
 import subprocess
 import sys
 import time
@@ -55,55 +54,18 @@ from lib import compress, net, smoke  # noqa: E402
 SSH_USER = os.environ.get("MACOS_USER", "docker")
 SSH_PASSWORD = os.environ.get("MACOS_PASSWORD", "admin")
 
-# The Homebrew installer is a script fetched over https and run with /bin/bash, which is
-# what its own documentation has said for years. It is idempotent: a second run says
-# "already installed" and exits 0.
-BREW_INSTALL = (
-    '/bin/bash -c "$(curl -fsSL '
-    'https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
-)
-
-# HOMEBREW IS NOT ON PATH IN A NON-INTERACTIVE SSH SHELL. Its installer writes to
-# /opt/homebrew (arm64) or /usr/local (x86_64) and tells the user to add a shellenv line
-# to a login file - which a `ssh host command` shell does not source. So the path is
-# prefixed explicitly on every use rather than assumed.
-BREW_PATH = '/opt/homebrew/bin:/usr/local/bin:$PATH'
-
-# WHAT A RUNNER NEEDS ON PATH, as (command that proves it, how to install it).
-PACKAGES = [
-    ("git", "--version", None),
-    ("node", "--version", "node"),
-    ("python3", "--version", "python"),
-    ("cmake", "--version", "cmake"),
-    ("jq", "--version", "jq"),
-    ("gh", "--version", "gh"),
-]
+# THE BREW RECIPE, THE PACKAGE LIST AND THE THREE FUNCTIONS THAT USED THEM lived here and
+# are macos/15/steps/dev.yaml now, beside the steps that run them. What is left in this file
+# is what a step cannot be: the machine, the disk, the recovery image and OpenCore.
+#
+# The Homebrew installer is a script fetched over https and run with /bin/bash, which is what
+# its own documentation has said for years. It is idempotent: a second run says "already
+# installed" and exits 0. That property is what lets the step run unconditionally.
+WALK = os.path.join(HERE, "steps", "dev.yaml")
 
 
 def log(message: str) -> None:
     print(f"[macos-dev {time.strftime('%H:%M:%S')}] {message}", flush=True)
-
-
-def ssh_base(port: int) -> list[str]:
-    """The ssh command, with the two options a first connection always needs.
-
-    StrictHostKeyChecking=no and UserKnownHostsFile=/dev/null because the host key is
-    generated fresh by the install and there is no known_hosts entry for it anywhere; the
-    alternative is an interactive prompt this has no terminal for.
-    """
-    return [
-        "sshpass", "-p", SSH_PASSWORD, "ssh",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "ConnectTimeout=15",
-        "-p", str(port), f"{SSH_USER}@{net.FORWARD_HOST}",
-    ]
-
-
-def run(port: int, command: str, timeout: int = 1800) -> subprocess.CompletedProcess:
-    log(f"ssh> {command[:110]}")
-    return subprocess.run(ssh_base(port) + [command],
-                          capture_output=True, text=True, timeout=timeout)
 
 
 def wait_for_ssh(port: int, seconds: int = 180) -> bool:
@@ -229,50 +191,29 @@ def main(argv: list[str]) -> int:
             log("  this stage needs the ssh-stage disk, not the desktop one")
             return 1
 
-        log("=== Homebrew ===")
-        brew = run(args.ssh_port, f"export PATH={BREW_PATH}; {BREW_INSTALL}", timeout=2400)
-        # THE INSTALLER EXITS 0 WHEN IT IS ALREADY THERE, so the check is the tool, not
-        # the exit status.
-        present = run(args.ssh_port, f"export PATH={BREW_PATH}; brew --version", timeout=120)
-        if present.returncode != 0:
-            log("=== HOMEBREW IS NOT USABLE ===")
-            log((brew.stdout or "")[-800:])
-            log((brew.stderr or "")[-800:])
+        # THE TOOLCHAIN IS A FILE NOW: macos/15/steps/dev.yaml.
+        #
+        # What stood here - install Homebrew, walk PACKAGES, brew install each, verify each -
+        # was a sequence of measurements and no decision. The measurements belong beside the
+        # numbers they produced; the decision ("does this stage pass?") stays here.
+        #
+        # THE WALK RUNS OVER SSH, so it takes the headless driver lib/steps.py builds when a
+        # file has no GUI steps. This stage never touches the screen: the disk arrived with a
+        # working sshd.
+        #
+        # `disk_path` IS PASSED SO A `python:` STEP CAN SEE IT, and `work` is the stage's own
+        # directory because the Xcode .xip is kept there between the fetch and the copy.
+        log(f"=== the walkthrough: {os.path.relpath(WALK, REPO)} ===")
+        import steps as stepslib
+        ok_walk, ran = stepslib.run_file(
+            WALK, qmp_path="", work=work, ssh_port=args.ssh_port,
+            user=SSH_USER, password=SSH_PASSWORD, release=RELEASE,
+            disk_path=disk,
+        )
+        log(f"{len(ran)} step(s) answered" if ok_walk
+            else f"the walkthrough failed after {len(ran)} step(s)")
+        if not ok_walk:
             return 1
-        log(f"  {(present.stdout or '').splitlines()[0] if present.stdout else 'brew'}")
-
-        for command, version_flag, formula in PACKAGES:
-            have = run(args.ssh_port,
-                       f"export PATH={BREW_PATH}; command -v {shlex.quote(command)} "
-                       f"&& {command} {version_flag}")
-            if have.returncode == 0 and (have.stdout or "").strip():
-                first = (have.stdout or "").strip().splitlines()[0]
-                log(f"  {command} already present: {first[:80]}")
-                continue
-            if formula is None:
-                # git ships with the command line tools that Homebrew itself installed.
-                log(f"  {command} is missing and has no formula here; "
-                    f"the command line tools did not install")
-                log("=== THE TOOLCHAIN IS INCOMPLETE ===")
-                return 1
-            log(f"=== {formula} ===")
-            got = run(args.ssh_port,
-                      f"export PATH={BREW_PATH}; brew install {shlex.quote(formula)}",
-                      timeout=1800)
-            if got.returncode != 0:
-                log(f"  brew install {formula} failed: {(got.stderr or '')[-400:]}")
-                log("=== THE TOOLCHAIN IS INCOMPLETE ===")
-                return 1
-
-        log("=== verifying every tool answers ===")
-        for command, version_flag, _formula in PACKAGES:
-            got = run(args.ssh_port,
-                      f"export PATH={BREW_PATH}; {command} {version_flag}", timeout=300)
-            if got.returncode != 0 or not (got.stdout or "").strip():
-                log(f"  {command} does not answer: {(got.stderr or '')[:200]}")
-                log("=== THE TOOLCHAIN IS INCOMPLETE ===")
-                return 1
-            log(f"  {command}: {(got.stdout or '').strip().splitlines()[0][:80]}")
 
         ok = True
         return 0

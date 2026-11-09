@@ -76,7 +76,7 @@ PINNED: dict[str, dict] = {
         "version": "26.3",
         "build": "17C529",
         "sha1": "cebf05ec2920111830af5e08a45f07961e36bfd6",
-        "bytes": 2926107000,          # ~2.7 GiB; the exact size is checked when present
+        "bytes": 2871807039,          # 2738 MiB, read from archive.org metadata
         "file": "Xcode_26.3_Universal.xip",
         "url": ("https://archive.org/download/xcode-26.3/"
                 "Xcode_26.3_Universal.xip"),
@@ -94,7 +94,7 @@ CLT = {
         "sha1": "6f3b952bb6bd9fa97b132d69b07c725d2ab80f29",
         "url": ("https://archive.org/download/xcode-26.3/"
                 "Command_Line_Tools_for_Xcode_26.3.dmg"),
-        "bytes": 879000000,           # ~838 MiB
+        "bytes": 878883722,            # 838 MiB, read from archive.org metadata
     },
 }
 
@@ -189,4 +189,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))

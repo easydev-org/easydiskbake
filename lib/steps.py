@@ -1001,7 +1001,13 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
             name += ".ps1"
         if shell == "sh" and not name.endswith(".sh"):
             name += ".sh"
-        local = os.path.join(driver.work, name)
+        # THE BODY IS WRITTEN INTO THE STAGE'S WORK DIRECTORY, which both drivers have and
+        # which is on the same filesystem as the rest of the stage's scratch. A headless
+        # walkthrough has one too - lib/steps.py's HeadlessDriver takes `work` for exactly
+        # this and for the frames a failing step wants to leave behind.
+        work_dir = getattr(driver, "work", "") or "."
+        os.makedirs(work_dir, exist_ok=True)
+        local = os.path.join(work_dir, name)
         body = body.replace("\r\n", "\n").replace("\n", "\r\n") if shell == "cmd" else body
         with open(local, "w", newline="") as fh:
             fh.write(body)
@@ -1022,7 +1028,12 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
             command = (f'powershell -NoProfile -ExecutionPolicy Bypass -File '
                        f'"{remote}"')
         else:
-            command = f"sh {remote}"
+            # `bash`, NOT `sh`. The shebang inside the body is ignored by an explicit
+            # interpreter argument, and these scripts use `set -uo pipefail` and `[[ ]]`
+            # freely - `sh` on macOS is bash 3.2 in POSIX mode, where pipefail does not
+            # exist and a failing stage of a pipeline is silently ignored. bash 3.2 itself
+            # is fine; it is the mode that is not.
+            command = f"bash {remote}"
         status, output = session.ssh(ssh_port, command, timeout=timeout, user=login,
                                      password=password)
         log(f"  script {name} ({shell}) -> {status}")
@@ -1908,6 +1919,13 @@ def walk_with(steps: Walk, driver: "Driver", *, values: dict[str, str] | None = 
     if values:
         overrides.update(values)
     setattr(driver, "values", steps.values(overrides))
+    # A `python:` EXTENSION NEEDS THE PORT AND THE PASSWORD, and they are not in `values`
+    # because they are not walkthrough data - they are how this run was started. Attaching
+    # them is the same argument as `release` and `frames_dir` above: an extension should read
+    # the facts of its own run off the driver rather than re-deriving them from the
+    # environment, which is how two answers to one question start.
+    setattr(driver, "ssh_port", ssh_port)
+    setattr(driver, "password", password)
     return walk(driver, steps, overrides=overrides, start_at=start_at,
                 stop_before=stop_before, ssh_port=ssh_port, password=password)
 
@@ -1984,6 +2002,8 @@ def run_file(walkthrough: str, qmp_path: str, *, work: str = "",
     # instead, so an extension reads `driver.values["user"]` and the YAML stays data.
     setattr(driver, "values", steps.values(
         {"args.user": user, "args.password": password}))
+    setattr(driver, "ssh_port", ssh_port)
+    setattr(driver, "password", password)
 
     try:
         # `extra_vars` IS FOR A VAR THE CALLER COMPUTES, NOT FOR A FLAG. The ssh walkthrough

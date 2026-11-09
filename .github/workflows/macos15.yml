@@ -451,7 +451,13 @@ jobs:
       always() && inputs.dev_run
       && (inputs.dev_from != '' || needs.ssh.outputs.tag != '')
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    # 240 MINUTES, BECAUSE XCODE IS THE SLOWEST STEP IN THE WHOLE CHAIN.
+    #
+    # The .xip is 2.7 GiB, `xip -x` on it takes several minutes and prints nothing, and
+    # `xcodebuild -runFirstLaunch` installs the bundled platform packages - about ten minutes
+    # on this guest with nothing else running. Two hours was enough for brew and six formulas
+    # and is not enough for those two, so the budget is the one that fits the stage.
+    timeout-minutes: 240
     container:
       image: ghcr.io/${{ github.repository }}:latest
       credentials:
@@ -469,7 +475,17 @@ jobs:
         uses: easydev-org/easyactions/runner-check@main
         with:
           kvm: true
-          disk-gb: '80'
+          # 150 GB, BECAUSE THE DEV STAGE HOLDS THREE COPIES OF A LARGE DISK AT ONCE.
+          #
+          #   out/*.qcow2          the ssh disk as pulled (~17 GiB compressed)
+          #   dev-work/dev.qcow2   the working copy (a full copy, not a backing file -
+          #                        a compressed qcow2 cannot be a backing image)
+          #   out/macos15-dev.qcow2  the result
+          #   + 2.7 GiB of Xcode .xip, which lives here until it is copied in
+          #
+          # 80 GB fits the first two and not the third. The failure would be a full disk in
+          # the middle of the Xcode expansion, which reads as a corrupt archive.
+          disk-gb: '150'
           token: ${{ github.token }}
 
       - name: prepare

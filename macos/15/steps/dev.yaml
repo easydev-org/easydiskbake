@@ -1,0 +1,201 @@
+# macOS 15 stage four: the developer toolchain, on a disk that already answers ssh.
+#
+#     python3 lib/steps.py macos/15/steps/dev.yaml --qmp /work/drive.sock.qmp --ssh-port 2222
+#
+# WHY THIS STAGE CAN BE ALL ssh: AND THE EARLIER ONES COULD NOT
+#
+# The ssh stage could not, because sshd was what it was creating. By this point the disk
+# answers on a forwarded port, so everything below is ordinary remote work: no keyboard, no
+# coordinates, no frames to read. That is the entire reason the stages are ordered
+# desktop -> ssh -> dev.
+#
+# WHAT IS HERE, AND THE ONE THING THAT IS NOT A PACKAGE
+#
+#     Homebrew      macOS ships none, and without one the disk cannot install anything later
+#     git node     the two a runner reaches for first
+#     python3      the system one is fine; the formula is the one with a working pip
+#     cmake jq gh  the three `brew install` lines that make a runner feel normal
+#     Xcode        the one asset that CANNOT come from Apple, and the reason this file is
+#                  shaped the way it is - see below
+#
+# WHY XCODE IS NOT `brew install --cask xcode`
+#
+# Because Apple's download endpoint refuses an unauthenticated request:
+#
+#     HTTP/2 302   location: https://developer.apple.com/unauthorized/
+#
+# measured on 2026-11-09, and the cookie trick that used to mint an `ADCDownloadAuth` now
+# returns 403 as well. A CI job that needs a person's Apple ID and a 2FA code is a job that
+# cannot run unattended, so the .xip comes from archive.org - which keeps Apple's own file
+# byte for byte, and whose recorded sha1 is the same number Apple's release index publishes:
+#
+#     Xcode 26.3 Universal   sha1 cebf05ec2920111830af5e08a45f07961e36bfd6
+#
+# lib/xcode_asset.py refuses the download unless the bytes match, which is what makes this
+# "Apple's file from an archive" rather than "a mirror, hopefully".
+#
+# WHY 26.3 AND NOT THE NEWEST
+#
+# Apple raises Xcode's minimum macOS with almost every release and the installer enforces
+# it. 26.3 requires macOS 15.6; 26.4 requires macOS 26.2. This disk is Sequoia, so 26.3 is
+# its ceiling - a later one would download 2.7 GiB and then refuse to install.
+#
+# WHY THE XIP IS COPIED IN RATHER THAN DOWNLOADED IN THE GUEST
+#
+# The guest reaches the internet through this container's NAT, and this container's
+# outbound HTTPS goes through a proxy the guest knows nothing about. Downloading on the
+# host means the proxy, the sha1 check and the retry all happen where they are already
+# solved, and the guest only ever sees bytes that were verified. `xcode_fetch` is the
+# step that does it; `scp` is the step that copies it; both name their numbers.
+
+name: macos 15 - developer toolchain
+resolution: [1920, 1080]
+
+vars:
+  user:
+    from: args.user
+    default: docker
+  password:
+    from: args.password
+    default: admin
+
+ssh_user: docker
+ssh_port: 2222
+
+steps:
+  # --- 1. THE DISK HAS TO ANSWER BEFORE ANY OF THIS IS WORTH DOING ---------------------
+  #
+  # A banner is not a login: session.wait_for_ssh runs a command, because a socket that
+  # accepts a connection and then refuses authentication is a different failure and has
+  # been one here before.
+  - name: wait for sshd
+    require_ssh: true
+    timeout: 900
+
+  # --- 2. HOMEBREW, WHICH IS THE PREREQUISITE RATHER THAN ONE OF THE ENTRIES -----------
+  #
+  # macOS ships no package manager. Homebrew is what the ecosystem uses, and a disk
+  # without one cannot install anything else later - which is why it is first and why the
+  # installer's own "already installed" path is relied on rather than guarded against: it
+  # exits 0 and says so.
+  #
+  # THE PATH IS SET ON EVERY USE. The installer writes /opt/homebrew/bin (arm64) or
+  # /usr/local/bin (x86_64) into a shell profile, and a `ssh host command` shell does not
+  # source one, so brew is "not found" in every step below unless the path is prefixed.
+  - name: install homebrew
+    script: |
+      #!/bin/bash
+      set -uo pipefail
+      if [ -x /opt/homebrew/bin/brew ] || [ -x /usr/local/bin/brew ]; then
+        echo "brew is already installed"
+        /opt/homebrew/bin/brew --version 2>/dev/null || /usr/local/bin/brew --version
+        exit 0
+      fi
+      NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" 2>&1 | tail -20
+      for candidate in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+        if [ -x "$candidate" ]; then
+          echo "brew at $candidate"
+          "$candidate" --version
+          exit 0
+        fi
+      done
+      echo "=== HOMEBREW IS NOT USABLE ==="
+      exit 1
+    script_shell: sh
+    script_name: install-homebrew.sh
+    timeout: 2400
+
+  # --- 3. THE PACKAGES, ONE STEP PER FORMULA SO THE FAILURE NAMES IT -------------------
+  #
+  # The exported path is the same on every line for the reason above. `brew install` is
+  # idempotent - a second run says "already installed" and exits 0 - so a resumed bake
+  # costs nothing here.
+  - name: install git
+    ssh: export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; brew install git && git --version
+    timeout: 1800
+  - name: install node
+    ssh: export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; brew install node && node --version && npm --version
+    timeout: 1800
+  - name: install python
+    ssh: export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; brew install python && python3 --version && pip3 --version
+    timeout: 1800
+  - name: install cmake
+    ssh: export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; brew install cmake && cmake --version
+    timeout: 1800
+  - name: install jq
+    ssh: export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; brew install jq && jq --version
+    timeout: 900
+  - name: install gh
+    ssh: export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; brew install gh && gh --version
+    timeout: 900
+
+  # --- 4. XCODE, WHICH IS THE ONLY ASSET THAT CANNOT COME FROM APPLE ------------------
+  #
+  # Fetched and verified on the host, then copied in. The sha1 is Apple's own number for
+  # this build (see lib/xcode_asset.py); a byte that differs stops the step before 2.7 GiB
+  # has been moved into a guest.
+  #
+  # THE DESTINATION IS THE USER'S HOME, not /tmp, because this is a 2.7 GiB file on a disk
+  # that is about to be published - and the step after it deletes the .xip once the app is
+  # expanded.
+  - name: fetch xcode on the host
+    python: macos_dev_asset:fetch_xcode
+
+  - name: copy xcode into the guest
+    python: macos_dev_asset:copy_xcode
+
+  # EXPANDING AND SELECTING IS ONE SCRIPT BECAUSE IT IS ONE OPERATION. `xip -x` prints
+  # nothing for twenty minutes, `xcodebuild -license accept` must come before anything asks
+  # Xcode a question, and `-runFirstLaunch` installs the SDKs (another ten minutes). Split
+  # into steps, a failure in the middle leaves a selected Xcode with no SDK, which answers
+  # --version and cannot build - the worst of both.
+  - name: expand and select xcode
+    script: |
+      #!/bin/bash
+      set -uo pipefail
+      bash /Users/docker/install-xcode.sh /Users/docker/Xcode.xip /Applications /Users/docker/xcode-expand
+    script_shell: sh
+    script_name: run-xcode-install.sh
+    timeout: 7200
+
+  # THE .XIP IS 2.7 GiB AND THE DISK IS PUBLISHED. Leaving it behind makes every later
+  # artifact bigger for a file nothing reads again.
+  - name: remove the xip
+    ssh: rm -f /Users/docker/Xcode.xip && df -h / | tail -1
+    timeout: 300
+
+  # --- 5. THE PROOFS ------------------------------------------------------------------
+  #
+  # A brew exit code says an installer ran. These ask the disk.
+  - name: prove the toolchain
+    ssh: export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; for t in git node npm python3 pip3 cmake jq gh; do printf '%s ' "$t"; command -v "$t" || { echo MISSING; exit 1; }; done
+    timeout: 300
+
+  - name: prove xcode is selected
+    ssh: xcode-select -p && xcodebuild -version
+    timeout: 300
+
+  # SWIFT IS THE REASON XCODE IS HERE RATHER THAN THE COMMAND LINE TOOLS. A selected Xcode
+  # with no SDK answers `swift --version` and cannot compile; this compiles.
+  - name: prove swift compiles
+    script: |
+      #!/bin/bash
+      set -uo pipefail
+      work=$(mktemp -d)
+      cat > "$work/hello.swift" <<'SWIFT'
+      print("hello-from-swift")
+      SWIFT
+      if ! swiftc "$work/hello.swift" -o "$work/hello"; then
+        echo "SWIFT_COMPILE_FAILED"
+        exit 1
+      fi
+      "$work/hello" || exit 1
+      echo "SWIFT_OK"
+      rm -rf "$work"
+    script_shell: sh
+    script_name: swift-check.sh
+    timeout: 1800
+
+  - name: note what is present
+    ssh: export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; echo "brew=$(brew --version | head -1)"; echo "node=$(node --version)"; echo "python=$(python3 --version)"; echo "swift=$(swift --version 2>&1 | head -1)"; echo "xcode=$(xcodebuild -version | head -1)"
+    timeout: 300

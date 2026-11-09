@@ -178,7 +178,14 @@ def main() -> int:
             print(f"       poisoned matcher: {one}")
 
     # --- the workflow ------------------------------------------------------------------
-    check("all three stages pass --steps", ".github/workflows/macos15.yml",
+    # THREE ARE PASSED ON THE COMMAND LINE AND THE FOURTH IS READ FROM INSIDE ITS STAGE.
+    #
+    # setup, desktop and ssh are entry points of their own, so their YAML is a `--steps`
+    # argument. dev is not: macos/15/dev.py starts the machine, and the walk is the middle of
+    # it - the same shape windows/11/ssh.py and devtools.py use. A `dev.yaml` on the command
+    # line would need a second entry point that duplicates the recording and the publishing,
+    # which is the "one fact in two places" mistake this repository keeps paying for.
+    check("three stages pass --steps", ".github/workflows/macos15.yml",
           workflow.count("--steps macos/15/steps/") == 3)
     for stage, walk in (("setup", "setup.yaml"), ("desktop", "sequoia.yaml"),
                         ("ssh", "ssh.yaml")):
@@ -244,6 +251,51 @@ def main() -> int:
     check("every windows typing step uses the measured 150 ms gap",
           "windows/11/steps/ssh.yaml",
           bool(typers) and all(float(s.get("type_gap", 0)) >= 0.15 for s in typers))
+
+    # --- macos dev: the toolchain, and the one asset Apple will not serve ---------------
+    #
+    # XCODE IS THE ONLY THING HERE THAT CANNOT BE FETCHED FROM ITS VENDOR. Apple's endpoint
+    # answers an unauthenticated request with a redirect:
+    #
+    #     HTTP/2 302   location: https://developer.apple.com/unauthorized/
+    #
+    # measured 2026-11-09, and the `ADCDownloadAuth` cookie trick now answers 403 as well. So
+    # the file comes from archive.org, and the sha1 is Apple's own number for that build -
+    # which is the only thing that makes an archive an identity check rather than a hope.
+    mac_dev = read("macos/15/dev.py")
+    check("macos dev is driven by dev.yaml", "macos/15/dev.py",
+          "steps/dev.yaml" in mac_dev and "stepslib.run_file(" in mac_dev)
+    # THE CHECK IS FOR THE COMMAND, NOT THE PHRASE. The file still *explains* why Homebrew is
+    # the prerequisite and what a `brew install` would do, and a grep for the words would fail
+    # on the prose that documents their absence. A `run(...)`/`subprocess` call with it is the
+    # thing that would mean the sequence had crept back.
+    check("macos dev does not run brew itself any more", "macos/15/dev.py",
+          "subprocess.run" not in mac_dev and "brew install " not in
+          "".join(line for line in mac_dev.splitlines()
+                  if not line.lstrip().startswith("#")))
+    try:
+        import xcode_asset
+        pin = xcode_asset.PINNED.get("15") or {}
+        check("xcode for macOS 15 is pinned with a sha1", "lib/xcode_asset.py",
+              len(pin.get("sha1") or "") == 40 and "26.3" in str(pin.get("version")))
+        # 26.3 is the LAST release whose `requires` is macOS 15.x; 26.4 needs 26.2. A later
+        # pin would download 2.7 GiB and then refuse to install.
+        check("the xcode pin is the top of the range macOS 15 can run",
+              "lib/xcode_asset.py", str(pin.get("version")) == "26.3")
+    except Exception as exc:                          # noqa: BLE001
+        check(f"xcode_asset imports ({exc})", "lib/xcode_asset.py", False)
+    # THE INSTALLER IS A FILE, NOT A QUOTED LINE: it expands, moves, selects, accepts the
+    # license and installs the platforms, and a failure between those leaves a selected Xcode
+    # with no SDK - which answers --version and cannot build.
+    import os as osmod
+    check("the xcode installer is a script in the repository",
+          "macos/15/xcode-install.sh",
+          osmod.path.isfile(osmod.path.join(REPO, "macos/15/xcode-install.sh")))
+    # AND THE PROOF COMPILES: an SDK that lists a version but cannot build is not a toolchain.
+    mac_dev_walk = load_yaml("macos/15/steps/dev.yaml")
+    names = [s.get("name") for s in (mac_dev_walk.get("steps") or [])]
+    check("the dev stage compiles something with swift", "macos/15/steps/dev.yaml",
+          "prove swift compiles" in names)
 
     # --- report ------------------------------------------------------------------------
     width = max(len(label) for label, _path, _ok in checks)

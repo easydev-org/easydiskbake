@@ -569,7 +569,8 @@ def test_real_files() -> None:
                      "macos/15/steps/setup.yaml",
                      "macos/15/steps/ssh.yaml",
                      "windows/11/steps/ssh.yaml",
-                     "windows/11/steps/dev.yaml"):
+                     "windows/11/steps/dev.yaml",
+                     "macos/15/steps/dev.yaml"):
         path = os.path.join(here, relative)
         try:
             walk = steps.load(path)
@@ -592,7 +593,7 @@ def test_require_ssh_probe() -> None:
     seen: list[tuple] = []
     real = session.wait_for_ssh
 
-    def fake(port, seconds, note=None, settle=10, probe="true", user=None):
+    def fake(port, seconds, note=None, settle=10, probe="true", user=None, **kwargs):
         seen.append((port, probe, user))
         return True
 
