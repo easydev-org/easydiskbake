@@ -86,6 +86,27 @@ def main() -> int:
     check("Remote Login is read before it is toggled", "macos/15/ssh.py",
           "def _remote_login_listening" in ssh_src
           and "_remote_login_listening(guest" in ssh_src)
+    # AND THE WALKTHROUGH PATH NEEDS THE SAME PROTECTION, which is a different guard: the one
+    # above is a socket probe that only Python can make. The switch is a toggle, so the step
+    # that presses it must be conditional on what the pane already says - measured by turning
+    # a running guest's Remote Login OFF with it, then waiting ten minutes for the sshd it had
+    # just stopped.
+    ssh_walk = load_yaml("macos/15/steps/ssh.yaml")
+    ssh_steps = {s.get("name"): s for s in ssh_walk.get("steps") or []}
+    toggler = ssh_steps.get("turn remote login on") or {}
+    check("the toggle is only pressed when the pane says it is off",
+          "macos/15/steps/ssh.yaml", "unless" in toggler)
+    check("the pane is read before the toggle is pressed",
+          "macos/15/steps/ssh.yaml", "the remote login pane is up" in ssh_steps)
+    # THE SEARCH FIELD IS CLEARED AS PART OF TYPING, not by a separate click. Two steps means
+    # the typing one has no `at:` and takes the type-into-focus branch, which clears nothing -
+    # and System Settings remembers the last query, so a second run searched for
+    # 'remote loginremote login' and got No Results.
+    searcher = ssh_steps.get("search for remote login") or {}
+    check("the search field is cleared before the query is typed",
+          "macos/15/steps/ssh.yaml",
+          bool(searcher.get("at")) and bool(searcher.get("type"))
+          and searcher.get("modifier") == "meta_l")
 
     # --- the walkthrough ---------------------------------------------------------------
     by_name = {s.get("name"): s for s in seq.get("steps") or []}
