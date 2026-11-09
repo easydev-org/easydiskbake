@@ -20,7 +20,7 @@
 # WHY THE GUI HALF IS STEPS AND NOT `python:`
 #
 # It used to be a Python step, argued for on two grounds - and both of them turn out to be
-# expressible as a step, so it is now eleven of them with no code at all:
+# expressible as a step, so it is now seventeen of them with no code at all:
 #
 #   the search field      "has to be clicked AFTER Spotlight has drawn, and a click that
 #                         arrives first leaves the pane on the Sharing overview" - that is a
@@ -30,12 +30,31 @@
 #                         clicking it again turns it OFF - which is the bug that made the
 #                         clean fail with `diskutil apfs trim WAS REFUSED`. The answer is not
 #                         code: it is simply NOT A STEP. The sequence does not click it, and
-#                         `the switch is on` reads the pane afterwards to prove the switch
+#                         `the switch reads on` reads the pane afterwards to prove the switch
 #                         that DOES matter moved.
 #
-# The one thing that stayed in code is the state check at the top - "is sshd already
-# answering" - because the switch is a TOGGLE and pressing it on a machine that is already on
-# turns it off. That is a read followed by a decision, and it needs a socket, not a click.
+# The one decision left in code is the state check in ssh.py ("is sshd already answering"),
+# because it needs a socket rather than a click. The same decision also exists here as a step,
+# for a walkthrough run on its own: `turn remote login on` carries an `unless:`.
+#
+# BOTH DIRECTIONS WERE MEASURED ON ONE GUEST, back to back.
+#
+#   from OFF, one full run of this file:
+#       the remote login pane is up    'remote login: off ... lets users of other computers'
+#       turn remote login on - unless  reads the same sentence, so the click happens
+#       the switch reads on            'remote login: on ... to log in to this computer'
+#       wait for sshd                  ssh answers after 0s
+#       5 x ssh:                       exit 0, WALKTHROUGH COMPLETE: 17 step(s) ran
+#
+#   from ON, the same file again:
+#       turn remote login on           skipped, the screen already shows log in to this
+#                                      computer
+#       5 x ssh:                       exit 0, WALKTHROUGH COMPLETE: 17 step(s) ran
+#
+# The second run is the one that matters for a resumed bake. Before `unless:` existed it
+# clicked anyway, and this stage - the one that turns Remote Login ON - turned it OFF:
+#
+#     connect to address 172.30.0.1 port 2222: Connection refused
 
 name: macos 15 remote login
 resolution: [1920, 1080]
