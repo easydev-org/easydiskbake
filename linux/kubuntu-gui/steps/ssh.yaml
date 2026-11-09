@@ -112,7 +112,7 @@ steps:
   # update must be as visible in the recording as a failure in the install.
   - name: install sshd
     run: |
-      echo {{ password }} | sudo -S sh -c "export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y openssh-server && systemctl enable --now ssh" 2>&1 | tail -12
+      echo {{ password }} | sudo -S sh -c "export DEBIAN_FRONTEND=noninteractive; apt-get update -o DPkg::Lock::Timeout=600 && apt-get install -y -o DPkg::Lock::Timeout=600 openssh-server && systemctl enable ssh; systemctl restart ssh; systemctl is-active ssh" 2>&1 | tail -12
     terminal_wait: 0
     settle: 120
 

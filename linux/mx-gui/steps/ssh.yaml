@@ -133,7 +133,7 @@ steps:
   # that does boot systemd.
   - name: install sshd
     run: |
-      echo {{ password }} | sudo -S sh -c "export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y openssh-server && update-rc.d ssh enable; service ssh start; service ssh status" 2>&1 | tail -12
+      echo {{ password }} | sudo -S sh -c "export DEBIAN_FRONTEND=noninteractive; apt-get update -o DPkg::Lock::Timeout=600 && apt-get install -y -o DPkg::Lock::Timeout=600 openssh-server && update-rc.d ssh enable; service ssh start; service ssh status" 2>&1 | tail -12
     terminal_wait: 0
     settle: 120
 
