@@ -345,9 +345,10 @@ def main(argv: list[str]) -> int:
                 return finish(1)
 
             # THE LAST PROOF IS FROM OUTSIDE THE GUEST, AND IT IS THE ONE THE OBJECTIVE NAMES:
-            # another container sshing in and running a command. The walk's `ssh:` steps go
-            # over the same forwarded port, so this is a re-read of the same fact in the
-            # stage's own words - and it is what the verdict line reports.
+            # another container sshing in and running a command.
+            #
+            # THE FIRST TWO GO OVER THE BRIDGE ADDRESS, which is what the walk's own `ssh:`
+            # steps used and what every bake in this repository uses.
             status, output = session.ssh(
                 args.ssh_port, "uname -a; (cat /etc/os-release || true) | head -3")
             note(f"ssh: uname -> {status}")
@@ -360,6 +361,32 @@ def main(argv: list[str]) -> int:
             status, output = session.ssh(args.ssh_port, "id -un; hostname")
             note(f"ssh: id/hostname -> {status}: {(output or '').splitlines()[:2]}")
             if status != 0:
+                return finish(1)
+
+            # AND THEN OVER THE CONTAINER'S OWN ADDRESS, WHICH IS THE ONLY ONE A SIBLING
+            # CONTAINER CAN REACH.
+            #
+            # The bridge address, 172.30.0.1, exists inside this container and nowhere else.
+            # A second container - or `docker run -p 2222:2222`, or a pod-to-pod connection -
+            # arrives on THIS container's eth0 address, and until net.expose_uplink() there
+            # was no DNAT rule for it: the packet was delivered locally, nothing listened on
+            # 2222, and the client got "Connection refused" while the guest was answering
+            # happily on the bridge. This is that path, proven by a command's exit status.
+            import net
+            external = net.uplink_addresses()
+            if not external:
+                note("=== NO UPLINK ADDRESS: THE PORT IS NOT REACHABLE FROM ANOTHER CONTAINER ===")
+                return finish(1)
+            reached = False
+            for address in external:
+                status, output = session.ssh(args.ssh_port, "id -un; hostname", host=address)
+                note(f"ssh from outside ({address}:{args.ssh_port}) -> {status}")
+                for line in (output or "").splitlines()[:3]:
+                    note(f"  {line}")
+                if status == 0:
+                    reached = True
+            if not reached:
+                note("=== THE GUEST ANSWERS ON THE BRIDGE BUT NOT ON THE CONTAINER'S ADDRESS ===")
                 return finish(1)
             return finish(0)
         finally:

@@ -80,8 +80,14 @@ def log(message: str) -> None:
     print(f"[session {time.strftime('%H:%M:%S')}] {message}", flush=True)
 
 
-def ssh(port: int, command: str, timeout: int = 30) -> tuple[int, str]:
+def ssh(port: int, command: str, timeout: int = 30, host: str | None = None) -> tuple[int, str]:
     """Run one command in the guest. Returns (exit status, combined output).
+
+    `host` IS HOW THE "ANOTHER CONTAINER" PROOF IS MADE. Everything in this repository
+    connects to net.FORWARD_HOST, the bridge address, which only exists inside the container
+    that owns the bridge. A sibling container cannot dial it. Passing one of this container's
+    own addresses is the same ssh, over the same DNAT chain, arriving on PREROUTING instead
+    of OUTPUT - which is exactly the path an outside client takes.
 
     NO KEY, NO TERMINAL. The password is the one every image here uses, and sshpass is
     what supplies it - there is no tty to prompt at.
@@ -102,7 +108,7 @@ def ssh(port: int, command: str, timeout: int = 30) -> tuple[int, str]:
         "-o", "ConnectTimeout=10",
         "-o", "PreferredAuthentications=password",
         "-o", "PubkeyAuthentication=no",
-        f"{SSH_USER}@{SSH_HOST}",
+        f"{SSH_USER}@{host or SSH_HOST}",
         command,
     ]
     try:

@@ -89,11 +89,27 @@ steps:
     key: ctrl+alt+t
     settle: 10
 
+  # `apt-get update` IS NOT OPTIONAL, AND RUN 42567710130 PROVED IT.
+  #
+  # The first version went straight to `apt-get install`, and the disk's own package index -
+  # frozen at the moment the installer wrote it - named a version that had since left the
+  # mirror:
+  #
+  #     E: Failed to fetch http://apt.pop-os.org/ubuntu/pool/main/o/openssh/\
+  #        openssh-server_9.6p1-3ubuntu13.4_amd64.deb 404 Not Found [IP: 99.86.101.11 80]
+  #     E: Unable to fetch some archives, maybe run apt-get update or try with --fix-missing?
+  #
+  # sudo was fine, the terminal was fine, the command ran exactly as written - the one thing
+  # missing was a refresh of the index that names what the mirror actually has. Every Debian
+  # derivative here has the same frozen index, so the update is part of the install.
+  #
+  # `tail -12` rather than `-5` because an update prints its own opinion, and a failure in the
+  # update must be as visible in the recording as a failure in the install.
   - name: install sshd
     run: |
-      echo {{ password }} | sudo -S sh -c "DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server && systemctl enable --now ssh" 2>&1 | tail -5
+      echo {{ password }} | sudo -S sh -c "export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y openssh-server && systemctl enable --now ssh" 2>&1 | tail -12
     terminal_wait: 0
-    settle: 90
+    settle: 120
 
   # THE SECOND HALF, FOR THE SYSTEMS WHERE THE FIRST COULD NOT RUN AS ROOT. `sudo -S` is what
   # a Debian/Fedora/Arch/suse desktop needs; FreeBSD has no sudo, and NixOS' rebuild must run
