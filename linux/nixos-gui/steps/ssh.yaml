@@ -197,13 +197,43 @@ steps:
   # both lines real, and `sh -c` is what keeps the redirect inside the privileged shell: a
   # `sudo printf ... >> file` would still do the redirect as `docker`.
   #
+  # THE APPEND HAS TO GO INSIDE THE BRACES, AND APPENDING TO THE FILE PUT IT OUTSIDE THEM.
+  #
+  # MEASURED ON THE REAL ISO IN A LOCAL KVM POD (2026-11-09). The disk's own
+  # `/etc/nixos/configuration.nix`, printed with `cat -n`, is
+  #
+  #     1  { config, pkgs, ... }:
+  #     2
+  #     3  {
+  #     4    imports = [ <nixpkgs/nixos/modules/installer/cd-dvd/
+  #                      installation-cd-graphical-combined.nix> ];
+  #     5
+  #     6
+  #     7  }
+  #
+  # - an EMPTY attribute set that closes on line 7. Appending with `>>` put the three
+  # attributes on lines 9..11, AFTER the closing brace, and `nixos-rebuild` answered
+  #
+  #     error: syntax error, unexpected '=', expecting end of file
+  #     at /etc/nixos/configuration.nix:9:27:
+  #        9|   services.openssh.enable = true;
+  #            ^
+  #
+  # `sed -i "$ d"` DELETES THE LAST LINE FIRST - the `}` - and the printf then writes the
+  # three attributes and a closing brace of its own. The result is one well-formed attribute
+  # set whose last three entries are the ones this stage needs.
+  #
+  # THE DELETE COMES BEFORE THE PRINTF AND NOT AFTER, because a `}` written first and then
+  # appended to would leave the same broken file; and it is `"$ d"` with double quotes so the
+  # walk's own YAML quoting keeps the dollar out of the shell's hands.
+  #
   # `PermitRootLogin` IS NOT SET. It defaults to `prohibit-password`, and the account this
   # stage proves is `docker`, not root - turning root logins on would open an account nothing
   # here uses. The firewall IS turned off: the graphical install leaves it on and it drops 22,
   # which is the difference this distribution has from every other one here.
   - name: install sshd
     run: |
-      echo {{ password }} | sudo -S sh -c 'printf "\n  services.openssh.enable = true;\n  services.openssh.settings.PasswordAuthentication = true;\n  networking.firewall.enable = false;\n" >> /etc/nixos/configuration.nix'
+      echo {{ password }} | sudo -S sh -c 'sed -i "$ d" /etc/nixos/configuration.nix; printf "  services.openssh.enable = true;\n  services.openssh.settings.PasswordAuthentication = true;\n  networking.firewall.enable = false;\n}\n" >> /etc/nixos/configuration.nix'
       echo {{ password }} | sudo -S nixos-rebuild switch 2>&1 | tail -8
     terminal_wait: 0
     # 150 ms, NOT THE 40 ms `run:` USES FOR A POSIX SHELL, AND THIS IS A MEASURED GUEST.
