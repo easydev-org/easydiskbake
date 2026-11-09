@@ -70,19 +70,18 @@ on:
         description: "setup: macOS release"
         default: "15"
       disk_size:
-        # 160G, BECAUSE THE DEV STAGE PUTS XCODE ON THIS DISK.
+        # 128G, AND XCODE FITS IN IT WITH ROOM TO SPARE.
         #
-        # The chain measures: macOS 15 installs to about 28 GiB, the toolchain adds a few, and
-        # Xcode 26.3 expands to about 15 GiB before `-runFirstLaunch` installs its platform
-        # packages on top. 128G fit every stage before dev and left too little headroom for
-        # that - and a disk that fills during the expansion fails at `xip`, which reads as a
-        # corrupt archive rather than a full disk.
+        # The arithmetic, so the next person does not have to redo it: macOS 15 installs to
+        # about 30 GiB, the toolchain and its formulas add about 3, Xcode 26.3 expands to
+        # about 20 with its platform packages, and the .xip is 2.7 while it is being expanded
+        # and is deleted afterwards. That is 56 GiB of a 128 GiB disk.
         #
         # The size is FIXED rather than a variable per stage for the reason macos/15's own
         # setup.yaml gives: the Disk Utility coordinates are measured on the disk the workflow
-        # actually bakes, and a different size moves them.
+        # actually bakes, and a different size moves the window.
         description: "setup: guest disk size"
-        default: "160G"
+        default: "128G"
       install_timeout:
         description: "setup: seconds the installer may run"
         default: "7200"
@@ -486,17 +485,7 @@ jobs:
         uses: easydev-org/easyactions/runner-check@main
         with:
           kvm: true
-          # 150 GB, BECAUSE THE DEV STAGE HOLDS THREE COPIES OF A LARGE DISK AT ONCE.
-          #
-          #   out/*.qcow2          the ssh disk as pulled (~17 GiB compressed)
-          #   dev-work/dev.qcow2   the working copy (a full copy, not a backing file -
-          #                        a compressed qcow2 cannot be a backing image)
-          #   out/macos15-dev.qcow2  the result
-          #   + 2.7 GiB of Xcode .xip, which lives here until it is copied in
-          #
-          # 80 GB fits the first two and not the third. The failure would be a full disk in
-          # the middle of the Xcode expansion, which reads as a corrupt archive.
-          disk-gb: '150'
+          disk-gb: '80'
           token: ${{ github.token }}
 
       - name: prepare

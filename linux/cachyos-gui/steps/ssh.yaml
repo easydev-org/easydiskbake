@@ -13,7 +13,7 @@
 #     terminal    ctrl+alt+t, the session's own emulator
 #     install    pacman -Sy --noconfirm --needed openssh
 #     enable     systemctl enable --now sshd
-#     firewall   no firewall is installed on this image
+#     firewall   ufw IS INSTALLED AND ACTIVE, and its default policy DROPS port 22
 #
 # Arch's service is `sshd`, not `ssh` - the one character that would make the wait time out.
 #
@@ -147,6 +147,23 @@ steps:
     key: ctrl+alt+t
     settle: 10
 
+  # THE FIREWALL IS REAL ON THIS IMAGE, AND THIS FILE SAID IT WAS NOT.
+  #
+  # Measured on the real CachyOS disk in a local KVM pod: after a successful GUI login the
+  # install ran, `systemctl is-active sshd` answered `active`, and the forwarded port still
+  # answered `Connection timed out` - not `refused`, a TIMEOUT, which is a DROP. The guest's
+  # own iptables dump on that same session shows
+  #
+  #     chain ufw-before-input { ... }
+  #     chain ufw-user-input  { ... }
+  #
+  # so ufw IS installed and IS loaded, and its default incoming policy drops 22. The header
+  # of this file said `firewall  no firewall is installed on this image`, which was simply
+  # wrong, and every earlier failure was read as an openssh or a systemd problem because of it.
+  #
+  # `ufw allow 22/tcp` plus `ufw status` - the status line puts the rule in the recording, so
+  # the next reader can see whether it took.
+  #
   # `systemctl enable` IS NOT `systemctl start`, AND ONLY THE SECOND ONE OPENS PORT 22.
   #
   # Runs 42573078551 and 42577844686 (opensuse) both show a Konsole whose install had
@@ -159,7 +176,7 @@ steps:
   # is-active (the answer). `tail -12` so the status line survives in the recording.
   - name: install sshd
     run: |
-      echo {{ password }} | sudo -S sh -c "pacman -Sy --noconfirm --needed openssh && systemctl enable sshd; systemctl restart sshd; systemctl is-active sshd" 2>&1 | tail -12
+      echo {{ password }} | sudo -S sh -c "pacman -Sy --noconfirm --needed openssh && systemctl enable sshd; systemctl restart sshd; systemctl is-active sshd; ufw allow 22/tcp; ufw status | head -6" 2>&1 | tail -16
     terminal_wait: 0
     settle: 90
 

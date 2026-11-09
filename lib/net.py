@@ -324,6 +324,21 @@ def down() -> None:
     log("removed")
 
 
+def bridge_exists() -> bool:
+    """Is the bridge address actually on an interface right now?
+
+    ASKED RATHER THAN ASSUMED, because a caller that starts a service on a bridge which does
+    not exist gets a server bound to an address the guest cannot route to - and the symptom is
+    a client timeout, not a start failure. `up()` is idempotent; this is how a caller decides
+    whether to say so.
+    """
+    result = _sh(f"ip -4 addr show dev {BRIDGE} 2>/dev/null | grep -c 'inet {BRIDGE_IP}/'")
+    try:
+        return int((result.stdout or "0").strip() or 0) > 0
+    except ValueError:
+        return False
+
+
 def guest_address() -> str:
     """The address the guest will have, for anything that needs to reach it directly."""
     return GUEST_IP

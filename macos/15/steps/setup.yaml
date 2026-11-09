@@ -153,23 +153,9 @@ steps:
     #
     # `at_window` scans one column for the first pixel brighter than the wallpaper and clicks
     # the offset below it. No OCR, so a word in a dialog cannot be mistaken for the window.
-    # THE SCAN STARTS AT 120, NOT 180, BECAUSE THE DISK GOT BIGGER.
-    #
-    # Disk Utility sizes its window to the detail pane's table, which grows with the number of
-    # partitions and with the disk. It centres vertically, so a taller window starts HIGHER:
-    #
-    #     window 521 tall  top y=279    (the 128G disk these numbers were measured on)
-    #     window 599 tall  top y=240
-    #     window 700 tall  top y=190
-    #     window 800 tall  top y=140
-    #
-    # 180 was above the top edge on the first two and would have been BELOW it on a window
-    # taller than about 720 - the scan would start inside the toolbar and take some button for
-    # the window's edge. 120 covers every plausible height and costs nothing: what it scans
-    # first is wallpaper, which is the one thing that is certainly not a window.
     at_window: [1289, 15]
     window_x: 500
-    window_from: 120
+    window_from: 180
     window_to: 400
     settle: 6
     expect_any:
