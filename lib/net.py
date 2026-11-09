@@ -340,17 +340,6 @@ def uplink_addresses() -> list[str]:
 
 
 def external_addresses() -> list[str]:
-    """The addresses HERE that another container can dial - i.e. not the bridge.
-
-    the bridge is only meaningful inside this container: nothing outside can route to it.
-    A sibling container, another pod, or the docker host publishing `-p 2222:2222` all
-    arrive on one of these instead. This is the list the "another container can reach it"
-    proof names, so the bridge is filtered out rather than silently proven again.
-    """
-    return [address for address in uplink_addresses() if address != BRIDGE_IP]
-
-
-def external_addresses() -> list[str]:
     """The addresses other containers dial: this container's own, minus the bridge.
 
     THE BRIDGE IS EXCLUDED ON PURPOSE. It is one of the container's global addresses and it
