@@ -86,6 +86,7 @@ BOOTED_MARKER = {
     "zorin-gui": "Zorin",
     "mx-gui": "MX Linux",
     "popos-gui": "Pop!_OS",
+    "nixos-gui": "NixOS",
 }
 
 # THE COMPOSITOR THAT PROVES A DESKTOP SESSION, or "" for a system that has none.
@@ -113,6 +114,7 @@ COMPOSITOR = {
     "zorin-gui": "gnome-shell",
     "mx-gui": "xfce4-session",        # Xfce on Xorg
     "popos-gui": "cosmic-comp",
+    "nixos-gui": "gnome-shell",
 }
 
 # DISKS WHOSE DESKTOP IS AN X SESSION BY DESIGN. Only FreeBSD, for the reason above.

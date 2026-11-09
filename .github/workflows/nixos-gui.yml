@@ -1,0 +1,305 @@
+name: nixos-gui
+
+# Install NixOS from its GRAPHICAL ISO, through the Calamares that image carries, and prove
+# the disk started and answers on ssh.
+#
+#     bake ──> publish ──> launch ──> ssh
+#
+# WHY THERE IS A GRAPHICAL NIXOS AT ALL
+#
+# linux/nixos/ installs the MINIMAL image by typing `nixos-install` at a serial console. That
+# is the right shape for a base system - and it is why the minimal image was chosen for it:
+# the smaller medium has no graphical session.
+#
+# THE GRAPHICAL IMAGE IS A DIFFERENT INSTALLER. It carries `calamares` and
+# `calamares-nixos-extensions`, whose settings.conf is a seven-pane wizard with a footer -
+# the same kind of thing Manjaro's, CachyOS' and EndeavourOS' bakes drive. So this is a
+# `-gui` bake in the same sense those are: it boots a live desktop, drives the installer, and
+# is judged by the disk it wrote.
+#
+# WHAT IT INSTALLS IS GNOME, which is `packagechooser.conf`'s own `default: gnome`.
+#
+# AND IT HAS NO SSHD, WHICH IS THE INTERESTING PART
+#
+# The graphical installer's configuration template ships
+#
+#     # services.openssh.enable = true;
+#
+# COMMENTED OUT. A graphical NixOS install therefore has no sshd at all, which is why the
+# `ssh` job below is not a formality here - it is the stage that makes the disk reachable.
+# It does it the way NixOS means it to be done: it uncomments that line and runs
+# `nixos-rebuild switch`, rather than installing a package behind the configuration's back.
+#
+# MANUAL ONLY.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bake_run:
+        description: "Install NixOS GNOME through Calamares"
+        type: boolean
+        default: true
+      iso_url:
+        description: "ISO URL (empty for the pinned image)"
+        default: ""
+      iso_sha256:
+        description: "ISO sha256 (empty for the pinned value)"
+        default: ""
+      disk_size:
+        description: "guest disk size"
+        default: "64G"
+      install_timeout:
+        description: "seconds the installer may take"
+        default: "5400"
+      publish_tag:
+        description: "tag to publish under; empty for linux-nixos-gui"
+        default: "linux-nixos-gui"
+      launch_run:
+        description: "stage 2: boot the finished disk and check the desktop comes up"
+        type: boolean
+        default: true
+      ssh_run:
+        description: "stage 3: install sshd on the disk and prove the forwarded port answers"
+        type: boolean
+        default: true
+      ssh_port:
+        description: "stage 3: the host port forwarded to the guest's 22"
+        default: "2222"
+      boot_timeout:
+        description: "stage 2/3: seconds a booted disk has to reach its desktop or its sshd"
+        default: "900"
+      resolution:
+        description: "guest screen as WxH"
+        default: "1920x1080"
+      publish:
+        description: "publish the finished disk to ghcr"
+        type: boolean
+        default: true
+
+concurrency:
+  group: nixos-gui-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bake:
+    if: inputs.bake_run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+    outputs:
+      tag: ${{ inputs.publish_tag || 'linux-nixos-gui' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '40'
+          token: ${{ github.token }}
+
+      - name: prepare
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: nixos-gui-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py tags --prefix iso-
+
+      - name: fetch the graphical ISO
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: nixos-gui-iso
+          interval: "10"
+          command: |
+            set -euo pipefail
+            mkdir -p out/iso
+            URL="${{ inputs.iso_url }}"
+            if [ -n "$URL" ]; then
+              echo "using the URL given: $URL"
+              curl -fL --retry 3 -o out/iso/nixos-graphical.iso "$URL"
+            else
+              # FROM ghcr, THE SAME AS EVERY OTHER GUI BAKE: fetched once, verified, pushed
+              # as :iso-nixos-graphical. A missing tag names the command that publishes it.
+              python3 lib/fetch_iso.py nixos-graphical "out/iso/nixos-graphical.iso"
+            fi
+
+      - name: install through Calamares
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: nixos-gui-install
+          interval: "15"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            export SNAPSHOT_INTERVAL=2
+            ISO=$(ls out/iso/*.iso | head -1)
+            echo "iso: $ISO"
+            python3 linux/nixos-gui/install.py \
+              --iso "$ISO" \
+              --out out/nixos-gui.qcow2 \
+              --disk-size "${{ inputs.disk_size || '64G' }}" \
+              --timeout "${{ inputs.install_timeout || '5400' }}"
+
+      - name: keep the recording
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nixos-gui-recording
+          path: |
+            out/install.mp4
+            out/last-frame.png
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: push the disk
+        if: success() && inputs.publish
+        id: publish
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/nixos-gui.qcow2
+          kind: linux-nixos-gui
+          tag: ${{ inputs.publish_tag || 'linux-nixos-gui' }}
+          token: ${{ github.token }}
+
+  # ===========================================================================
+  # STAGE TWO - BOOT THE DISK AND SEE THE DESKTOP. See lib/launch_linux.py.
+  # ===========================================================================
+  launch:
+    needs: [bake]
+    if: |
+      always() && inputs.launch_run && inputs.bake_run
+      && needs.bake.result == 'success' && inputs.publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN
+    permissions:
+      contents: read
+      packages: read
+      checks: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '30'
+          token: ${{ github.token }}
+
+      - name: launch it
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: nixos-gui-launch
+          interval: "20"
+          command: |
+            set -euo pipefail
+            python3 lib/launch_linux.py \
+              --tag "${{ needs.bake.outputs.tag || 'linux-nixos-gui' }}" \
+              --kind nixos-gui \
+              --ssh skip \
+              --artifacts "out/nixos-gui-launch" \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}"
+
+      - name: keep the verdict
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nixos-gui-launch
+          path: |
+            out/nixos-gui-launch/launch.txt
+            out/nixos-gui-launch/console.log
+            out/nixos-gui-launch/screen.png
+          if-no-files-found: warn
+          retention-days: 14
+
+  # ===========================================================================
+  # STAGE THREE - PUT SSHD ON THE DISK AND PROVE THE FORWARDED PORT ANSWERS.
+  # ===========================================================================
+  #
+  # WHY THIS IS A SEPARATE STAGE AND NOT PART OF THE BAKE: the disk that was verified is the
+  # disk that ships. Installing sshd during the bake would mean the launch stage was checking
+  # a different artifact from the one published.
+  #
+  # WHY IT IS NOT A FORMALITY ON THIS SYSTEM: NixOS' graphical installer template ships
+  # `# services.openssh.enable = true;` COMMENTED OUT, so a Calamares NixOS install has no
+  # sshd at all. This job is what makes the disk reachable, and it does it NixOS' own way -
+  # uncomment that line and run `nixos-rebuild switch`.
+  #
+  # THE PROOF IS MEASURED FROM OUTSIDE THE GUEST: lib/session.py connects to the forwarded
+  # port with the account's password and runs a command. "A port is open" is not the claim
+  # being made; "another container can ssh in and execute something" is.
+  ssh:
+    needs: [bake]
+    if: |
+      always() && inputs.ssh_run && inputs.bake_run
+      && needs.bake.result == 'success' && inputs.publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      # THE SAME THREE AS EVERY GUEST JOB, because the guest is on a tap: the forwarded port
+      # 2222 lives on the bridge address and the DNAT rule that puts it there needs
+      # NET_ADMIN, exactly as lib/net.py documents.
+      options: --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN
+    permissions:
+      contents: read
+      checks: write
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '30'
+          token: ${{ github.token }}
+
+      - name: install sshd and prove it answers
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: nixos-gui-ssh
+          interval: "20"
+          command: |
+            set -euo pipefail
+            python3 lib/ssh_step.py \
+              --tag "${{ needs.bake.outputs.tag || 'linux-nixos-gui' }}" \
+              --kind nixos-gui \
+              --artifacts out/nixos-gui-ssh \
+              --ssh-port "${{ inputs.ssh_port || '2222' }}" \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}"
+
+      - name: keep the verdict
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nixos-gui-ssh
+          path: |
+            out/nixos-gui-ssh/ssh.txt
+            out/nixos-gui-ssh/console.log
+          if-no-files-found: warn
+          retention-days: 14

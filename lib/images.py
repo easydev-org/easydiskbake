@@ -252,6 +252,24 @@ DESKTOP = {
         "sha256": "894bc15abcad05839b226655121a113ad16cfbc4ada98e93e3ffb74a853fdcd4",
         "size": 2693218304,
     },
+    "nixos-graphical": {
+        # THE GRAPHICAL IMAGE, NOT THE MINIMAL ONE. This is the ISO that carries Calamares
+        # and a GNOME session, so it is driven the same way every other -gui bake is: a
+        # measured coordinate and a measured wait, from a desktop that is already running.
+        #
+        # IT IS A DATED SNAPSHOT AND NOT THE CHANNEL ALIAS. `channels.nixos.org` answers 302
+        # to a `nixos-26.05.<build>.<rev>/...` file, and that target moves when the channel
+        # advances. Pinning the resolved URL is what makes the sha256 below mean anything -
+        # the same rule the other entries here follow, and the reason openSUSE's entry is the
+        # one that deliberately omits a hash.
+        #
+        # MEASURED: downloaded and hashed on 2026-11-09, 3.62 GiB.
+        "url": "https://releases.nixos.org/nixos/26.05/"
+               "nixos-26.05.13627.c56a87d8e41c/"
+               "nixos-graphical-26.05.13627.c56a87d8e41c-x86_64-linux.iso",
+        "sha256": "62900e47b6bea0917c491ac0a8e18dd4e3b7579d9b60ee8e0bbbd8945162256d",
+        "size": 3888513024,
+    },
     "ghostbsd-mate": {
         "url": "https://download.ghostbsd.org/releases/amd64/24.10.1/GhostBSD-24.10.1.iso",
         "sha256": "e4e969603a3edf848db8c7fc2646f76871f0d9bd12787bc6c966250938c2c283",

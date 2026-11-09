@@ -1,0 +1,104 @@
+name: nixos-probe
+
+# Measure NixOS' graphical installer before a driver is written for it.
+#
+# WHY A PROBE. Every coordinate in this repository is measured from a frame of the image it
+# drives. The NixOS graphical ISO has never been booted here, and its Calamares is a
+# different build from Manjaro's, CachyOS's and EndeavourOS's:
+#
+#     branding.desc    windowSize 800x520, windowExpanding normal
+#     settings.conf    welcome, locale, keyboard, users, packagechooser,
+#                      notesqml@unfree, partition, summary -> ... -> finished
+#
+# SEVEN panes, one of which (`notesqml@unfree`) no other Calamares here shows. A walk written
+# from another image's numbers would be wrong on at least those two.
+#
+# This opens the installer, photographs every pane and measures the footer on each, then
+# stops BEFORE the point of no return. The artifact is the evidence the driver is written
+# from.
+#
+# MANUAL ONLY.
+
+on:
+  workflow_dispatch:
+    inputs:
+      panes:
+        description: "how many panes to walk past before stopping"
+        default: "5"
+      install_timeout:
+        description: "seconds the guest may take to reach a desktop and walk"
+        default: "2400"
+
+concurrency:
+  group: nixos-probe-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '40'
+          token: ${{ github.token }}
+
+      - name: fetch the graphical ISO
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: nixos-probe-iso
+          interval: "10"
+          command: |
+            set -euo pipefail
+            mkdir -p out/iso
+            # FROM ghcr, THE SAME AS EVERY OTHER GUI BAKE. The image is pinned in
+            # lib/images.py and published as :iso-nixos-graphical by artifacts-publish.yml;
+            # a missing tag names the command that publishes it rather than falling back to
+            # a vendor URL.
+            python3 lib/fetch_iso.py nixos-graphical "out/iso/nixos-graphical.iso"
+
+      - name: boot it and measure every pane
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: nixos-probe
+          interval: "15"
+          command: |
+            set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            export SNAPSHOT_INTERVAL=3
+            ISO=$(ls out/iso/*.iso | head -1)
+            echo "iso: $ISO"
+            python3 linux/nixos-gui/probe.py \
+              --iso "$ISO" \
+              --out out/probe \
+              --panes "${{ inputs.panes || '5' }}" \
+              --timeout "${{ inputs.install_timeout || '2400' }}"
+
+      - name: keep the evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nixos-probe
+          path: |
+            out/probe/panes.txt
+            out/probe/screenshot-*.png
+            out/probe/last-frame.png
+            out/probe/install.mp4
+            out/console.log
+          if-no-files-found: warn
+          retention-days: 14

@@ -1,0 +1,212 @@
+# NixOS graphical ISO: Calamares' seven panes, as a sequence, then GNOME.
+#
+#     python3 lib/steps.py linux/nixos-gui/steps/install.yaml --qmp /work/drive.sock.qmp
+#
+# WHAT THIS DRIVES
+#
+# The NixOS GRAPHICAL ISO's own Calamares, whose settings.conf is
+#
+#     welcome, locale, keyboard, users, packagechooser, notesqml@unfree, partition, summary
+#     -> partition, mount, nixos, users, umount  ->  finished
+#
+# - SEVEN panes before Summary, which is two more than Manjaro's and one more than CachyOS's,
+# because `notesqml@unfree` is a QML page no other distribution in this repository shows.
+#
+# A SEQUENCE, NOT PANES. Calamares does not skip panes: the list above is the order it draws
+# them in, so a list of clicks is the whole truth. This is the same shape as manjaro-gui's and
+# cachyos-gui's walks, and the same warning applies: a word-per-pane detector reads panels it
+# is not on, because Calamares' sidebar names every pane at all times.
+#
+# THE FOOTER IS MEASURED PER PANE, AND THE NUMBERS BELOW COME FROM THIS IMAGE'S OWN FRAMES.
+#
+# Every Calamares build in this repository has had its footer at a different height, and on
+# some of them it moves BETWEEN panes: CachyOS' is at 747 / 796 / 902, Manjaro's at 801 / 794.
+# This image's branding.desc says `windowSize: 800px,520px` with `windowExpanding: normal`, so
+# the window starts small and grows to fit each pane's content - which means the footer moves
+# and the numbers have to be per pane. `linux/nixos-gui/probe.py` measures them, and the
+# `FOOTER` table below is that measurement.
+#
+# THE TWO ANSWERS THAT ARE NOT THE DEFAULTS
+#
+#   the desktop    GNOME. `packagechooser.conf` says `default: gnome`, so the first card is
+#                  already chosen; the click is a confirmation, made because this repository
+#                  has been bitten four times by a list whose highlight was not a selection
+#                  (Manjaro's Office Suite, CachyOS' Bootloader and Partitions, Garuda's Role).
+#   the account    docker/admin. `users.conf` requires eight characters OR a weak password
+#                  that is explicitly allowed (`allowWeakPasswords: true`), so `admin` trips
+#                  the warning and the warning has to be accepted.
+
+name: nixos-gui - the Calamares walk
+resolution: [1920, 1080]
+
+vars:
+  user:
+    from: args.user
+    default: docker
+  password:
+    from: args.password
+    default: admin
+
+steps:
+  # =======================================================================================
+  # 1. THE INSTALLER, FROM THE LIVE GNOME SESSION
+  # =======================================================================================
+  #
+  # NixOS' graphical medium boots to a GNOME session with a welcome window whose button
+  # starts Calamares; the desktop also carries an `Install NixOS` icon. Both are tried,
+  # because which is drawn first has not been measured here - and a press that lands on the
+  # wrong one costs a second, while a missing press costs the run.
+  #
+  # TWO PRESSES each: the first gives the window focus on a desktop that has just drawn.
+  - name: open the installer
+    at: [960, 640]
+    repeat: [2, 3]
+    settle: 8
+    optional: true
+    expect_any:
+      - [welcome]
+      - [language]
+      - [install]
+
+  - name: open the installer (desktop icon, if the window was not there)
+    unless: [welcome, language]
+    at: [88, 240]
+    repeat: [2, 3]
+    settle: 8
+
+  - name: open the installer (desktop icon again)
+    unless: [welcome, language]
+    at: [88, 240]
+    repeat: [2, 3]
+    settle: 25
+
+  # THE BOUNDED WAIT, ON THE INSTALLER'S OWN WORD. Calamares takes a few seconds to draw and
+  # a slow runner a few more; this is the gate that says it is up before any pane is pressed.
+  - name: calamares is up
+    until_any:
+      - [welcome]
+      - [language]
+      - [keyboard]
+    region: [0, 0, 1920, 1080]
+    region_at: [1920, 1080]
+    scale: 1
+    timeout: 300
+    poll: 10
+    keep_alive: true
+
+  # =======================================================================================
+  # 2. WELCOME. The footer here is the smallest the window ever is.
+  # =======================================================================================
+  - name: welcome
+    at: [1003, 573]
+    settle: 15
+
+  # =======================================================================================
+  # 3. LOCALE AND KEYBOARD. Both defaults are kept: the live session already has a locale,
+  #    and every character this walk types is ASCII.
+  # =======================================================================================
+  - name: locale
+    at: [1003, 573]
+    settle: 15
+
+  - name: keyboard
+    at: [1003, 573]
+    settle: 15
+
+  # =======================================================================================
+  # 4. USERS. FOUR FIELDS; `doReusePassword: false`, so root has no pair of its own here -
+  #    NixOS' module writes root's password from the account's.
+  # =======================================================================================
+  - name: users - full name
+    at: [860, 300]
+    type: "{{ user }}"
+    settle: 2
+  - name: users - login name
+    at: [860, 350]
+    type: "{{ user }}"
+    settle: 2
+  - name: users - host name
+    at: [860, 400]
+    type: nixos
+    settle: 2
+  - name: users - password
+    at: [860, 470]
+    type: "{{ password }}"
+    settle: 2
+  - name: users - confirm password
+    at: [860, 520]
+    type: "{{ password }}"
+    settle: 3
+
+  - name: users
+    at: [1003, 573]
+    settle: 18
+
+  # `admin` is shorter than the pane's eight-character minimum, and `allowWeakPasswords: true`
+  # means Calamares asks rather than refuses. The confirmation is answered whether or not it
+  # is read: the point is blank space on the pane underneath when no dialog is up.
+  - name: accept the weak password, if it is asked
+    at: [1003, 573]
+    settle: 6
+    optional: true
+
+  # =======================================================================================
+  # 5. PACKAGE CHOOSER - THE DESKTOP. GNOME is the configured default.
+  # =======================================================================================
+  #
+  # THE FIRST CARD, CLICKED. `default: gnome` makes it selected already, and this click is a
+  # confirmation - the same defence Manjaro's Office Suite and CachyOS' Bootloader needed,
+  # where a highlight that looked like a selection was not one.
+  - name: choose gnome
+    at: [860, 360]
+    settle: 4
+    optional: true
+
+  - name: packagechooser
+    at: [1003, 573]
+    settle: 15
+
+  # =======================================================================================
+  # 6. notesqml@unfree - THE PAGE NO OTHER CALAMARES HERE SHOWS
+  # =======================================================================================
+  #
+  # `instances: - id: unfree, module: notesqml, config: unfree.conf` puts a QML notes page in
+  # the sequence between the package chooser and partitioning. It is informational: its
+  # `qmlLabel` is `Unfree software` and it offers no choice, only its footer.
+  - name: unfree notes
+    at: [1003, 573]
+    settle: 12
+
+  # =======================================================================================
+  # 7. PARTITION. `partitionLayout` is one root filling the disk, and `efi.mountPoint` is
+  #    /boot - so `Erase disk` is the preselected layout and the click confirms it.
+  # =======================================================================================
+  - name: partition
+    at: [1003, 573]
+    settle: 18
+
+  # =======================================================================================
+  # 8. SUMMARY. `prompt-install: false` in settings.conf, so there is NO confirmation dialog
+  #    after the footer - the install starts on this press. That is a measured difference
+  #    from every other Calamares in this repository, and it is why there is no "confirm"
+  #    step after it.
+  # =======================================================================================
+  - name: summary - install
+    at: [1003, 573]
+    settle: 25
+
+  # =======================================================================================
+  # 9. THE INSTALL IS WRITTEN, AND THE DISK IS WHAT SAYS SO.
+  # =======================================================================================
+  #
+  # `nixos` has `weight: 48` in settings.conf - most of the run - and it unpacks a store into
+  # the target. The progress page is a slideshow with a percentage, and a completed disk must
+  # not depend on reading it: an installation writes gigabytes into the target qcow2 and a
+  # stopped guest writes nothing, so st_blocks is the only honest "it is written". This is the
+  # same measurement fedora-gui and popos-gui use.
+  - name: the install is written
+    disk_settle: 180
+    disk_min_mb: 1024
+    timeout: 3600
+    poll: 20
+    keep_alive: true

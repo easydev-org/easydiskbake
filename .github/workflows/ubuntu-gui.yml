@@ -53,6 +53,13 @@ on:
       boot_timeout:
         description: "stage 2: seconds the booted disk has to reach its desktop"
         default: "900"
+      ssh_run:
+        description: "stage 3: install sshd on the disk and prove the forwarded port answers"
+        type: boolean
+        default: true
+      ssh_port:
+        description: "stage 3: the host port forwarded to the guest's 22"
+        default: "2222"
       launch_run:
         description: "stage 2: boot the finished disk and check the desktop comes up"
         type: boolean
@@ -232,5 +239,76 @@ jobs:
             out/ubuntu-gui-launch/launch.txt
             out/ubuntu-gui-launch/console.log
             out/ubuntu-gui-launch/screen.png
+          if-no-files-found: warn
+          retention-days: 14
+
+  # ===========================================================================
+  # STAGE THREE - PUT SSHD ON THE DISK AND PROVE THE FORWARDED PORT ANSWERS.
+  # ===========================================================================
+  #
+  # WHY THIS IS A SEPARATE STAGE AND NOT PART OF THE BAKE: the disk that was verified is
+  # the disk that ships. Installing sshd during the bake would mean the launch stage was
+  # checking a different artifact from the one published.
+  #
+  # WHY IT IS NEEDED AT ALL: a `-gui` disk is installed by clicking through a desktop
+  # installer, and none of those installers puts an ssh package on the target. NixOS'
+  # Calamares template says so outright - `# services.openssh.enable = true;`, commented
+  # out - and every other desktop ISO here simply does not select one.
+  #
+  # THE PROOF IS MEASURED FROM OUTSIDE THE GUEST: lib/session.py connects to the forwarded
+  # port with the account's password and runs a command. "A port is open" is not the claim;
+  # "another container can ssh in and execute something" is.
+  ssh:
+    needs: [bake]
+    if: |
+      always() && inputs.ssh_run && inputs.bake_run
+      && needs.bake.result == 'success' && inputs.publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      # THE FORWARDED PORT 2222 LIVES ON THE BRIDGE ADDRESS, and the DNAT rule that puts it
+      # there needs NET_ADMIN - the same three container privileges every guest job has.
+      options: --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN
+    permissions:
+      contents: read
+      checks: write
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '30'
+          token: ${{ github.token }}
+
+      - name: install sshd and prove it answers
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: ubuntu-gui-ssh
+          interval: "20"
+          command: |
+            set -euo pipefail
+            python3 lib/ssh_step.py \
+              --tag "${{ needs.bake.outputs.tag }}" \
+              --kind ubuntu-gui \
+              --artifacts out/ubuntu-gui-ssh \
+              --ssh-port "${{ inputs.ssh_port || '2222' }}" \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}"
+
+      - name: keep the verdict
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-gui-ssh
+          path: |
+            out/ubuntu-gui-ssh/ssh.txt
+            out/ubuntu-gui-ssh/console.log
           if-no-files-found: warn
           retention-days: 14
