@@ -1539,7 +1539,13 @@ def run_file(walkthrough: str, qmp_path: str, *, work: str = "",
         #     AttributeError: 'HeadlessDriver' object has no attribute 'key'
         #
         # - measured on run 42555862172, which is the run that found this.
-        or s["run"] or s["key"]
+        #
+        # AND `python:` NEEDS ONE, WHICH IS THE SAME MISTAKE A THIRD TIME. An extension like
+        # ssh_panes:enable_remote_login drives the GUI through the driver's own QMP connection;
+        # classified headless it gets a driver with no socket, and the function waits out its
+        # 120-second "no QMP socket at " (with an empty path) before giving up. A walkthrough
+        # that delegates to an extension cannot be known to be headless.
+        or s["python"] or s["run"] or s["key"]
         for s in steps.steps)
 
     if needs_screen:
@@ -1626,7 +1632,7 @@ def main(argv: list[str]) -> int:
     needs_screen = bool(steps.panes) or any(
         s["at"] or s["double"] or s["expect"] or s["expect_any"] or s["until"]
         or s["until_any"] or s["disk_settle"] or s["when"] or s["unless"]
-        or s["run"] or s["key"] for s in steps.steps)
+        or s["python"] or s["run"] or s["key"] for s in steps.steps)
     if needs_screen and not args.qmp:
         log("FAILED: this walkthrough has GUI steps; --qmp is required")
         return 1
