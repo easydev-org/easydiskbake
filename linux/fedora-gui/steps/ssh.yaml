@@ -15,7 +15,10 @@
 #     enable     systemctl enable --now sshd
 #     firewall   firewalld may be active; port 22 must be opened explicitly
 #
-# Fedora ships firewalld too, so this walk opens ssh the same way openSUSE's does.
+# Fedora ships firewalld too, so this walk opens ssh the same way openSUSE's does - and it
+# did NOT, which is what run 42579801145's `Connection refused` was measured against. The
+# command now runs `firewall-cmd` explicitly; `|| true` because a disk with firewalld
+# stopped is a disk where the command fails harmlessly and the tunnel still works.
 #
 # THE THREE ACTIONS ARE THE SAME EVERYWHERE, WHICH IS WHY THE SHAPE IS THE SAME:
 #
@@ -128,7 +131,7 @@ steps:
   # is-active (the answer). `tail -12` so the status line survives in the recording.
   - name: install sshd
     run: |
-      echo {{ password }} | sudo -S sh -c "dnf install -y openssh-server && systemctl enable sshd; systemctl restart sshd; systemctl is-active sshd" 2>&1 | tail -12
+      echo {{ password }} | sudo -S sh -c "dnf install -y openssh-server && systemctl enable sshd; systemctl restart sshd; systemctl is-active sshd; firewall-cmd --add-service=ssh --permanent || true; firewall-cmd --reload || true; firewall-cmd --list-services || true" 2>&1 | tail -14
     terminal_wait: 0
     settle: 90
 

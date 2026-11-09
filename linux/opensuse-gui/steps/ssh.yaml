@@ -114,10 +114,26 @@ steps:
   # answer off, so the stage waited ten minutes against a port that may never have opened.
   #
   # So the three actions are separate and each one reports: enable (boot), restart (now),
-  # is-active (the answer). `tail -12` so the status line survives in the recording.
+  # is-active (the answer). `tail -14` so the status line survives in the recording.
+  #
+  # AND THE FIREWALL, WHICH THIS FILE'S OWN HEADER PROMISED AND THE COMMAND NEVER DID.
+  #
+  # Run 42580099375's frame shows the whole install working and `is-active` answering
+  # `active` - sshd WAS running - and the stage still failed with
+  #
+  #     ssh: connect to host 172.30.0.1 port 2222: No route to host
+  #
+  # `No route to host` is a DROP, not a refusal: nothing is listening on 2222 from the
+  # guest's side because firewalld's default zone is discarding the SYN. Visible in the
+  # screenshot: the terminal shows `active`, and it also shows the `firewall-cmd` this walk
+  # was supposed to run is absent. openSUSE's own header in this file says
+  # `firewall-cmd --add-service=ssh` is part of the walk.
+  #
+  # `--permanent` plus `--reload`, then `--list-services` so the recording shows ssh in the
+  # list rather than leaving the next stage to find out.
   - name: install sshd
     run: |
-      echo {{ password }} | sudo -S sh -c "zypper --non-interactive --no-gpg-checks install openssh && systemctl enable sshd; systemctl restart sshd; systemctl is-active sshd" 2>&1 | tail -12
+      echo {{ password }} | sudo -S sh -c "zypper --non-interactive --no-gpg-checks install openssh && systemctl enable sshd; systemctl restart sshd; systemctl is-active sshd; firewall-cmd --add-service=ssh --permanent; firewall-cmd --reload; firewall-cmd --list-services" 2>&1 | tail -14
     terminal_wait: 0
     settle: 90
 
