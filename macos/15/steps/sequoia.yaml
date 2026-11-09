@@ -44,6 +44,11 @@
 name: macos 15 sequoia setup assistant
 resolution: [1920, 1080]
 ends: [finder]
+# THE MENU BAR, READ AS A CROP. `finder` is 12-pixel text at the top of the screen, and a
+# whole-frame read of a 1920x1080 desktop returns "Empty page!!" - the page segmenter decides
+# there is no page. lib/desktop.py's MENU_BAR is (0, 0, 700, 34) at 3x for exactly this.
+ends_region: [0, 0, 700, 34]
+ends_region_scale: 3
 # THE DISK IS STILL BOOTING WHEN THIS WALKTHROUGH STARTS, so the loop has to know how it
 # recognises the first pane. Without it the loop matches nothing against a black screen and
 # reports STUCK, which is exactly what the first CI run of the desktop stage did.

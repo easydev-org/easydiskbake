@@ -724,6 +724,12 @@ def _run_until_dark(driver: Driver, step: Step) -> bool:
     return False
 
 
+def _read_region(driver: Driver, region, scale: int, label: str) -> list[tuple]:
+    """Read one rectangle and leave the words on the driver. Nothing else is decided here."""
+    driver.look_at(region, label, scale=scale)
+    return driver.words
+
+
 def _read(driver: Driver, step: Step, label: str = "look") -> list[tuple]:
     """One look, cropped to the step's `region` when it has one.
 
@@ -1096,6 +1102,35 @@ def walk_panes(driver: Driver, steps: Walk, values: dict[str, str], *,
         driver.look("pass")
 
         ended = False
+        # THE END CONDITION IS READ IN ITS OWN REGION WHEN ONE IS DECLARED, AND FOR A MACOS
+        # DESKTOP IT MUST BE.
+        #
+        # `finder` is 12-pixel text in the menu bar. Read whole, tesseract's page segmenter
+        # decides a 1920x1080 desktop has no page at all and returns
+        #
+        #     Empty page!!
+        #
+        # which is run 42383829203: its last-frame.png IS the desktop and the stage waited out
+        # its whole budget because the word never appeared in a whole-frame read.
+        # lib/desktop.py solves it by cropping the menu bar and enlarging it three times; this
+        # is the same answer, reachable from a walkthrough as `ends_region`.
+        #
+        # THE PANE MATCHING BELOW STILL USES THE WHOLE FRAME. A pane's title is large text and
+        # reads fine whole; only the menu bar is too small for that. So the end is asked in its
+        # region FIRST, on its own read, and the loop's own `look` follows.
+        ends_region = steps.document.get("ends_region")
+        if ends_region:
+            words_here = _read_region(driver, ends_region,
+                                      int(steps.document.get("ends_region_scale", 3)), "end")
+            for spec in steps.document.get("ends") or []:
+                wanted = spec if isinstance(spec, list) else [spec]
+                have = {"".join(c for c in w[0].lower() if c.isalnum()) for w in words_here}
+                if all("".join(c for c in w.lower() if c.isalnum()) in have for w in wanted):
+                    log(f"=== THE END: {' '.join(wanted)} ===")
+                    ended = True
+                    break
+            if ended:
+                return True, answered
         for spec in steps.document.get("ends") or []:
             words = spec if isinstance(spec, list) else [spec]
             if all(driver.says(w) for w in words):
