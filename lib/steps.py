@@ -1100,6 +1100,13 @@ def walk_panes(driver: Driver, steps: Walk, values: dict[str, str], *,
     idle_since: float | None = None
     while True:
         driver.look("pass")
+        # THE WHOLE-FRAME READING IS KEPT, because a pane with a `region` overwrites
+        # driver.words with its crop. Without this, a pane that follows a cropped one is
+        # matched against the CROP instead of the screen - which is what the first local run
+        # did: `country or region` (no region) was tested against the 300..340 strip that the
+        # account pane had just read, saw the words 'select your country or region' from the
+        # COUNTRY screen's card, and never matched its own.
+        whole = list(driver.words)
 
         ended = False
         # THE END CONDITION IS READ IN ITS OWN REGION WHEN ONE IS DECLARED, AND FOR A MACOS
@@ -1122,6 +1129,7 @@ def walk_panes(driver: Driver, steps: Walk, values: dict[str, str], *,
         if ends_region:
             words_here = _read_region(driver, ends_region,
                                       int(steps.document.get("ends_region_scale", 3)), "end")
+            driver.words = whole
             for spec in steps.document.get("ends") or []:
                 wanted = spec if isinstance(spec, list) else [spec]
                 have = {"".join(c for c in w[0].lower() if c.isalnum()) for w in words_here}
@@ -1165,7 +1173,11 @@ def walk_panes(driver: Driver, steps: Walk, values: dict[str, str], *,
                 _read_region(driver, here["region"],
                              int(here.get("scale", DEFAULT_CROP_SCALE)), here.name)
                 matched = all(driver.says(w) for w in words)
+                # PUT THE WHOLE-FRAME READING BACK, so the next pane is matched against the
+                # screen rather than this crop.
+                driver.words = whole
             else:
+                driver.words = whole
                 matched = all(driver.says(w) for w in words)
             if not matched:
                 continue

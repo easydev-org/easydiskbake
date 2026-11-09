@@ -1,0 +1,81 @@
+# Stage three for linux-nixos-gui: put sshd on THIS disk and prove ssh works.
+#
+#     python3 lib/steps.py linux/nixos-gui/steps/ssh.yaml --qmp /work/drive.sock.qmp --ssh-port 2222
+#
+# WHY THIS FILE IS PER-DISTRIBUTION AND NOT ONE SHARED WALK
+#
+# Because the four things it does differ on every image, and a shared file would have to be
+# written as a table of exceptions - which is what a per-distribution file already is, only
+# with the exceptions where a reader can see them.
+#
+# WHAT DIFFERS, FOR THIS ONE
+#
+#     terminal    ctrl+alt+t, the session's own emulator
+#     install    printf '\n  services.openssh.enable = true
+#     enable     nixos-rebuild switch
+#     firewall   the graphical install leaves networking.firewall ENABLED, which drops 22; the appended configuration turns it off
+#
+# THE ONE DISTRIBUTION WHERE sshd IS NOT A PACKAGE INSTALL. NixOS is declarative: its Calamares template ships `# services.openssh.enable = true;` commented out, so the step is to append the attribute and rebuild - there is no package to install.
+#
+# THE THREE ACTIONS ARE THE SAME EVERYWHERE, WHICH IS WHY THE SHAPE IS THE SAME:
+#
+#     run:          open this session's terminal and type the install
+#     require_ssh:  wait for the daemon it enabled (the step macOS's own ssh.yaml added)
+#     ssh:          run a command IN THE GUEST over the forwarded port - an exit status
+#
+# THE TRANSPORT IS THE DESKTOP. These disks have no getty on ttyS0 - measured on run
+# 42551299241, whose console said `BdsDxe: starting Boot0001` and then nothing - so `run:`
+# is the only way in.
+
+name: linux-nixos-gui - sshd
+
+resolution: [1920, 1080]
+
+vars:
+  password:
+    from: args.password
+    default: admin
+  user:
+    from: args.user
+    default: docker
+
+steps:
+  # =======================================================================================
+  # 1. THE INSTALL, TYPED INTO THIS SESSION'S OWN TERMINAL
+  # =======================================================================================
+  #
+  # `run:` presses ctrl+alt+t to open the terminal, waits `terminal_wait`, types the text,
+  # presses Return and waits `settle`. Every number here is this image's: a desktop that has
+  # just painted has not started its session yet, so the wait comes before the shortcut.
+  - name: install sshd
+    run: |
+      printf '\n  services.openssh.enable = true;\n  services.openssh.settings.PasswordAuthentication = true;\n  services.openssh.settings.PermitRootLogin = "yes";\n  networking.firewall.enable = false;\n' >> /etc/nixos/configuration.nix
+      sudo -S nixos-rebuild switch 2>&1 | tail -8
+    terminal_wait: 14
+    settle: 300
+  - name: install sshd as root
+    run: "test -f /tmp/easy-ssh.sh && sudo -S nixos-rebuild switch || true"
+    terminal_wait: 14
+    settle: 15
+    optional: true
+
+  # =======================================================================================
+  # 2. WAIT FOR THE DAEMON THAT STEP ENABLED
+  # =======================================================================================
+  #
+  # NO FIXED `wait:` - the number would be a guess about a package install and a
+  # `nixos-rebuild` that share nothing. `require_ssh` asks the only question that matters.
+  - name: wait for sshd
+    require_ssh: true
+    timeout: 600
+
+  # =======================================================================================
+  # 3. THE PROOF, AND IT IS THIS GUEST ANSWERING OVER THE FORWARDED PORT
+  # =======================================================================================
+  - name: prove the kernel over ssh
+    ssh: uname -a
+    timeout: 120
+
+  - name: prove the account over ssh
+    ssh: id -un; hostname
+    timeout: 120

@@ -1,0 +1,71 @@
+# Stage three for bsd-ghostbsd-mate: put sshd on THIS disk and prove ssh works.
+#
+#     python3 lib/steps.py bsd/ghostbsd/steps/ssh.yaml --qmp /work/drive.sock.qmp --ssh-port 2222
+#
+# WHY THIS FILE IS PER-DISTRIBUTION AND NOT ONE SHARED WALK
+#
+# Because the four things it does differ on every image, and a shared file would have to be
+# written as a table of exceptions - which is what a per-distribution file already is, only
+# with the exceptions where a reader can see them.
+#
+# WHAT DIFFERS, FOR THIS ONE
+#
+#     terminal    ctrl+alt+t, the session's own emulator
+#     install    sysrc sshd_enable=YES
+#     enable     service sshd restart || service sshd start
+#     firewall   no pf rules are loaded by default on this image
+#
+# FREEBSD HAS NO sudo, so this walk uses `su -m root` and MATE's terminal. Its `sshd_enable` is an rc.conf knob, not a systemd unit, so the wait sees the daemon only after `service sshd start`.
+#
+# THE THREE ACTIONS ARE THE SAME EVERYWHERE, WHICH IS WHY THE SHAPE IS THE SAME:
+#
+#     run:          open this session's terminal and type the install
+#     require_ssh:  wait for the daemon it enabled (the step macOS's own ssh.yaml added)
+#     ssh:          run a command IN THE GUEST over the forwarded port - an exit status
+#
+# THE TRANSPORT IS THE DESKTOP. These disks have no getty on ttyS0 - measured on run
+# 42551299241, whose console said `BdsDxe: starting Boot0001` and then nothing - so `run:`
+# is the only way in.
+
+name: bsd-ghostbsd-mate - sshd
+
+resolution: [1920, 1080]
+
+vars:
+  password:
+    from: args.password
+    default: admin
+  user:
+    from: args.user
+    default: docker
+
+steps:
+  # =======================================================================================
+  # 1. THE INSTALL, TYPED INTO THIS SESSION'S OWN TERMINAL
+  # =======================================================================================
+  #
+  # `run:` presses ctrl+alt+t to open the terminal, waits `terminal_wait`, types the text,
+  # presses Return and waits `settle`. Every number here is this image's: a desktop that has
+  # just painted has not started its session yet, so the wait comes before the shortcut.
+  - name: install sshd
+    run: |
+      echo "__PW__" | su -m root -c 'sysrc sshd_enable=YES; service sshd restart || service sshd start'
+    terminal_wait: 12
+    settle: 60
+  - name: wait for sshd
+    require_ssh: true
+    timeout: 600
+
+  # =======================================================================================
+  # 3. THE PROOF, AND IT IS THIS GUEST ANSWERING OVER THE FORWARDED PORT
+  # =======================================================================================
+  - name: prove the kernel over ssh
+    ssh: uname -a
+    timeout: 120
+
+  - name: prove the account over ssh
+    ssh: id -un; hostname
+    timeout: 120
+
+  # MATE'S OWN sshd IS THE rc.conf ONE, so the wait only succeeds once
+  # `service sshd start` has run - which the install step above does.
