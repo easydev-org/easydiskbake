@@ -870,6 +870,30 @@ export PATH=/vendor/bin:/system/bin:/system/xbin
 
 # THE TRIGGER, IN ITS OWN .rc. A vendor .rc IS parsed (init says so: "Parsing file
 # /vendor/etc/init/..."), so this only needs to start the service AOSP already defined.
+# SSHD, STARTED FROM THE SAME PLACE THE NETWORK IS.
+#
+# Termux ships no init script and Android has no service for it, so this is the thin piece
+# that runs the binary. It is a shell command inside a vendor service, NOT a new SELinux
+# domain: the binary is vendor_file, which goldfish_setup may execute.
+#
+# `-D` KEEPS IT IN THE FOREGROUND, which is what makes init treat it as a daemon rather than
+# a oneshot. `-p 8022` is Termux's default port and the one lib/net.py already forwards.
+SSHD_RC = b"""\
+# sshd from Termux's openssh, started once the network is up.
+#
+# The host keys are generated on first start by sshd itself (`-R` regenerates, but a missing
+# key is created automatically), so nothing has to be shipped.
+service sshd /data/data/com.termux/files/usr/bin/sshd
+    class late_start
+    user root
+    group root
+    oneshot
+    disabled
+
+on late-init
+    start sshd
+"""
+
 NETWORK_RC = b"""\
 # Start the SDK's own network script, which now also brings eth0 up.
 #
@@ -1056,7 +1080,7 @@ def add_network(cache: str, sdk_system: str) -> None:
                             "security.selinux u:object_r:goldfish_setup_exec:s0",
                             carved], capture_output=True, text=True)
 
-        debugfs_write(carved, "/etc/init/eth0up.rc", NETWORK_RC)
+        debugfs_write(carved, "/etc/init/eth0up.rc", NETWORK_RC + SSHD_RC)
 
         # VERIFY BY READING BACK. A truncated script looks exactly like an interface that
         # did not come up.
@@ -1087,6 +1111,143 @@ def add_network(cache: str, sdk_system: str) -> None:
                 remaining -= len(chunk)
         log(f"vendor (in super, {size >> 20} MiB): eth0 bring-up installed")
     finally:
+        if os.path.exists(carved):
+            os.unlink(carved)
+
+
+# SSH, FROM TERMUX'S OWN PACKAGES.
+#
+# WHY TERMUX AND NOT A STATIC BUILD. Android's C library is bionic, not glibc, so a
+# statically linked Debian dropbear is a foreign binary on this guest. Termux's packages are
+# compiled FOR Android against bionic - `sshd` needs libandroid-support, libcrypto, libldns
+# and libc, and libc is the guest's own:
+#
+#     INTERP          /system/bin/linker64       <- the guest's dynamic loader
+#     0x01 (NEEDED)   libandroid-support.so
+#     0x01 (NEEDED)   libcrypto.so.3
+#     0x01 (NEEDED)   libldns.so
+#     0x01 (NEEDED)   libc.so                    <- from the system partition
+#
+# THE PREFIX IS COMPILED IN. The binary has /data/data/com.termux/files/usr baked into it
+# for its config, host keys and moduli, so the files are unpacked at exactly that path
+# rather than at /vendor/... - a symlink would not help, because the path is a string in
+# the binary, not a lookup.
+SSH_PREFIX = "/data/data/com.termux/files/usr"
+SSH_ARCHIVE = "termux-ssh.tar.zst"
+
+
+def add_ssh(cache: str, sdk_system: str, payload: str) -> None:
+    """Unpack the Termux prefix into the vendor partition and set sshd up to start.
+
+    THE PAYLOAD TRAVELS OUTSIDE THE IMAGES. sbin/init cannot carry 20 MB of uncompressed
+    Termux files, so the tarball sits beside mkdisks.py and is unpacked into the vendor
+    filesystem here - the same carve/edit/put-back as the network script, one directory at
+    a time.
+    """
+    if not os.path.isfile(payload):
+        raise SystemExit(f"=== no ssh payload at {payload} ===")
+
+    with open(sdk_system, "rb") as fh:
+        sdk_super = read_gpt(sdk_system)["super"][0]
+        fh.seek(sdk_super * SECTOR)
+        head = fh.read(4 * 2 ** 20)
+    lp = lp_partitions(head)
+    if "vendor" not in lp:
+        raise SystemExit("=== super has no `vendor` logical partition ===")
+    vendor_off, vendor_sectors = lp["vendor"]
+    super_lba = read_gpt(cache)["super"][0]
+    start = (super_lba + vendor_off) * SECTOR
+    size = vendor_sectors * SECTOR
+
+    carved = cache + ".vendor-ssh"
+    staging = cache + ".ssh-staging"
+    try:
+        with open(cache, "rb") as fh, open(carved, "wb") as out:
+            fh.seek(start)
+            remaining = size
+            while remaining > 0:
+                chunk = fh.read(min(8 * 2 ** 20, remaining))
+                if not chunk:
+                    break
+                out.write(chunk)
+                remaining -= len(chunk)
+
+        shutil.rmtree(staging, ignore_errors=True)
+        os.makedirs(staging, exist_ok=True)
+        unpacked = subprocess.run(["tar", "-x", "-f", payload, "-C", staging],
+                                  capture_output=True, text=True)
+        if unpacked.returncode != 0:
+            raise SystemExit(f"=== tar failed: {unpacked.stderr[:300]} ===")
+
+        # EVERY FILE, INTO ITS PREFIX PATH INSIDE THE VENDOR FILESYSTEM.
+        #
+        # debugfs has `write`, which creates one file, and `mkdir`, which creates one
+        # directory; it has no recursive copy. So the tree is walked here and fed to it one
+        # entry at a time, directories first.
+        prefix = "/" + SSH_PREFIX.lstrip("/")
+        made = set()
+
+        def mkdirs(path: str) -> None:
+            parts = path.strip("/").split("/")
+            for i in range(1, len(parts) + 1):
+                d = "/" + "/".join(parts[:i])
+                if d in made:
+                    continue
+                subprocess.run(["debugfs", "-w", "-R", f"mkdir {d}", carved],
+                               capture_output=True, text=True)
+                made.add(d)
+
+        mkdirs(prefix)
+        count = 0
+        for root, dirs, files in os.walk(staging):
+            rel = os.path.relpath(root, staging)
+            dest_dir = prefix if rel == "." else f"{prefix}/{rel}"
+            mkdirs(dest_dir)
+            for name in files:
+                source = os.path.join(root, name)
+                target = f"{dest_dir}/{name}"
+                # LINKS AND DUPLICATES ARE SKIPPED, AND BOTH ARE REAL CASES IN A DEB.
+                #
+                # A package may carry a symlink whose target is on the host (ca-certificates
+                # has one pointing outside the prefix), and `os.stat` follows it to a file
+                # that is not there:
+                #
+                #     FileNotFoundError: .../ca-certificates/copyright
+                #
+                # debugfs can write symlinks but sshd needs none of them, so a link is
+                # followed when the target exists inside the staging tree and skipped
+                # otherwise. A file that vanishes between the walk and the read is skipped
+                # for the same reason - the walk is not atomic.
+                if os.path.islink(source):
+                    real = os.path.realpath(source)
+                    if not os.path.exists(real) or not real.startswith(staging):
+                        continue
+                    source = real
+                try:
+                    mode = os.stat(source).st_mode & 0o7777
+                    body = open(source, "rb").read()
+                except (FileNotFoundError, PermissionError):
+                    continue
+                debugfs_write(carved, target, body, mode=0o100000 | mode)
+                count += 1
+
+        log(f"ssh: {count} files unpacked into {prefix}")
+
+        # PUT THE PARTITION BACK, AND KEEP THE SIZE. Termux's prefix is 20 MB and the
+        # vendor partition is 102 MB; the write-back is the same length it was carved at,
+        # so nothing outside it moves.
+        with open(cache, "r+b") as out, open(carved, "rb") as src:
+            out.seek(start)
+            remaining = size
+            while remaining > 0:
+                chunk = src.read(min(8 * 2 ** 20, remaining))
+                if not chunk:
+                    break
+                out.write(chunk)
+                remaining -= len(chunk)
+        log(f"vendor (in super): ssh prefix installed at {prefix}")
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
         if os.path.exists(carved):
             os.unlink(carved)
 
@@ -1251,6 +1412,8 @@ def main(argv: list[str]) -> int:
     p.add_argument("--out", default="/a/android", help="where the disks are written")
     p.add_argument("--force-userdata", action="store_true",
                    help="throw away an existing /data instead of keeping its applications")
+    p.add_argument("--ssh-payload", default="",
+                   help="a tar.zst of the Termux prefix to install, giving the guest sshd")
     p.add_argument("--no-net", dest="net", action="store_false",
                    help="do not install the eth0 bring-up service into vendor")
     p.add_argument("--noencrypt", action="store_true",
@@ -1297,6 +1460,14 @@ def main(argv: list[str]) -> int:
     # THE GUEST'S NETWORK, INTO THE PARTITION THAT IS ACTUALLY MOUNTED AT /vendor.
     if a.net:
         add_network(cache, os.path.join(sdk, "system.img"))
+
+    # THE TERMUX SSH PAYLOAD IS UNPACKED INTO THE SAME PARTITION.
+    #
+    # `--ssh-payload` names the tarball, because it is 4 MB compressed and is built once
+    # rather than derived from the system image. Absent, the step is skipped and the image
+    # is exactly what it was before ssh existed.
+    if a.ssh_payload:
+        add_ssh(cache, os.path.join(sdk, "system.img"), a.ssh_payload)
 
     userdata = os.path.join(work, "userdata.img")
     if userdata_filesystem(userdata, force=a.force_userdata):
