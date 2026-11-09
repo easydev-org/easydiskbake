@@ -852,6 +852,20 @@ export PATH=/vendor/bin:/system/bin:/system/xbin
 /vendor/bin/toybox_vendor ip link set eth0 up
 /vendor/bin/toybox_vendor ip addr add 172.30.0.2/24 dev eth0
 /vendor/bin/toybox_vendor ip route add default via 172.30.0.1 dev eth0
+# ANDROID ROUTES BY POLICY: without this rule the default route above is in a table that
+# `ip rule` never consults, and every packet falls through to `32000: from all unreachable`.
+# Measured - the interface was up, addressed and correctly routed, and ping still answered
+# "Network is unreachable" until this line was added.
+/vendor/bin/toybox_vendor ip rule add from all lookup main pref 31000
+# THE RULE, WITHOUT WHICH THE ROUTE ABOVE DOES NOTHING. Android routes by policy and the
+# shipped rule table never consults `main`; every packet falls through to
+#
+#     32000:  from all unreachable
+#
+# so an interface that is up, addressed and correctly routed still answers "Network is
+# unreachable". Measured on the working adb path: with this rule the bridge answers
+# 2 packets transmitted, 2 received; without it, nothing leaves the guest.
+/vendor/bin/toybox_vendor ip rule add from all lookup main pref 31000
 """
 
 # THE TRIGGER, IN ITS OWN .rc. A vendor .rc IS parsed (init says so: "Parsing file
