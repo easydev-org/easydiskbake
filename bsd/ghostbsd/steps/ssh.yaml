@@ -49,9 +49,9 @@ steps:
   # just painted has not started its session yet, so the wait comes before the shortcut.
   - name: install sshd
     run: |
-      echo "__PW__" | su -m root -c 'sysrc sshd_enable=YES; service sshd restart || service sshd start'
+      echo {{ password }} | su -m root -c "sysrc sshd_enable=YES; service sshd restart || service sshd start" 2>&1
     terminal_wait: 12
-    settle: 60
+    settle: 90
   - name: wait for sshd
     require_ssh: true
     timeout: 600

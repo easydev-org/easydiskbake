@@ -50,14 +50,9 @@ steps:
   - name: install sshd
     run: |
       printf '\n  services.openssh.enable = true;\n  services.openssh.settings.PasswordAuthentication = true;\n  services.openssh.settings.PermitRootLogin = "yes";\n  networking.firewall.enable = false;\n' >> /etc/nixos/configuration.nix
-      sudo -S nixos-rebuild switch 2>&1 | tail -8
-    terminal_wait: 14
+      echo {{ password }} | sudo -S nixos-rebuild switch 2>&1 | tail -8
+    terminal_wait: 12
     settle: 300
-  - name: install sshd as root
-    run: "test -f /tmp/easy-ssh.sh && sudo -S nixos-rebuild switch || true"
-    terminal_wait: 14
-    settle: 15
-    optional: true
 
   # =======================================================================================
   # 2. WAIT FOR THE DAEMON THAT STEP ENABLED

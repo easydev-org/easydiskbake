@@ -49,15 +49,9 @@ steps:
   # just painted has not started its session yet, so the wait comes before the shortcut.
   - name: install sshd
     run: |
-      sudo -S sh -c 'zypper --non-interactive --no-gpg-checks install openssh && systemctl enable --now sshd'
-      sudo -S sh -c 'firewall-cmd --permanent --add-service=ssh && firewall-cmd --reload 2>/dev/null || true'
+      echo {{ password }} | sudo -S sh -c "zypper --non-interactive --no-gpg-checks install openssh && systemctl enable --now sshd" 2>&1 | tail -5
     terminal_wait: 12
-    settle: 150
-  - name: install sshd as root
-    run: "test -f /tmp/easy-ssh.sh && echo $password | sudo -S sh /tmp/easy-ssh.sh || true"
-    terminal_wait: 12
-    settle: 15
-    optional: true
+    settle: 90
 
   # =======================================================================================
   # 2. WAIT FOR THE DAEMON THAT STEP ENABLED

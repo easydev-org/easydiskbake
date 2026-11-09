@@ -31,18 +31,19 @@ SO THE COMMANDS GO IN THROUGH THE DESKTOP: boot it, open the terminal the sessio
 has (ctrl+alt+t on every one of these), type the script, and then prove the result the only
 way that means anything - connect from outside on the forwarded port and run a command.
 
-WHAT IT INSTALLS, PER FAMILY
+WHAT IT INSTALLS IS NOT DECIDED HERE
 
-    debian      apt-get install openssh-server, systemctl enable --now ssh
-    fedora      dnf install openssh-server, systemctl enable --now sshd
-    arch        pacman -S --noconfirm openssh, systemctl enable --now sshd
-    suse        zypper install openssh, systemctl enable --now sshd
-    nixos       append services.openssh.enable and firewall settings to
-                configuration.nix, then nixos-rebuild switch  (see INSTALL)
-    freebsd     sysrc sshd_enable=YES, service sshd start
+    <distro>/steps/ssh.yaml is the whole of that distribution's ssh install:
 
-The script travels as ONE base64 blob typed as two lines, so no character in it - the `|` in
-a sed pattern, the quotes in FreeBSD's `su -c` - has to survive a terminal's line discipline.
+        linux/ubuntu-gui/steps/ssh.yaml     apt-get install openssh-server
+        linux/cachyos-gui/steps/ssh.yaml    pacman -S openssh, `sshd` not `ssh`
+        linux/fedora-gui/...                dnf, plus firewall-cmd --add-service=ssh
+        linux/opensuse-gui/...              zypper, plus firewalld
+        linux/nixos-gui/...                 append the attribute, nixos-rebuild switch
+        bsd/ghostbsd/steps/ssh.yaml         sysrc sshd_enable=YES, service sshd start
+
+    Thirteen distributions whose package manager, unit name, firewall and even whether sshd
+    is a package at all differ. Each one is a file, not a row in a table here.
 
 WHAT PROVES IT
 
@@ -69,60 +70,27 @@ import session  # noqa: E402
 import uefi     # noqa: E402
 import vm       # noqa: E402
 
-# THE INSTALL, PER FAMILY.
-INSTALL = {
-    "debian": [
-        "apt-get update || true",
-        "DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server",
-        "systemctl enable --now ssh || systemctl enable --now sshd || true",
-    ],
-    "fedora": [
-        "dnf install -y openssh-server",
-        "systemctl enable --now sshd",
-    ],
-    "arch": [
-        "pacman -Sy --noconfirm --needed openssh",
-        "systemctl enable --now sshd",
-    ],
-    "suse": [
-        "zypper --non-interactive --no-gpg-checks install openssh",
-        "systemctl enable --now sshd",
-    ],
-    # THE ONE FAMILY THAT IS NOT A PACKAGE INSTALL, AND THE ONE PLACE A `sed` IS WRONG.
-    #
-    # The graphical installer writes a configuration.nix with
-    #
-    #     # services.openssh.enable = true;
-    #
-    # commented out. Turning one line into three needs an embedded newline in a `sed`
-    # replacement, and GNU sed does not expand `\n` there without `-z`. Appending is what a
-    # person would do, and it is correct in Nix: repeated attribute definitions merge, so the
-    # remaining comment is harmless. `networking.firewall.enable = false` is part of it - the
-    # graphical install leaves the firewall ON, and a firewall that drops 22 is a disk that
-    # answers nothing.
-    "nixos": [
-        "printf '\\n  services.openssh.enable = true;\\n"
-        "  services.openssh.settings.PasswordAuthentication = true;\\n"
-        "  services.openssh.settings.PermitRootLogin = \"yes\";\\n"
-        "  networking.firewall.enable = false;\\n' >> /etc/nixos/configuration.nix",
-        "nixos-rebuild switch 2>&1 | tail -25",
-        "systemctl is-active sshd || systemctl start sshd || true",
-    ],
-    "freebsd": [
-        "sysrc sshd_enable=YES",
-        "service sshd restart || service sshd start",
-    ],
-}
+# THE KINDS THIS STAGE SUPPORTS - A LIST FOR THE ARGUMENT PARSER, NOT A TABLE OF BEHAVIOUR.
+#
+# Every fact about HOW ssh is installed lives in that distribution's steps/ssh.yaml. This is
+# only so `--kind` refuses a typo with the real names, which is what argparse is for.
+KINDS = (
+    "ubuntu-gui", "kubuntu-gui", "zorin-gui", "mint-gui", "cachyos-gui", "manjaro-gui",
+    "mx-gui", "opensuse-gui", "endeavour-gui", "fedora-gui", "popos-gui", "nixos-gui",
+    "ghostbsd-mate",
+)
 
-FAMILY = {
-    "ubuntu-gui": "debian", "kubuntu-gui": "debian", "zorin-gui": "debian",
-    "mint-gui": "debian", "popos-gui": "debian", "mx-gui": "debian",
-    "fedora-gui": "fedora",
-    "cachyos-gui": "arch", "manjaro-gui": "arch", "endeavour-gui": "arch",
-    "opensuse-gui": "suse",
-    "nixos-gui": "nixos",
-    "ghostbsd-mate": "freebsd",
-}
+# EACH DISTRIBUTION'S ssh.yaml IS THE WHOLE OF ITS ssh INSTALL.
+#
+# There is deliberately NO table here. The first version of this module carried one - a
+# `FAMILY` map and an `INSTALL` map of package commands - and that was the mistake the whole
+# change is undoing: thirteen distributions whose desktop, package manager, unit name,
+# firewall and even whether sshd is a package at all all differ, written as one table of
+# exceptions in a Python file. They live in <distro>/steps/ssh.yaml, where each one is a file
+# a reader can open on its own.
+#
+# So this module only does what a runner must: boot the disk, wait for its desktop, then
+# hand the walk the QMP socket and the verdict. The walk is the distribution's.
 
 # THE TERMINAL SHORTCUT, AND THE SETTLE AFTER IT. ctrl+alt+t opens a terminal on GNOME,
 # KDE, Xfce, Cinnamon, MATE and COSMIC alike - it is the one shortcut all six agree on, and
@@ -139,31 +107,6 @@ INSTALL_WAIT = {"debian": 240, "fedora": 240, "arch": 240, "suse": 300,
 
 def log(message: str) -> None:
     print(f"[ssh-step {time.strftime('%H:%M:%S')}] {message}", flush=True)
-
-
-def the_script(kind: str) -> str:
-    """The shell script that installs sshd, as one text blob - see the module docstring."""
-    lines = ["#!/bin/sh", "set -x"]
-    lines.extend(INSTALL[FAMILY[kind]])
-    return "\n".join(lines) + "\n"
-
-
-def the_lines(kind: str, password: str) -> list[str]:
-    """The two lines to type into the guest's terminal.
-
-    ONE base64 WRITE, ONE base64 RUN. The password appears once, piped rather than passed as
-    an argument, because there is no tty to prompt at - the same shape every bake here uses.
-    """
-    blob = base64.b64encode(the_script(kind).encode()).decode()
-    if FAMILY[kind] == "freebsd":
-        return [
-            f"echo {blob} | base64 -d > /tmp/easy-ssh.sh",
-            f'echo {password} | su -m root -c "sh /tmp/easy-ssh.sh" 2>&1',
-        ]
-    return [
-        f"echo {blob} | base64 -d > /tmp/easy-ssh.sh",
-        f"echo {password} | sudo -S sh /tmp/easy-ssh.sh 2>&1",
-    ]
 
 
 def type_line(q, text: str, per_char: float = 0.002) -> None:
@@ -187,7 +130,7 @@ def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--disk", default=None, help="a local qcow2")
     p.add_argument("--tag", default=None, help="a published tag to pull instead")
-    p.add_argument("--kind", required=True, choices=sorted(FAMILY))
+    p.add_argument("--kind", required=True, choices=sorted(KINDS))
     p.add_argument("--artifacts", default="out")
     p.add_argument("--work", default=None)
     p.add_argument("--boot-timeout", type=int, default=900)
@@ -222,7 +165,7 @@ def main(argv: list[str]) -> int:
 
     def finish(code: int) -> int:
         note(f"VERDICT {'PASS' if code == 0 else 'FAIL'} kind={args.kind} "
-             f"family={FAMILY[args.kind]} tag={args.tag or args.disk}")
+             f"tag={args.tag or args.disk}")
         return code
 
     disk = args.disk
@@ -318,14 +261,25 @@ def main(argv: list[str]) -> int:
             # client per socket and steps.run_file opens its own.
             q.close()
             import steps as stepmod
-            walk = os.path.join(REPO, "linux", "ssh", "steps", "ssh.yaml")
-            blob = base64.b64encode(the_script(args.kind).encode()).decode()
-            note(f"=== the walk: {os.path.basename(walk)} (family {FAMILY[args.kind]}) ===")
+            # EACH DISTRIBUTION'S OWN FILE, BECAUSE THE FOUR THINGS IT DOES DIFFER.
+            #
+            # A single shared walk would have to be written as a table of exceptions - the
+            # package manager, the unit name (`ssh` on Debian, `sshd` elsewhere), the firewall
+            # that drops 22 on Fedora and openSUSE and does not exist on the others, and
+            # whether sshd is a package at all (NixOS is declarative; FreeBSD has no sudo and
+            # an rc.conf knob instead of a systemd unit). Those live in
+            # <distro>/steps/ssh.yaml, beside the install.yaml that drives the same image.
+            root = os.path.join("bsd", "ghostbsd") if args.kind == "ghostbsd-mate" \
+                else os.path.join("linux", args.kind)
+            walk = os.path.join(REPO, root, "steps", "ssh.yaml")
+            if not os.path.isfile(walk):
+                note(f"=== NO ssh.yaml FOR {args.kind}: {walk} ===")
+                return finish(2)
+            note(f"=== the walk: {os.path.join(root, 'steps', 'ssh.yaml')} ===")
             ok, ran = stepmod.run_file(
                 walk, guest.paths.drive, work=work,
                 user=args.user, password=args.password,
                 ssh_port=args.ssh_port,
-                extra_vars={"args.script": blob},
             )
             note(f"{len(ran)} step(s) ran" if ok
                  else f"the walkthrough failed after {len(ran)} step(s)")

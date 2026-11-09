@@ -48,7 +48,8 @@ steps:
   # presses Return and waits `settle`. Every number here is this image's: a desktop that has
   # just painted has not started its session yet, so the wait comes before the shortcut.
   - name: install sshd
-    run: "pacman -Sy --noconfirm --needed openssh; systemctl enable --now sshd 2>&1 | tail -5"
+    run: |
+      echo {{ password }} | sudo -S sh -c "pacman -Sy --noconfirm --needed openssh && systemctl enable --now sshd" 2>&1 | tail -5
     terminal_wait: 12
     settle: 90
 
@@ -56,11 +57,6 @@ steps:
   # a Debian/Fedora/Arch/suse desktop needs; FreeBSD has no sudo, and NixOS' rebuild must run
   # as root by design. This step is `optional` so on a disk where the first one worked its only
   # effect is one harmless line in the same terminal.
-  - name: install sshd as root
-    run: "test -f /tmp/easy-ssh.sh && echo $password | sudo -S sh /tmp/easy-ssh.sh || true"
-    terminal_wait: 12
-    settle: 15
-    optional: true
 
   # =======================================================================================
   # 2. WAIT FOR THE DAEMON THAT STEP ENABLED
