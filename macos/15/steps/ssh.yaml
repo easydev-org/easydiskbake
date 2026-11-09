@@ -77,20 +77,21 @@ steps:
   - name: prove disk utility works over ssh
     ssh: diskutil list | head -5
 
-  # THE MACHINE'S OWN NAME, AND THIS IS THE ONE THING THE STAGE CHANGES ON THE DISK.
+  # THE MACHINE'S OWN NAME - AND `scutil` NEEDS ROOT FOR EVERY NAME IT SETS.
   #
-  # NO sudo, AND NO PASSWORD IN THE COMMAND. `scutil --set HostName` needs root, so this asks
-  # for the LocalHostName instead, which the account owns:
+  # Measured on the live guest: `scutil --set LocalHostName docker` answers
   #
-  #     scutil --set LocalHostName   no privilege needed, and it is the name Bonjour and the
-  #                                  Sharing pane show
+  #     Permission denied.
   #
-  # A password piped into sudo was the first version and it had two problems worth recording:
-  # the remote shell is `sh`, not bash, so `<<<` is not available; and `{{ password }}` is
-  # substituted as PLAIN TEXT into a shell command line, so a password containing a quote or a
-  # `$` would have broken it. A step that needs no privilege needs neither.
+  # so the LocalHostName is not the unprivileged alternative it looks like. The password goes
+  # through `sudo -S` on STDIN - `printf` in a pipe, not a here-string, because the remote shell
+  # is `sh` and `<<<` is a bash extension that fails with "unexpected redirection".
+  #
+  # It is also `optional`: this step names the disk, it does not prove anything, and a naming
+  # failure must not fail a stage whose real evidence is the three checks above it.
   - name: name the machine
-    ssh: scutil --set LocalHostName docker
+    ssh: printf '%s\n' "{{ password }}" | sudo -S scutil --set LocalHostName docker
+    optional: true
 
   # --- 3. A READ-MEANT-TO-FAIL IS NOT A FAILURE -----------------------------------------
   #
