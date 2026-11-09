@@ -49,6 +49,22 @@ ends: [finder]
 # there is no page. lib/desktop.py's MENU_BAR is (0, 0, 700, 34) at 3x for exactly this.
 ends_region: [0, 0, 700, 34]
 ends_region_scale: 3
+# AND THE WIZARD'S REAL END, WHICH IS THE LOGIN WINDOW - NOT A DESKTOP.
+#
+# macOS 15's Setup Assistant finishes by putting the machine at its login window. There the only
+# readable text is the password field's placeholder: twelve pixels tall in a 165x40 box, so a
+# whole-frame read finds nothing and this walk reported STUCK on a screen that read
+#
+#     Sunday, November 8  7:18  docker  [Enter Password]
+#
+# lib/desktop.py crops PASSWORD_FIELD for exactly this, and desktop.py's own wait_for_desktop()
+# TYPES THE PASSWORD when it sees it - so this stage's job ends here and the unlock belongs to
+# the code that already does it.
+ends_at:
+  - name: the login window's password field
+    region: [880, 960, 1045, 1000]
+    scale: 6
+    words: [enter, password]
 # THE DISK IS STILL BOOTING WHEN THIS WALKTHROUGH STARTS, so the loop has to know how it
 # recognises the first pane. Without it the loop matches nothing against a black screen and
 # reports STUCK, which is exactly what the first CI run of the desktop stage did.

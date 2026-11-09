@@ -83,6 +83,7 @@ STEP_KEYS = {    "name",        # required: what the log calls this step
     "ssh",         # a command run over ssh IN THE GUEST - see _do_action
     "require_ssh", # wait for sshd before the steps that use it
     "terminal_wait",  # seconds to wait for the terminal after `run` opens it
+    "line_gap",    # seconds between the lines of a multi-line `run`
     "settle",      # seconds to wait after the action
     "wait",        # seconds to wait with nothing clicked
     "expect",      # words that must appear afterwards; a mismatch fails the step
@@ -982,15 +983,36 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222) -> None:
         time.sleep(settle)
 
     if step["run"]:
-        # A SHELL LINE, TYPED INTO THE GUEST'S OWN TERMINAL. This is how mint disables a screen
+        # A SHELL, TYPED INTO THE GUEST'S OWN TERMINAL. This is how mint disables a screen
         # saver that ignores synthetic clicks: the settings live in the session's dconf and the
         # keep-alive is the session's own xdotool. It is data here because the command is a
         # measurement; it would be an escape hatch if it were logic.
+        #
+        # MULTI-LINE, AND THAT IS NOT COSMETIC. `keys.for_text` REFUSES a newline - measured:
+        #
+        #     for_text('apt-get install\nopenssh')
+        #     ValueError: cannot type '\n'; split the command and send it as separate lines
+        #
+        # so a `run:` whose text contains one used to type everything up to the newline and
+        # then silently drop the rest, because `type_text` REPORTS untypable characters rather
+        # than raising. The ssh stage's install is multi-line by nature (nixos-rebuild after an
+        # append), so the newline is honoured here: each line is typed, then Return, then the
+        # next - which is exactly what a person does at a terminal.
         driver.key("ctrl+alt+t")
         time.sleep(float(step.get("terminal_wait", 8.0)))
         import keys
-        keys.type_text(driver.q, str(step["run"]), per_char=0.02)
-        driver.qmpmod.key(driver.q, "ret")
+        body = str(step["run"])
+        for index, line in enumerate(body.splitlines()):
+            if not line.strip():
+                continue
+            unsupported = keys.type_text(driver.q, line, per_char=0.02)
+            if unsupported:
+                log(f"  COULD NOT TYPE {unsupported!r} on line {index + 1}")
+            driver.qmpmod.key(driver.q, "ret")
+            # A SHORT PAUSE BETWEEN LINES, so the shell has started the previous command
+            # before the next is typed into the same terminal.
+            if index < len(body.splitlines()) - 1:
+                time.sleep(float(step.get("line_gap", 1.0)))
         time.sleep(settle)
 
 
@@ -1168,6 +1190,33 @@ def walk_panes(driver: Driver, steps: Walk, values: dict[str, str], *,
                 break
         if ended:
             return True, answered
+
+        # A WALKTHROUGH MAY ALSO END ON A SMALLER CONTROL THAN A TITLE OR A MENU BAR.
+        #
+        # macOS 15's Setup Assistant does not finish on a desktop: it finishes on the LOGIN
+        # WINDOW, and there the only readable text is the password field's placeholder - twelve
+        # pixels tall, in a 165x40 box. lib/desktop.py crops PASSWORD_FIELD = (880, 960, 1045,
+        # 1000) at 6x for exactly this, and reads 'enter password'.
+        #
+        # So an end condition may carry its own crop. Without it this walk answered fifteen
+        # panes correctly and then reported STUCK on a screen that read
+        #
+        #     Sunday, November 8   7:18   docker   [Enter Password]
+        #
+        # which is a finished wizard, not a pane nobody knows.
+        for spec in steps.document.get("ends_at") or []:
+            if not isinstance(spec, dict):
+                continue
+            words_here = _read_region(driver, spec.get("region"),
+                                      int(spec.get("scale", 3)), "end-at")
+            driver.words = whole
+            wanted = spec.get("words") or []
+            wanted = wanted if isinstance(wanted, list) else [wanted]
+            have = {"".join(c for c in w[0].lower() if c.isalnum()) for w in words_here}
+            if wanted and all("".join(c for c in w.lower() if c.isalnum()) in have
+                              for w in wanted):
+                log(f"=== THE END: {' '.join(wanted)} ({spec.get('name', 'a control')}) ===")
+                return True, answered
 
         ran_one = False
         for step in steps.panes:

@@ -168,6 +168,28 @@ def main(argv: list[str]) -> int:
              f"tag={args.tag or args.disk}")
         return code
 
+    def shot(q, name: str) -> str:
+        """A screenshot, saved and logged. THE ARTIFACT THAT EXPLAINS A FAILURE.
+
+        The first real run of this stage ended `sshd NEVER ANSWERED` with nothing to look
+        at: the desktop painted, the terminal was opened, two lines were typed, and the port
+        stayed refused. Whether the terminal opened at all, whether the command ran, whether
+        apt printed an error - all of it was on a screen nobody photographed. So every step
+        that can be wrong takes a frame, and the frames are uploaded with the verdict.
+        """
+        ppm = os.path.join(artifacts, f"{name}.ppm")
+        png = os.path.join(artifacts, f"{name}.png")
+        try:
+            q.execute("screendump", filename=ppm)
+        except (OSError, RuntimeError, AttributeError):
+            return ""
+        try:
+            import lastframe
+            lastframe.convert(ppm, png)
+        except (OSError, subprocess.SubprocessError):
+            return ppm
+        return png
+
     disk = args.disk
     if not disk:
         if not args.tag:
@@ -284,6 +306,18 @@ def main(argv: list[str]) -> int:
             note(f"{len(ran)} step(s) ran" if ok
                  else f"the walkthrough failed after {len(ran)} step(s)")
             if not ok:
+                # THE FRAME THAT EXPLAINS IT. The first real run of this stage ended with
+                # `sshd NEVER ANSWERED` and nothing to look at: the terminal may or may not
+                # have opened, and apt may have printed an error on a screen nobody took.
+                # `steps.py` closes its QMP client on the way out, so this reopens one.
+                try:
+                    q2 = Q.QMP(guest.paths.drive)
+                    try:
+                        note(f"  last frame: {shot(q2, 'failed')}")
+                    finally:
+                        q2.close()
+                except Exception:                  # noqa: BLE001
+                    pass
                 return finish(1)
 
             # THE LAST PROOF IS FROM OUTSIDE THE GUEST, AND IT IS THE ONE THE OBJECTIVE NAMES:
