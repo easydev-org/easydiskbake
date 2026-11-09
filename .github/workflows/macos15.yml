@@ -127,6 +127,11 @@ on:
       publish_tag:
         description: "the tag to publish under; empty for macos15-<stage>"
         default: ""
+      proxy:
+        description: >-
+          https proxy for the host side of a stage. The dev stage downloads Xcode from
+          archive.org and this runner reaches the internet only through it.
+        default: "http://mihomo.develop.svc.cluster.local:7890"
       isolate:
         description: >-
           Run beside other macos15 runs instead of queueing behind them. Any short string;
@@ -522,6 +527,19 @@ jobs:
           command: |
             set -euo pipefail
             export GITHUB_TOKEN="${{ github.token }}"
+            # THE PROXY, BECAUSE XCODE IS DOWNLOADED FROM archive.org BY THIS STEP.
+            #
+            # The dev stage fetches a 2.7 GiB .xip from the host side (lib/xcode_asset.py),
+            # and this runner reaches the internet only through the proxy:
+            #
+            #     via proxy   https://archive.org/metadata/xcode-26.3   200
+            #     direct      same URL                                   connection failed
+            #
+            # Without this the fetch fails in the first two minutes of a stage that has already
+            # pulled a 16 GiB disk. The guest does NOT need it - the .xip is copied in over ssh
+            # - so it is exported here and not in the guest.
+            export https_proxy="${{ inputs.proxy || 'http://mihomo.develop.svc.cluster.local:7890' }}"
+            export http_proxy="$https_proxy"
             DISK=$(ls out/*.qcow2 | head -1)
             # NO --clean: the step below is the clean, and macos/15/dev.py no longer takes
             # the flag. The one it used to take wrote zeros with dd, which is the mechanism
