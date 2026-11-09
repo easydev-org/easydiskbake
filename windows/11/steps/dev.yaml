@@ -271,8 +271,39 @@ steps:
   # THE THREE THAT MUST BE ON PATH AFTER A REBOOT, not just in this session. `winget` edits the
   # user PATH, and an ssh session started before that edit keeps the old one - so this asks a
   # PROCESS STARTED NOW, and reports where each tool actually is.
+  # A SCRIPT, NOT A `ssh:` ONE-LINER, BECAUSE THE QUOTES DO NOT SURVIVE THE TRIP.
+  #
+  # The one-liner was
+  #
+  #     powershell -Command "foreach ($t in 'python','node','git') { $c = Get-Command "$t.exe" ..."
+  #
+  # and by the time it had gone through ssh and cmd.exe the inner double quotes were gone, so
+  # PowerShell received `Get-Command $t.exe` and answered
+  #
+  #     ParameterArgumentValidationError,Microsoft.PowerShell.Commands.GetCommandCommand
+  #
+  # That is run 42624101406: every install above it had succeeded, and the stage failed on the
+  # step that reads the result back. A script file has no outer pair to be eaten.
   - name: prove python node and git
-    ssh: powershell -Command "foreach ($t in 'python','node','git') { $c = Get-Command "$t.exe" -ErrorAction SilentlyContinue; if ($c) { Write-Output "ok $t -> $($c.Source)" } else { Write-Output "MISSING $t" } }"
+    script: |
+      $ErrorActionPreference = 'Continue'
+      $bad = 0
+      foreach ($t in @('python', 'node', 'git')) {
+        $c = Get-Command "$t.exe" -ErrorAction SilentlyContinue
+        if ($c) {
+          Write-Output "ok      $t -> $($c.Source)"
+        } else {
+          Write-Output "MISSING $t"
+          $bad = 1
+        }
+      }
+      if ($bad -ne 0) {
+        Write-Output "=== THE THREE THE macOS DISK ALSO HAS ARE NOT ALL HERE ==="
+        exit 1
+      }
+      Write-Output "PYTHON_NODE_GIT_OK"
+    script_shell: powershell
+    script_name: prove-python-node-git.ps1
     timeout: 300
 
   - name: note what the toolchain reports

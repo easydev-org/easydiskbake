@@ -117,7 +117,7 @@ steps:
       # THE PASSWORD IS AN ARGUMENT BECAUSE SUDO OVER SSH HAS NO TTY. See the note in
       # install-xcode.sh: `sudo` on this channel answers "a password is required" and the
       # expand/move/select step is where that would first bite.
-      bash /Users/{{ user }}/install-xcode.sh /Users/{{ user }}/Xcode.xip '{{ password }}' /Applications /Users/{{ user }}/xcode-expand
+      bash /Users/{{ user }}/xcode-install.sh /Users/{{ user }}/Xcode.xip '{{ password }}' /Applications /Users/{{ user }}/xcode-expand
     script_shell: sh
     script_name: run-xcode-install.sh
     timeout: 7200

@@ -491,6 +491,37 @@ def main() -> int:
               "from lib import machine" not in code
               and "from lib import opencore" not in code)
 
+    # --- the xcode installer: one name, in the repository and in the call ---------------
+    #
+    # IT WAS TWO NAMES AND THAT COST TWO RUNS. The module copied the file into the guest as
+    # `install-xcode.sh` while the file on disk is `xcode-install.sh`, and the YAML then ran
+    # `bash ~/install-xcode.sh`:
+    #
+    #     42634570965   copying .../steps/install-xcode.sh   -> 255, no such file on the host
+    #     42636875683   the guest has all 2738 MiB, then
+    #                   bash: /Users/docker/install-xcode.sh: No such file or directory
+    #
+    # Each fix moved the mismatch one step later. This asserts the three places agree.
+    try:
+        # THE EXTENSION LIVES BESIDE THE WALKTHROUGH IT SERVES, not in lib/ - see the note in
+        # macos/15/dev.py about `from lib import machine`. The path is added here because this
+        # checker runs from the repository root.
+        import sys as _sys
+        _ext = osmod.path.join(REPO, "macos", "15", "steps")
+        if _ext not in _sys.path:
+            _sys.path.insert(0, _ext)
+        import macos_dev_asset
+        name = macos_dev_asset.SCRIPT_NAME
+    except Exception as exc:                          # noqa: BLE001
+        check(f"macos_dev_asset imports ({exc})", "macos/15/steps/macos_dev_asset.py", False)
+        name = ""
+    check("the xcode installer exists under the name the module copies",
+          "macos/15/xcode-install.sh",
+          bool(name) and osmod.path.isfile(osmod.path.join(REPO, "macos", "15", name)))
+    dev_walk_text = read("macos/15/steps/dev.yaml")
+    check("the walkthrough runs the installer under that name", "macos/15/steps/dev.yaml",
+          bool(name) and f"/{name}" in dev_walk_text)
+
     # --- report ------------------------------------------------------------------------
     width = max(len(label) for label, _path, _ok in checks)
     failures = 0

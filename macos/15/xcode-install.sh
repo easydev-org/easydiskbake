@@ -70,10 +70,20 @@ else
     exit 1
   fi
   tail -3 /tmp/xip.log
+  # THE PRODUCT IS NAMED AFTER THE ARCHIVE, NOT ALWAYS "Xcode.app". An .xip expands to the name
+  # inside it, and a versioned download (Xcode_26.3.xip) has produced "Xcode.app" on every
+  # release so far - but "so far" is not a guarantee, and the failure would be a silent
+  # `mv: no such file` after a twenty-minute expansion.
   if [ ! -d "$WORK/Xcode.app" ]; then
-    echo "=== THE ARCHIVE EXPANDED BUT THERE IS NO Xcode.app ==="
-    ls -la "$WORK" | head -10
-    exit 1
+    found=$(find "$WORK" -maxdepth 1 -name 'Xcode*.app' -type d | head -1)
+    if [ -n "$found" ]; then
+      echo "the archive expanded to $(basename "$found"), not Xcode.app"
+      mv "$found" "$WORK/Xcode.app"
+    else
+      echo "=== THE ARCHIVE EXPANDED BUT THERE IS NO Xcode*.app ==="
+      ls -la "$WORK" | head -10
+      exit 1
+    fi
   fi
 fi
 
