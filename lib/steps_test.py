@@ -494,6 +494,49 @@ def test_waits_for_gate() -> None:
     check(answered == [], "and answers nothing")
 
 
+def test_ends_region() -> None:
+    print("\n=== a pane file can read its end condition in a crop")
+    document = steps.Walk({
+        "name": "menu bar",
+        "ends": ["finder"],
+        "ends_region": [0, 0, 700, 34],
+        "ends_region_scale": 3,
+        "stuck_after": 0,
+        "steps": [
+            {"name": "privacy", "when": ["data", "privacy"], "at": [1, 1], "settle": 0},
+        ],
+    }, path="inline")
+
+    class MenuBar(FakeDriver):
+        """Whole-frame reads cannot see the menu bar; the crop can.
+
+        THAT IS THE MEASUREMENT THIS MODELS: tesseract on a full 1920x1080 desktop returns
+        'Empty page!!' because its page segmenter finds no page, so `finder` is only readable
+        in the 700x34 strip at 3x. A fake that returns the same words either way would pass on
+        a broken implementation.
+        """
+
+        def __init__(self):
+            super().__init__()
+            self.crops: list[tuple] = []
+
+        def look(self, label="look"):
+            self.screen = "File Edit View Go Window Help"
+            return super().look(label)
+
+        def look_at(self, region, label="look", *, scale=2):
+            self.crops.append((tuple(region), scale))
+            self.screen = "Finder File Edit View Go Window Help"
+            self.words = [(w, 0, 0, 0, 0) for w in self.screen.split()]
+            return self.words
+
+    driver = MenuBar()
+    ok, answered = steps.walk(driver, document)
+    check(ok, "the walk ends on the cropped word")
+    check(driver.crops and driver.crops[0] == ((0, 0, 700, 34), 3),
+          f"the menu-bar crop was used at 3x, got {driver.crops}")
+
+
 def test_headless_needs_no_screen() -> None:
     print("\n=== a walkthrough with no GUI steps needs no QMP socket")
     headless = steps.HeadlessDriver("/tmp")
@@ -541,6 +584,7 @@ def main() -> int:
     test_region_is_a_crop()
     test_pane_do_list()
     test_waits_for_gate()
+    test_ends_region()
     test_headless_needs_no_screen()
     test_real_files()
 
