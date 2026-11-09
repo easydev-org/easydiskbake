@@ -50,6 +50,12 @@ on:
         description: "Install the toolchain over ssh"
         type: boolean
         default: true
+      launch_dev_run:
+        description: >-
+          Boot the dev disk a second time, put a bootstrap in a host share, and check it ran.
+          Writes ~/hello.txt INSIDE the guest; publishes nothing.
+        type: boolean
+        default: true
 
       # --- where each job starts -----------------------------------------------------
       setup_from:
@@ -63,6 +69,9 @@ on:
         default: ""
       dev_from:
         description: "dev: pull this tag instead of the ssh job's output"
+        default: ""
+      launch_dev_from:
+        description: "launch_dev: the tag to boot; empty for the dev job's output"
         default: ""
 
       # --- setup ----------------------------------------------------------------------
@@ -574,3 +583,86 @@ jobs:
           kind: macos15-dev
           tag: ${{ inputs.publish_tag || 'macos15-dev' }}
           token: ${{ github.token }}
+
+  # ===========================================================================
+  # LAUNCH DEV - boot the finished disk and prove the bootstrap chain ran.
+  # ===========================================================================
+  #
+  # WHY THIS JOB EXISTS AND IS NOT PART OF `dev`.
+  #
+  # `dev` proves the toolchain is on the disk. It cannot prove the LAUNCHER works, for two
+  # reasons that are both structural:
+  #
+  #     the launcher fires at LOGIN, and `dev` is already logged in when it runs
+  #     anything a stage wrote to prove it would land on the PUBLISHED disk
+  #
+  # So the disk is started a second time, exactly as a person would: the host serves ~/shared,
+  # a bootstrap.py is dropped there, and the guest is left to find it. ~/hello.txt is written
+  # INSIDE the guest and dies with the launch - it is never in an artifact, which is the
+  # property that makes this a test rather than a fixture.
+  #
+  # `needs: dev` with `always()` is the same rule as every other downstream job: a tag to pull
+  # is the real precondition, so this can also be run against a disk that already exists.
+  launch_dev:
+    needs: dev
+    if: |
+      always() && inputs.launch_dev_run
+      && (inputs.launch_dev_from != '' || needs.dev.outputs.tag != '')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN
+    permissions:
+      contents: read
+      checks: write
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare the runner
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          # THE DISK TWICE PLUS A COPY. launch_selftest copies the pulled disk before opening
+          # it (the test must not touch the artifact), and the macos disk is ~16 GiB.
+          disk-gb: '80'
+          token: ${{ github.token }}
+
+      - name: pull the dev disk
+        uses: easydev-org/easyactions/oci-pull@main
+        with:
+          tag: ${{ inputs.launch_dev_from || needs.dev.outputs.tag }}
+          dest: out
+          token: ${{ github.token }}
+
+      - name: boot it and check the bootstrap ran
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: launch-dev
+          interval: "20"
+          command: |
+            set -euo pipefail
+            DISK=$(ls out/*.qcow2 | head -1)
+            python3 lib/launch_selftest.py \
+              --family macos \
+              --disk "$DISK" \
+              --ssh-port "${{ inputs.ssh_port || '2222' }}" \
+              --boot-timeout "${{ inputs.boot_timeout || '1800' }}"
+
+      # THE REPORT IS THE EVIDENCE, and it is kept even when the launch failed - a failed
+      # launch is exactly when someone wants to read it.
+      - name: keep the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos15-launch-dev-report
+          path: |
+            out/selftest-work/shots
+            out/selftest-work/console.log
+          if-no-files-found: warn
+          retention-days: 7

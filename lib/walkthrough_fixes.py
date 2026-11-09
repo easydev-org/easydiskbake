@@ -427,6 +427,38 @@ def main() -> int:
     check("that dependency is written down where it is used",
           "windows/11/answer/Autounattend.xml", "elevatesSelf" in win_answer)
 
+    # --- the launch self-test: hello.txt, and why it is not in the disk ------------------
+    #
+    # THE DEV STAGE CANNOT PROVE THE LAUNCHER, for two structural reasons: the launcher fires at
+    # LOGIN and dev is already logged in, and anything dev wrote to prove it would land on the
+    # published disk. So a second launch does it, and ~/hello.txt dies with that launch.
+    for wf, family in (("macos15", "macos"), ("windows-11", "windows")):
+        text = read(f".github/workflows/{wf}.yml")
+        check(f"{wf} has a launch job that checks the bootstrap",
+              f".github/workflows/{wf}.yml",
+              "lib/launch_selftest.py" in text and f"--family {family}" in text)
+    selftest = read("lib/launch_selftest.py")
+    check("the self-test copies the disk instead of opening the artifact",
+          "lib/launch_selftest.py", "shutil.copyfile" in read("lib/boot_machine.py"))
+    check("the self-test reads ~/hello.txt back over ssh",
+          "lib/launch_selftest.py", "hello.txt" in selftest)
+    # AND IT NEVER PUBLISHES. A launch job that pushed a tag would put the probe's output on a
+    # disk somebody boots.
+    mac_wf = read(".github/workflows/macos15.yml")
+    launch_block = mac_wf[mac_wf.index("  launch_dev:"):]
+    check("the macos launch job publishes nothing", ".github/workflows/macos15.yml",
+          "oci-push" not in launch_block)
+
+    # THE PROBE IS THE TEST, so it has to assert the things that can fail separately: py thon
+    # ran, the share was mounted, and the account is the one that logged in.
+    probe = read("lib/bootstrap_probe.py")
+    check("the probe reports whether the share was readable", "lib/bootstrap_probe.py",
+          "share=" in probe and "readable" in probe)
+    # getpass, NOT USER: a launchd agent and a Task Scheduler task run with a smaller
+    # environment, and `USER` is one of the things that can be absent.
+    check("the probe finds the user without relying on $USER", "lib/bootstrap_probe.py",
+          "getpass" in probe)
+
     # --- report ------------------------------------------------------------------------
     width = max(len(label) for label, _path, _ok in checks)
     failures = 0

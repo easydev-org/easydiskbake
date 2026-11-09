@@ -531,3 +531,38 @@ jobs:
             out/launch.txt
           if-no-files-found: warn
           retention-days: 14
+
+      # THE BOOTSTRAP CHAIN, WHICH THE LAUNCH ABOVE CANNOT PROVE.
+      #
+      # `launch_windows.py` answers "does this disk reach a desktop". It does not answer "does
+      # a bootstrap.py dropped on the host run at logon" - that needs the share mounted, a file
+      # put there, and the guest left to find it. And it needs to happen on a COPY: the disk in
+      # `out/` came from a published tag and nothing here may modify it.
+      #
+      # ~/hello.txt IS WRITTEN INSIDE THE GUEST and dies with the run. It is never uploaded,
+      # which is what keeps it a test rather than an artifact.
+      - name: boot it again and check the bootstrap ran
+        if: always()
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: launch-dev-bootstrap
+          interval: "20"
+          command: |
+            set -euo pipefail
+            python3 lib/launch_selftest.py \
+              --family windows \
+              --tag "${{ inputs.launch_dev_from || needs.dev.outputs.tag }}" \
+              --ssh-port "${{ inputs.ssh_port || '2222' }}" \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}"
+
+      - name: keep the bootstrap report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: launch-dev-bootstrap-report
+          path: |
+            selftest/selftest-work/console.log
+            selftest/selftest-work/shots
+          if-no-files-found: warn
+          retention-days: 7
