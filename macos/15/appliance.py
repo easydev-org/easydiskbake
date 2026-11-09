@@ -199,6 +199,23 @@ def stage(assets: str, work: str) -> str:
     """
     os.makedirs(work, exist_ok=True)
 
+    # THE OPENCORE TREE IS REBUILT WHEN THE MARKER IS MISSING, AND THAT IS NOT ENOUGH.
+    #
+    # unpack_opencore() writes a `.efi-tree` marker naming the directory it chose, because a
+    # warm cache that returned the extraction root instead of the tree produced a boot.img whose
+    # ESP held
+    #
+    #     ::/        opencore    <DIR>
+    #
+    # and OVMF dropped to its internal shell. A cache written by the BROKEN version has no
+    # marker, so it is rebuilt - but a cache written by a correct version and then left behind a
+    # changed upstream asset is a different thing, and the cheap answer to both is to let
+    # opencore.build() decide. It verifies every pinned asset's sha256 before using it, so a
+    # tree that does not match its archive is discarded there.
+    #
+    # Nothing is deleted here: the marker check inside unpack_opencore() is what makes a stale
+    # tree safe, and this comment records why a stage that reuses a volume must not assume the
+    # tree on it was built by the code that is running now.
     recovery = os.path.join(work, "recovery.dmg")
     if not os.path.exists(recovery):
         _place(os.path.join(assets, "recovery.dmg"), recovery, move=False)
