@@ -106,6 +106,7 @@ STEP_KEYS = {    "name",        # required: what the log calls this step
     "repeat",      # (count, settle) for a footer button pressed the same way N times
     "sweep",       # a band of clicks at one x, stopping when the sheet opens
     "at_window",   # [x, dy] - click x at dy pixels below the window's top edge
+    "at_bottom",   # [x, dy] - click x at dy pixels ABOVE the window's bottom edge
     "window_x",    # the column to scan for the window's top edge (default 500)
     "window_from", # first y to scan (default 180)
     "window_to",   # last y to scan (default 400)
@@ -137,7 +138,7 @@ WAIT_STEPS = {"until", "until_any", "wait", "wait_for_change", "until_dark", "di
 # Everything above that actually drives the guest. A step with none of these is a check, and
 # a check that does nothing is reported rather than run.
 ACTION_KEYS = {"at", "double", "type", "key", "run", "ssh", "require_ssh", "sweep",
-               "at_window"}
+               "at_window", "at_bottom"}
 
 
 class Step:
@@ -1022,6 +1023,58 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222) -> None:
 
         click_y = top + dy
         log(f"  {step.name}: window top y={top}; clicking ({x}, {click_y})")
+        driver.click((x, click_y), step.name, settle=settle)
+        return
+
+    # --- at_bottom: A FOOTER THAT MOVES WITH THE WINDOW'S HEIGHT -----------------------
+    #
+    # THE MIRROR OF `at_window`, AND THE NIXOS INSTALLER NEEDS THAT ONE INSTEAD.
+    #
+    # Calamares' window in the NixOS graphical image has a FIXED TOP (y=296) and a variable
+    # BOTTOM: its branding says `windowSize: 800px,520px` with `windowExpanding: normal`, so it
+    # grows to fit each pane and never moves up. Measured on run 42551013541's own recording:
+    #
+    #     Unfree software page   window 296..853   footer buttons centred y=839
+    #     Summary page           window 296..883   footer buttons centred y=869
+    #
+    # - 28 pixels lower, and the walk pressed (1324, 835) on BOTH. On Summary that is 30 px
+    # ABOVE the `Install` button, in empty white space, so the press did nothing, the install
+    # never started, and `disk_settle` watched a qcow2 that stayed at 0 MiB for an hour.
+    #
+    # The constant that survives is the distance from the window's BOTTOM EDGE: the button's
+    # centre is 15 px above that edge on both frames, and x is 1327. `dy` is measured UP.
+    if step["at_bottom"]:
+        x, dy = (int(v) for v in step["at_bottom"])
+        column = int(step.get("window_x", 960))
+        threshold = int(step.get("window_brightness", 40))
+
+        if step.get("region"):
+            driver.look_at(step["region"], f"{step.name} - find the window",
+                           scale=int(step.get("scale", DEFAULT_CROP_SCALE)))
+        else:
+            driver.look(f"{step.name} - find the window")
+
+        bottom = None
+        if driver.ppm:
+            from PIL import Image
+            try:
+                image = Image.open(driver.ppm).convert("RGB")
+            except (OSError, ValueError):
+                image = None
+            if image is not None:
+                from_bottom = int(step.get("window_from_bottom", 120))
+                for y in range(image.height - 1, max(0, image.height - from_bottom), -1):
+                    r, g, b = image.getpixel((min(column, image.width - 1), y))
+                    if (r + g + b) // 3 > threshold:
+                        bottom = y
+                        break
+
+        if bottom is None:
+            log(f"  {step.name}: no window bottom found in column {column}; not clicking")
+            return
+
+        click_y = bottom - dy
+        log(f"  {step.name}: window bottom y={bottom}; clicking ({x}, {click_y})")
         driver.click((x, click_y), step.name, settle=settle)
         return
 

@@ -97,8 +97,25 @@ steps:
   # =======================================================================================
   # 2. WELCOME. The footer here is the smallest the window ever is.
   # =======================================================================================
+  #
+  # EVERY FOOTER PRESS BELOW USES `at_bottom`, AND THAT IS THIS IMAGE'S ONE STRUCTURAL FACT.
+  #
+  # Its Calamares has a FIXED TOP (y=296) and a variable BOTTOM: `branding.desc` says
+  # `windowSize: 800px,520px` with `windowExpanding: normal`, so the window grows downward to
+  # fit each pane. Measured on run 42551013541's own recording, two pages of one session:
+  #
+  #     Unfree software   window 296..853   footer button centre y=839
+  #     Summary           window 296..883   footer button centre y=869
+  #
+  # A constant (1324, 835) is correct on the first and 34 px ABOVE the button on the second -
+  # inside the white footer band, on nothing. That is exactly what run 42551013541 did: the
+  # press was accepted and consumed, the install never started, and `disk_settle` watched a
+  # qcow2 that stayed at 0 MiB for an hour before failing. A press that misses is silent.
+  #
+  # On both frames the button's centre is 15-16 px above the window's bottom edge and its x is
+  # 1327, so `at_bottom: [1327, 15]` is the coordinate that survives a page of any height.
   - name: welcome
-    at: [1324, 835]
+    at_bottom: [1327, 15]
     settle: 15
 
   # =======================================================================================
@@ -112,11 +129,11 @@ steps:
   # So this walk presses Next ONCE from Welcome, and the next pane it is looking at is
   # Keyboard - not a `locale` click that would land on the Users pane's password field.
   - name: location
-    at: [1324, 835]
+    at_bottom: [1327, 15]
     settle: 15
 
   - name: keyboard
-    at: [1324, 835]
+    at_bottom: [1327, 15]
     settle: 15
 
   # =======================================================================================
@@ -174,7 +191,7 @@ steps:
     settle: 3
 
   - name: users
-    at: [1324, 835]
+    at_bottom: [1327, 15]
     settle: 18
 
   # =======================================================================================
@@ -190,7 +207,7 @@ steps:
     optional: true
 
   - name: packagechooser
-    at: [1324, 835]
+    at_bottom: [1327, 15]
     settle: 15
 
   # =======================================================================================
@@ -201,7 +218,7 @@ steps:
   # the sequence between the package chooser and partitioning. It is informational: its
   # `qmlLabel` is `Unfree software` and it offers no choice, only its footer.
   - name: unfree notes
-    at: [1324, 835]
+    at_bottom: [1327, 15]
     settle: 12
 
   # =======================================================================================
@@ -223,7 +240,7 @@ steps:
     settle: 6
 
   - name: partitions
-    at: [1324, 835]
+    at_bottom: [1327, 15]
     settle: 18
 
   # =======================================================================================
@@ -233,7 +250,7 @@ steps:
   #    step after it.
   # =======================================================================================
   - name: summary - install
-    at: [1324, 835]
+    at_bottom: [1327, 15]
     settle: 25
 
   # =======================================================================================
