@@ -1044,20 +1044,31 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222) -> None:
     # The constant that survives is the distance from the window's BOTTOM EDGE: the button's
     # centre is 15 px above that edge on both frames, and x is 1327. `dy` is measured UP.
     #
-    # THE THRESHOLD IS NOT `window_brightness`, AND THAT WAS THE BUG IN THE FIRST VERSION.
-    # `at_window` looks for a pixel brighter than a NEAR-BLACK wallpaper (40). NixOS' live
-    # session paints a BLUE desktop, and measured on the failure frame:
+    # SEARCH DOWNWARD FROM THE WINDOW'S TOP, NOT UPWARD FROM THE SCREEN'S BOTTOM.
     #
-    #     wallpaper       (59, 75, 160)   brightness  98
-    #     window content  (239,239,239)   brightness 239
+    # THE FIRST VERSION SCANNED UP AND FOUND THE GNOME DOCK. `at_bottom` looked for the
+    # bottom-most near-white pixel in the column, and on this desktop the bottom-most bright
+    # thing is not the window at all - measured on run 42574138805's own frame (NixOS'
+    # Welcome page, which is the SHORTEST one):
     #
-    # so a threshold of 40 finds the wallpaper at the bottom of the screen and clicks 15 px
-    # above y=1079. What identifies a window's bottom here is that it is NEAR WHITE, and the
-    # default threshold is high enough that nothing in a wallpaper can pass it.
+    #     window (white panel)          296..852
+    #     GNOME's dock / panel          ~1035..1060   brighter than 200
+    #     wallpaper between them         (59,75,160)  brightness 98
+    #
+    # so the scan returned y=1045 and pressed (1327,1030) - 178 pixels BELOW the Next button,
+    # on the dock. Every page that reported `window bottom y=852` in the same run was right
+    # by luck: those pages are tall enough that the window's own band reaches further down.
+    #
+    # THE WINDOW IS THE FIRST CONTIGUOUS BRIGHT BAND BELOW ITS TOP EDGE. So this finds the
+    # top the way `at_window` does, walks down while the column stays bright, and takes the
+    # last bright row before the first dark gap. A dock below the window is a SECOND band,
+    # and is never reached.
     if step["at_bottom"]:
         x, dy = (int(v) for v in step["at_bottom"])
         column = int(step.get("window_x", 960))
         threshold = int(step.get("window_brightness", 200))
+        search_from = int(step.get("window_from", 180))
+        search_to = int(step.get("window_to", 1080))
 
         if step.get("region"):
             driver.look_at(step["region"], f"{step.name} - find the window",
@@ -1066,6 +1077,7 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222) -> None:
             driver.look(f"{step.name} - find the window")
 
         bottom = None
+        top = None
         if driver.ppm:
             from PIL import Image
             try:
@@ -1073,20 +1085,54 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222) -> None:
             except (OSError, ValueError):
                 image = None
             if image is not None:
-                from_bottom = int(step.get("window_from_bottom", 260))
-                for y in range(image.height - 1, max(0, image.height - from_bottom), -1):
-                    r, g, b = image.getpixel((min(column, image.width - 1), y))
-                    if (r + g + b) // 3 > threshold:
-                        bottom = y
-                        break
+                col = min(column, image.width - 1)
+                limit = min(search_to, image.height)
+
+                def bright(y: int) -> bool:
+                    r, g, b = image.getpixel((col, y))
+                    return (r + g + b) // 3 > threshold
+
+                # A ROW IS "IN THE WINDOW" WHEN MOST OF ITS WIDTH IS BRIGHT.
+                #
+                # A single column is not enough: on the Welcome page the column through the
+                # artwork passes through dark shapes, and the longest 1-column band is a
+                # picture, not the window. Measured on run 42574138805's Welcome frame, over
+                # the window's own x span (470..1450, every 10 px, 98 samples):
+                #
+                #     y=330..852   83..98 samples bright   <- the window
+                #     y=853..      0 samples               <- the desktop
+                #
+                # so the edge is the LAST row that is mostly bright, and the rows above it
+                # are the window whatever their content is.
+                span = [xx for xx in range(int(step.get("window_span_from", 470)),
+                                           int(step.get("window_span_to", 1450)), 10)
+                        if xx < image.width]
+                if span:
+                    def in_window(y: int) -> bool:
+                        hits = 0
+                        for xx in span:
+                            r, g, b = image.getpixel((xx, y))
+                            if (r + g + b) // 3 > threshold:
+                                hits += 1
+                        return hits > len(span) * 0.6
+
+                    rows = [y for y in range(search_from, limit) if in_window(y)]
+                    if rows:
+                        bottom = rows[-1]
+                        top = search_from
+                        if bottom - search_from < 40:
+                            log(f"  {step.name}: the bright window band is only "
+                                f"{bottom - search_from + 1} rows; not treating it as "
+                                f"the window")
+                            bottom = None
 
         if bottom is None:
-            log(f"  {step.name}: no window bottom brighter than {threshold} in "
-                f"column {column}; not clicking")
+            log(f"  {step.name}: no window band brighter than {threshold} in "
+                f"column {column} between y={search_from} and {search_to}; not clicking")
             return
 
         click_y = bottom - dy
-        log(f"  {step.name}: window bottom y={bottom}; clicking ({x}, {click_y})")
+        log(f"  {step.name}: window {top}..{bottom}; clicking ({x}, {click_y})")
         driver.click((x, click_y), step.name, settle=settle)
         return
 

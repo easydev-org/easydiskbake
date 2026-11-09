@@ -112,8 +112,45 @@ steps:
   # the two, and a click that far off a forty-pixel button misses silently while the wizard
   # carries on.
 
+  # THE UNTICK HAS TO HAPPEN BEFORE THE PAGE THAT MERELY MENTIONS PRIVACY.
+  #
+  # `data and privacy` used to be able to match the Analytics screen, and it is declared
+  # earlier, so on both CI runs of this stage the walk clicked Continue here and never unticked
+  # 'Share Mac Analytics with Apple'. The order below is the fix, and the tightened matcher
+  # above is the belt to go with it.
+  #
+  # UNTICK FIRST. The box is on when the pane opens; clicking it clears it and greys the second
+  # option with it, which is what the bake wants. (808, 513) is that box; (1306, 810) is the
+  # footer's Continue.
+  - name: analytics
+    when: [analytics, improve]
+    do:
+      - at: [808, 513]
+        settle: 3
+      - at: [1306, 810]
+        settle: 10
+
   - name: data and privacy
-    when: [data, privacy]
+    # THE WORDS ARE THE PAGE'S OWN SENTENCE, NOT TWO WORDS ITS NEIGHBOUR ALSO SAYS.
+    #
+    # `when: [data, privacy]` matched TWO panes on macOS 15. The Analytics page says
+    #
+    #     ... automatically sending diagnostics and usage data. Diagnostic data may include
+    #     location information.        About Analytics & Privacy...
+    #
+    # which contains both "data" and "privacy", so the walk answered it as this pane: it
+    # clicked Continue and never ran the analytics step. Measured on the CI recording of run
+    # 42573249989, frame t=512s: `data privacy` TRUE and `analytics improve` TRUE at once, and
+    # this step is 115 lines above the analytics one, so it won.
+    #
+    # The cost was not a stuck walk - the wizard carried on and reached Finder - it was a disk
+    # that still had 'Share Mac Analytics with Apple' ticked, which is the one thing the
+    # analytics step exists to untick.
+    #
+    # 'this icon appears when an apple feature asks to use your personal information' is this
+    # page's own body text. Checked against the real frames of five panes: TRUE here, FALSE on
+    # Analytics, Create a Mac Account, Accessibility, Choose Your Look and Time Zone.
+    when: [privacy, fundamental]
     at: [1306, 810]
     settle: 8
 
@@ -223,16 +260,6 @@ steps:
         settle: 3
       - key: ret
         settle: 6
-
-  # UNTICK FIRST. The box is on when the pane opens; clicking it clears it and greys the second
-  # option with it, which is what the bake wants.
-  - name: analytics
-    when: [analytics, improve]
-    do:
-      - at: [808, 513]
-        settle: 3
-      - at: [1306, 810]
-        settle: 10
 
   # SET UP LATER, AND ITS OWN BUTTON - not the footer.
   # THIS PANE FINISHES ON ITS OWN AND TAKES ABOUT FORTY SECONDS - drive_read.py measures it
