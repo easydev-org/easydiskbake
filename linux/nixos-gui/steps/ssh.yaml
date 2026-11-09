@@ -155,6 +155,35 @@ steps:
   - name: let the session finish starting
     wait: 240
 
+  # THE FIRST LOGIN ENDS ON A MODAL, `Welcome to NixOS 26.05 (Yarara)` WITH Skip / Take Tour.
+  #
+  # MEASURED ON RUN 42682847712 AND AGAIN ON 42684897644. That dialog is gnome-initial-setup's
+  # last page, and it is the reason the overview never opened: the walk pressed Super and the
+  # SEARCH FIELD was not there to receive `terminal`, so `wait for the Console result` polled
+  # `yy. | _.~` - an empty strip - for its whole timeout and the run ended before `install`.
+  #
+  # ESC DOES NOT CLOSE IT. The earlier version of this file pressed Escape BEFORE the greeter
+  # was even answered, which is why it never helped; the dialog does not exist yet at that
+  # point. Even after it exists, Escape is not this dialog's dismissal - the two buttons are.
+  #
+  # The button is measured on run 42684897644's own frame: the Skip button's outline spans
+  # x 765..953, y 715..782, so its centre is (858, 748). It is the left-hand button and it is
+  # pre-focused (the blue outline), so Return alone would also take it - the click is used
+  # because a click does not depend on where the focus happens to be.
+  #
+  # `optional` because a disk that has already finished initial setup never shows it.
+  - name: skip the welcome dialog
+    at: [858, 748]
+    settle: 5
+    optional: true
+
+  # AND IF THE CLICK MISSED (a dock without that dialog, a different layout), Escape is still
+  # worth one press: it costs a second and it is what closes an unexpected GTK sheet.
+  - name: clear anything left over
+    key: esc
+    settle: 2
+    optional: true
+
   # AND THEN THE DESKTOP IS CONFIRMED, NOT ASSUMED. `Dashboard` is the app-grid button's title
   # on this GNOME's dock, and it is drawn only once the shell is up. If it is not there, the
   # steps below still run - `optional` - but the recording says which world it was in.
@@ -164,7 +193,7 @@ steps:
       - [Activities]
     region: [0, 0, 1920, 1080]
     region_at: [1920, 1080]
-    scale: 1
+    scale: 2
     timeout: 120
     poll: 10
     keep_alive: true
@@ -213,17 +242,6 @@ steps:
   - name: desktop - give the shell focus
     at: [960, 700]
     settle: 2
-
-  # A FRESH DISK DRAWS GNOME'S FIRST-LOGIN WELCOME DIALOG OVER THE DESKTOP.
-  #
-  # Run 42677442246's own frames are the evidence: run 42668665658's frame at 02:00 shows
-  # `Welcome to NixOS 26.05 (Yarara)` with `Skip` / `Take Tour`, which is gnome-initial-setup's
-  # last page. It is modal to the shell, so a Super press reaches it rather than the overview.
-  # Escape is what closes it, and it costs one key when the dialog is not there.
-  - name: dismiss the welcome dialog
-    key: esc
-    settle: 3
-    optional: true
 
   - name: open the overview
     key: meta_l
