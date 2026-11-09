@@ -140,25 +140,35 @@ steps:
   # 0b. THE TERMINAL, WHICH IS WHERE THE INSTALL IS TYPED
   # =======================================================================================
   #
-  # NixOS' DESKTOP IS GNOME, AND GNOME HAS NO ctrl+alt+t AND NO TERMINAL ON ITS DOCK.
+  # NixOS' DESKTOP IS GNOME WITH GREAT CONSOLE, AND THE SEARCH WORD IS `Console`.
   #
-  # This file used to press `ctrl+alt+t`, which had never been measured on this image. The
-  # same desktop WAS measured on fedora-gui's disk in a local pod (2026-11-09), and the frame
-  # after that key is GNOME's OVERVIEW, not a shell: GNOME's dock ships Firefox, Calendar,
-  # Files, Software, Text Editor and Calculator, and pressing ctrl+alt+t is not a binding.
-  # Writing `ctrl+alt+t` here was the same assumption that failed there.
+  # MEASURED ON THE REAL GRAPHICAL ISO IN A LOCAL KVM POD (2026-11-09), twice over.
   #
-  # NixOS' graphical ISO runs stock GNOME, so the measured path is the same one:
+  # First, this file's `ctrl+alt+t` was wrong: it is not a binding on GNOME. Then a run that
+  # used fedora-gui's path (Super, type `terminal`, click (960,178)) failed too, and its own
+  # recording says why - the frame at 02:15 of that run's install.mp4 is the overview with
   #
-  #     click the wallpaper   (960,700)   give the shell focus, or the overview never takes
-  #                                       the typing - measured on fedora, where pressing
-  #                                       Super straight after login left it unchanged twice
-  #     Super                             the overview and its search field
-  #     type "terminal"                   a result tile at (960,178)
-  #     click (960,178)                   a Terminal window opens
+  #     [ search field ]  terminal
+  #     Console                                   <- the only application result
+  #     Characters / Soyombo Terminal Mark-1 ...  <- the list `terminal` also matches
   #
-  # The `run:` step below then types into that window, which is where GNOME Terminal's own
-  # `Terminal` application is the only thing that has focus.
+  # and the `run:` text landed in the SEARCH FIELD, not a shell:
+  #
+  #     [ udo -S nixos-rebuild switch 2>&1 | tail -8 ]    No results
+  #
+  # - `sudo` had lost its `s` to the field's own handling, and nothing was ever executed.
+  #
+  # NixOS ships GNOME's **Console** (kgx), not gnome-terminal, so `terminal` matches it only
+  # as a substring and it is not the first thing on the page.
+  #
+  # MEASURED IN THE LIVE SESSION, on this ISO, in this pod:
+  #
+  #     Super            the overview
+  #     type "terminal"  a `Console` tile, icon at (960,160), label under it at y=232
+  #     click (960,160)  a terminal opens: `[nixos@nixos:~]$`, titled `nixos@nixos: ~`
+  #
+  # So the path is fedora's four steps with this image's own word and coordinate. The `run:`
+  # afterwards types into the window this opens, and the recording shows the prompt first.
   - name: desktop - give the shell focus
     at: [960, 700]
     settle: 2
@@ -169,11 +179,11 @@ steps:
 
   - name: search for the terminal
     type: terminal
-    settle: 4
+    settle: 5
 
   - name: open the terminal
-    at: [960, 178]
-    settle: 12
+    at: [960, 160]
+    settle: 14
 
   # BOTH LINES RUN AS ROOT, AND THE FIRST ONE HAD TO BE FIXED TO DO SO.
   #
@@ -196,6 +206,19 @@ steps:
       echo {{ password }} | sudo -S sh -c 'printf "\n  services.openssh.enable = true;\n  services.openssh.settings.PasswordAuthentication = true;\n  networking.firewall.enable = false;\n" >> /etc/nixos/configuration.nix'
       echo {{ password }} | sudo -S nixos-rebuild switch 2>&1 | tail -8
     terminal_wait: 0
+    # 150 ms, NOT THE 40 ms `run:` USES FOR A POSIX SHELL, AND THIS IS A MEASURED GUEST.
+    #
+    # GNOME Console (kgx) is the terminal this image opens, and in a local pod on this ISO it
+    # dropped keystrokes at 10 ms and duplicated one key at 10 ms: the frame showed a screen
+    # of `tttttttt` with a stuck `t`. 40 ms is what a plain xterm takes; a GTK4 terminal
+    # compositing a WebKit-free but still hot path is not that. 150 ms is the same number
+    # windows/11/ssh.py uses for a form that validates as it types, and it costs this line
+    # about twelve seconds.
+    #
+    # The alternative - retrying a command that half-ran - is worse than typing slowly: the
+    # append line is not idempotent, and a second append would put the attributes in the file
+    # twice.
+    type_gap: 0.15
     settle: 300
 
   # =======================================================================================
