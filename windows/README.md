@@ -10,7 +10,11 @@ installer interface is genuinely declarative. `Autounattend.xml` covers Windows 
 through Server 2025 in the same format, and `dockur/windows` already walks all of them
 with one mechanism.
 
-## Why this platform needs no driver
+## Why the BASE stage needs no driver
+
+(The two stages after it DO have walkthroughs - see "The stages after base" at the bottom of
+this file. This section is about the install, and the distinction is the useful one: the
+install is declarative, the work after it is a sequence.)
 
 The whole reason `linux/mx/` has five Python files is that minstall has no working
 unattended mode. Windows has the opposite: a complete unattended format consumed by
@@ -139,3 +143,31 @@ windows/11/
   answer/
     Autounattend.xml the whole guest-side contract
 ```
+
+## The stages after base
+
+`bake.py` stops at a desktop and that is the whole of the install. Everything after it is a
+sequence of things done TO that desktop, and those are walkthroughs, driven by `lib/steps.py`
+like every other platform here:
+
+```
+windows/11/steps/ssh.yaml    turn on OpenSSH, prove it answers, configure the guest for a VM
+windows/11/steps/dev.yaml    install the toolchain, then compile and run something with it
+```
+
+`ssh.py` and `devtools.py` keep what is not a step - copying the disk, the qemu command line,
+the fresh OVMF variable store, swtpm, compressing the result - and hand the sequence to
+`stepslib`. The numbers in the two files are this guest's measurements: 150 ms between
+keystrokes because PSReadLine drops them below that, `ssh_probe: echo ok` because `true` is not
+a cmd.exe command, and `script:` for anything whose quoting does not survive ssh -> cmd.
+
+Three of these are worth knowing before editing a file:
+
+| what | why |
+|---|---|
+| `type_gap: 0.15` on every typing step | run 41997580476: `winget install` arrived as `get install`, and the stage reported OpenSSH was not installed - correctly |
+| `ssh_probe: echo ok` on every `require_ssh` | run 41844808248 spent its whole fifteen-minute budget on an sshd that was answering perfectly |
+| `script:` rather than `ssh:` for the Build Tools | a Visual Studio `--override` has spaces and quotes and they are eaten by the time it reaches winget |
+
+The base stage's install is still `answer/Autounattend.xml` and nothing else - there is no
+sequence to move, because setup reads that file itself.
