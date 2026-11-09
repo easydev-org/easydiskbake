@@ -61,14 +61,21 @@ steps:
   # BORDER - run 42575602052's frame shows the caret on the field and the placeholder
   # `Password` still in it after the password had been typed, because the click had put
   # focus on the border rather than inside the entry.
+  # CLICK AND TYPE IN ONE STEP, BECAUSE GDM DROPS THE TYPING OTHERWISE.
+  #
+  # Runs 42575602052 and 42577685826 both ended on this screen with the placeholder
+  # `Password` still in the entry and the caret beside it, after the `type:` step had run -
+  # so GDM had the focus but had not taken the characters. The two-step form (click here,
+  # `type:` into whatever has focus next) gives the greeter a settle window in between and
+  # this one does not honour it.
+  #
+  # `clear: false` because the field is empty and a ctrl+a on a GDM entry selects nothing
+  # useful; the password is typed straight in.
   - name: greeter - the password box
     at: [936, 628]
-    settle: 3
-    optional: true
-
-  - name: greeter - log in
     type: "{{ password }}"
-    settle: 3
+    clear: false
+    settle: 4
     optional: true
 
   - name: greeter - submit
