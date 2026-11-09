@@ -341,6 +341,47 @@ def main() -> int:
           "macos/15/steps/dev.yaml",
           "command -v" in body and "/opt/homebrew/*" in body)
 
+    # --- the bootstrap launcher: one script, two disks --------------------------------
+    #
+    # THE SHARE ONLY MAKES A FILE VISIBLE. Running it needs a login hook, and the hook is what
+    # these check.
+    try:
+        import bootstrap
+        # ONE NAME FOR THE LAUNCHER ON BOTH DISKS, because a person looking for "the bootstrap
+        # launcher" should find one thing. The bodies differ - launchd runs a program, Windows
+        # suppresses a console - and that is the only difference.
+        check("both launchers are called bootstrap-launcher.py", "lib/bootstrap.py",
+              bootstrap.LAUNCHER == "bootstrap-launcher.py"
+              and bootstrap.SCRIPT == "bootstrap.py")
+        mac_body = bootstrap.launcher_body("macos")
+        win_body = bootstrap.launcher_body("windows")
+        # THE MARKER IS WRITTEN ONLY ON SUCCESS, in both. A failing bootstrap that marked
+        # itself done would never run again - which is the opposite of what a person debugging
+        # one wants.
+        check("the macos launcher marks success only", "lib/bootstrap.py",
+              "FAILED" in mac_body and "date > \"$MARKER\"" in mac_body)
+        check("the windows launcher marks success only", "lib/bootstrap.py",
+              "FAILED" in win_body and 'open(MARKER, "w")' in win_body)
+        # AND IT IS PYTHON, WHICH IS WHY WINDOWS NOW INSTALLS AN INTERPRETER.
+        check("the windows launcher is python, not a shell script", "lib/bootstrap.py",
+              win_body.lstrip().startswith("#") and "import subprocess" in win_body)
+    except Exception as exc:                          # noqa: BLE001
+        check(f"bootstrap imports ({exc})", "lib/bootstrap.py", False)
+
+    # WINDOWS MUST HAVE AN INTERPRETER FOR THAT LAUNCHER TO WORK, and these three are what the
+    # macOS disk already had. A Windows disk with a compiler and no python cannot run
+    # ~/shared/bootstrap.py at all.
+    win_dev_walk = load_yaml("windows/11/steps/dev.yaml")
+    win_dev_names = [s.get("name") for s in (win_dev_walk.get("steps") or [])]
+    for tool in ("install python", "install node", "install git"):
+        check(f"windows dev installs {tool.split()[-1]}", "windows/11/steps/dev.yaml",
+              tool in win_dev_names)
+    # AND BOTH STAGES INSTALL THE LAUNCHER, or the share is a directory nobody opens.
+    check("macos dev installs the bootstrap launcher", "macos/15/steps/dev.yaml",
+          any(s.get("bootstrap_install") for s in (mac_dev_walk.get("steps") or [])))
+    check("windows dev installs the bootstrap launcher", "windows/11/steps/dev.yaml",
+          any(s.get("bootstrap_install") for s in (win_dev_walk.get("steps") or [])))
+
     # --- report ------------------------------------------------------------------------
     width = max(len(label) for label, _path, _ok in checks)
     failures = 0

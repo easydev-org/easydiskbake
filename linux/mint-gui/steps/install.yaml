@@ -132,9 +132,14 @@ steps:
   # A CONDITIONAL THAT GATES A CLICK IS THE SAME MISTAKE AS A LOOKUP THAT CHOOSES ONE, and
   # this repository has paid for it four times. The click costs nothing when the dialog is
   # absent: (1269,659) is blank space on the pane, so a stray click there selects nothing.
+  # MEASURED ON THIS IMAGE'S OWN MODAL (local run, 2026-11-09): the `Continue` button inside
+  # `Write the changes to disks?` is x=1180..1352, y=645..681 - centre (1266, 663). The old
+  # (1269, 659) is inside that box too, so the press was not the whole story: the modal was
+  # still on screen when the walk reached the next pane, which means the press was delivered
+  # before the dialog had finished drawing. `settle` before the press, and again after.
   - name: write the changes to disks
-    at: [1269, 659]
-    settle: 20
+    at: [1266, 663]
+    settle: 25
 
   # The time zone default is kept: on this cluster it is Shanghai, and changing it is one
   # more text field that can go wrong for no gain.

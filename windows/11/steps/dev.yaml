@@ -85,6 +85,42 @@ steps:
     timeout: 2400
     optional: true
 
+  # --- 1b. THE THREE THE macOS DISK ALREADY HAS, SO THE TWO DISKS AGREE -----------------
+  #
+  # WHY THESE AND NOT ONLY THE COMPILERS. The macOS dev stage installs python, node and git
+  # because a runner is not useful without them; a Windows disk that has an MSVC toolchain and
+  # no python is a disk you cannot run a script on. That mattered the moment the bootstrap
+  # launcher became Python: `~/shared/bootstrap.py` is written once and has to run on both
+  # disks, and it cannot on a Windows disk with no interpreter.
+  #
+  # PYTHON IS THE ONE THAT IS ACTUALLY REQUIRED; node and git are here so the two disks offer
+  # the same thing rather than two different toolchains behind the same name.
+  #
+  # THE IDS ARE THE WINGET ONES, checked against microsoft/winget-pkgs rather than guessed:
+  #
+  #     Python.Python.3.13     manifests/p/Python/Python/3/13/     3.13.9
+  #     OpenJS.NodeJS.LTS      manifests/o/OpenJS/NodeJS/LTS/     24.11.1
+  #     Git.Git                manifests/g/Git/Git/               2.51.0
+  #
+  # `Python.Python.3.13` INSTALLS FOR THE CURRENT USER, under
+  # %LOCALAPPDATA%\Programs\Python\Python313 - which is why the bootstrap launcher looks
+  # there first and only then asks PATH. An all-users install would land in C:\Program Files
+  # and need elevation, which this channel cannot answer.
+  - name: install python
+    ssh: winget install --id Python.Python.3.13 --exact --source winget --accept-source-agreements --accept-package-agreements --disable-interactivity
+    timeout: 2400
+    optional: true
+
+  - name: install node
+    ssh: winget install --id OpenJS.NodeJS.LTS --exact --source winget --accept-source-agreements --accept-package-agreements --disable-interactivity
+    timeout: 2400
+    optional: true
+
+  - name: install git
+    ssh: winget install --id Git.Git --exact --source winget --accept-source-agreements --accept-package-agreements --disable-interactivity
+    timeout: 2400
+    optional: true
+
   # THE SERVICE SURVIVES AN INSTALLER THAT RESTARTED IT, OR THE NEXT STEP FAILS FOR A REASON
   # THAT READS LIKE A BROKEN DISK.
   - name: wait for sshd again
@@ -194,6 +230,13 @@ steps:
     timeout: 120
     optional: true
 
+  # THE THREE THAT MUST BE ON PATH AFTER A REBOOT, not just in this session. `winget` edits the
+  # user PATH, and an ssh session started before that edit keeps the old one - so this asks a
+  # PROCESS STARTED NOW, and reports where each tool actually is.
+  - name: prove python node and git
+    ssh: powershell -Command "foreach ($t in 'python','node','git') { $c = Get-Command "$t.exe" -ErrorAction SilentlyContinue; if ($c) { Write-Output "ok $t -> $($c.Source)" } else { Write-Output "MISSING $t" } }"
+    timeout: 300
+
   - name: note what the toolchain reports
     ssh: powershell -Command "'SDK=' + (Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\Include' -Name -ErrorAction SilentlyContinue | Select-Object -Last 1) + ' DOTNET=' + ((& 'C:\Program Files\dotnet\dotnet.exe' --version) 2>&1)"
     timeout: 180
@@ -223,3 +266,16 @@ steps:
   - name: prove the share is readable and writable
     ssh: cmd /c "dir Z:\ & echo written-by-windows > Z:\from-guest.txt & type Z:\from-guest.txt"
     timeout: 120
+
+  # --- 4. THE LOGIN HOOK, SO A bootstrap.py IN THE SHARE RUNS BY ITSELF ----------------
+  #
+  # A Task Scheduler logon trigger, running the launcher through pythonw.exe - the console
+  # variant flashes a black window every time it fires, and a bootstrap that interrupts the
+  # desktop is one the person deletes.
+  #
+  # THE TASK LIVES IN THE DISK, THE SCRIPT LIVES IN THE SHARE. Nothing here depends on the host
+  # being reachable: with no share there is no bootstrap.py, and the launcher exits quietly.
+  - name: install the bootstrap launcher
+    bootstrap_install: true
+    share_family: windows
+    timeout: 300

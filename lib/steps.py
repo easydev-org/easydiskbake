@@ -93,6 +93,7 @@ STEP_KEYS = {    "name",        # required: what the log calls this step
     "share_mount",   # start the host's smbd for a directory, and mount it in the guest
     "share_dir",     # the host directory to share (default ~/shared)
     "share_family",  # which client the guest uses: macos, windows, linux
+    "bootstrap_install",  # install the login launcher that runs ~/shared/bootstrap.py
     "settle",      # seconds to wait after the action
     "wait",        # seconds to wait with nothing clicked
     "expect",      # words that must appear afterwards; a mismatch fails the step
@@ -138,7 +139,7 @@ STEP_KEYS = {    "name",        # required: what the log calls this step
 # already decided that, and they cannot be a pane themselves.
 ACTION_ONLY_KEYS = {"at", "double", "type", "clear", "key", "run", "ssh", "scp", "script",
                     "script_shell", "script_name", "share_mount", "share_dir",
-                    "share_family", "keep_alive",
+                    "share_family", "bootstrap_install", "keep_alive",
                     "settle", "terminal_wait", "timeout", "modifier", "type_gap"}
 
 # Steps that wait for something to happen rather than doing something. `expect` does not apply
@@ -149,7 +150,7 @@ WAIT_STEPS = {"until", "until_any", "wait", "wait_for_change", "until_dark", "di
 # Everything above that actually drives the guest. A step with none of these is a check, and
 # a check that does nothing is reported rather than run.
 ACTION_KEYS = {"at", "double", "type", "key", "run", "ssh", "scp", "script", "share_mount",
-               "require_ssh", "sweep",
+               "bootstrap_install", "require_ssh", "sweep",
                "at_window", "at_bottom"}
 
 
@@ -1045,6 +1046,92 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
             log(f"    {line[:150]}")
         if status != 0 and not step["optional"]:
             raise StepError(f"{step.name}: the script exited {status}")
+        return
+
+    # --- bootstrap_install: THE LOGIN HOOK THAT RUNS ~/shared/bootstrap.py ------------
+    #
+    # THE HALF THE SHARE ALONE DOES NOT DO. A directory the guest can read is a directory
+    # somebody has to open; the point of putting a bootstrap on the host is that the machine
+    # runs it without being asked. So this installs the launcher and the trigger, and leaves
+    # the script itself to the person - the launcher does nothing until ~/shared/bootstrap.py
+    # exists, which is what makes it safe to bake into a published disk.
+    #
+    # PYTHON ON BOTH DISKS, WHICH IS WHY windows/11/steps/dev.yaml NOW INSTALLS IT. One
+    # bootstrap.py has to run on both, and a shell script does not run on Windows while a .ps1
+    # does not run on macOS. See lib/bootstrap.py.
+    if step["bootstrap_install"]:
+        import bootstrap
+        import session
+
+        family = str(step.get("share_family") or "macos")
+        local = bootstrap.write_launcher(driver.work or ".", family)
+        remote = "/tmp/bootstrap-launcher.py" if family == "windows" \
+            else "/tmp/bootstrap-launcher.py"
+        status, output = session.scp(local, remote, port=ssh_port, timeout=300,
+                                     user=login, password=password)
+        log(f"  launcher -> {remote} -> {status}")
+        if status != 0:
+            if not step["optional"]:
+                raise StepError(f"{step.name}: the launcher copy exited {status}")
+            return
+
+        if family == "macos":
+            # THE PLIST NAMES A PATH UNDER THE ACCOUNT'S HOME, so the launcher is moved there
+            # first - launchd will not run something in /tmp, which is wiped.
+            #
+            # THE PLIST IS WRITTEN ON THE HOST AND COPIED, not assembled by a heredoc inside a
+            # shell command: it is XML with quotes in it, and every attempt to build one inline
+            # is an attempt to get the quoting right through ssh. The path substitution is the
+            # only thing that has to happen in the guest, and `sed` does that on one line.
+            plist_local = os.path.join(driver.work or ".", "bootstrap.plist")
+            with open(plist_local, "w") as fh:
+                fh.write(bootstrap.macos_plist("__LAUNCHER__"))
+            plist_remote = "/tmp/bootstrap.plist"
+            status, output = session.scp(plist_local, plist_remote, port=ssh_port,
+                                         timeout=300, user=login, password=password)
+            if status != 0:
+                if not step["optional"]:
+                    raise StepError(f"{step.name}: the plist copy exited {status}")
+                return
+            target = f"~/Library/LaunchAgents/{bootstrap.MACOS_LABEL}.plist"
+            script = (
+                "set -e\n"
+                "mkdir -p ~/Library/LaunchAgents\n"
+                "cp /tmp/bootstrap-launcher.py ~/bootstrap-launcher.py\n"
+                "chmod +x ~/bootstrap-launcher.py\n"
+                f"sed \"s|__LAUNCHER__|$HOME/bootstrap-launcher.py|\" "
+                f"/tmp/bootstrap.plist > {target}\n"
+                # UNLOAD FIRST, so a rerun replaces the agent instead of failing on a duplicate.
+                f"launchctl unload {target} 2>/dev/null || true\n"
+                f"launchctl load {target}\n"
+                f"launchctl list | grep {bootstrap.MACOS_LABEL} || "
+                f"{{ echo '=== THE AGENT DID NOT LOAD ==='; exit 1; }}\n"
+            )
+        else:
+            ps1 = bootstrap.windows_ps1("C:\\Users\\%s\\bootstrap-launcher.py"
+                                        % (login or "docker"))
+            local_ps1 = os.path.join(driver.work or ".", "bootstrap-install.ps1")
+            with open(local_ps1, "w") as fh:
+                fh.write(ps1)
+            remote_ps1 = f"C:/Users/{login or 'docker'}/bootstrap-install.ps1"
+            status, output = session.scp(local_ps1, remote_ps1, port=ssh_port, timeout=300,
+                                         user=login, password=password)
+            if status != 0:
+                if not step["optional"]:
+                    raise StepError(f"{step.name}: the installer copy exited {status}")
+                return
+            script = (f"copy /Y C:\\Users\\{login or 'docker'}\\bootstrap-launcher.py "
+                      f"C:\\Users\\{login or 'docker'}\\bootstrap-launcher.py >nul & "
+                      f"powershell -NoProfile -ExecutionPolicy Bypass -File "
+                      f"{remote_ps1}")
+
+        status, output = session.ssh(ssh_port, script, timeout=int(step.get("timeout", 300)),
+                                     user=login, password=password)
+        log(f"  install -> {status}")
+        for line in (output or "").splitlines()[:15]:
+            log(f"    {line[:150]}")
+        if status != 0 and not step["optional"]:
+            raise StepError(f"{step.name}: the launcher install exited {status}")
         return
 
     # --- share_mount: A HOST DIRECTORY THE GUEST CAN READ AND WRITE -------------------

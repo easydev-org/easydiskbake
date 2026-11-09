@@ -309,3 +309,19 @@ steps:
     ssh: |
       ls -la ~/shared | head -20 && printf 'written-by-%s\n' "$(hostname)" > ~/shared/from-guest.txt && cat ~/shared/from-guest.txt
     timeout: 120
+
+  # --- 7. THE LOGIN HOOK, SO A bootstrap.py IN THE SHARE RUNS BY ITSELF ----------------
+  #
+  # THE SHARE ALONE ONLY MAKES THE FILE VISIBLE; this is what runs it. A LaunchAgent fires at
+  # login, in the user's session, which is where the SMB mount lives - a boot-time trigger
+  # would run before there is a mount and find nothing.
+  #
+  # IT DOES NOTHING UNTIL ~/shared/bootstrap.py EXISTS. That is what makes it safe to bake into
+  # a published disk: an empty share means a no-op, and the launcher leaves a log either way.
+  #
+  # PYTHON ON BOTH DISKS, which is why the toolchain above installs it: one bootstrap.py has to
+  # run on both, and a shell script does not run on Windows.
+  - name: install the bootstrap launcher
+    bootstrap_install: true
+    share_family: macos
+    timeout: 300
