@@ -70,8 +70,19 @@ on:
         description: "setup: macOS release"
         default: "15"
       disk_size:
+        # 160G, BECAUSE THE DEV STAGE PUTS XCODE ON THIS DISK.
+        #
+        # The chain measures: macOS 15 installs to about 28 GiB, the toolchain adds a few, and
+        # Xcode 26.3 expands to about 15 GiB before `-runFirstLaunch` installs its platform
+        # packages on top. 128G fit every stage before dev and left too little headroom for
+        # that - and a disk that fills during the expansion fails at `xip`, which reads as a
+        # corrupt archive rather than a full disk.
+        #
+        # The size is FIXED rather than a variable per stage for the reason macos/15's own
+        # setup.yaml gives: the Disk Utility coordinates are measured on the disk the workflow
+        # actually bakes, and a different size moves them.
         description: "setup: guest disk size"
-        default: "128G"
+        default: "160G"
       install_timeout:
         description: "setup: seconds the installer may run"
         default: "7200"
