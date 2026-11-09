@@ -129,6 +129,21 @@ for pair in "macos15-setup:macos/15/steps/setup.yaml:sequence" \
     continue
   fi
 
+  # A STAGE THAT WAS ASKED NOT TO RUN IS NOT A STAGE THAT FAILED TO. When setup_from names a
+  # tag, the setup job's `bake` is skipped on purpose and there is no log to read - and the
+  # evidence for setup is that tag's own run, not this one. The `bake` step's conclusion is
+  # what distinguishes that from a job that was green with its walkthrough missing.
+  if [ "$prefix" = "macos15-setup" ]; then
+    bake=$(gh api "repos/$REPO/actions/runs/$RUN/jobs" \
+           --jq '.jobs[]|select(.name=="setup")|.steps[]|select(.name=="bake")|.conclusion' \
+           2>/dev/null | head -1)
+    if [ "$bake" = "skipped" ]; then
+      echo "  ok    $walk: setup was SKIPPED (a tag was named) - its evidence is that tag's run"
+      echo "        this run proves desktop and ssh only"
+      continue
+    fi
+  fi
+
   got=$(printf '%s' "$text" | grep -oE '[0-9]+ step\(s\) answered' |
         grep -oE '[0-9]+' | tail -1)
   if [ -z "$got" ]; then
