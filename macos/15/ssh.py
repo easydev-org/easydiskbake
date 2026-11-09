@@ -246,10 +246,32 @@ def main(argv: list[str]) -> int:
         # uses for a boot, and typing the password early is not a mistake: the keystrokes go
         # to a machine that is not listening yet and are simply lost, and unlock() is followed
         # by the ssh check that is the real verdict.
-        delay = int(os.environ.get("MACOS_LOGIN_DELAY", "120"))
-        log(f"waiting {delay}s for the boot, then logging in - this disk always shows a "
-            f"lock screen")
-        time.sleep(delay)
+        # WAIT FOR THE WINDOW, WITH THE FIXED NUMBER AS THE CEILING RATHER THAN THE DELAY.
+        #
+        # The comment above measures the login window at "two to four minutes after qemu
+        # starts", and the previous code slept a flat 120 - the BOTTOM of that range. On a
+        # slower runner the keystrokes then went to a machine that had not drawn its window
+        # yet and were simply lost, which reads later as "the password was wrong".
+        #
+        # `reached_lock_screen` is the same test the desktop stage uses (the password field's
+        # twelve-pixel placeholder, cropped and enlarged), so this waits for the thing it is
+        # about to type into. MACOS_LOGIN_DELAY stays as the ceiling: whatever the number is,
+        # the wait ends as soon as the window is up.
+        delay = int(os.environ.get("MACOS_LOGIN_DELAY", "240"))
+        log(f"waiting up to {delay}s for the login window")
+        from lib import desktop as desktoplib
+        deadline = time.time() + delay
+        seen = False
+        while time.time() < deadline:
+            if desktoplib.reached_lock_screen(frames):
+                log(f"  the login window is up after "
+                    f"{delay - int(deadline - time.time())}s")
+                seen = True
+                break
+            time.sleep(5)
+        if not seen:
+            log(f"  no login window in {delay}s; typing anyway, which is what the old "
+                f"fixed wait always did")
 
         log(f"=== logging in as {GUEST_USER} ===")
         unlock(guest)
