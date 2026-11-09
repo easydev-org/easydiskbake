@@ -304,7 +304,27 @@ def main(argv: list[str]) -> int:
             return 1
 
         log("=== turning Remote Login on ===")
-        if args.steps:
+        # THE TOGGLE HAS TO BE READ BEFORE EITHER PATH PRESSES IT, AND THAT INCLUDES THE
+        # WALKTHROUGH PATH.
+        #
+        # This guard used to live inside enable_remote_login(), so it only protected the
+        # Python branch. The YAML branch called run_file() straight away, which presses the
+        # switch unconditionally - and the switch is a TOGGLE. Measured on the local guest,
+        # second run of this stage: the disk came up with sshd already listening, the
+        # walkthrough pressed the switch, and the stage that exists to turn Remote Login ON
+        # turned it OFF, then failed at wait_for_ssh with a message about sshd never starting.
+        #
+        # The check is host-side and the walkthrough cannot make it: it is a TCP connection to
+        # the forward, and `require_ssh` in the YAML can only report that sshd already answers
+        # - which is exactly the fact that should have stopped the clicks.
+        already = _remote_login_listening(
+            guest, getattr(getattr(guest, "shape", None), "ssh_port", args.ssh_port))
+        if already:
+            log("=== Remote Login is ALREADY on; nothing to press ===")
+            log("  (the GUI sequence is skipped: the switch is a toggle and pressing it now "
+                "would turn sshd off. The ssh: steps below still run, because a daemon that "
+                "is listening is not the same fact as an account that may log in.)")
+        if not already and args.steps:
             import steps as stepslib
             ok, ran = stepslib.run_file(
                 args.steps, guest.paths.drive, work=os.path.dirname(frames) or ".",
@@ -319,8 +339,24 @@ def main(argv: list[str]) -> int:
                 else f"the walkthrough failed after {len(ran)} step(s)")
             if not ok:
                 return 1
-        else:
+        elif not already:
             enable_remote_login(guest)
+        else:
+            # THE HALF OF THE WALKTHROUGH THAT IS STILL WORTH RUNNING. The GUI steps exist to
+            # turn the daemon on; it is on. The `ssh:` steps are the proof the next stage's
+            # disk is usable, and skipping them because of a GUI precondition nobody needed
+            # would throw away the only assertions this stage has.
+            import steps as stepslib
+            ok, ran = stepslib.run_file(
+                args.steps, guest.paths.drive, work=os.path.dirname(frames) or ".",
+                user=GUEST_USER, password=os.environ.get("MACOS_PASSWORD", "admin"),
+                ssh_port=args.ssh_port, release="15", frames=frames,
+                start_at="wait for sshd",
+            )
+            log(f"{len(ran)} step(s) answered (no GUI: it was already on)" if ok
+                else f"the walkthrough failed after {len(ran)} step(s)")
+            if not ok:
+                return 1
 
         log(f"checking that the guest's sshd answers on the host's port {args.ssh_port}")
         if not wait_for_ssh(args.ssh_port, timeout=180):

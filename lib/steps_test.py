@@ -573,6 +573,38 @@ def test_real_files() -> None:
         check(len(walk.steps) > 5, f"{relative}: {len(walk.steps)} steps")
 
 
+def test_ssh_matchers_on_their_frames() -> None:
+    """The ssh stage's two region matchers, against the frames they were measured on.
+
+    A REGION IS THE ONE THING IN A WALKTHROUGH THAT CANNOT BE CHECKED BY READING THE FILE.
+    The words look right and the rectangle looks plausible, but whether tesseract finds
+    anything inside it is a fact about a bitmap - and on these frames it is the difference
+    between a read and an empty one: 'allow full disk access' is small text in a 1920-wide
+    image and full-screen OCR discards it as noise.
+
+    The three frames are what make the assert meaningful:
+
+        remote-login-3-pane.png               the sheet, switch OFF
+        remote-login-5-full-disk-access.png   the sheet, switch ON
+        search-no-results.png                 doubled query, list says No Results, no sheet
+
+    and the third is the one that matters: 'the pane is up' must be FALSE there, or it cannot
+    stop the clicks that follow it - which is exactly the run where the stage reported success
+    against a daemon the PREVIOUS run had left listening.
+    """
+    import ssh_frames_test
+    if not all(os.path.isfile(path) for _, path, _, _ in ssh_frames_test.FRAMES):
+        print("  skip ssh matchers: the measured frames are not in testdata/ssh")
+        return
+    for name, which in (("the remote login pane is up", 2), ("the switch reads on", 3)):
+        for row in ssh_frames_test.FRAMES:
+            label, path, expected = row[0], row[1], row[which]
+            hit = ssh_frames_test.matches(name, ssh_frames_test.FrameDriver(path))
+            if hit != expected:
+                FAILED.append(f"{name}: {label} read {'PASS' if hit else 'miss'}, "
+                              f"expected {'PASS' if expected else 'miss'}")
+
+
 def main() -> int:
     test_expect_failure()
     test_optional_expect()
@@ -592,6 +624,7 @@ def main() -> int:
     test_ends_region()
     test_headless_needs_no_screen()
     test_real_files()
+    test_ssh_matchers_on_their_frames()
 
     print()
     if FAILED:

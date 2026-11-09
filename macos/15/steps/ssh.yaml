@@ -91,13 +91,33 @@ steps:
     poll: 3
     optional: true
 
-  # THE SEARCH FIELD, AT ITS MEASURED PIXEL. (715, 267) is the centre of a box whose interior
-  # spans x 630..800, y 250..284 at 1920x1080.
+  # THE SEARCH FIELD, AND THE FIELD IS CLEARED AS PART OF TYPING INTO IT.
+  #
+  # `at` AND `type` ARE ONE STEP ON PURPOSE. Split into "click the box" and "type into it",
+  # the second step has no `at`, so it takes the type-into-focus branch and never clears
+  # anything - and System Settings REMEMBERS THE LAST QUERY. Measured on the local guest,
+  # second run of this stage:
+  #
+  #     search field reads   'remote login' + 'remote login'
+  #     result list reads    No Results
+  #     right-hand pane      Sharing's overview, every switch off
+  #
+  # The row at (703, 336) was then an empty area, the "switch" click hit the Sharing list,
+  # and the stage still reported success - because sshd had been left on by the previous run
+  # and `require_ssh` cannot tell who turned it on. On a fresh CI disk the field starts empty
+  # and one typed query works, which is exactly why this only shows up on a second run.
+  #
+  # (715, 267) is the centre of a box whose interior spans x 630..800, y 250..284 at
+  # 1920x1080.
+  #
+  # `modifier: meta_l` IS NOT COSMETIC. Select-all is Control+A on Linux and Command+A on
+  # macOS; with the default Control+A on macOS the caret jumps to the start of the line, the
+  # old text stays, and the new text is inserted before it. That is the doubled query above.
   - name: search for remote login
     at: [715, 267]
-    settle: 2
-  - name: type the search
     type: remote login
+    clear: true
+    modifier: meta_l
     settle: 10
 
   # THE RESULT ROW. The list puts "Sharing" as a header and "Remote Login" under it, and the
@@ -108,6 +128,43 @@ steps:
     at: [703, 336]
     settle: 12
 
+  # THE PANE HAS TO BE THE REMOTE LOGIN PANE BEFORE ANYTHING IS PRESSED.
+  #
+  # This is the check that was missing, and its absence is why a run that never opened the
+  # pane could still end in "ssh answers": the two clicks below landed on the Sharing
+  # overview, changed nothing, and `require_ssh` connected to a daemon that was already
+  # listening. Reading the pane is the only thing that distinguishes "I turned it on" from
+  # "it was on when I arrived".
+  #
+  # THE WORDS ARE THE ROW THIS PANE ALONE HAS, NOT ITS TITLE. The title would be useless
+  # here: the search field on the left still holds the text that was just typed into it, so a
+  # full-screen read for "remote login" matches whether or not the pane ever opened. This row
+  # exists only in this pane - it is the same label ssh.py's own comment quotes from a
+  # measured frame of run 42167875539, 'Allow full disk access for remote users' - and the
+  # Sharing overview that a failed click leaves on screen does not contain it. Measured
+  # against this stage's own failure frame, which reads 'No Results' and then the overview's
+  # list of shares.
+  #
+  # THE REGION IS THE SHEET ITSELF, AND IT IS WHAT MAKES THE READ WORK AT ALL. Full-screen,
+  # this same frame does not yield 'allow full disk access' - the sheet's text is small and
+  # the frame is 1920 wide, so tesseract discards it as noise. Cropped to the sheet and
+  # enlarged 2x it reads, on both measured frames:
+  #
+  #     remote-login-3-pane.png              'remote login: off ... allow full disk access
+  #                                           for remote users ...'
+  #     remote-login-5-full-disk-access.png  'remote login: on ... to log in to this computer
+  #                                           remotely, type "ssh docker@..." ...'
+  #
+  # NOT `optional`: this is the precondition for the two clicks below, and a stage that
+  # presses a switch it never found is the failure mode this step exists to stop.
+  - name: the remote login pane is up
+    until_any:
+      - [allow, full, disk, access]
+    region: [726, 300, 1200, 715]
+    scale: 2
+    timeout: 90
+    poll: 3
+
   # THE SWITCH. It reads "Off" until it is pressed, and pressing it also turns
   # `Allow full disk access for remote users` ON - which is why nothing below presses that
   # one: pressing it again would turn it off, and a remote session without Full Disk Access
@@ -116,17 +173,28 @@ steps:
     at: [1145, 353]
     settle: 4
 
-  # THE PANE SAYS SO. This is the read-only check the old Python step took a frame for, and
-  # as a step it is also the one that fails loudly when the switch did not move.
-  - name: the switch is on
+  # WHAT THE PANE SAYS AFTER THE PRESS, AS A REPORT AND NOT AS THE VERDICT.
+  #
+  # The switch's own drawing is a few pixels of blue and reading it is the least reliable
+  # thing in this file, so a failed read here must not fail the stage. But the pane's
+  # SENTENCE changes with the switch, and that is readable text:
+  #
+  #     Off   "Remote Login lets users of other computers access this computer using SSH
+  #            and SFTP."
+  #     On    "To log in to this computer remotely, type "ssh docker@..."".
+  #
+  # Only the On sentence contains "log in to this computer". Both were measured - the Off
+  # line on the failure frame that this stage's local run produced, the On line on
+  # remote-login-5-full-disk-access.png of run 42473082131.
+  #
+  # `require_ssh` below is the real verdict, for the reason ssh.py's own comment gives: a
+  # switch that looks on is not the same fact as a daemon that answers.
+  - name: the switch reads on
     until_any:
-      # `on` IS A BOOLEAN IN YAML 1.1. Unquoted, this list parsed as
-      # ['remote', 'login', True] and the driver died with
-      # "'bool' object has no attribute 'lower'" - so the word is quoted, the way a
-      # walkthrough has to quote yes/no/on/off anywhere it means the text.
-      - [remote, login, "on"]
-      - [allowing, remote, users]
-    timeout: 60
+      - [log, in, to, this, computer]
+    region: [726, 300, 1200, 715]
+    scale: 2
+    timeout: 30
     poll: 3
     optional: true
 
