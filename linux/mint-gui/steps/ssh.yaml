@@ -32,6 +32,18 @@ name: linux-mint-gui - sshd
 resolution: [1920, 1080]
 
 vars:
+  # THE ACCOUNT THIS DISK LOGS IN WITH, WHICH IS NOT ALWAYS `user`.
+  #
+  # The console login types this, so it has to be the name the DISK has - the same one
+  # `ssh_user` gives ssh, when a file declares one. mint's tty3 shows it plainly:
+  #
+  #     DOCKERdocker-Standard-PC-Q35-ICH9-2009 login:
+  #
+  # and typing `docker` there fails. Defaults to `user` so a file that does not care is
+  # unchanged.
+  console_user:
+    from: args.user
+    default: docker
   password:
     from: args.password
     default: admin
@@ -54,6 +66,13 @@ vars:
   #
   # So the login name on these disks is `DOCKERdocker`, and ssh has to ask for that one.
   ssh_user: DOCKERdocker
+  # AND THE CONSOLE LOGIN TAKES THE SAME NAME, because it is what the disk has. Measured on
+  # run 42588426522's tty3:
+  #
+  #     DOCKERdocker-Standard-PC-Q35-ICH9-2009 login:
+  #
+  # - the walk typed `docker` there and the prompt never moved.
+  console_user: DOCKERdocker
 
 steps:
 
@@ -115,7 +134,7 @@ steps:
     optional: true
 
   - name: console - the login name
-    type: "{{ user }}"
+    type: "{{ console_user }}"
     settle: 3
     optional: true
 

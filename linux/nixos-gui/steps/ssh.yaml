@@ -32,6 +32,18 @@ name: linux-nixos-gui - sshd
 resolution: [1920, 1080]
 
 vars:
+  # THE ACCOUNT THIS DISK LOGS IN WITH, WHICH IS NOT ALWAYS `user`.
+  #
+  # The console login types this, so it has to be the name the DISK has - the same one
+  # `ssh_user` gives ssh, when a file declares one. mint's tty3 shows it plainly:
+  #
+  #     DOCKERdocker-Standard-PC-Q35-ICH9-2009 login:
+  #
+  # and typing `docker` there fails. Defaults to `user` so a file that does not care is
+  # unchanged.
+  console_user:
+    from: args.user
+    default: docker
   password:
     from: args.password
     default: admin
@@ -117,7 +129,7 @@ steps:
     optional: true
 
   - name: console - the login name
-    type: "{{ user }}"
+    type: "{{ console_user }}"
     settle: 3
     optional: true
 
