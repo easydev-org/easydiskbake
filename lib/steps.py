@@ -975,7 +975,14 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222) -> None:
     # NOTHING AT ALL - the only branch that typed was `at: AND type:`, so an ssh walk that
     # logged in with `at:`/`type:`/`key:` would click the box, type nothing, and press Return
     # on an empty password.
-    if step["at"] is None and step["type"] is not None:
+    #
+    # THE THREE BRANCHES BELOW ARE ONE CHAIN, AND SEPARATING THEM WAS A REAL BUG. It used to be
+    # `if at and type: ...` followed by a new `if at is None and type: ... elif at: ...`, so a
+    # step with BOTH `at` and `type` typed into the field and then clicked it again - two
+    # presses where the walkthrough asked for one. The unit test caught it as
+    # 'the Continue clicked once, got [(1, 1), (2, 2), (3, 3)]' over a three-field form whose
+    # Continue had not been clicked yet.
+    elif step["at"] is None and step["type"] is not None:
         import keys as keysmod
         unsupported = keysmod.type_text(driver.q, str(step["type"]), per_char=0.1)
         if unsupported:

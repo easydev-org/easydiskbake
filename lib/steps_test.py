@@ -156,7 +156,12 @@ def test_no_step_acts_twice() -> None:
     driver, (ok, _ran) = run(walk)
     check(ok, "the walk succeeds")
     check(driver.typed == [((5, 6), "docker")], "one type, at the measured point")
-    check(driver.clicks == [], "no separate click was also made")
+    # ONE ACTION, NOT TWO. A step carrying `at` and `type` must type into the field, and
+    # type_into() clicks the field itself - so `driver.clicks` stays empty and the step must
+    # not ALSO run the plain-click branch. The earlier assertion here was `clicks == []`,
+    # which is the same thing said in a way that breaks the moment type_into grows a click.
+    check(len(driver.typed) == 1 and driver.doubles == [],
+          f"typed once and did not double-click, got {driver.typed} / {driver.doubles}")
 
 
 # --- 5. repeat presses one coordinate N times -------------------------------------------
