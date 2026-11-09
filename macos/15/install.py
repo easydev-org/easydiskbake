@@ -133,10 +133,22 @@ CONTINUE_MENU = (1142, 586)
 # the control lives somewhere inside 280..320; two pixels is finer than the hit area it is
 # being swept for. X stays at 1290, which is inside the button horizontally in every frame
 # that has been measured (its extent is x=1255..1310).
-ERASE_BUTTON_Y_FIRST = 280
-ERASE_BUTTON_Y_LAST = 320
-ERASE_BUTTON_Y_STEP = 2
-ERASE_BUTTON_X = 1290
+# THE ERASE CONTROL IS ONE POINT, AND THE Y WAS WRONG FOR A DOZEN RUNS.
+#
+# Every earlier value was the LABEL's baseline - 295, 300, 305, 306, and a sweep of 280..320 -
+# and the label sits BELOW the button's hit area. Measured on a live guest by clicking both:
+#
+#     (1180, 297)  First Aid's label   -> nothing
+#     (1180, 280)  First Aid's icon    -> 'run first aid on "..."?'    the sheet appeared
+#     (1290, 297)  Erase's label       -> nothing
+#     (1290, 280)  Erase's icon        -> 'erase "..."? will be deleted' the sheet appeared
+#
+# The toolbar draws a glyph with its caption underneath; the caption is a label, not a control.
+# That is why the sweep of 280..320 was a coin toss in BOTH directions: it crossed the boundary
+# between one control's caption and the next control's glyph, so the answers it collected
+# (280 opened once, 306 opened once, thirteen steps did nothing) described the layout rather
+# than the button.
+ERASE_BUTTON = (1290, 280)
 
 # Sidebar rows under "Internal", 28px apart, x=540 inside the labels. Five rows because
 # the count differs between Show Only Volumes (one) and Show All Devices (four), and a
@@ -1230,34 +1242,13 @@ def select_and_erase(d: Recovery) -> None:
 
     d.wait(5, "the detail pane settles on the chosen disk")
 
-    # THE SWEEP: y = 280..320 BY 2, TWO SECONDS APART.
-    #
-    # `settle` is the pause AFTER each click, so two seconds here is the interval between
-    # one click and the next. The frame before each click is still taken by click()'s own
-    # shot(), so the recording shows every position that was tried.
-    #
-    # It stops mattering the moment the sheet opens: the next click lands on the sheet's
-    # backdrop. There is no early exit because detecting "the sheet is up" needs a
-    # screen read this file deliberately does not do for control flow.
-    sheet_open = False
-    for y in range(ERASE_BUTTON_Y_FIRST, ERASE_BUTTON_Y_LAST + 1, ERASE_BUTTON_Y_STEP):
-        d.click((ERASE_BUTTON_X, y), f"Erase (y={y})", settle=2)
-        # EACH SWEEP STEP IS CHECKED, SO A WORKING CLICK ENDS THE SWEEP AND A DEAD ONE IS
-        # KNOWN TO BE DEAD.
-        #
-        # The sweep exists because the control moves a pixel or two between runs; the
-        # check exists because a sweep that never lands used to be followed by a backspace
-        # and a typed name into a field that was not there, and the failure then surfaced
-        # two minutes later as "the disk did not grow".
-        if d.erase_sheet_is_open():
-            log(f"  the erase sheet opened at y={y}")
-            sheet_open = True
-            break
+    # ONE CLICK, AT THE MEASUREMENT. See ERASE_BUTTON for what the sweep was really measuring.
+    d.click(ERASE_BUTTON, "Erase", settle=6)
 
-    if not sheet_open:
+    if not d.erase_sheet_is_open():
         log("=== THE ERASE SHEET NEVER OPENED ===")
-        log("  every y in the sweep was clicked and none raised it; the disk is unchanged")
-        log("  and the sequence stops rather than typing a name into nothing")
+        log(f"  {ERASE_BUTTON} was clicked and it did not raise it; the disk is unchanged and")
+        log("  the sequence stops rather than typing a name into nothing")
         raise SystemExit(1)
 
     # ONE BACKSPACE, because the name field arrives holding the disk's own name with the

@@ -119,118 +119,31 @@ steps:
     python: setup_panes:select_target_disk
 
   # =======================================================================================
-  # 2b. ERASE: FIND THE BUTTON, NAME THE VOLUME, CONFIRM, DONE
+  # 2b. ERASE: ONE CLICK, THEN NAME THE VOLUME, CONFIRM, DONE
   # =======================================================================================
   #
-  # THE SWEEP IS ELEVEN CLICKS AND THEY ARE STEPS, NOT A LOOP IN PYTHON.
+  # THE ERASE CONTROL IS AT (1290, 280), AND THE NUMBER THAT WAS WRONG FOR A DOZEN RUNS WAS
+  # THE Y: every attempt used the LABEL's baseline, about 297, and the label sits BELOW the
+  # button's hit area. Measured on a live guest by clicking both and watching which one
+  # opened the sheet:
   #
-  # The toolbar's Erase control has a hit area a few pixels tall and it moves between
-  # runs. Measured from this repository's own CI logs:
+  #     (1180, 297)  First Aid's label   -> nothing
+  #     (1180, 280)  First Aid's icon    -> 'run first aid on "..."?'     the sheet appeared
+  #     (1290, 297)  Erase's label       -> nothing
+  #     (1290, 280)  Erase's icon        -> 'erase "..."? will be deleted' the sheet appeared
   #
-  #     run 08e6c87d   y=280 opened it        (one click)
-  #     run d9244d66   y=280..304 all did NOTHING, y=306 opened it   (fourteen clicks)
-  #
-  # so a single number is a coin toss in BOTH directions - the same y that worked once
-  # did nothing thirteen times in a row on the next run. The band 278..318 at four-pixel
-  # steps covers every value that has ever been observed to work (278, 295, 306) and the
-  # ones that have failed (296, 305, 309, 311, 314).
-  #
-  # EACH POINT IS GUARDED BY THE SHEET'S OWN WORDS. Once a click lands, the sheet is up and
-  # every later point would be a click on its backdrop - `unless` skips them, so the sweep
-  # stops as soon as it has succeeded and the log says which y did it.
-  #
-  # TWO PIXELS WAS THE OLD STEP AND FOUR IS ENOUGH: the hit area is a few pixels tall, so
-  # four-pixel spacing cannot step over it, and it halves the worst case from forty seconds
-  # to twenty.
-
-  - name: erase - try y=278
-    at: [1290, 278]
-    settle: 2
-    unless: [erase, free, space]
-    region: [700, 300, 1300, 500]
-    region_at: [1920, 1080]
-    scale: 2
-
-  - name: erase - try y=282
-    at: [1290, 282]
-    settle: 2
-    unless: [erase, free, space]
-    region: [700, 300, 1300, 500]
-    region_at: [1920, 1080]
-    scale: 2
-
-  - name: erase - try y=286
-    at: [1290, 286]
-    settle: 2
-    unless: [erase, free, space]
-    region: [700, 300, 1300, 500]
-    region_at: [1920, 1080]
-    scale: 2
-
-  - name: erase - try y=290
-    at: [1290, 290]
-    settle: 2
-    unless: [erase, free, space]
-    region: [700, 300, 1300, 500]
-    region_at: [1920, 1080]
-    scale: 2
-
-  - name: erase - try y=294
-    at: [1290, 294]
-    settle: 2
-    unless: [erase, free, space]
-    region: [700, 300, 1300, 500]
-    region_at: [1920, 1080]
-    scale: 2
-
-  - name: erase - try y=298
-    at: [1290, 298]
-    settle: 2
-    unless: [erase, free, space]
-    region: [700, 300, 1300, 500]
-    region_at: [1920, 1080]
-    scale: 2
-
-  - name: erase - try y=302
-    at: [1290, 302]
-    settle: 2
-    unless: [erase, free, space]
-    region: [700, 300, 1300, 500]
-    region_at: [1920, 1080]
-    scale: 2
-
-  - name: erase - try y=306
-    at: [1290, 306]
-    settle: 2
-    unless: [erase, free, space]
-    region: [700, 300, 1300, 500]
-    region_at: [1920, 1080]
-    scale: 2
-
-  - name: erase - try y=310
-    at: [1290, 310]
-    settle: 2
-    unless: [erase, free, space]
-    region: [700, 300, 1300, 500]
-    region_at: [1920, 1080]
-    scale: 2
-
-  - name: erase - try y=314
-    at: [1290, 314]
-    settle: 2
-    unless: [erase, free, space]
-    region: [700, 300, 1300, 500]
-    region_at: [1920, 1080]
-    scale: 2
-
-  - name: erase - try y=318
-    at: [1290, 318]
-    settle: 2
-    unless: [erase, free, space]
-    region: [700, 300, 1300, 500]
-    region_at: [1920, 1080]
-    scale: 2
-
+  # The toolbar draws a glyph with its caption underneath; the caption is a label, not a
+  # control. That is why the old sweep of y=278..320 was a coin toss in BOTH directions - it
+  # was sweeping across the boundary between two different widgets, and the answers it
+  # collected (280 opened once, 306 opened once, the rest did nothing) describe where the
+  # caption of one control ends and the caption of the next begins.
+  - name: erase - open the sheet
+    at: [1290, 280]
+    settle: 6
+    expect_any:
+      - [erase, deleted]
+      - [free, space]
+      - [security, option]
   # THE SHEET IS UP. Its name field arrives holding the disk's own name with the text
   # selected, so one backspace clears it - without that the typed name is appended and the
   # volume is called something else.
