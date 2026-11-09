@@ -135,8 +135,17 @@ def main(argv: list[str]) -> int:
     p.add_argument("--artifacts", default="out")
     p.add_argument("--work", default=None)
     p.add_argument("--boot-timeout", type=int, default=900)
-    p.add_argument("--desktop-timeout", type=int, default=300,
-                   help="how long the desktop gets to paint before the terminal is opened")
+    # THE DESKTOP GETS THE SAME BUDGET THE LAUNCH STAGE GIVES IT, BECAUSE IT IS THE SAME BOOT.
+    #
+    # This was 300 s and that is why cachyos failed twice with `=== NO DESKTOP PAINTED ===`:
+    # it is the largest disk here (7028 MiB, 81% of its 8.6 GiB virtual size), and a guest
+    # that size needs longer than five minutes to reach a desktop on a loaded runner. The
+    # launch stage boots THE SAME DISK with `--boot-timeout 900` and its verdict is PASS, so
+    # the 300 was not a measurement of this image - it was a default nobody revisited.
+    #
+    # 0 means "use --boot-timeout", which is what every workflow passes.
+    p.add_argument("--desktop-timeout", type=int, default=0,
+                   help="how long the desktop gets to paint (0 = the boot timeout)")
     p.add_argument("--mem", type=int, default=4096)
     p.add_argument("--cpus", type=int, default=4)
     p.add_argument("--ssh-port", type=int, default=2222)
@@ -146,6 +155,11 @@ def main(argv: list[str]) -> int:
     p.add_argument("--no-clean", action="store_true",
                    help="accepted and ignored: this stage does not clean, it installs")
     args = p.parse_args(argv)
+
+    # 0 MEANS "THE BOOT BUDGET", which is how the flag is documented and what every workflow
+    # gets without changing it: the desktop wait and the boot wait are the same wait.
+    if args.desktop_timeout <= 0:
+        args.desktop_timeout = args.boot_timeout
 
     work = os.path.abspath(args.work or args.artifacts)
     artifacts = os.path.abspath(args.artifacts)
