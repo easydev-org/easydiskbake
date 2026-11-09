@@ -54,6 +54,32 @@ steps:
   # ctrl+alt+t is this desktop's own shortcut. The step EXISTS on its own - rather than being
   # folded into the `run:` - because "did the terminal open" is the first question when an
   # install produces nothing, and the recording now answers it.
+  # =======================================================================================
+  # 0. THE GREETER, IF THIS DISK STOPS AT ONE
+  # =======================================================================================
+  #
+  # GhostBSD's launch has so far photographed a MATE desktop rather than a greeter - its
+  # gbi install sets no display-manager autologin, but the session has come up unasked. That
+  # is luck rather than a guarantee: the same image on a slower runner can land on lightdm.
+  #
+  # `optional` for exactly that reason: on the desktop it is a click on the wallpaper and a
+  # typed password that goes nowhere, and on a greeter it is the login. MATE's lightdm puts
+  # the password box under the user tile, which on 1920x1080 is (960,640).
+  - name: greeter - the password box
+    at: [960, 640]
+    settle: 2
+    optional: true
+
+  - name: greeter - log in
+    type: "{{ password }}"
+    settle: 3
+    optional: true
+
+  - name: greeter - submit
+    key: ret
+    settle: 12
+    optional: true
+
   - name: open the terminal
     key: ctrl+alt+t
     settle: 10
