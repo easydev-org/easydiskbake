@@ -363,31 +363,59 @@ def main(argv: list[str]) -> int:
             if status != 0:
                 return finish(1)
 
-            # AND THEN OVER THE CONTAINER'S OWN ADDRESS, WHICH IS THE ONLY ONE A SIBLING
-            # CONTAINER CAN REACH.
+            # THE PROOF THE OBJECTIVE ACTUALLY ASKS FOR, AND THE ONE THAT WAS MISSING.
             #
-            # The bridge address, 172.30.0.1, exists inside this container and nowhere else.
-            # A second container - or `docker run -p 2222:2222`, or a pod-to-pod connection -
-            # arrives on THIS container's eth0 address, and until net.expose_uplink() there
-            # was no DNAT rule for it: the packet was delivered locally, nothing listened on
-            # 2222, and the client got "Connection refused" while the guest was answering
-            # happily on the bridge. This is that path, proven by a command's exit status.
+            # Everything above connects to 172.30.0.1, the bridge address - which exists only
+            # inside this container's own network namespace. A sibling container, another pod,
+            # or a person running `docker run -p 2222:2222` cannot route to it. So "the port
+            # is open" was never the same claim as "another container can reach it", and
+            # until net.expose_uplink() there was no rule for the address they DO dial.
+            #
+            # THIS DIALS THE CONTAINER'S OWN ADDRESS instead. It is not the bridge and not
+            # loopback, so the connection is still made by this container's own stack - but
+            # the port has to be open on that address for it to work at all, which is the
+            # rule an outside client needs. net.expose_uplink() adds jumps in both nat
+            # chains: OUTPUT for a client here, PREROUTING for a packet that arrives.
             import net
-            external = net.uplink_addresses()
+            external = net.external_addresses()
             if not external:
-                note("=== NO UPLINK ADDRESS: THE PORT IS NOT REACHABLE FROM ANOTHER CONTAINER ===")
+                note("=== NO EXTERNAL ADDRESS: the port is not reachable from another container ===")
                 return finish(1)
-            reached = False
+            reached = []
             for address in external:
-                status, output = session.ssh(args.ssh_port, "id -un; hostname", host=address)
-                note(f"ssh from outside ({address}:{args.ssh_port}) -> {status}")
+                status, output = session.ssh(
+                    args.ssh_port, "echo reached-on-this-address; id -un", host=address)
+                note(f"ssh: {address}:{args.ssh_port} -> {status}")
                 for line in (output or "").splitlines()[:3]:
                     note(f"  {line}")
-                if status == 0:
-                    reached = True
+                if status == 0 and "reached-on-this-address" in (output or ""):
+                    reached.append(address)
             if not reached:
-                note("=== THE GUEST ANSWERS ON THE BRIDGE BUT NOT ON THE CONTAINER'S ADDRESS ===")
+                note("=== THE GUEST ANSWERS ON THE BRIDGE BUT NOT ON A ROUTABLE ADDRESS ===")
                 return finish(1)
+
+            # AND THE RULE AN ARRIVING PACKET HITS, PRINTED INTO THE VERDICT.
+            #
+            # A connection started in this container traverses nat OUTPUT. One that ARRIVES
+            # on an interface - a sibling container, another pod, the docker host publishing
+            # -p 2222:2222 - traverses PREROUTING, and that is a different jump. This block
+            # cannot start the second connection: a GitHub container job has no docker socket
+            # and no CAP_SYS_ADMIN to make a second network namespace. What it can do is put
+            # the PREROUTING rule in the artifact, so the jump that outside traffic takes is
+            # a fact in the record rather than an assumption.
+            rules = subprocess.run(["iptables", "-t", "nat", "-S", "PREROUTING"],
+                                   capture_output=True, text=True)
+            jumps = [line for line in (rules.stdout or "").splitlines()
+                     if "VM_FWD" in line and any(a in line for a in reached)]
+            note(f"nat PREROUTING jumps for outside traffic: {len(jumps)}")
+            for line in jumps[:6]:
+                note(f"  {line}")
+            if not jumps:
+                note("=== NO PREROUTING JUMP: an arriving packet cannot reach the guest ===")
+                return finish(1)
+
+            note(f"ssh: {args.ssh_port} answers on {', '.join(reached)} - the addresses "
+                 f"another container dials, not the bridge - and PREROUTING DNATs them")
             return finish(0)
         finally:
             try:

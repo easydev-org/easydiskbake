@@ -327,7 +327,7 @@ def up(*, ssh_port: int = 2222, rdp_port: int = 3389,
 
 
 def uplink_addresses() -> list[str]:
-    """This container's own IPv4 addresses - the ones another container can dial."""
+    """This container's own IPv4 addresses, including the bridge."""
     route = _run(["ip", "-4", "-o", "addr", "show", "scope", "global"])
     out: list[str] = []
     for line in (route.stdout or "").splitlines():
@@ -339,30 +339,72 @@ def uplink_addresses() -> list[str]:
     return out
 
 
+def external_addresses() -> list[str]:
+    """The addresses HERE that another container can dial - i.e. not the bridge.
+
+    the bridge is only meaningful inside this container: nothing outside can route to it.
+    A sibling container, another pod, or the docker host publishing `-p 2222:2222` all
+    arrive on one of these instead. This is the list the "another container can reach it"
+    proof names, so the bridge is filtered out rather than silently proven again.
+    """
+    return [address for address in uplink_addresses() if address != BRIDGE_IP]
+
+
+def external_addresses() -> list[str]:
+    """The addresses other containers dial: this container's own, minus the bridge.
+
+    THE BRIDGE IS EXCLUDED ON PURPOSE. It is one of the container's global addresses and it
+    would otherwise appear here, but it is the network's own side - reachable from nowhere
+    else - and a proof that dials it is the proof this repository already had.
+    """
+    return [a for a in uplink_addresses() if a != BRIDGE_IP]
+
+
 def expose_uplink(*, ssh_port: int = 2222, rdp_port: int = 3389) -> list[str]:
     """Make the forwarded ports reachable on the container's own addresses.
 
     THE SAME VM_FWD CHAIN, ONE MORE DESTINATION. Not a second network mode: the chain and
-    its DNAT rules are net.up()'s, and this only adds a PREROUTING jump for each address the
-    container itself holds. Returns the addresses that were exposed.
+    its DNAT rules are net.up()'s, and this only adds jumps for each address the container
+    itself holds. Returns the addresses that were exposed.
+
+    BOTH JUMPS, BECAUSE THEY ARE TWO DIFFERENT CLIENTS:
+
+        PREROUTING   a packet that ARRIVED on an interface - a sibling container, another
+                     pod, the docker host forwarding a published port
+        OUTPUT       a client inside this container dialling one of its own addresses.
+                     It never reaches PREROUTING: the kernel routes it locally.
+
+    Without OUTPUT an inside client gets "Connection refused" against an address that an
+    outside client reaches fine, and a stage that proves its own port is then lying in the
+    direction that matters least.
+
+    THE SOURCE ADDRESS IS WHY OUTPUT IS SAFE HERE AND WAS NOT SAFE FOR 127.0.0.1. DNAT
+    rewrites the destination and leaves the source alone, so the guest answers the source it
+    saw. Dialling the container's eth0 address means the source is 172.17.0.x - a routable
+    address whose way back is the guest's own default gateway, this container. Dialling
+    127.0.0.1 meant the source was the guest's own loopback and the answer never left it;
+    lib/net.py has that measurement. The jump below is scoped to addresses the container
+    actually holds, so 127.0.0.1 can never match it.
 
     A container with no address of its own is a container with no networking, which up() has
     already refused, so an empty list is reported rather than guessed at.
     """
-    addresses = uplink_addresses()
+    addresses = external_addresses()
     if not addresses:
-        log("! no uplink address found; the forwards are reachable on the bridge only")
+        log("! no external address found; the forwards are reachable on the bridge only")
         return []
     for address in addresses:
-        check = _sh(f"iptables -t nat -C PREROUTING -d {address}/32 -p tcp -j VM_FWD")
-        if check.returncode == 0:
-            continue
-        add = _sh(f"iptables -t nat -A PREROUTING -d {address}/32 -p tcp -j VM_FWD")
-        if add.returncode == 0:
-            log(f"forwards reachable from outside on {address} "
-                f"(ssh {ssh_port}, rdp {rdp_port})")
-        else:
-            log(f"! no uplink forward on {address}: {add.stderr.strip()[:160]}")
+        for table, direction in (("PREROUTING", "outside"),
+                                 ("OUTPUT", "this container")):
+            check = _sh(f"iptables -t nat -C {table} -d {address}/32 -p tcp -j VM_FWD")
+            if check.returncode == 0:
+                continue
+            add = _sh(f"iptables -t nat -A {table} -d {address}/32 -p tcp -j VM_FWD")
+            if add.returncode == 0:
+                log(f"forwards reachable from {direction} on {address} "
+                    f"(ssh {ssh_port}, rdp {rdp_port})")
+            else:
+                log(f"! no {table} forward on {address}: {add.stderr.strip()[:160]}")
     return addresses
 
 
@@ -371,11 +413,12 @@ def down() -> None:
     _sh("pkill -x dnsmasq")
     # THE UPLINK JUMPS ARE REMOVED BEFORE THE CHAIN THEY POINT AT, or a jump would outlive
     # its target and the `-F`/`-X` pair below would leave it behind. One jump exists per
-    # address and `-D` removes exactly one matching rule per call, so it is repeated.
-    for address in uplink_addresses():
-        while _sh(f"iptables -t nat -D PREROUTING -d {address}/32 -p tcp -j VM_FWD"
-                  ).returncode == 0:
-            pass
+    # address per table and `-D` removes exactly one matching rule per call, so it repeats.
+    for address in external_addresses():
+        for table in ("PREROUTING", "OUTPUT"):
+            while _sh(f"iptables -t nat -D {table} -d {address}/32 -p tcp -j VM_FWD"
+                      ).returncode == 0:
+                pass
     _sh("iptables -t nat -F VM_FWD")
     _sh("iptables -t nat -X VM_FWD")
     _sh(f"iptables -t nat -D POSTROUTING -s {BRIDGE_IP}/{PREFIX} -j MASQUERADE")
