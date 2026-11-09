@@ -967,6 +967,21 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222) -> None:
                          modifier=str(step.get("modifier", "ctrl")))
         time.sleep(settle)
 
+    # A `type:` WITH NO `at:` TYPES INTO WHATEVER ALREADY HAS THE FOCUS.
+    #
+    # The greeter is the case: a password box is clicked once (the step before) and then the
+    # text goes into it, and clicking it again to type would be a second press that some
+    # greeters read as "submit an empty password". Without this branch `type:` alone did
+    # NOTHING AT ALL - the only branch that typed was `at: AND type:`, so an ssh walk that
+    # logged in with `at:`/`type:`/`key:` would click the box, type nothing, and press Return
+    # on an empty password.
+    if step["at"] is None and step["type"] is not None:
+        import keys as keysmod
+        unsupported = keysmod.type_text(driver.q, str(step["type"]), per_char=0.1)
+        if unsupported:
+            log(f"  COULD NOT TYPE {unsupported!r}")
+        time.sleep(settle)
+
     elif step["at"]:
         driver.click(step["at"], step.name, settle=settle)
         repeat = step["repeat"]
