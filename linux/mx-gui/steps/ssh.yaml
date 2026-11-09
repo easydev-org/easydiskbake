@@ -114,9 +114,26 @@ steps:
   #
   # `tail -12` rather than `-5` because an update prints its own opinion, and a failure in the
   # update must be as visible in the recording as a failure in the install.
+  # MX IS SysVinit, NOT SYSTEMD, AND `systemctl` SAYS SO ITSELF.
+  #
+  # Run 42575585242's own recording, with a command this repository had already corrected for
+  # the shift bug, shows the install running correctly and then:
+  #
+  #     Created symlink /etc/systemd/system/sshd.service -> .../ssh.service
+  #     Executing: /usr/lib/systemd/systemd-sysv-install enable ssh
+  #     --now cannot be used when systemd is not running or in conjunction with
+  #     --root/--global, refusing.
+  #
+  # `systemctl enable` worked - it wrote the symlinks - but `--now` REFUSED, because MX-25
+  # boots SysVinit and systemd is not PID 1. Nothing started the daemon.
+  #
+  # THIS FILE'S OWN HEADER ALREADY SAID SO ("MX is antiX-based: it uses sysvinit for some
+  # units"), and the command ignored it. The service is started the way this distribution
+  # starts services: `service ssh start`, with `systemctl start` as the fallback for a disk
+  # that does boot systemd.
   - name: install sshd
     run: |
-      echo {{ password }} | sudo -S sh -c "export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y openssh-server && systemctl enable --now ssh" 2>&1 | tail -12
+      echo {{ password }} | sudo -S sh -c "export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y openssh-server && (service ssh start || systemctl start ssh || /etc/init.d/ssh start)" 2>&1 | tail -12
     terminal_wait: 0
     settle: 120
 

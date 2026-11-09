@@ -56,9 +56,14 @@ steps:
   #
   # `optional` because a disk that DOES autologin never shows this page, and on one of those
   # the click lands on the desktop and the typing goes to nothing that matters.
+  # MEASURED ON THIS GREETER: THE ENTRY'S INTERIOR IS y=614..643, x=776..1096, so its
+  # centre is (936, 628). The previous (960, 640) was three pixels above the box's BOTTOM
+  # BORDER - run 42575602052's frame shows the caret on the field and the placeholder
+  # `Password` still in it after the password had been typed, because the click had put
+  # focus on the border rather than inside the entry.
   - name: greeter - the password box
-    at: [960, 640]
-    settle: 2
+    at: [936, 628]
+    settle: 3
     optional: true
 
   - name: greeter - log in
