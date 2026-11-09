@@ -300,6 +300,8 @@ jobs:
           name: fedora-gui-ssh
           path: |
             out/fedora-gui-ssh/ssh.txt
+            out/fedora-gui-ssh/install.mp4
+            out/fedora-gui-ssh/last-frame.png
             out/fedora-gui-ssh/console.log
             out/fedora-gui-ssh/steps/*.png
           if-no-files-found: warn

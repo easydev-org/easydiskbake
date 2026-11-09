@@ -297,6 +297,8 @@ jobs:
           name: mint-gui-ssh
           path: |
             out/mint-gui-ssh/ssh.txt
+            out/mint-gui-ssh/install.mp4
+            out/mint-gui-ssh/last-frame.png
             out/mint-gui-ssh/console.log
             out/mint-gui-ssh/steps/*.png
           if-no-files-found: warn

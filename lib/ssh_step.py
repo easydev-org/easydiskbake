@@ -66,6 +66,7 @@ REPO = os.path.dirname(HERE)
 sys.path.insert(0, REPO)
 sys.path.insert(0, HERE)
 
+import live     # noqa: E402
 import session  # noqa: E402
 import uefi     # noqa: E402
 import vm       # noqa: E402
@@ -233,6 +234,29 @@ def main(argv: list[str]) -> int:
         ser.open(timeout=60)
         note(f"qemu pid {guest.pid}, console {console_path}")
 
+        # THE RECORDING, THE SAME ONE EVERY GUI BAKE AND EVERY macOS STAGE MAKES.
+        #
+        # `snapshots.py` screendumps on an interval into `frames/`, and `lib/live.py` ffmpegs
+        # those frames into `install.mp4` and keeps `last-frame.png` current. macos/15/bake.py
+        # has done this since its first stage, and all twelve -gui bakes do it too.
+        #
+        # THIS STAGE DID NOT, AND THAT IS WHY ITS FIRST THREE FAILURES WERE UNEXPLAINED. The
+        # question after `sshd did not answer` is always "what was on the screen" - an empty
+        # terminal, a sudo prompt, a greeter nobody answered - and a single frame at the end
+        # cannot show the SEQUENCE that led there. The mp4 can: it is the whole run, and the
+        # moment the terminal opened (or did not) is in it.
+        frames = os.path.join(work, "frames")
+        os.makedirs(frames, exist_ok=True)
+        snap = subprocess.Popen(
+            [sys.executable, os.path.join(REPO, "lib", "snapshots.py"),
+             guest.paths.record, frames, os.environ.get("SNAPSHOT_INTERVAL", "2")],
+            stdout=open(os.path.join(frames, "snapshots.log"), "wb"),
+            stderr=subprocess.STDOUT,
+        )
+        art = live.start([frames], os.path.join(work, "install.mp4"),
+                         os.path.join(work, "last-frame.png"),
+                         every=float(os.environ.get("LIVE_ARTIFACT_SECONDS", "30")))
+
         # DRIVE THE DESKTOP. The same qmp socket every GUI stage uses; this module opens its
         # own client because nothing else is holding it here.
         q = Q.QMP(guest.paths.drive)
@@ -349,6 +373,12 @@ def main(argv: list[str]) -> int:
         except Exception:                          # noqa: BLE001
             pass
         guest.stop(acpi_first=False)
+        # AFTER guest.stop(), so the last frames are in the recording before it is closed.
+        try:
+            snap.terminate()
+            art.stop()
+        except Exception:                          # noqa: BLE001
+            pass
 
 
 if __name__ == "__main__":

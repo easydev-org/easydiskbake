@@ -878,22 +878,6 @@ export PATH=/vendor/bin:/system/bin:/system/xbin
 #
 # `-D` KEEPS IT IN THE FOREGROUND, which is what makes init treat it as a daemon rather than
 # a oneshot. `-p 8022` is Termux's default port and the one lib/net.py already forwards.
-SSHD_RC = b"""\
-# sshd from Termux's openssh, started once the network is up.
-#
-# The host keys are generated on first start by sshd itself (`-R` regenerates, but a missing
-# key is created automatically), so nothing has to be shipped.
-service sshd /data/data/com.termux/files/usr/bin/sshd
-    class late_start
-    user root
-    group root
-    oneshot
-    disabled
-
-on late-init
-    start sshd
-"""
-
 NETWORK_RC = b"""\
 # Start the SDK's own network script, which now also brings eth0 up.
 #
@@ -1080,7 +1064,7 @@ def add_network(cache: str, sdk_system: str) -> None:
                             "security.selinux u:object_r:goldfish_setup_exec:s0",
                             carved], capture_output=True, text=True)
 
-        debugfs_write(carved, "/etc/init/eth0up.rc", NETWORK_RC + SSHD_RC)
+        debugfs_write(carved, "/etc/init/eth0up.rc", NETWORK_RC)
 
         # VERIFY BY READING BACK. A truncated script looks exactly like an interface that
         # did not come up.
@@ -1132,119 +1116,6 @@ def add_network(cache: str, sdk_system: str) -> None:
 # for its config, host keys and moduli, so the files are unpacked at exactly that path
 # rather than at /vendor/... - a symlink would not help, because the path is a string in
 # the binary, not a lookup.
-SSH_PREFIX = "/data/data/com.termux/files/usr"
-SSH_ARCHIVE = "termux-ssh.tar.zst"
-
-
-def add_ssh(userdata: str, payload: str) -> None:
-    """Unpack the Termux prefix into /data/data/com.termux, where sshd expects it.
-
-    NOT INTO vendor, AND THE REASON IS ARITHMETIC. The vendor partition inside super is
-    101 MiB with EIGHT HUNDRED inodes total:
-
-        Inode count:  800
-        Free inodes:  9
-        Free blocks:  83
-
-    and this payload is 1761 files and 20 MiB. Five hundred of those writes failed with
-
-        write: Could not allocate inode in ext2 filesystem
-
-    before anything else could go wrong. /data is where the files belong anyway - the path
-    is compiled into the binary:
-
-        /data/data/com.termux/files/usr/bin/sshd
-        /data/data/com.termux/files/usr/etc/ssh/modssh_host_ecdsa_key
-
-    so no symlink and no policy exception is needed: this is the path sshd asks for.
-
-    AND IT HAS TO GO IN BEFORE THE FIRST BOOT. Once the guest has started, /data is
-    metadata-encrypted and every byte of it, superblocks included, is ciphertext on the
-    host - measured: 0x53EF before the first boot, 0xfcbf after. Writing into a fresh
-    userdata.img is the only moment the filesystem is readable from here.
-    """
-    if not os.path.isfile(payload):
-        raise SystemExit(f"=== no ssh payload at {payload} ===")
-    if not os.path.isfile(userdata):
-        raise SystemExit(f"=== no {userdata} to install ssh into ===")
-
-    staging = userdata + ".ssh-staging"
-    try:
-        shutil.rmtree(staging, ignore_errors=True)
-        os.makedirs(staging, exist_ok=True)
-        unpacked = subprocess.run(["tar", "-x", "-f", payload, "-C", staging],
-                                  capture_output=True, text=True)
-        if unpacked.returncode != 0:
-            raise SystemExit(f"=== tar failed: {unpacked.stderr[:300]} ===")
-
-        prefix = "/" + SSH_PREFIX.lstrip("/")
-        commands: list[str] = []
-        made: set[str] = set()
-        staged = 0
-
-        def mkdirs(path: str) -> None:
-            parts = path.strip("/").split("/")
-            for i in range(1, len(parts) + 1):
-                d = "/" + "/".join(parts[:i])
-                if d in made:
-                    continue
-                commands.append(f"mkdir {d}")
-                made.add(d)
-
-        for root, dirs, files in os.walk(staging):
-            rel = os.path.relpath(root, staging)
-            dest_dir = prefix if rel == "." else f"{prefix}/{rel}"
-            mkdirs(dest_dir)
-            for name in files:
-                source = os.path.join(root, name)
-                target = f"{dest_dir}/{name}"
-                if os.path.islink(source):
-                    real = os.path.realpath(source)
-                    if not os.path.exists(real) or not real.startswith(staging):
-                        continue
-                    source = real
-                try:
-                    mode = os.stat(source).st_mode & 0o7777
-                except OSError:
-                    continue
-                commands.append(f"rm {target}")
-                commands.append(f"write {source} {target}")
-                commands.append(f"sif {target} mode 0{0o100000 | mode:o}")
-                staged += 1
-
-        # A DIRECTORY THE BINARY NEEDS TO WRITE INTO. sshd creates its host keys on first
-        # start, and /data is writable, but the prefix directories come from this image and
-        # would otherwise be read-only to a non-root sshd.
-        commands.append(f"mkdir {prefix}/tmp")
-
-        script = userdata + ".ssh-cmds"
-        out_path = userdata + ".ssh-out"
-        with open(script, "w") as fh:
-            fh.write("\n".join(commands) + "\n")
-        with open(out_path, "w") as out_fh:
-            done = subprocess.run(["debugfs", "-w", "-f", script, userdata],
-                                  stdout=out_fh, stderr=subprocess.STDOUT)
-        with open(out_path, errors="replace") as fh:
-            text = fh.read()
-        os.unlink(out_path)
-        os.unlink(script)
-
-        allocated = text.count("Allocated inode")
-        failures = [ln for ln in text.splitlines()
-                    if "do_write_internal" in ln or "Could not allocate" in ln]
-        log(f"ssh: {allocated} of {staged} files written")
-        if done.returncode != 0 or len(failures) > 3:
-            for ln in failures[:5]:
-                log(f"  debugfs: {ln[:180]}")
-            raise SystemExit(f"=== ssh install wrote {allocated} of {staged} files ===")
-
-        check = subprocess.run(["debugfs", "-R", f"stat {prefix}/bin/sshd", userdata],
-                               capture_output=True, text=True)
-        if "Type: regular" not in ((check.stdout or "") + (check.stderr or "")):
-            raise SystemExit("=== sshd did not land in /data ===")
-        log(f"ssh: sshd installed at {prefix}/bin/sshd")
-    finally:
-        shutil.rmtree(staging, ignore_errors=True)
 
 
 def patch_vendor(vendor: str) -> None:
@@ -1407,8 +1278,6 @@ def main(argv: list[str]) -> int:
     p.add_argument("--out", default="/a/android", help="where the disks are written")
     p.add_argument("--force-userdata", action="store_true",
                    help="throw away an existing /data instead of keeping its applications")
-    p.add_argument("--ssh-payload", default="",
-                   help="a tar.zst of the Termux prefix to install, giving the guest sshd")
     p.add_argument("--no-net", dest="net", action="store_false",
                    help="do not install the eth0 bring-up service into vendor")
     p.add_argument("--noencrypt", action="store_true",
@@ -1465,12 +1334,6 @@ def main(argv: list[str]) -> int:
         log("  to carry this /data to another machine: python3 android/15/persist.py "
             "--save")
 
-    # THE SSH PAYLOAD GOES INTO /data, AFTER THE FILESYSTEM EXISTS AND BEFORE ANY BOOT.
-    #
-    # `--ssh-payload` names the tarball: 4 MB compressed, built once rather than derived
-    # from the system image. Absent, the step is skipped and the image is what it was.
-    if a.ssh_payload:
-        add_ssh(userdata, a.ssh_payload)
 
     # ENCRYPTION IS DECIDED IN TWO PLACES AND BOTH ARE PATCHED HERE.
     #

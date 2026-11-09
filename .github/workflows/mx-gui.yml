@@ -300,6 +300,8 @@ jobs:
           name: mx-gui-ssh
           path: |
             out/mx-gui-ssh/ssh.txt
+            out/mx-gui-ssh/install.mp4
+            out/mx-gui-ssh/last-frame.png
             out/mx-gui-ssh/console.log
             out/mx-gui-ssh/steps/*.png
           if-no-files-found: warn

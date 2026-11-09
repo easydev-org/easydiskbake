@@ -298,6 +298,8 @@ jobs:
           name: cachyos-gui-ssh
           path: |
             out/cachyos-gui-ssh/ssh.txt
+            out/cachyos-gui-ssh/install.mp4
+            out/cachyos-gui-ssh/last-frame.png
             out/cachyos-gui-ssh/console.log
             out/cachyos-gui-ssh/steps/*.png
           if-no-files-found: warn

@@ -299,6 +299,8 @@ jobs:
           name: opensuse-gui-ssh
           path: |
             out/opensuse-gui-ssh/ssh.txt
+            out/opensuse-gui-ssh/install.mp4
+            out/opensuse-gui-ssh/last-frame.png
             out/opensuse-gui-ssh/console.log
             out/opensuse-gui-ssh/steps/*.png
           if-no-files-found: warn

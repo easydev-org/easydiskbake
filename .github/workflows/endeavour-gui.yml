@@ -304,6 +304,8 @@ jobs:
           name: endeavour-gui-ssh
           path: |
             out/endeavour-gui-ssh/ssh.txt
+            out/endeavour-gui-ssh/install.mp4
+            out/endeavour-gui-ssh/last-frame.png
             out/endeavour-gui-ssh/console.log
             out/endeavour-gui-ssh/steps/*.png
           if-no-files-found: warn

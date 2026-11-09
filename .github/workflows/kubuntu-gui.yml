@@ -312,6 +312,8 @@ jobs:
           name: kubuntu-gui-ssh
           path: |
             out/kubuntu-gui-ssh/ssh.txt
+            out/kubuntu-gui-ssh/install.mp4
+            out/kubuntu-gui-ssh/last-frame.png
             out/kubuntu-gui-ssh/console.log
             out/kubuntu-gui-ssh/steps/*.png
           if-no-files-found: warn

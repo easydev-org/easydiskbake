@@ -310,6 +310,8 @@ jobs:
           name: ghostbsd-mate-ssh
           path: |
             out/ghostbsd-mate-ssh/ssh.txt
+            out/ghostbsd-mate-ssh/install.mp4
+            out/ghostbsd-mate-ssh/last-frame.png
             out/ghostbsd-mate-ssh/console.log
             out/ghostbsd-mate-ssh/steps/*.png
           if-no-files-found: warn

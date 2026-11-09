@@ -295,6 +295,8 @@ jobs:
           name: popos-gui-ssh
           path: |
             out/popos-gui-ssh/ssh.txt
+            out/popos-gui-ssh/install.mp4
+            out/popos-gui-ssh/last-frame.png
             out/popos-gui-ssh/console.log
             out/popos-gui-ssh/steps/*.png
           if-no-files-found: warn

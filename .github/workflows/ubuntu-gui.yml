@@ -319,6 +319,8 @@ jobs:
           name: ubuntu-gui-ssh
           path: |
             out/ubuntu-gui-ssh/ssh.txt
+            out/ubuntu-gui-ssh/install.mp4
+            out/ubuntu-gui-ssh/last-frame.png
             out/ubuntu-gui-ssh/console.log
             out/ubuntu-gui-ssh/steps/*.png
           if-no-files-found: warn

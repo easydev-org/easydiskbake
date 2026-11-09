@@ -301,6 +301,8 @@ jobs:
           name: manjaro-gui-ssh
           path: |
             out/manjaro-gui-ssh/ssh.txt
+            out/manjaro-gui-ssh/install.mp4
+            out/manjaro-gui-ssh/last-frame.png
             out/manjaro-gui-ssh/console.log
             out/manjaro-gui-ssh/steps/*.png
           if-no-files-found: warn

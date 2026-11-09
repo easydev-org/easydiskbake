@@ -308,6 +308,8 @@ jobs:
           name: nixos-gui-ssh
           path: |
             out/nixos-gui-ssh/ssh.txt
+            out/nixos-gui-ssh/install.mp4
+            out/nixos-gui-ssh/last-frame.png
             out/nixos-gui-ssh/console.log
             out/nixos-gui-ssh/steps/*.png
           if-no-files-found: warn

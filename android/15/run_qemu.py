@@ -348,6 +348,105 @@ def configure_network(port: int, seconds: int) -> bool:
     return ok
 
 
+# SSH, INSTALLED AFTER THE GUEST HAS BOOTED - NOT BEFORE IT.
+#
+# THE FIRST ATTEMPT PUT THE TERMUX PREFIX INTO /data AT IMAGE-BUILD TIME AND THE GUEST WOULD
+# NOT BOOT. debugfs created /data/data before vold ever ran, so it carried no SELinux label:
+#
+#     avc: denied { rmdir } for name="data" ... tcontext=u:object_r:unlabeled:s0
+#     vold: Failed to set encryption policy of /data/data: Permission denied
+#     vdc: Command: cryptfs init_user0 Failed
+#     init: InitFatalReboot: signal 6
+#
+# /data/data is vold's directory: vold creates it, labels it and encrypts it. Anything that
+# pre-creates it produces exactly that sequence, and the guest restarts forever - 137 kernel
+# boots, zero completed.
+#
+# So the prefix is pushed once adb answers, which is after vold has done its work and /data
+# is a normal writable filesystem. The path is the one sshd asks for, unchanged:
+#
+#     /data/data/com.termux/files/usr/bin/sshd
+SSH_PREFIX = "/data/data/com.termux/files/usr"
+
+
+def install_ssh(port: int, payload: str) -> bool:
+    """Push the Termux prefix into /data and start sshd. True if it is listening."""
+    if not os.path.isfile(payload):
+        print(f"[run_qemu] no ssh payload at {payload}", flush=True)
+        return False
+
+    # THE GUEST'S tar DOES NOT READ zstd, so the archive is never pushed.
+    #
+    # Measured: `tar: Not tar` from toybox, which has no zstd support and no option to add
+    # it. Extracting on the host and pushing the TREE costs one extra step and removes the
+    # dependency entirely - adb push takes a directory and walks it.
+    staging = payload + ".tree"
+    shutil.rmtree(staging, ignore_errors=True)
+    os.makedirs(staging, exist_ok=True)
+    unpack = subprocess.run(["tar", "-x", "-f", payload, "-C", staging],
+                            capture_output=True, text=True)
+    if unpack.returncode != 0:
+        print(f"[run_qemu] could not extract {payload}: {unpack.stderr[:200]}", flush=True)
+        shutil.rmtree(staging, ignore_errors=True)
+        return False
+
+    files = sum(len(f) for _, _, f in os.walk(staging))
+    print(f"[run_qemu] pushing {files} files to {SSH_PREFIX}", flush=True)
+
+    adb(port, "shell", "su 0 mkdir -p /data/data/com.termux/files", timeout=60)
+    pushed = adb(port, "push", staging + "/.", "/data/local/tmp/termux/", timeout=600)
+    if "failed" in pushed.lower():
+        print(f"[run_qemu] push failed: {pushed[:300]}", flush=True)
+    moved = adb(port, "shell",
+                "su 0 sh -c 'mkdir -p /data/data/com.termux/files; "
+                "cp -a /data/local/tmp/termux/. /data/data/com.termux/files/usr/; "
+                "chmod -R 755 /data/data/com.termux/files/usr/bin; "
+                "rm -rf /data/local/tmp/termux; echo moved-ok'", timeout=300)
+    if moved:
+        print(f"[run_qemu] install said: {moved.strip()[-160:]}", flush=True)
+    shutil.rmtree(staging, ignore_errors=True)
+
+    check = adb(port, "shell", f"su 0 ls -la {SSH_PREFIX}/bin/sshd", timeout=30)
+    if "sshd" not in check:
+        print(f"[run_qemu] sshd is not installed: {check[:200]}", flush=True)
+        return False
+    print(f"[run_qemu] {check.strip()}", flush=True)
+
+    # PORT 8022 IS TERMUX'S DEFAULT AND THE ONE lib/net.py FORWARDS.
+    start = (
+        f"export LD_LIBRARY_PATH={SSH_PREFIX}/lib; "
+        f"mkdir -p {SSH_PREFIX}/etc/ssh; "
+        f"mkdir -p /data/local/tmp; "
+        f"{SSH_PREFIX}/bin/sshd -p 8022 "
+        f"-h {SSH_PREFIX}/etc/ssh/ssh_host_rsa_key "
+        f"-h {SSH_PREFIX}/etc/ssh/ssh_host_ed25519_key"
+    )
+    # THE HOST KEYS ARE MADE FIRST, AND BY ssh-keygen FROM THE SAME PREFIX.
+    gen = (
+        f"export LD_LIBRARY_PATH={SSH_PREFIX}/lib; "
+        f"mkdir -p {SSH_PREFIX}/etc/ssh; "
+        f"[ -f {SSH_PREFIX}/etc/ssh/ssh_host_rsa_key ] || "
+        f"{SSH_PREFIX}/bin/ssh-keygen -t rsa -b 2048 -f "
+        f"{SSH_PREFIX}/etc/ssh/ssh_host_rsa_key -N '' -q; "
+        f"[ -f {SSH_PREFIX}/etc/ssh/ssh_host_ed25519_key ] || "
+        f"{SSH_PREFIX}/bin/ssh-keygen -t ed25519 -f "
+        f"{SSH_PREFIX}/etc/ssh/ssh_host_ed25519_key -N '' -q; echo keys-ok"
+    )
+    keys = adb(port, "shell", f"su 0 sh -c \"{gen}\"", timeout=120)
+    if keys:
+        print(f"[run_qemu] host keys: {keys.strip()[-120:]}", flush=True)
+
+    launched = adb(port, "shell", f"su 0 sh -c \"{start}\"", timeout=60)
+    if launched:
+        print(f"[run_qemu] sshd start said: {launched[:200]}", flush=True)
+
+    listening = adb(port, "shell",
+                    "su 0 sh -c 'netstat -lntp 2>/dev/null | grep 8022'", timeout=30)
+    ok = "8022" in listening
+    print(f"[run_qemu] sshd listening on 8022: {ok}", flush=True)
+    return ok
+
+
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--dir", default="/a/android",
@@ -363,6 +462,10 @@ def main(argv: list[str]) -> int:
                    help="host port forwarded to the guest's ssh port")
     p.add_argument("--adb-port", type=int, default=5554,
                    help="the emulator's adb port; adb does not see the device without one")
+    p.add_argument("--ssh-payload", default="",
+                   help="a tar.zst of a Termux prefix; pushed and started as sshd once the "
+                        "guest has booted (installing it into the image does not work - "
+                        "/data/data belongs to vold)")
     a = p.parse_args(argv)
     D = os.path.abspath(a.dir)
 
@@ -499,7 +602,15 @@ def main(argv: list[str]) -> int:
         # THE NETWORK GOES IN WHILE THE GUEST IS STILL BOOTING, from a thread of its own.
         # Doing it after the emulator is killed would be too late, and doing it inline would
         # hold up the console script that reads the boot state.
-        threading.Thread(target=configure_network, args=(a.adb_port, a.seconds),
+        def bring_up(port: int, seconds: int, payload: str) -> None:
+            """Network first, then ssh - sshd needs /data writable, which needs vold done."""
+            if not configure_network(port, seconds):
+                return
+            if payload:
+                install_ssh(port, payload)
+
+        threading.Thread(target=bring_up,
+                         args=(a.adb_port, a.seconds, a.ssh_payload),
                          daemon=True).start()
         try:
             while time.time() - started < a.seconds and proc.poll() is None:
