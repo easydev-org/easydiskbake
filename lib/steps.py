@@ -1119,11 +1119,36 @@ def walk_panes(driver: Driver, steps: Walk, values: dict[str, str], *,
         log(f"waiting up to {boot_timeout:.0f}s for {shown}")
         deadline = time.time() + boot_timeout
         arrived = False
+        # THE LOGIN WINDOW IS A VALID PLACE TO ARRIVE, and it is not readable as a phrase.
+        #
+        # A macOS login window's only text is the password field's placeholder, twelve pixels
+        # tall, so a whole-frame read returns nothing at all:
+        #
+        #     [steps] look boot: 0 words ::
+        #
+        # and a walk whose gate lists fifteen pane titles waits out its whole budget on a
+        # finished wizard. The gate therefore checks the walkthrough's own `ends_at` crops too -
+        # the same reader the end condition uses, so the two cannot disagree about what "there
+        # is nothing left to answer" looks like.
+        end_crops = [s for s in (steps.document.get("ends_at") or []) if isinstance(s, dict)]
         while time.time() < deadline:
             driver.look("boot")
             for words in alternatives:
                 if all(driver.says(w) for w in words):
                     log(f"=== A PANE IS UP: {' '.join(words)} ===")
+                    arrived = True
+                    break
+            if arrived:
+                break
+            for spec in end_crops:
+                words_here = _read_region(driver, spec.get("region"),
+                                          int(spec.get("scale", 3)), "boot-end")
+                wanted = spec.get("words") or []
+                wanted = wanted if isinstance(wanted, list) else [wanted]
+                have = {"".join(c for c in w[0].lower() if c.isalnum()) for w in words_here}
+                if wanted and all("".join(c for c in w.lower() if c.isalnum()) in have
+                                  for w in wanted):
+                    log(f"=== ARRIVED AT {' '.join(wanted)} ({spec.get('name', 'a control')}) ===")
                     arrived = True
                     break
             if arrived:
