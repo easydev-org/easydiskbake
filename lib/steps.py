@@ -105,6 +105,8 @@ STEP_KEYS = {    "name",        # required: what the log calls this step
     "once",        # a pane answered at most ONCE, for a pane that starts a slow process
     "repeat",      # (count, settle) for a footer button pressed the same way N times
     "sweep",       # a band of clicks at one x, stopping when the sheet opens
+    "click_word",  # OCR this word in `region`, click `dy` above its centre - a toolbar glyph
+    "word_dy",     # pixels above the word's centre to click (default 17)
     "wait_for_change",  # until the screen stops looking like it did before
     "change_timeout",   # seconds wait_for_change may take
     "change_settle",    # seconds between fingerprints in wait_for_change
@@ -131,7 +133,8 @@ WAIT_STEPS = {"until", "until_any", "wait", "wait_for_change", "until_dark", "di
 
 # Everything above that actually drives the guest. A step with none of these is a check, and
 # a check that does nothing is reported rather than run.
-ACTION_KEYS = {"at", "double", "type", "key", "run", "ssh", "require_ssh", "sweep"}
+ACTION_KEYS = {"at", "double", "type", "key", "run", "ssh", "require_ssh", "sweep",
+               "click_word"}
 
 
 class Step:
@@ -958,6 +961,52 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222) -> None:
     # honest description of what a person does with an unreliable hit area, and it belongs in
     # the vocabulary rather than being written out as twenty-one `at:` steps that a reader
     # would have to count.
+    # --- click_word: FIND THE CONTROL BY ITS CAPTION, THEN CLICK ITS GLYPH ---------------
+    #
+    # A MACOS TOOLBAR IS A GLYPH WITH ITS CAPTION UNDERNEATH, AND THE CAPTION IS NOT THE
+    # CONTROL. Clicking the word does nothing; clicking about seventeen pixels above its
+    # centre hits the button. That is measured, twice, on two different widgets:
+    #
+    #     (1180, 297)  First Aid's caption -> nothing
+    #     (1180, 280)  First Aid's glyph   -> 'run first aid on "..."?'      the sheet
+    #     (1290, 297)  Erase's caption     -> nothing
+    #     (1290, 280)  Erase's glyph       -> 'erase "..."? will be deleted' the sheet
+    #
+    # AND THE GLYPH'S ABSOLUTE Y IS NOT CONSTANT, which is the part a fixed coordinate cannot
+    # survive. Disk Utility centres its window, and the window's height depends on the detail
+    # pane's table, which depends on the DISK: a 68.72 GB target put Erase's glyph at y=280 on
+    # one machine, a 137.44 GB target put it at y=314 on the next. Two runs, same code, same
+    # screen size, thirty-four pixels apart.
+    #
+    # So the y comes from the caption's own position in the frame, read at run time, and only
+    # the OFFSET is a constant. `region` keeps the search inside the toolbar, so the word
+    # "Erase" in a dialog's prose cannot be found instead.
+    if step["click_word"]:
+        want = str(step["click_word"]).lower()
+        region = step.get("region")
+        if not region:
+            raise StepError(f"{step.name}: click_word needs a region to search in")
+        driver.look_at(region, f"{step.name} - find {want}",
+                       scale=int(step.get("scale", DEFAULT_CROP_SCALE)))
+        # A PREFIX MATCH, NOT EQUALITY: tesseract reads a twelve-pixel caption as
+        # 'erfye', 'erle' and 'erase' on three different frames of the SAME button. Requiring
+        # the whole word would fail on two of the three.
+        found = None
+        for text, cx, cy, _w, _h in driver.words:
+            clean = text.strip().lower().strip(":")
+            if clean and (clean == want or clean.startswith(want[:4])):
+                found = (cx, cy)
+                break
+        if found is None:
+            log(f"  {step.name}: no {want!r} in {tuple(region)}; not clicking anything")
+            return
+        dy = int(step.get("word_dy", 17))
+        x, y = found[0], found[1] - dy
+        log(f"  {step.name}: {want!r} at ({found[0]}, {found[1]}); clicking its glyph "
+            f"({x}, {y})")
+        driver.click((x, y), step.name, settle=settle)
+        return
+
     if step["sweep"]:
         first, last, stride = step["sweep"]
         x = int(step.get("at")[0]) if step.get("at") else 0

@@ -138,7 +138,16 @@ steps:
   # collected (280 opened once, 306 opened once, the rest did nothing) describe where the
   # caption of one control ends and the caption of the next begins.
   - name: erase - open the sheet
-    at: [1290, 280]
+    click_word: erase
+    # THE BAND COVERS BOTH LAYOUTS THAT HAVE BEEN MEASURED. Disk Utility centres its
+    # window and the window's height follows the detail pane's table, which follows the DISK:
+    # Erase's caption sat at y=297 for a 68.72 GB target and y=336 for a 137.44 GB one. The
+    # band spans 270..355 so either reading lands inside it, and the glyph offset is applied
+    # to whatever y the caption actually has.
+    region: [1240, 270, 1350, 355]
+    region_at: [1920, 1080]
+    scale: 2
+    word_dy: 17
     settle: 6
     expect_any:
       - [erase, deleted]
