@@ -111,6 +111,39 @@ def main() -> int:
     check("waits_for lists the panes, so a resumed disk is not stuck",
           "macos/15/steps/sequoia.yaml", len(gates) >= 10)
 
+    # --- YAML BOOLEANS THAT SHOULD HAVE BEEN WORDS ---------------------------------------
+    #
+    # YAML 1.1 reads on/off/yes/no as booleans, so an unquoted matcher
+    #
+    #     - [remote, login, on]
+    #
+    # parses as ['remote', 'login', True] and the driver dies with
+    # "'bool' object has no attribute 'lower'". Found on a live guest, in the ssh stage's
+    # first run as YAML - the word "on" is in the pane's own title, so this is not a
+    # contrived case.
+    import glob as globmod
+
+    poisoned = []
+    for walk_path in (globmod.glob(os.path.join(REPO, "*", "steps", "*.yaml"))
+                      + globmod.glob(os.path.join(REPO, "*", "*", "steps", "*.yaml"))):
+        document = load_yaml(os.path.relpath(walk_path, REPO))
+        for step in (document.get("steps") or []):
+            for key in ("until", "until_any", "expect", "expect_any", "when",
+                        "unless", "ends"):
+                value = step.get(key)
+
+                def scan(node):
+                    if isinstance(node, list):
+                        return any(scan(item) for item in node)
+                    return not isinstance(node, str)
+                if value is not None and scan(value):
+                    poisoned.append(f"{os.path.basename(walk_path)}:{step.get('name')}:{key}")
+    check("no YAML boolean where a matcher expects a word",
+          "*/steps/*.yaml", not poisoned)
+    if poisoned:
+        for one in poisoned:
+            print(f"       poisoned matcher: {one}")
+
     # --- the workflow ------------------------------------------------------------------
     check("all three stages pass --steps", ".github/workflows/macos15.yml",
           workflow.count("--steps macos/15/steps/") == 3)

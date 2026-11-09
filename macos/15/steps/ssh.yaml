@@ -120,7 +120,11 @@ steps:
   # as a step it is also the one that fails loudly when the switch did not move.
   - name: the switch is on
     until_any:
-      - [remote, login, on]
+      # `on` IS A BOOLEAN IN YAML 1.1. Unquoted, this list parsed as
+      # ['remote', 'login', True] and the driver died with
+      # "'bool' object has no attribute 'lower'" - so the word is quoted, the way a
+      # walkthrough has to quote yes/no/on/off anywhere it means the text.
+      - [remote, login, "on"]
       - [allowing, remote, users]
     timeout: 60
     poll: 3
