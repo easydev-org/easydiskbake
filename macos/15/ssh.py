@@ -612,6 +612,36 @@ REMOTE_LOGIN_STEPS: list[str] = []  # replaced by the System Settings sequence
 REMOTE_LOGIN_CHECK = "netstat -an | grep -c '*.22 '"
 
 
+def _remote_login_listening(guest: vm.Guest) -> bool:
+    """Does anything answer on the guest's ssh port already?
+
+    THE SWITCH IN SYSTEM SETTINGS IS A TOGGLE, NOT AN "ON" BUTTON, so pressing it on a machine
+    where Remote Login is already on turns it OFF. Measured on a live guest in the local pod:
+    three runs of this stage left sshd closed, and the `wait for sshd` step after it waited out
+    its whole 600-second budget for a daemon the step before had just switched off.
+
+    The check is the socket, not the switch. QMP can read the pane and a person could tell the
+    two states apart, but the honest question is "does sshd answer", and the answer costs one
+    TCP connect through the forward lib/net.py builds.
+
+    Returns False - meaning "go ahead and press it" - when the port cannot be reached at all,
+    which is the fresh-disk case this stage exists for.
+    """
+    import socket
+
+    import net
+
+    try:
+        with socket.create_connection((net.FORWARD_HOST, 2222), timeout=4) as sock:
+            sock.settimeout(4)
+            banner = sock.recv(64)
+    except OSError:
+        return False
+    # A CONNECTED PORT IS NOT AN SSHD: qemu's forward could be answered by anything. The banner
+    # is what says it is ssh, and it is the same test wait_for_ssh() makes.
+    return banner.startswith(b"SSH-")
+
+
 def enable_remote_login(guest: vm.Guest, q=None) -> None:
     """Turn Remote Login on THROUGH SYSTEM SETTINGS, which is the only way that works.
 
@@ -694,6 +724,21 @@ def enable_remote_login(guest: vm.Guest, q=None) -> None:
             log(f"  screendump {name} failed: {exc}")
 
     try:
+        # IS IT ALREADY ON? THE SWITCH IS A TOGGLE, NOT A "TURN ON".
+        #
+        # Running this stage twice on the same disk turns Remote Login OFF the second time -
+        # measured on a live guest: three runs left sshd closed, and the stage that followed
+        # waited out its whole budget for a daemon the step before it had just switched off.
+        # The switch is at (1145, 353) and it reads "Off" until it is pressed, so a driver that
+        # cannot tell the two states must not press it.
+        #
+        # The cheapest honest state check is the daemon itself: if the port answers, there is
+        # nothing to do. It also makes a resumed run cheap - the GUI sequence is most of a
+        # minute of clicking.
+        if _remote_login_listening(guest):
+            log("=== Remote Login is ALREADY on; nothing to press ===")
+            return
+
         # 1. SYSTEM SETTINGS, THROUGH SPOTLIGHT. The full name is used rather than "settings"
         #    because Spotlight's first row for a short query can be a web suggestion, and
         #    Return takes the highlighted row.
