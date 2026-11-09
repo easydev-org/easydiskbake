@@ -810,19 +810,34 @@ NETWORK_APPEND = b"""\
 # --- eth0, added by easydiskbake -------------------------------------------------
 # Android leaves the emulated ethernet interface down (flags 0x1002, operstate down, no
 # address). lib/net.py's bridge gives it a fixed address, so this states it.
-# ABSOLUTE PATHS, AND `/system/bin/ip` RATHER THAN `route`.
+# `/vendor/bin/toybox_vendor ip`, BECAUSE THE POLICY ALLOWS THAT ONE AND NOT
+# /system/bin/ip.
 #
-# The first version relied on `ifconfig` and `route` being findable and the service exited
-# with status 127 - the shell's answer to a missing command, not init's answer to a bad
-# service. `/vendor/bin` has ifconfig and no route; `/system/bin` has ip, which does both.
+# Three attempts at the command itself, each refused by SELinux with a different subject:
 #
-# USING /system/bin/ip HERE IS NOT THE THING SELINUX REFUSED EARLIER. What init may not do
-# is *exec* /system/bin/sh as the service binary - that is decided when the service starts.
-# A command inside a script that init has already started as a vendor service is a different
-# check, and ip runs.
-/system/bin/ip link set eth0 up
-/system/bin/ip addr add 172.30.0.2/24 dev eth0
-/system/bin/ip route add default via 172.30.0.1 dev eth0
+#     ifconfig ...              found and allowed, but /vendor/bin has no `route`
+#     /system/bin/ip ...        denied outright:
+#                                 avc: denied { getattr } for comm="init.ranchu-net"
+#                                 path="/system/bin/ip" scontext=u:r:goldfish_setup:s0
+#                                 tcontext=u:object_r:system_file:s0 permissive=0
+#     /vendor/bin/toybox_vendor  allowed - and it is the one that has every command needed.
+#
+# The vendor policy in device/generic/goldfish/sepolicy/vendor/goldfish_setup.te grants
+#
+#     allow goldfish_setup vendor_toolbox_exec:file execute_no_trans;
+#     allow goldfish_setup vendor_file:file execute_no_trans;
+#
+# and toybox_vendor is a vendor_file. It carries ifconfig, ip AND route - checked by
+# reading its own command table, since the binary is bionic-linked and cannot run here:
+#
+#     toybox_vendor has: brctl, ifconfig, ip, route
+#
+# The one line that would have made /system/bin/ip work is commented out in AOSP itself:
+#
+#     #allow goldfish_setup system_file:file { execute getattr open read };
+/vendor/bin/toybox_vendor ip link set eth0 up
+/vendor/bin/toybox_vendor ip addr add 172.30.0.2/24 dev eth0
+/vendor/bin/toybox_vendor ip route add default via 172.30.0.1 dev eth0
 """
 
 # THE TRIGGER, IN ITS OWN .rc. A vendor .rc IS parsed (init says so: "Parsing file
@@ -1008,7 +1023,7 @@ def add_network(cache: str, sdk_system: str) -> None:
         # did not come up.
         sh_back = subprocess.run(["debugfs", "-R", "cat /bin/init.ranchu-net.sh", carved],
                                  capture_output=True, text=True).stdout
-        if "eth0, added by easydiskbake" not in sh_back or "ip link set eth0 up" not in sh_back:
+        if "eth0, added by easydiskbake" not in sh_back or "toybox_vendor ip link set eth0 up" not in sh_back:
             raise SystemExit("=== the eth0 lines did not survive the write ===")
         label = subprocess.run(["debugfs", "-R",
                                 "ea_list /bin/init.ranchu-net.sh", carved],

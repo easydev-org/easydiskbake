@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -96,17 +97,27 @@ INSTALL = {
     # NIXOS IS THE ONE THAT IS NOT A PACKAGE INSTALL. Its configuration is a declaration, not
     # a package list: the graphical installer's own template has openssh commented out, so
     # the switch to make is `services.openssh.enable`, and the mechanism is nixos-rebuild.
+    # THE ONE FAMILY THAT IS NOT A PACKAGE INSTALL, AND THE ONE PLACE A `sed` IS WRONG.
+    #
+    # The graphical installer writes a configuration.nix with
+    #
+    #     # services.openssh.enable = true;
+    #
+    # commented out. The obvious fix is a `sed` that uncomments it - and the obvious fix does
+    # not work: turning one line into three needs an embedded newline in the replacement, and
+    # GNU sed does not expand `\n` there without `-z`. What DOES work, and is what a person
+    # would do, is append the three settings to the file. NixOS merges repeated attribute
+    # definitions, so appending is correct even though the commented line is still there.
+    #
+    # `networking.firewall.enable` is set false as well: the graphical install leaves the
+    # firewall ON, and a firewall that drops 22 is a disk that answers nothing.
     "nixos": [
-        "sed -i 's|^  # services.openssh.enable = true;|  services.openssh.enable = true;|' "
-        "/etc/nixos/configuration.nix || true",
-        "grep -q '^  services.openssh.enable = true;' /etc/nixos/configuration.nix || "
-        "echo '  services.openssh.enable = true;' >> /etc/nixos/configuration.nix",
-        "grep -q 'PasswordAuthentication' /etc/nixos/configuration.nix || "
-        "sed -i 's|^  services.openssh.enable = true;|  services.openssh.enable = true;\\n"
+        "printf '\\n  services.openssh.enable = true;\\n"
         "  services.openssh.settings.PasswordAuthentication = true;\\n"
-        "  services.openssh.settings.PermitRootLogin = \"yes\";|' "
-        "/etc/nixos/configuration.nix",
-        "nixos-rebuild switch --no-flake 2>&1 | tail -20 || nixos-rebuild switch 2>&1 | tail -20",
+        "  services.openssh.settings.PermitRootLogin = \"yes\";\\n"
+        "  networking.firewall.enable = false;\\n' >> /etc/nixos/configuration.nix",
+        "nixos-rebuild switch 2>&1 | tail -25",
+        "systemctl is-active sshd || systemctl start sshd || true",
     ],
 }
 
@@ -128,24 +139,51 @@ def log(message: str) -> None:
     print(f"[ssh-step {time.strftime('%H:%M:%S')}] {message}", flush=True)
 
 
-def the_commands(kind: str, password: str) -> list[str]:
-    """The lines to send, with the account's own password where sudo needs it."""
+def the_script(kind: str) -> str:
+    """The shell script that installs sshd, as ONE text blob.
+
+    WHY A SCRIPT AND NOT A LIST OF LINES TYPED AT A PROMPT. These commands go in through a
+    serial console, which is a stream of characters with no quoting layer above it: a `sed`
+    with a `|` delimiter inside single quotes (the NixOS case) or a `su -c "..."` (the
+    FreeBSD case) has to be escaped for a shell, and then survive a terminal. The first
+    version of this module built those strings by concatenation and produced
+
+        sudo -n ... 2>&1 2>&1 || sudo -S ... 2>&1
+
+    which is a different command from the one intended. A script delimited by a heredoc has
+    exactly the same problem, because the heredoc is also typed.
+
+    SO IT IS base64. One line to write the blob, one line to run it, and no character in the
+    script can be misread on the way in. `base64 -d` is in coreutils, in FreeBSD's base and
+    in every one of these images.
+    """
     family = FAMILY[kind]
-    steps = INSTALL[family]
-    out = []
-    for command in steps:
-        if family == "freebsd":
-            # FreeBSD's `su` needs root's password, and every image here sets it to the same
-            # one the account has (bsdinstall's own answer sets it).
-            out.append(f"echo {password} | su -m root -c \"{command}\" 2>&1")
-        elif family == "nixos":
-            # nixos-rebuild MUST run as root; the account has wheel with no password prompt
-            # (configuration-minimal.nix sets wheelNeedsPassword=false, and the graphical
-            # installer's template does the same), but sudo -n is used so a prompt cannot hang.
-            out.append(f"sudo -n {command} 2>&1 || sudo -S {command} <<< '{password}' 2>&1")
-        else:
-            out.append(f"echo {password} | sudo -S {command} 2>&1")
-    return out
+    lines = ["#!/bin/sh", "set -x"]
+    lines.extend(INSTALL[family])
+    return "\n".join(lines) + "\n"
+
+
+def the_commands(kind: str, password: str) -> list[str]:
+    """The TWO lines that install sshd, for the family this kind belongs to.
+
+    THE SECOND LINE IS THE ONLY PLACE THE PASSWORD APPEARS, and it is piped rather than
+    typed as an argument: `echo <pw> | sudo -S` is what every bake in this repository
+    already does for the same reason (there is no tty to prompt at).
+    """
+    import base64
+
+    blob = base64.b64encode(the_script(kind).encode()).decode()
+    if FAMILY[kind] == "freebsd":
+        # FreeBSD's base system has base64 and su; there is no sudo on a default install.
+        return [
+            f"echo {blob} | base64 -d > /tmp/easy-ssh.sh",
+            f'echo {password} | su -m root -c "sh /tmp/easy-ssh.sh" 2>&1',
+        ]
+    # EVERY LINUX FAMILY: decode the blob, then run it as root.
+    return [
+        f"echo {blob} | base64 -d > /tmp/easy-ssh.sh",
+        f"echo {password} | sudo -S sh /tmp/easy-ssh.sh 2>&1",
+    ]
 
 
 def main(argv: list[str]) -> int:
