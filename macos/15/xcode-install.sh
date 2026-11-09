@@ -94,6 +94,22 @@ if ! sudo_ mv "$WORK/Xcode.app" "$DEST/Xcode.app"; then
   exit 1
 fi
 
+# LEAVE $WORK BEFORE ANYTHING ELSE RUNS, BECAUSE THIS SHELL IS STANDING IN IT.
+#
+# `cd "$WORK"` was needed for `xip -x`, which expands into the current directory. Once
+# Xcode.app is moved out, $WORK is empty - and an empty directory that is also the cwd makes
+# every later command start with
+#
+#     shell-init: error retrieving current directory: getcwd: cannot access parent directories
+#
+# because bash re-resolves `pwd` on each exec. Run 42638892532 expanded 2.7 GiB successfully,
+# moved it, and then could not run `brew` because every command in the guest inherited a cwd
+# that no longer existed.
+#
+# / is the one directory that cannot be removed.
+cd / || exit 1
+rmdir "$WORK" 2>/dev/null || true
+
 # THE QUARANTINE FLAG IS WHAT MAKES GATEKEEPER PROMPT. It is set because the file came from
 # the network, and a dialog has nobody to answer it over ssh.
 sudo_ xattr -dr com.apple.quarantine "$DEST/Xcode.app" 2>/dev/null || true
