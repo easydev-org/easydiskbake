@@ -98,7 +98,7 @@ steps:
   # (approximately) Files, Editor, Files-manager, ..., Editor tile at 1035, Terminal at 1083.
   # The yellow `>` is what identifies it: it is the only yellow glyph in the dock.
   - name: open the terminal
-    at: [1083, 1043]
+    at: [1092, 1048]
     settle: 12
 
   - name: install sshd
