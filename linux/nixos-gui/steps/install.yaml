@@ -208,7 +208,21 @@ steps:
   # 7. PARTITION. `partitionLayout` is one root filling the disk, and `efi.mountPoint` is
   #    /boot - so `Erase disk` is the preselected layout and the click confirms it.
   # =======================================================================================
-  - name: partition
+  # THE RADIO STARTS EMPTY, AND THE HIGHLIGHT IS NOT A SELECTION.
+  #
+  # Run 42547693743's frame at 02:00 is this pane with `Erase disk` looking selected -
+  # its icon is green, its row is the first - and BOTH radio circles empty, `Next` greyed
+  # out at (1324,835). That is the fifth instance of this trap in this repository
+  # (Manjaro's Office Suite, CachyOS' Bootloader and Partitions, Garuda's Role, NixOS'
+  # package chooser) and the tell is always the same: a footer button that will not enable.
+  #
+  # MEASURED: the circles are at x=633, `Erase disk` at y=390 and `Manual partitioning` at
+  # y=438. The walk presses the circle itself, not the row.
+  - name: partitions - erase the disk
+    at: [633, 390]
+    settle: 6
+
+  - name: partitions
     at: [1324, 835]
     settle: 18
 
