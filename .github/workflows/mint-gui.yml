@@ -298,5 +298,6 @@ jobs:
           path: |
             out/mint-gui-ssh/ssh.txt
             out/mint-gui-ssh/console.log
+            out/mint-gui-ssh/steps/*.png
           if-no-files-found: warn
           retention-days: 14

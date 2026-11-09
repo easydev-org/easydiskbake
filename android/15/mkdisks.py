@@ -1136,42 +1136,40 @@ SSH_PREFIX = "/data/data/com.termux/files/usr"
 SSH_ARCHIVE = "termux-ssh.tar.zst"
 
 
-def add_ssh(cache: str, sdk_system: str, payload: str) -> None:
-    """Unpack the Termux prefix into the vendor partition and set sshd up to start.
+def add_ssh(userdata: str, payload: str) -> None:
+    """Unpack the Termux prefix into /data/data/com.termux, where sshd expects it.
 
-    THE PAYLOAD TRAVELS OUTSIDE THE IMAGES. sbin/init cannot carry 20 MB of uncompressed
-    Termux files, so the tarball sits beside mkdisks.py and is unpacked into the vendor
-    filesystem here - the same carve/edit/put-back as the network script, one directory at
-    a time.
+    NOT INTO vendor, AND THE REASON IS ARITHMETIC. The vendor partition inside super is
+    101 MiB with EIGHT HUNDRED inodes total:
+
+        Inode count:  800
+        Free inodes:  9
+        Free blocks:  83
+
+    and this payload is 1761 files and 20 MiB. Five hundred of those writes failed with
+
+        write: Could not allocate inode in ext2 filesystem
+
+    before anything else could go wrong. /data is where the files belong anyway - the path
+    is compiled into the binary:
+
+        /data/data/com.termux/files/usr/bin/sshd
+        /data/data/com.termux/files/usr/etc/ssh/modssh_host_ecdsa_key
+
+    so no symlink and no policy exception is needed: this is the path sshd asks for.
+
+    AND IT HAS TO GO IN BEFORE THE FIRST BOOT. Once the guest has started, /data is
+    metadata-encrypted and every byte of it, superblocks included, is ciphertext on the
+    host - measured: 0x53EF before the first boot, 0xfcbf after. Writing into a fresh
+    userdata.img is the only moment the filesystem is readable from here.
     """
     if not os.path.isfile(payload):
         raise SystemExit(f"=== no ssh payload at {payload} ===")
+    if not os.path.isfile(userdata):
+        raise SystemExit(f"=== no {userdata} to install ssh into ===")
 
-    with open(sdk_system, "rb") as fh:
-        sdk_super = read_gpt(sdk_system)["super"][0]
-        fh.seek(sdk_super * SECTOR)
-        head = fh.read(4 * 2 ** 20)
-    lp = lp_partitions(head)
-    if "vendor" not in lp:
-        raise SystemExit("=== super has no `vendor` logical partition ===")
-    vendor_off, vendor_sectors = lp["vendor"]
-    super_lba = read_gpt(cache)["super"][0]
-    start = (super_lba + vendor_off) * SECTOR
-    size = vendor_sectors * SECTOR
-
-    carved = cache + ".vendor-ssh"
-    staging = cache + ".ssh-staging"
+    staging = userdata + ".ssh-staging"
     try:
-        with open(cache, "rb") as fh, open(carved, "wb") as out:
-            fh.seek(start)
-            remaining = size
-            while remaining > 0:
-                chunk = fh.read(min(8 * 2 ** 20, remaining))
-                if not chunk:
-                    break
-                out.write(chunk)
-                remaining -= len(chunk)
-
         shutil.rmtree(staging, ignore_errors=True)
         os.makedirs(staging, exist_ok=True)
         unpacked = subprocess.run(["tar", "-x", "-f", payload, "-C", staging],
@@ -1179,13 +1177,10 @@ def add_ssh(cache: str, sdk_system: str, payload: str) -> None:
         if unpacked.returncode != 0:
             raise SystemExit(f"=== tar failed: {unpacked.stderr[:300]} ===")
 
-        # EVERY FILE, INTO ITS PREFIX PATH INSIDE THE VENDOR FILESYSTEM.
-        #
-        # debugfs has `write`, which creates one file, and `mkdir`, which creates one
-        # directory; it has no recursive copy. So the tree is walked here and fed to it one
-        # entry at a time, directories first.
         prefix = "/" + SSH_PREFIX.lstrip("/")
-        made = set()
+        commands: list[str] = []
+        made: set[str] = set()
+        staged = 0
 
         def mkdirs(path: str) -> None:
             parts = path.strip("/").split("/")
@@ -1193,12 +1188,9 @@ def add_ssh(cache: str, sdk_system: str, payload: str) -> None:
                 d = "/" + "/".join(parts[:i])
                 if d in made:
                     continue
-                subprocess.run(["debugfs", "-w", "-R", f"mkdir {d}", carved],
-                               capture_output=True, text=True)
+                commands.append(f"mkdir {d}")
                 made.add(d)
 
-        mkdirs(prefix)
-        count = 0
         for root, dirs, files in os.walk(staging):
             rel = os.path.relpath(root, staging)
             dest_dir = prefix if rel == "." else f"{prefix}/{rel}"
@@ -1206,18 +1198,6 @@ def add_ssh(cache: str, sdk_system: str, payload: str) -> None:
             for name in files:
                 source = os.path.join(root, name)
                 target = f"{dest_dir}/{name}"
-                # LINKS AND DUPLICATES ARE SKIPPED, AND BOTH ARE REAL CASES IN A DEB.
-                #
-                # A package may carry a symlink whose target is on the host (ca-certificates
-                # has one pointing outside the prefix), and `os.stat` follows it to a file
-                # that is not there:
-                #
-                #     FileNotFoundError: .../ca-certificates/copyright
-                #
-                # debugfs can write symlinks but sshd needs none of them, so a link is
-                # followed when the target exists inside the staging tree and skipped
-                # otherwise. A file that vanishes between the walk and the read is skipped
-                # for the same reason - the walk is not atomic.
                 if os.path.islink(source):
                     real = os.path.realpath(source)
                     if not os.path.exists(real) or not real.startswith(staging):
@@ -1225,31 +1205,46 @@ def add_ssh(cache: str, sdk_system: str, payload: str) -> None:
                     source = real
                 try:
                     mode = os.stat(source).st_mode & 0o7777
-                    body = open(source, "rb").read()
-                except (FileNotFoundError, PermissionError):
+                except OSError:
                     continue
-                debugfs_write(carved, target, body, mode=0o100000 | mode)
-                count += 1
+                commands.append(f"rm {target}")
+                commands.append(f"write {source} {target}")
+                commands.append(f"sif {target} mode 0{0o100000 | mode:o}")
+                staged += 1
 
-        log(f"ssh: {count} files unpacked into {prefix}")
+        # A DIRECTORY THE BINARY NEEDS TO WRITE INTO. sshd creates its host keys on first
+        # start, and /data is writable, but the prefix directories come from this image and
+        # would otherwise be read-only to a non-root sshd.
+        commands.append(f"mkdir {prefix}/tmp")
 
-        # PUT THE PARTITION BACK, AND KEEP THE SIZE. Termux's prefix is 20 MB and the
-        # vendor partition is 102 MB; the write-back is the same length it was carved at,
-        # so nothing outside it moves.
-        with open(cache, "r+b") as out, open(carved, "rb") as src:
-            out.seek(start)
-            remaining = size
-            while remaining > 0:
-                chunk = src.read(min(8 * 2 ** 20, remaining))
-                if not chunk:
-                    break
-                out.write(chunk)
-                remaining -= len(chunk)
-        log(f"vendor (in super): ssh prefix installed at {prefix}")
+        script = userdata + ".ssh-cmds"
+        out_path = userdata + ".ssh-out"
+        with open(script, "w") as fh:
+            fh.write("\n".join(commands) + "\n")
+        with open(out_path, "w") as out_fh:
+            done = subprocess.run(["debugfs", "-w", "-f", script, userdata],
+                                  stdout=out_fh, stderr=subprocess.STDOUT)
+        with open(out_path, errors="replace") as fh:
+            text = fh.read()
+        os.unlink(out_path)
+        os.unlink(script)
+
+        allocated = text.count("Allocated inode")
+        failures = [ln for ln in text.splitlines()
+                    if "do_write_internal" in ln or "Could not allocate" in ln]
+        log(f"ssh: {allocated} of {staged} files written")
+        if done.returncode != 0 or len(failures) > 3:
+            for ln in failures[:5]:
+                log(f"  debugfs: {ln[:180]}")
+            raise SystemExit(f"=== ssh install wrote {allocated} of {staged} files ===")
+
+        check = subprocess.run(["debugfs", "-R", f"stat {prefix}/bin/sshd", userdata],
+                               capture_output=True, text=True)
+        if "Type: regular" not in ((check.stdout or "") + (check.stderr or "")):
+            raise SystemExit("=== sshd did not land in /data ===")
+        log(f"ssh: sshd installed at {prefix}/bin/sshd")
     finally:
         shutil.rmtree(staging, ignore_errors=True)
-        if os.path.exists(carved):
-            os.unlink(carved)
 
 
 def patch_vendor(vendor: str) -> None:
@@ -1461,14 +1456,6 @@ def main(argv: list[str]) -> int:
     if a.net:
         add_network(cache, os.path.join(sdk, "system.img"))
 
-    # THE TERMUX SSH PAYLOAD IS UNPACKED INTO THE SAME PARTITION.
-    #
-    # `--ssh-payload` names the tarball, because it is 4 MB compressed and is built once
-    # rather than derived from the system image. Absent, the step is skipped and the image
-    # is exactly what it was before ssh existed.
-    if a.ssh_payload:
-        add_ssh(cache, os.path.join(sdk, "system.img"), a.ssh_payload)
-
     userdata = os.path.join(work, "userdata.img")
     if userdata_filesystem(userdata, force=a.force_userdata):
         log(f"userdata {userdata}: {USERDATA_BYTES >> 30} GiB ext4, freshly made")
@@ -1477,6 +1464,13 @@ def main(argv: list[str]) -> int:
         log("  to start from a blank device: --force-userdata")
         log("  to carry this /data to another machine: python3 android/15/persist.py "
             "--save")
+
+    # THE SSH PAYLOAD GOES INTO /data, AFTER THE FILESYSTEM EXISTS AND BEFORE ANY BOOT.
+    #
+    # `--ssh-payload` names the tarball: 4 MB compressed, built once rather than derived
+    # from the system image. Absent, the step is skipped and the image is what it was.
+    if a.ssh_payload:
+        add_ssh(userdata, a.ssh_payload)
 
     # ENCRYPTION IS DECIDED IN TWO PLACES AND BOTH ARE PATCHED HERE.
     #

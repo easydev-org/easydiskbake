@@ -296,5 +296,6 @@ jobs:
           path: |
             out/popos-gui-ssh/ssh.txt
             out/popos-gui-ssh/console.log
+            out/popos-gui-ssh/steps/*.png
           if-no-files-found: warn
           retention-days: 14

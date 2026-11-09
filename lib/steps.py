@@ -898,6 +898,14 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222) -> None:
         seconds = int(step.get("timeout", 600))
         log(f"  waiting up to {seconds}s for sshd on port {ssh_port}")
         if not session.wait_for_ssh(ssh_port, seconds):
+            # A FRAME BEFORE FAILING, because the question that follows is always "what was
+            # on screen". The ssh stage's first failures had nothing to look at, and the
+            # answer - a lock screen, an empty terminal, a sudo prompt - was only visible in
+            # a picture.
+            try:
+                _dump_frame(driver, step.name)
+            except Exception:                      # noqa: BLE001
+                pass
             if not step["optional"]:
                 raise StepError(f"{step.name}: sshd did not answer in {seconds}s")
             log(f"  {step.name}: no sshd, and the step is optional")
@@ -1036,6 +1044,30 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222) -> None:
             if index < len(body.splitlines()) - 1:
                 time.sleep(float(step.get("line_gap", 1.0)))
         time.sleep(settle)
+
+
+def _dump_frame(driver, label: str) -> None:
+    """Save one screendump beside the driver's work directory, for a post-mortem.
+
+    NOT THE VERDICT, AND NOT READ. A stage that fails while typing into a guest fails with a
+    picture: an empty terminal, a sudo prompt, a greeter nobody answered. Three ssh runs
+    ended `sshd did not answer` with nothing to look at before this existed.
+    """
+    import lastframe
+    work = getattr(driver, "work", "") or "."
+    stem = os.path.join(work, "steps", "failed-" + "".join(
+        c if c.isalnum() else "-" for c in label)[:40])
+    os.makedirs(os.path.dirname(stem), exist_ok=True)
+    ppm = stem + ".ppm"
+    try:
+        driver.q.execute("screendump", filename=ppm)
+    except Exception:                              # noqa: BLE001
+        return
+    try:
+        lastframe.convert(ppm, stem + ".png")
+        log(f"  frame for the post-mortem: {stem}.png")
+    except Exception:                              # noqa: BLE001
+        pass
 
 
 def _run_python(driver: Driver, step: Step, walk_path: str) -> bool:

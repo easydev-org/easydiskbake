@@ -311,5 +311,6 @@ jobs:
           path: |
             out/ghostbsd-mate-ssh/ssh.txt
             out/ghostbsd-mate-ssh/console.log
+            out/ghostbsd-mate-ssh/steps/*.png
           if-no-files-found: warn
           retention-days: 14

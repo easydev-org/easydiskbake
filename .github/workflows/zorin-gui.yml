@@ -306,5 +306,6 @@ jobs:
           path: |
             out/zorin-gui-ssh/ssh.txt
             out/zorin-gui-ssh/console.log
+            out/zorin-gui-ssh/steps/*.png
           if-no-files-found: warn
           retention-days: 14

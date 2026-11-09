@@ -305,5 +305,6 @@ jobs:
           path: |
             out/endeavour-gui-ssh/ssh.txt
             out/endeavour-gui-ssh/console.log
+            out/endeavour-gui-ssh/steps/*.png
           if-no-files-found: warn
           retention-days: 14

@@ -274,8 +274,14 @@ steps:
     settle: 12
 
   # THE LAST PANE, AND IT ASKS WHETHER TO KEEP THE KEYBOARD SETUP.
+  # THE KEYBOARD SETUP ASSISTANT, WHICH IS A DIALOG OVER THE DESKTOP AND NOT A WIZARD PANE.
+  #
+  # drive_read.py matches it on `keyboard` + `assistant`; this file matched
+  # `keyboard` + `select`, which is not what the dialog says, so the handler would never have
+  # fired. The dialog eats the next keystroke - ssh.py's dismiss_keyboard_assistant() exists
+  # because of exactly that - so leaving it up is a failure that surfaces much later.
   - name: keyboard
-    when: [keyboard, select]
+    when: [keyboard, assistant]
     at: [1222, 818]
     settle: 12
 

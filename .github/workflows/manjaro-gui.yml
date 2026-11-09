@@ -302,5 +302,6 @@ jobs:
           path: |
             out/manjaro-gui-ssh/ssh.txt
             out/manjaro-gui-ssh/console.log
+            out/manjaro-gui-ssh/steps/*.png
           if-no-files-found: warn
           retention-days: 14

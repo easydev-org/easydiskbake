@@ -309,5 +309,6 @@ jobs:
           path: |
             out/nixos-gui-ssh/ssh.txt
             out/nixos-gui-ssh/console.log
+            out/nixos-gui-ssh/steps/*.png
           if-no-files-found: warn
           retention-days: 14

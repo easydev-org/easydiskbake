@@ -313,5 +313,6 @@ jobs:
           path: |
             out/kubuntu-gui-ssh/ssh.txt
             out/kubuntu-gui-ssh/console.log
+            out/kubuntu-gui-ssh/steps/*.png
           if-no-files-found: warn
           retention-days: 14

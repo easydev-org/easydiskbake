@@ -301,5 +301,6 @@ jobs:
           path: |
             out/fedora-gui-ssh/ssh.txt
             out/fedora-gui-ssh/console.log
+            out/fedora-gui-ssh/steps/*.png
           if-no-files-found: warn
           retention-days: 14

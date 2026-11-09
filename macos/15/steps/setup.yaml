@@ -119,34 +119,155 @@ steps:
     python: setup_panes:select_target_disk
 
   # =======================================================================================
-  # 2b. ERASE IT, WHICH IS FIVE CLICKS THAT ARE ONLY MEANINGFUL TOGETHER
+  # 2b. ERASE: FIND THE BUTTON, NAME THE VOLUME, CONFIRM, DONE
   # =======================================================================================
   #
-  # This part is ONE step, and the reason is worth stating because it is the exception:
+  # THE SWEEP IS ELEVEN CLICKS AND THEY ARE STEPS, NOT A LOOP IN PYTHON.
   #
-  #     sweep the Erase button    a band, because the hit area is a few pixels tall
-  #     name the volume           into a field that only exists if the sweep landed
-  #     confirm                   a sheet that only exists if the name was typed
-  #     wait for the report       the sheet stays up while it erases
-  #     press Done                on a report that only exists after the erase
+  # The toolbar's Erase control has a hit area a few pixels tall and it moves between
+  # runs. Measured from this repository's own CI logs:
   #
-  # A step 3 that types into a field step 2 may not have opened is exactly what made six runs
-  # of this bake fail with "the disk did not grow" two minutes later. Splitting them would put
-  # a click into nothing in the middle of a file, and the YAML above already has the capacity
-  # check as its own step so a reader can see which part is a measurement.
+  #     run 08e6c87d   y=280 opened it        (one click)
+  #     run d9244d66   y=280..304 all did NOTHING, y=306 opened it   (fourteen clicks)
   #
-  # `expect_any` IS THE SHEET'S OWN WORDS, so the step still stops with the screen in the log if
-  # the Erase button is never found - the sweep inside ends when the sheet's words appear.
-  - name: erase the target as APFS
-    python: setup_panes:erase_the_disk
-    region: [700, 380, 1300, 640]
+  # so a single number is a coin toss in BOTH directions - the same y that worked once
+  # did nothing thirteen times in a row on the next run. The band 278..318 at four-pixel
+  # steps covers every value that has ever been observed to work (278, 295, 306) and the
+  # ones that have failed (296, 305, 309, 311, 314).
+  #
+  # EACH POINT IS GUARDED BY THE SHEET'S OWN WORDS. Once a click lands, the sheet is up and
+  # every later point would be a click on its backdrop - `unless` skips them, so the sweep
+  # stops as soon as it has succeeded and the log says which y did it.
+  #
+  # TWO PIXELS WAS THE OLD STEP AND FOUR IS ENOUGH: the hit area is a few pixels tall, so
+  # four-pixel spacing cannot step over it, and it halves the worst case from forty seconds
+  # to twenty.
+
+  - name: erase - try y=278
+    at: [1290, 278]
+    settle: 2
+    unless: [erase, free, space]
+    region: [700, 300, 1300, 500]
     region_at: [1920, 1080]
     scale: 2
-    expect_any:
-      - [erase, complete]
-      - [main, created]
+
+  - name: erase - try y=282
+    at: [1290, 282]
+    settle: 2
+    unless: [erase, free, space]
+    region: [700, 300, 1300, 500]
+    region_at: [1920, 1080]
+    scale: 2
+
+  - name: erase - try y=286
+    at: [1290, 286]
+    settle: 2
+    unless: [erase, free, space]
+    region: [700, 300, 1300, 500]
+    region_at: [1920, 1080]
+    scale: 2
+
+  - name: erase - try y=290
+    at: [1290, 290]
+    settle: 2
+    unless: [erase, free, space]
+    region: [700, 300, 1300, 500]
+    region_at: [1920, 1080]
+    scale: 2
+
+  - name: erase - try y=294
+    at: [1290, 294]
+    settle: 2
+    unless: [erase, free, space]
+    region: [700, 300, 1300, 500]
+    region_at: [1920, 1080]
+    scale: 2
+
+  - name: erase - try y=298
+    at: [1290, 298]
+    settle: 2
+    unless: [erase, free, space]
+    region: [700, 300, 1300, 500]
+    region_at: [1920, 1080]
+    scale: 2
+
+  - name: erase - try y=302
+    at: [1290, 302]
+    settle: 2
+    unless: [erase, free, space]
+    region: [700, 300, 1300, 500]
+    region_at: [1920, 1080]
+    scale: 2
+
+  - name: erase - try y=306
+    at: [1290, 306]
+    settle: 2
+    unless: [erase, free, space]
+    region: [700, 300, 1300, 500]
+    region_at: [1920, 1080]
+    scale: 2
+
+  - name: erase - try y=310
+    at: [1290, 310]
+    settle: 2
+    unless: [erase, free, space]
+    region: [700, 300, 1300, 500]
+    region_at: [1920, 1080]
+    scale: 2
+
+  - name: erase - try y=314
+    at: [1290, 314]
+    settle: 2
+    unless: [erase, free, space]
+    region: [700, 300, 1300, 500]
+    region_at: [1920, 1080]
+    scale: 2
+
+  - name: erase - try y=318
+    at: [1290, 318]
+    settle: 2
+    unless: [erase, free, space]
+    region: [700, 300, 1300, 500]
+    region_at: [1920, 1080]
+    scale: 2
+
+  # THE SHEET IS UP. Its name field arrives holding the disk's own name with the text
+  # selected, so one backspace clears it - without that the typed name is appended and the
+  # volume is called something else.
+  - name: erase - clear the name field
+    key: backspace
+    settle: 3
+
+  - name: erase - name the volume
+    at: [960, 415]
+    type: "{{ disk_name }}"
+    settle: 4
+
+  # THE CENTRE, NOT A CORNER. (1140, 633) is inside the button's bounding box and did
+  # nothing: the label is drawn at the top and the hit area extends below it.
+  - name: erase - confirm
+    at: [1155, 646]
     settle: 5
 
+  # THE SHEET REPORTS AND WAITS FOR Done, which is drawn rather than written - its text
+  # reads "Donffto" through tesseract, so the button is found by position.
+  - name: erase - wait for the report
+    until_any:
+      - [erase, complete]
+      - [erase, process]
+    timeout: 300
+    poll: 5
+
+  - name: erase - done
+    at: [1143, 601]
+    settle: 5
+
+  # DISK UTILITY IN RECOVERY HAS NO CLOSE BUTTON, so it is quit with the keyboard - the
+  # same thing a person does. Without this the recovery menu is behind a window and the
+  # next click lands on that window's own content.
+  - name: close disk utility
+    key: meta_l+q
+    settle: 12
   # CLOSING DISK UTILITY IS PART OF ERASING. Without it the recovery menu is behind a window
   # and the next click lands on the window's own content. select_and_erase() closes it, and
   # this wait is for the menu to be back - a different question from the first wait, because
@@ -239,11 +360,34 @@ steps:
   #
   # at a mean grey of 26.6, unchanged for two minutes. A wait for darkness would have sat
   # there until its timeout while the disk was being written the whole time.
+  # THE END OF THIS STAGE IS THE SETUP ASSISTANT, AND THAT IS WHAT IS WAITED FOR.
   #
-  # THE DISK IS THE SIGNAL, and it is the only one that can tell "copying 12 GB" from "hung" -
-  # the screen cannot, because both of those panes draw. install.py's installer_panes() watches
-  # st_blocks on the target qcow2, which is what grows on a sparse file, and returns when the
-  # wizard appears: the reboot into the installed system, which is this stage's end.
-  - name: the copy runs to completion
-    python: setup_panes:install_macos
-    timeout: 14400
+  # This used to watch the target qcow2's allocated blocks and stop when it stopped growing,
+  # on the argument that a black screen cannot tell "copying 12 GB" from "hung". That argument
+  # is about the SCREEN, and the mistake was answering it with the disk instead of with the
+  # thing the stage actually wants:
+  #
+  #     macOS writes ~30 GiB, takes an APFS snapshot, discards its staging volume, switches the
+  #     root, reboots into the installed system - and only THEN draws the wizard.
+  #
+  # So a disk that has stopped growing is not the end; it is somewhere in the middle, and a
+  # run that stopped there published a disk with no system on it. The wizard appearing is the
+  # end, it is unambiguous, and it is one OCR phrase.
+  #
+  # THE PHRASES ARE lib/assistant.py's OWN - the same list reached_assistant() uses, which is
+  # what bake.py's wait_for_assistant() calls after this stage. Five ways the first page can
+  # read, because the wizard's first page depends on what the machine has: a fresh install with
+  # no network shows "How do you want to connect to the internet" before it shows anything
+  # else, and one with a network goes straight to the country list.
+  #
+  # TWO HOURS. The installer says "about 2 hours and 52 minutes remaining" on a cold CI disk,
+  # and the copy plus the reboot plus the first boot's first paint is what has to fit.
+  - name: the copy runs until the Setup Assistant appears
+    until_any:
+      - [select, your, country, or, region]
+      - [how, do, you, want, to, connect, to, the, internet]
+      - [transfer, your, information, to, this, mac]
+      - [choose, a, wireless, network]
+      - [sign, in, with, your, apple, id]
+    timeout: 7200
+    poll: 20

@@ -300,5 +300,6 @@ jobs:
           path: |
             out/opensuse-gui-ssh/ssh.txt
             out/opensuse-gui-ssh/console.log
+            out/opensuse-gui-ssh/steps/*.png
           if-no-files-found: warn
           retention-days: 14
