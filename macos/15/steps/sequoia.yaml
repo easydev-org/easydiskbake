@@ -129,7 +129,10 @@ steps:
   # later pane is matched against its text. That is what the first YAML desktop run did, and its
   # log shows the account pane still up sixty seconds later.
   - name: create a mac account
-    when: [full, name]
+    when: [create, mac, account]
+    region: [300, 300, 1620, 340]
+    region_at: [1920, 1080]
+    scale: 2
     do:
       - at: [945, 447]
         type: "{{ user }}"
@@ -239,6 +242,9 @@ steps:
   # a phrase in the body.
   - name: sign in to apple account
     when: [sign, in, to, your, apple, account]
+    region: [300, 420, 1620, 460]
+    region_at: [1920, 1080]
+    scale: 2
     python: sequoia_panes:apple_account
 
   # UPDATE MAC AUTOMATICALLY. On 15 this is another footer click. On 26 it greys Continue, spins

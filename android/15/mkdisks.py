@@ -805,6 +805,13 @@ def copy(src, dst, total: int, name: str) -> None:
 # eth0 configuration is APPENDED TO THAT FILE and started by that existing service. The
 # only thing added is the `on post-fs-data` trigger without the virtiowifi condition, since
 # this guest has no VirtioWifi.
+NETWORK_PREPEND = b"""\
+# --- PATH first, added by easydiskbake -------------------------------------------
+# The script's own first command is `getprop`, and an init service inherits no PATH worth
+# speaking of - without this the shell answers 127 before reaching anything below.
+export PATH=/vendor/bin:/system/bin:/system/xbin
+"""
+
 NETWORK_APPEND = b"""\
 
 # --- eth0, added by easydiskbake -------------------------------------------------
@@ -835,6 +842,13 @@ NETWORK_APPEND = b"""\
 # The one line that would have made /system/bin/ip work is commented out in AOSP itself:
 #
 #     #allow goldfish_setup system_file:file { execute getattr open read };
+# THE SDK SCRIPT ALREADY FAILED WITH 127 BEFORE THESE LINES.
+#
+# The script starts with `getprop ro.boot.qemu.virtiowifi`, and `getprop` comes from PATH.
+# An init service inherits almost nothing, so the shell answers 127 for its first command
+# and the script exits - our lines are never reached. Setting PATH first is what makes both
+# the SDK's commands and ours resolvable.
+export PATH=/vendor/bin:/system/bin:/system/xbin
 /vendor/bin/toybox_vendor ip link set eth0 up
 /vendor/bin/toybox_vendor ip addr add 172.30.0.2/24 dev eth0
 /vendor/bin/toybox_vendor ip route add default via 172.30.0.1 dev eth0
@@ -1025,8 +1039,14 @@ def add_network(cache: str, sdk_system: str) -> None:
             #
             # The label is read back from the ORIGINAL through the vendor file_contexts
             # rule, which is what the platform itself would use.
+            # PREPENDED AFTER THE SHEBANG LINE, so PATH is set before the SDK's own
+            # `getprop` on line 4 of the script.
+            lines = existing.split("\n", 1)
+            head = lines[0] + "\n"
+            rest = lines[1] if len(lines) > 1 else ""
             debugfs_write(carved, "/bin/init.ranchu-net.sh",
-                          existing.encode() + NETWORK_APPEND, mode=0o100755)
+                          (head + NETWORK_PREPEND.decode() + rest).encode()
+                          + NETWORK_APPEND, mode=0o100755)
             subprocess.run(["debugfs", "-w", "-R",
                             "ea_set /bin/init.ranchu-net.sh "
                             "security.selinux u:object_r:goldfish_setup_exec:s0",

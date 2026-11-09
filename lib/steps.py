@@ -1147,7 +1147,27 @@ def walk_panes(driver: Driver, steps: Walk, values: dict[str, str], *,
 
             condition = here["when"]
             words = condition if isinstance(condition, list) else [condition]
-            if not all(driver.says(w) for w in words):
+
+            # A PANE MAY SAY WHERE ITS WORDS ARE. `region` ON A PANE IS NOT DECORATION: the
+            # account pane's own body contains
+            #
+            #     Allow computer account password to be reset with your Apple Account.
+            #     You must sign in with your Apple Account in the next step to use this feature.
+            #
+            # which satisfies every word of the Apple Account pane's title match. Measured on
+            # the CI recording's own frames: `sign in to your apple account` was TRUE for the
+            # ACCOUNT pane (f003) and for the Apple Account pane (f006) alike, so the walk
+            # answered one as the other. Restricted to the title band, the two are clean apart:
+            #
+            #     account  y=300..340  -> 'create a mac account'
+            #     apple    y=420..460  -> 'sign in to your apple account'
+            if here["region"]:
+                _read_region(driver, here["region"],
+                             int(here.get("scale", DEFAULT_CROP_SCALE)), here.name)
+                matched = all(driver.says(w) for w in words)
+            else:
+                matched = all(driver.says(w) for w in words)
+            if not matched:
                 continue
 
             if counts.get(here.name, 0) >= repeat_max:
