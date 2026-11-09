@@ -52,6 +52,9 @@ on:
         description: "stage 2: boot the finished disk and check the desktop comes up"
         type: boolean
         default: true
+      ssh_from:
+        description: "stage 3: a published tag to put sshd on instead of the bake's output"
+        default: ""
       ssh_run:
         description: "stage 3: install sshd on the disk and prove the forwarded port answers"
         type: boolean
@@ -248,9 +251,16 @@ jobs:
   # being made; "another container can ssh in and execute something" is.
   ssh:
     needs: [bake]
+    # STAGE THREE CAN BE RUN ON ITS OWN, against a tag that is already published.
+    #
+    # `ssh_from` is what makes that possible, and it is the same shape windows-11.yml uses:
+    # the job either follows the bake it depends on, or starts from a tag named by the
+    # caller. Without it a stage that only needs a disk could not be re-run without
+    # re-running a two-hour install first - which is exactly what was needed to test it.
     if: |
-      always() && inputs.ssh_run && inputs.bake_run
-      && needs.bake.result == 'success' && inputs.publish
+      always() && inputs.ssh_run
+      && (inputs.ssh_from != ''
+          || (inputs.bake_run && inputs.publish && needs.bake.result == 'success'))
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     container:
@@ -285,7 +295,7 @@ jobs:
           command: |
             set -euo pipefail
             python3 lib/ssh_step.py \
-              --tag "${{ needs.bake.outputs.tag || 'linux-nixos-gui' }}" \
+              --tag "${{ inputs.ssh_from || needs.bake.outputs.tag || 'linux-nixos-gui' }}" \
               --kind nixos-gui \
               --artifacts out/nixos-gui-ssh \
               --ssh-port "${{ inputs.ssh_port || '2222' }}" \
