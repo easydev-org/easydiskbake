@@ -207,12 +207,22 @@ steps:
   # and on the installed disk this stage starts seconds after the greeter - so `terminal`
   # matches nothing at first and matches `Console` a moment later. Five seconds is a guess
   # about that cache; `Console` on screen is the fact.
+  # `scale: 3` BECAUSE `Console` IS SMALL, LIGHT GREY ON DARK GREY, AND OCR MISSES IT AT 1:1.
+  #
+  # Measured in the same pod on the same frame: tesseract reads this label correctly from a
+  # crop of the tile (880,90)-(1040,250), and reads NOTHING from the same area at 1:1 inside a
+  # 730x440 region - the whole region is 320k pixels and the label is 60x14 of them. A wait
+  # that never matches is a wait that always times out, which is worse than no wait at all.
+  #
+  # 3x is what makes the label bigger than tesseract's minimum, and the region is the band the
+  # result tile occupies: the overview's search field is y=42..80 and the tile's label is at
+  # y=232, so 60..500 holds the tile and nothing else that says `Console`.
   - name: wait for the Console result
     until_any:
       - [Console]
     region: [600, 60, 1330, 500]
     region_at: [1920, 1080]
-    scale: 1
+    scale: 3
     timeout: 90
     poll: 5
     keep_alive: true
