@@ -50,3 +50,78 @@ while IFS="$(printf '\t')" read -r name id; do
     | .[-12:]
     | .[]'
 done
+
+# --- THE STEP COUNTS HAVE TO MATCH THE FILES -----------------------------------------------
+#
+# '23 step(s) answered' is not evidence that the stage walked its walkthrough: a file whose
+# steps were all skipped prints the same shape with a smaller number, and a stage that never
+# ran its YAML at all prints nothing. Both have happened here - the ssh stage went green with
+# 'the switch is on: did not appear' because a matcher read the wrong region, and the run
+# before it was green with the walkthrough not reached at all.
+#
+# THE TWO SHAPES NEED DIFFERENT QUESTIONS, which is why this is not one comparison.
+#
+#   setup, ssh    SEQUENCES. Every named step runs or the walk stops, so the count must be
+#                 the number of steps in the file. A smaller number is a walk that stopped
+#                 early and still reported success.
+#
+#   desktop       A PANE SET. Panes are matched against the screen and the walk ends on an
+#                 end condition, so the count is whatever the screen offered - 15 of the file's
+#                 16 on the passing run, because macOS 15 never shows the keyboard-assistant
+#                 pane when qemu supplies a USB keyboard. The question for this shape is not
+#                 "did it answer all of them" but "did it get to the end at all", and that is
+#                 read from `THE END` below.
+echo
+echo "=== did each stage run the whole file? ==="
+FAILED=0
+for pair in "macos15-setup:macos/15/steps/setup.yaml:sequence" \
+            "desktop-drive-:macos/15/steps/sequoia.yaml:panes" \
+            "ssh-enable:macos/15/steps/ssh.yaml:sequence"; do
+  prefix=${pair%%:*}
+  rest=${pair#*:}
+  walk=${rest%%:*}
+  kind=${rest##*:}
+
+  if [ ! -f "$walk" ]; then
+    echo "  FAIL  $walk is not in this checkout; cannot count its steps"
+    FAILED=1
+    continue
+  fi
+
+  want=$(grep -c '^  - name:' "$walk" || true)
+  text=$(gh api "repos/$REPO/commits/$SHA/check-runs" \
+         --jq ".check_runs[] | select(.name | startswith(\"$prefix\")) | .output.text // \"\"" \
+         2>/dev/null)
+
+  if [ "$kind" = "panes" ]; then
+    if printf '%s' "$text" | grep -q "THE END:"; then
+      got=$(printf '%s' "$text" | grep -oE '[0-9]+ step\(s\) answered' |
+            grep -oE '[0-9]+' | tail -1)
+      echo "  ok    $walk: reached its end condition, ${got:-?} of $want pane(s) matched"
+      echo "        (a pane set answers what the screen offers; the end condition is the verdict)"
+    else
+      echo "  FAIL  $walk: no 'THE END' in this stage's log - the walk did not finish"
+      FAILED=1
+    fi
+    continue
+  fi
+
+  got=$(printf '%s' "$text" | grep -oE '[0-9]+ step\(s\) answered' |
+        grep -oE '[0-9]+' | tail -1)
+  if [ -z "$got" ]; then
+    echo "  FAIL  $walk wanted $want step(s); the stage never said how many it answered"
+    FAILED=1
+  elif [ "$got" -lt "$want" ]; then
+    echo "  FAIL  $walk wanted $want step(s); the stage answered $got"
+    FAILED=1
+  else
+    echo "  ok    $walk: $got step(s) answered (file has $want)"
+  fi
+done
+
+echo
+if [ "$FAILED" -ne 0 ]; then
+  echo "=== A STAGE IS GREEN WITHOUT HAVING RUN ITS FILE - read the counts above ==="
+  exit 1
+fi
+echo "=== every stage ran its file, or reached the end it declares ==="

@@ -101,6 +101,46 @@ steps:
     settle: 12
     optional: true
 
+  # A TEXT CONSOLE, BECAUSE THIS GREETER DOES NOT TAKE SYNTHETIC KEYS.
+  #
+  # THE KEYBOARD IS FINE; GDM IS NOT LISTENING TO IT. mint is the control: its LightDM
+  # answered `Invalid password, please try again` after this same walk typed at it, so the
+  # keystrokes DO reach a LightDM greeter. On this image the entry keeps its placeholder
+  # `Password` and never shows a bullet, so nothing arrived - and that has now been measured
+  # three times: at the field's own centre, with an Escape to wake the screen first, in the
+  # two-step form and in the click-and-type form.
+  #
+  # Ctrl+Alt+F3 does not go through the greeter at all. Every Linux here runs a getty on
+  # tty3, and a login there is a shell - the same shell the `run:` below needs. The greeter
+  # steps stay above it: on a disk that autologins they are harmless, and on one where GDM
+  # does accept input they save the switch.
+  #
+  # ALL OF IT IS `optional`, because a disk that reaches a desktop needs none of it.
+  - name: console - switch to tty3
+    key: ctrl+alt+f3
+    settle: 10
+    optional: true
+
+  - name: console - the login name
+    type: "{{ user }}"
+    settle: 3
+    optional: true
+
+  - name: console - the login name's Return
+    key: ret
+    settle: 4
+    optional: true
+
+  - name: console - the password
+    type: "{{ password }}"
+    settle: 3
+    optional: true
+
+  - name: console - the password's Return
+    key: ret
+    settle: 10
+    optional: true
+
   # =======================================================================================
   # 1. THE INSTALL, TYPED INTO THIS SESSION'S OWN TERMINAL
   # =======================================================================================
