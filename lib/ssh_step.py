@@ -322,9 +322,30 @@ def main(argv: list[str]) -> int:
                 note(f"=== NO ssh.yaml FOR {args.kind}: {walk} ===")
                 return finish(2)
             note(f"=== the walk: {os.path.join(root, 'steps', 'ssh.yaml')} ===")
+            # THE ACCOUNT THIS DISK ACTUALLY CARRIES, READ FROM ITS OWN FILE.
+            #
+            # It defaults to --user, which is `docker` - the account every answer-file install
+            # creates. Pop!_OS is the exception: its installer derives the login name from the
+            # full name, so the disk carries `dockeruser`. Its ssh.yaml says so with
+            # `ssh_user: dockeruser`.
+            #
+            # THE WALK AND THESE PROOFS MUST NAME THE SAME ACCOUNT. A stage that installs
+            # sshd - successfully, as run 42570186630 did - and then proves `docker` against a
+            # disk whose account is `dockeruser` reports Permission denied and calls a working
+            # installation a failure.
+            walk_user = args.user
+            try:
+                parsed = stepmod.load(walk)
+                walk_user = (parsed.values({"args.user": args.user,
+                                            "args.password": args.password})
+                             .get("ssh_user") or args.user)
+            except Exception:                      # noqa: BLE001
+                pass
+            if walk_user != args.user:
+                note(f"the walk declares its own account: {walk_user} (not {args.user})")
             ok, ran = stepmod.run_file(
                 walk, guest.paths.drive, work=work,
-                user=args.user, password=args.password,
+                user=walk_user, password=args.password,
                 ssh_port=args.ssh_port,
             )
             note(f"{len(ran)} step(s) ran" if ok
@@ -350,7 +371,8 @@ def main(argv: list[str]) -> int:
             # THE FIRST TWO GO OVER THE BRIDGE ADDRESS, which is what the walk's own `ssh:`
             # steps used and what every bake in this repository uses.
             status, output = session.ssh(
-                args.ssh_port, "uname -a; (cat /etc/os-release || true) | head -3")
+                args.ssh_port, "uname -a; (cat /etc/os-release || true) | head -3",
+                user=walk_user)
             note(f"ssh: uname -> {status}")
             for line in (output or "").splitlines()[:6]:
                 note(f"  {line}")
@@ -358,7 +380,7 @@ def main(argv: list[str]) -> int:
                 note("=== ssh ANSWERED BUT THE COMMAND FAILED ===")
                 return finish(1)
 
-            status, output = session.ssh(args.ssh_port, "id -un; hostname")
+            status, output = session.ssh(args.ssh_port, "id -un; hostname", user=walk_user)
             note(f"ssh: id/hostname -> {status}: {(output or '').splitlines()[:2]}")
             if status != 0:
                 return finish(1)
@@ -384,7 +406,8 @@ def main(argv: list[str]) -> int:
             reached = []
             for address in external:
                 status, output = session.ssh(
-                    args.ssh_port, "echo reached-on-this-address; id -un", host=address)
+                    args.ssh_port, "echo reached-on-this-address; id -un", host=address,
+                    user=walk_user)
                 note(f"ssh: {address}:{args.ssh_port} -> {status}")
                 for line in (output or "").splitlines()[:3]:
                     note(f"  {line}")

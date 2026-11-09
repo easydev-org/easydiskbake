@@ -80,7 +80,8 @@ def log(message: str) -> None:
     print(f"[session {time.strftime('%H:%M:%S')}] {message}", flush=True)
 
 
-def ssh(port: int, command: str, timeout: int = 30, host: str | None = None) -> tuple[int, str]:
+def ssh(port: int, command: str, timeout: int = 30, host: str | None = None,
+        user: str | None = None) -> tuple[int, str]:
     """Run one command in the guest. Returns (exit status, combined output).
 
     `host` IS HOW THE "ANOTHER CONTAINER" PROOF IS MADE. Everything in this repository
@@ -88,6 +89,12 @@ def ssh(port: int, command: str, timeout: int = 30, host: str | None = None) -> 
     that owns the bridge. A sibling container cannot dial it. Passing one of this container's
     own addresses is the same ssh, over the same DNAT chain, arriving on PREROUTING instead
     of OUTPUT - which is exactly the path an outside client takes.
+
+    `user` DEFAULTS TO SSH_USER, AND A WALKTHROUGH MAY NAME ITS OWN. Pop!_OS' installer
+    derives the login name from the full name, so its disk carries `dockeruser` while every
+    other image here carries the name it was given. That is one distribution's fact, so it
+    travels with that distribution's file: the walk's `ssh_user` var reaches the `ssh:` steps
+    through this parameter. See linux/popos-gui/steps/ssh.yaml.
 
     NO KEY, NO TERMINAL. The password is the one every image here uses, and sshpass is
     what supplies it - there is no tty to prompt at.
@@ -108,7 +115,7 @@ def ssh(port: int, command: str, timeout: int = 30, host: str | None = None) -> 
         "-o", "ConnectTimeout=10",
         "-o", "PreferredAuthentications=password",
         "-o", "PubkeyAuthentication=no",
-        f"{SSH_USER}@{host or SSH_HOST}",
+        f"{user or SSH_USER}@{host or SSH_HOST}",
         command,
     ]
     try:
@@ -121,7 +128,7 @@ def ssh(port: int, command: str, timeout: int = 30, host: str | None = None) -> 
 
 
 def wait_for_ssh(port: int, seconds: int, note=log, settle: int = 10,
-                 probe: str = "true") -> bool:
+                 probe: str = "true", user: str | None = None) -> bool:
     """Wait until sshd answers and the account can log in.
 
     A BANNER IS NOT ENOUGH - this runs a command, because a socket that accepts a
@@ -156,7 +163,7 @@ def wait_for_ssh(port: int, seconds: int, note=log, settle: int = 10,
     out = ""
     status = None
     while time.time() < deadline:
-        status, out = ssh(port, probe, timeout=20)
+        status, out = ssh(port, probe, timeout=20, user=user)
         if status == 0:
             note(f"ssh answers after {time.time() - started:.0f}s")
             return True
@@ -175,11 +182,11 @@ def wait_for_ssh(port: int, seconds: int, note=log, settle: int = 10,
     # failed connection or credential; 124 is this function's timeout; 127 is a missing client.
     note(f"  last status: {status}")
     note(f"  last output: {out[:300]}")
-    explain(port, probe, note)
+    explain(port, probe, note, user=user)
     return False
 
 
-def explain(port: int, probe: str, note=log) -> None:
+def explain(port: int, probe: str, note=log, user: str | None = None) -> None:
     """One last attempt with ssh's own account of why, printed in full.
 
     THIS IS NOT A SECOND CHECK, IT IS THE EXPLANATION FOR THE FIRST ONE. Everything the run
@@ -198,6 +205,9 @@ def explain(port: int, probe: str, note=log) -> None:
     `-vvv` prints each method ssh offered, which one it tried, and what the server replied to
     each. It is the only output in this run that can separate "wrong password" from "PAM
     refused the account" from "the password never arrived", and it costs one connection.
+
+    `user` IS THE ACCOUNT THE CALLER MEANT, because the retry has to name the same one the
+    probe did - explaining a failure against a different account explains nothing.
     """
     if not shutil.which("sshpass"):
         return
@@ -211,7 +221,7 @@ def explain(port: int, probe: str, note=log) -> None:
         "-o", "ConnectTimeout=10",
         "-o", "PreferredAuthentications=password",
         "-o", "PubkeyAuthentication=no",
-        f"{SSH_USER}@{SSH_HOST}",
+        f"{user or SSH_USER}@{SSH_HOST}",
         probe,
     ]
     try:

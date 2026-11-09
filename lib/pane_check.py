@@ -54,6 +54,33 @@ def words_in(path: str, region=None, scale: int = 2) -> set[str]:
     return {"".join(c for c in w.lower() if c.isalnum()) for w in text.split()}
 
 
+def ended_by(walk, frame: str) -> str:
+    """The end condition this frame satisfies, or "".
+
+    A WALKTHROUGH `ends` TWO WAYS and both are in the file: `ends` + `ends_region` for a menu
+    bar (Finder's is twelve-pixel text, so it is read in a crop and enlarged), and `ends_at`
+    for a control with its own crop - the login window's password field is 165x40.
+    """
+    document = walk.document
+    region = document.get("ends_region")
+    if region:
+        words = words_in(frame, region, int(document.get("ends_region_scale", 3)))
+        for spec in document.get("ends") or []:
+            wanted = spec if isinstance(spec, list) else [spec]
+            if all("".join(c for c in w.lower() if c.isalnum()) in words for w in wanted):
+                return " ".join(wanted)
+    for spec in document.get("ends_at") or []:
+        if not isinstance(spec, dict):
+            continue
+        words = words_in(frame, spec.get("region"), int(spec.get("scale", 3)))
+        wanted = spec.get("words") or []
+        wanted = wanted if isinstance(wanted, list) else [wanted]
+        if wanted and all("".join(c for c in w.lower() if c.isalnum()) in words
+                          for w in wanted):
+            return f"{' '.join(wanted)} ({spec.get('name', 'a control')})"
+    return ""
+
+
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("walkthrough")
@@ -83,10 +110,19 @@ def main(argv: list[str]) -> int:
                 hits.append(step.name)
 
         name = os.path.basename(frame)
+        # AN UNMATCHED FRAME IS ONLY FINE IF SOMETHING ELSE ENDS THE WALK THERE. The desktop
+        # ends on the login window's password field and on Finder's menu bar, neither of which
+        # is a pane; a frame that matches no pane AND no end condition is the STUCK the driver
+        # reports after stuck_after seconds.
         if not hits:
+            ended = ended_by(walk, frame)
+            if ended:
+                if not a.quiet:
+                    log(f"  {name}: the end — {ended}")
+                continue
             unmatched += 1
             if not a.quiet:
-                log(f"  {name}: (nothing matches)")
+                log(f"  {name}: (nothing matches, and no end condition either)")
         elif len(hits) > 1:
             ambiguous += 1
             log(f"  {name}: AMBIGUOUS — {', '.join(hits)}")

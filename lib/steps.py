@@ -893,6 +893,15 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222) -> None:
     """
     settle = float(step.get("settle", 2.0))
 
+    # THE ACCOUNT ON THIS DISK, WHEN THE FILE SAYS IT IS NOT THE USUAL ONE.
+    #
+    # Every image here was installed with the account it was given, so `docker` is right for
+    # all of them but one: Pop!_OS' installer derives the login name from the full name and
+    # writes `dockeruser`. A walkthrough that knows that says `ssh_user: dockeruser` in its
+    # own `vars`, and this is where that reaches the client. `None` means "the default the
+    # client already carries", so a file that does not name one is unchanged.
+    login = (getattr(driver, "values", {}) or {}).get("ssh_user") or None
+
     # --- require_ssh: WAIT FOR THE GUEST'S OWN SSHD BEFORE USING IT -------------------
     #
     # THE STAGE THAT TURNS REMOTE LOGIN ON IS A GUI STAGE; EVERYTHING AFTER IT IS NOT. So a
@@ -903,7 +912,7 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222) -> None:
         import session
         seconds = int(step.get("timeout", 600))
         log(f"  waiting up to {seconds}s for sshd on port {ssh_port}")
-        if not session.wait_for_ssh(ssh_port, seconds):
+        if not session.wait_for_ssh(ssh_port, seconds, user=login):
             # A FRAME BEFORE FAILING, because the question that follows is always "what was
             # on screen". The ssh stage's first failures had nothing to look at, and the
             # answer - a lock screen, an empty terminal, a sudo prompt - was only visible in
@@ -933,7 +942,7 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222) -> None:
         import session
         command = str(step["ssh"])
         timeout = int(step.get("timeout", 120))
-        status, output = session.ssh(ssh_port, command, timeout=timeout)
+        status, output = session.ssh(ssh_port, command, timeout=timeout, user=login)
         log(f"  ssh: {command} -> {status}")
         for line in (output or "").splitlines()[:40]:
             log(f"    {line}")

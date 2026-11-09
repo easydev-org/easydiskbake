@@ -38,6 +38,25 @@ vars:
   user:
     from: args.user
     default: docker
+  # THE ACCOUNT THIS DISK ACTUALLY HAS, WHICH IS NOT THE ONE THE WALK WAS GIVEN.
+  #
+  # Pop!_OS' installer DERIVES the login name from the full name. `linux/popos-gui/steps/
+  # install.yaml` types `Docker User` into Full Name and leaves User Name to the installer,
+  # which fills in `dockeruser` - visible on the recording of run 42570186630 in the
+  # terminal's own prompt:
+  #
+  #     dockeruser@pop-os:~$
+  #
+  # So sshd was installed, enabled and listening, and `ssh docker@...` was answered
+  #
+  #     Permission denied, please try again.
+  #
+  # by an account that does not exist on this disk - while the password pane below works,
+  # because the greeter names the user by its DISPLAY name and takes the password only.
+  #
+  # THIS IS POP!_OS' BEHAVIOUR AND NOBODY ELSE'S, which is why it is this file's var rather
+  # than a change to lib/session.py: every other image here logs in as the name it was given.
+  ssh_user: dockeruser
 
 steps:
 
