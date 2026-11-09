@@ -129,6 +129,47 @@ steps:
     settle: 12
     optional: true
 
+  # NIXOS' GNOME TAKES MINUTES TO DRAW ITS FIRST DESKTOP, AND THE WALK USED TO ASSUME TWELVE.
+  #
+  # MEASURED ON RUN 42682847712'S OWN RECORDING. After `greeter - submit` the frames are the
+  # NixOS spinner - the blue field with the circular logo at the centre - at 00:30, 01:00,
+  # 01:30 and at the LAST frame of the run. The desktop never appeared, so every step after it
+  # pressed coordinates on a loading screen:
+  #
+  #     desktop - give the shell focus   click (960,700)   -> the spinner
+  #     dismiss the welcome dialog       esc               -> the spinner
+  #     open the overview                Super             -> the spinner
+  #     search for the terminal          type `terminal`   -> nowhere
+  #     wait for the Console result      OCR: `yy. | _.~`   -> nothing to find
+  #
+  # - which is the whole run, and it explains a `wait for sshd` that could never have started.
+  #
+  # THE SPINNER IS STATIC IN SHAPE AND ANIMATED IN PHASE, so `wait_for_change` cannot answer
+  # this: its fingerprint keeps changing while the animation runs, and then the desktop arrives
+  # and stops it. A `wait` with a measured number is the honest primitive for "the session has
+  # not finished starting" - this image is the slowest desktop here and the other four GNOME
+  # images settle well inside it.
+  #
+  # 240 s is the number live.py itself allows a desktop to draw on these runners, and the
+  # spinner above had not finished at 90.
+  - name: let the session finish starting
+    wait: 240
+
+  # AND THEN THE DESKTOP IS CONFIRMED, NOT ASSUMED. `Dashboard` is the app-grid button's title
+  # on this GNOME's dock, and it is drawn only once the shell is up. If it is not there, the
+  # steps below still run - `optional` - but the recording says which world it was in.
+  - name: the desktop is up
+    until_any:
+      - [Dashboard]
+      - [Activities]
+    region: [0, 0, 1920, 1080]
+    region_at: [1920, 1080]
+    scale: 1
+    timeout: 120
+    poll: 10
+    keep_alive: true
+    optional: true
+
   # =======================================================================================
   # 1. THE INSTALL, TYPED INTO THIS SESSION'S OWN TERMINAL
   # =======================================================================================
