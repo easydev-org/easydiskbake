@@ -484,7 +484,11 @@ def dismiss_keyboard_assistant(guest: vm.Guest, q=None) -> bool:
             qmpmod.click(q, *KEYBOARD_ASSISTANT_QUIT)
             time.sleep(4)
     finally:
-        q.close()
+        # ONLY THE CONNECTION THIS FUNCTION OPENED. Closing a caller's socket takes the
+        # walkthrough's own screen reader down with it, and the next qmpmod.click then fails
+        # with 'OSError: [Errno 9] Bad file descriptor' on a connection that looked fine.
+        if owned:
+            q.close()
     return True
 
 
@@ -671,6 +675,7 @@ def enable_remote_login(guest: vm.Guest, q=None) -> None:
     #
     # which is the same failure macos/15/install.py's Recovery(q=...) exists to avoid, in the
     # other stage. The caller that passes one owns its lifetime.
+    q_owned = q is None
     q = q or qmpmod.QMP(kb_work)
 
     def click(x: int, y: int, settle: float = 2.0) -> None:
@@ -773,7 +778,15 @@ def enable_remote_login(guest: vm.Guest, q=None) -> None:
         time.sleep(6)
         shot("7-verdict")
     finally:
-        q.close()
+        # THE SAME RULE ONE LEVEL UP: a connection the caller handed in is the CALLER'S to
+        # close. Closing it here is what produced
+        #
+        #     OSError: [Errno 9] Bad file descriptor
+        #
+        # on the next qmpmod.click, one line after '=== opening System Settings ===' - a socket
+        # that had been working a moment earlier.
+        if q_owned:
+            q.close()
 
 
 def wait_for_ssh(port: int, timeout: int = 180) -> bool:
