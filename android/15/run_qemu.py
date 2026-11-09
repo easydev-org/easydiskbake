@@ -383,11 +383,35 @@ def install_ssh(port: int, payload: str) -> bool:
     staging = payload + ".tree"
     shutil.rmtree(staging, ignore_errors=True)
     os.makedirs(staging, exist_ok=True)
-    unpack = subprocess.run(["tar", "-x", "-f", payload, "-C", staging],
+    # SYMLINKS ARE MATERIALISED, BECAUSE /data/local/tmp REFUSES TO CREATE THEM.
+    #
+    #     adb: error: failed to copy .../lib/libncurses.so.6: remote symlink failed:
+    #          Permission denied
+    #
+    # `adb push` sends a link as a link, and /data/local/tmp on the guest will not create
+    # one. `tar -h` does NOT help - it dereferences what the archive points AT, not the
+    # links it creates, and 869 of them survived it:
+    #
+    #     $ tar -x -h -f payload ; find . -type l | wc -l
+    #     869
+    #
+    # `cp -rL` does: it walks the extracted tree and writes a COPY of each target in place
+    # of the link. The prefix grows by a few hundred KB and every entry is a real file.
+    raw = staging + ".raw"
+    shutil.rmtree(raw, ignore_errors=True)
+    os.makedirs(raw, exist_ok=True)
+    os.makedirs(staging, exist_ok=True)
+    unpack = subprocess.run(["tar", "-x", "-f", payload, "-C", raw],
                             capture_output=True, text=True)
     if unpack.returncode != 0:
         print(f"[run_qemu] could not extract {payload}: {unpack.stderr[:200]}", flush=True)
-        shutil.rmtree(staging, ignore_errors=True)
+        shutil.rmtree(raw, ignore_errors=True)
+        return False
+    flatten = subprocess.run(["cp", "-rL", raw + "/.", staging + "/"],
+                             capture_output=True, text=True)
+    shutil.rmtree(raw, ignore_errors=True)
+    if flatten.returncode != 0 and not os.path.isdir(os.path.join(staging, "bin")):
+        print(f"[run_qemu] could not flatten: {flatten.stderr[:200]}", flush=True)
         return False
 
     files = sum(len(f) for _, _, f in os.walk(staging))
@@ -413,9 +437,22 @@ def install_ssh(port: int, payload: str) -> bool:
     print(f"[run_qemu] {check.strip()}", flush=True)
 
     # PORT 8022 IS TERMUX'S DEFAULT AND THE ONE lib/net.py FORWARDS.
+    # `var/empty` IS sshd's PRIVILEGE SEPARATION DIRECTORY, AND IT HAS TO EXIST EMPTY.
+    #
+    # Without it sshd refuses to start, and says so in one line:
+    #
+    #     Missing privilege separation directory:
+    #         /data/data/com.termux/files/usr/var/empty
+    #
+    # It must be owned by root and contain nothing; sshd chroots there for unauthenticated
+    # connections. Termux's package ships it, but `cp -rL` does not create empty
+    # directories that contain no files when the target is a tmpfs being walked by adb.
     start = (
         f"export LD_LIBRARY_PATH={SSH_PREFIX}/lib; "
         f"mkdir -p {SSH_PREFIX}/etc/ssh; "
+        f"mkdir -p {SSH_PREFIX}/var/empty; "
+        f"chmod 755 {SSH_PREFIX}/var/empty; "
+        f"mkdir -p {SSH_PREFIX}/var/run; "
         f"mkdir -p /data/local/tmp; "
         f"{SSH_PREFIX}/bin/sshd -p 8022 "
         f"-h {SSH_PREFIX}/etc/ssh/ssh_host_rsa_key "

@@ -1028,8 +1028,18 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222) -> None:
         # than raising. The ssh stage's install is multi-line by nature (nixos-rebuild after an
         # append), so the newline is honoured here: each line is typed, then Return, then the
         # next - which is exactly what a person does at a terminal.
-        driver.key("ctrl+alt+t")
-        time.sleep(float(step.get("terminal_wait", 8.0)))
+        # THE TERMINAL IS OPENED BY ITS OWN STEP (`key: ctrl+alt+t` or a dock click),
+        # because whether it opened is the first thing to check when an install produces
+        # nothing. `terminal_wait: 0` therefore means "the terminal is already up".
+        #
+        # THIS USED TO PRESS ctrl+alt+t UNCONDITIONALLY, which is right for a desktop whose
+        # shortcut works and wrong for one where it does not: Pop!_OS' COSMIC ignores it, and
+        # pressing it again after the dock had opened the terminal just typed a control
+        # chord into the focusing window.
+        wait = float(step.get("terminal_wait", 8.0))
+        if wait > 0:
+            driver.key("ctrl+alt+t")
+            time.sleep(wait)
         import keys
         body = str(step["run"])
         for index, line in enumerate(body.splitlines()):

@@ -78,10 +78,21 @@ steps:
   # `run:` presses ctrl+alt+t to open the terminal, waits `terminal_wait`, types the text,
   # presses Return and waits `settle`. Every number here is this image's: a desktop that has
   # just painted has not started its session yet, so the wait comes before the shortcut.
+  # =======================================================================================
+  # 0b. THE TERMINAL, WHICH IS WHERE THE INSTALL IS TYPED
+  # =======================================================================================
+  #
+  # ctrl+alt+t is this desktop's own shortcut. The step EXISTS on its own - rather than being
+  # folded into the `run:` - because "did the terminal open" is the first question when an
+  # install produces nothing, and the recording now answers it.
+  - name: open the terminal
+    key: ctrl+alt+t
+    settle: 10
+
   - name: install sshd
     run: |
       echo {{ password }} | sudo -S sh -c "pacman -Sy --noconfirm --needed openssh && systemctl enable --now sshd" 2>&1 | tail -5
-    terminal_wait: 12
+    terminal_wait: 0
     settle: 90
 
   # THE SECOND HALF, FOR THE SYSTEMS WHERE THE FIRST COULD NOT RUN AS ROOT. `sudo -S` is what

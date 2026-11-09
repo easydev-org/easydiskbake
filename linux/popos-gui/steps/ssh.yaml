@@ -78,10 +78,24 @@ steps:
   # `run:` presses ctrl+alt+t to open the terminal, waits `terminal_wait`, types the text,
   # presses Return and waits `settle`. Every number here is this image's: a desktop that has
   # just painted has not started its session yet, so the wait comes before the shortcut.
+  # =======================================================================================
+  # 0b. THE TERMINAL. THIS DESKTOP HAS NO ctrl+alt+t.
+  # =======================================================================================
+  #
+  # MEASURED ON RUN 42563749005: Pop!_OS booted to a COSMIC desktop - top bar, dock and
+  # wallpaper all drawn - and ctrl+alt+t did NOTHING. The whole 382 s recording is the desktop
+  # with not one terminal window in it, so the login worked and the install had nowhere to go.
+  #
+  # COSMIC's dock DOES carry a terminal: a dark rounded tile with a light `>` at (1013,1048),
+  # measured on that run's own last frame. This is the way in.
+  - name: open the terminal
+    at: [1013, 1048]
+    settle: 12
+
   - name: install sshd
     run: |
       echo {{ password }} | sudo -S sh -c "DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server && systemctl enable --now ssh" 2>&1 | tail -5
-    terminal_wait: 12
+    terminal_wait: 0
     settle: 90
 
   # THE SECOND HALF, FOR THE SYSTEMS WHERE THE FIRST COULD NOT RUN AS ROOT. `sudo -S` is what
