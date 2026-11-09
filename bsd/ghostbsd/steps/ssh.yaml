@@ -188,9 +188,48 @@ steps:
     key: ret
     settle: 15
 
+  # `sudo`, NOT `su`, BECAUSE FreeBSD'S `su` READS /dev/tty AND A PIPE CANNOT FEED IT.
+  #
+  # Measured on the real GhostBSD disk in a local pod (2026-11-09). The terminal is open, the
+  # command is typed correctly, and the frame reads
+  #
+  #     docker@docker-ghostbsd ~> echo admin | su -m root -c "sysrc sshd_enable=YES; ..."
+  #     Password:
+  #     su: Sorry
+  #
+  # `su` never looked at stdin - it opened the controlling terminal and read from there, so
+  # the `echo` was wasted. Whether root's password is `admin` was never tested by that attempt.
+  #
+  # THIS IMAGE DOES HAVE sudo AND IS IN THE GROUP THAT MAKES IT WORK:
+  #
+  #     $ command -v sudo        -> /usr/local/bin/sudo
+  #     $ id                     -> uid=1001(docker) gid=1001(docker)
+  #                                 groups=1001(docker),0(wheel),5(operator)
+  #
+  # `wheel` is what sudo's default `%wheel ALL=(ALL) ALL` requires, so the image is already
+  # set up for it. `sudo -S` takes the password on stdin, which is what every Linux file here
+  # does, so this distribution stops being an exception.
+  #
+  # PASSWORD AUTHENTICATION IS OFF BY DEFAULT ON FreeBSD'S sshd, AND THAT IS THE NEXT LAYER.
+  #
+  # With sshd running (the frame shows `sshd is running as pid 1807` and
+  # `root sshd 1807 4 tcp4 *:22 *:*`), the client still got
+  #
+  #     docker@172.30.0.1: Permission denied (publickey,keyboard-interactive).
+  #
+  # - `password` is not in the list of methods the server offers. FreeBSD's shipped
+  # sshd_config has `#PasswordAuthentication no` behind a compile-time default, and this
+  # image inherits it. The stage's account has a password, so the server has to be told it may
+  # use it.
+  #
+  # `sed` on the one line, then restart, then the same status and socket check - three
+  # separate ``places`` in the recording where a reader can see whether it took.
+  #
+  # `sysrc` and `service` are still this image's own: an rc.conf knob and an rc.d script, not
+  # a systemd unit.
   - name: install sshd
     run: |
-      echo {{ password }} | su -m root -c "sysrc sshd_enable=YES; service sshd restart || service sshd start" 2>&1
+      echo {{ password }} | sudo -S sh -c 'sysrc sshd_enable=YES; printf "PasswordAuthentication yes\n" >> /etc/ssh/sshd_config; grep -c "^PasswordAuthentication yes" /etc/ssh/sshd_config; service sshd restart || service sshd start; service sshd status; sockstat -4 -l | grep sshd' 2>&1 | tail -14
     terminal_wait: 0
     settle: 90
   - name: wait for sshd
