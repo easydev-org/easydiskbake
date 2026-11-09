@@ -99,25 +99,94 @@ steps:
   # So the screen is woken first, and then the terminal is opened the way MATE actually does
   # it: the `Applications` menu at the top left, then `System Tools` -> `Terminal`. Both
   # presses are measured from that same frame (the menu bar runs along y=12).
+  # THE TERMINAL IS REACHED BY KEYBOARD, BECAUSE THIS DESKTOP'S MENU DOES NOT ANSWER A CLICK.
+  #
+  # MEASURED ON THE REAL DISK IN A LOCAL KVM POD (2026-11-09). Two things make this
+  # different from every other image here:
+  #
+  #   ctrl+alt+t does NOT open a terminal on this MATE. Pressed on the desktop, the frame
+  #   before and after are byte-identical.
+  #
+  #   A CLICK does not open the Applications menu either. Clicking `Applications` at its own
+  #   measured centre (67,12) left the desktop unchanged, and so did clicking `System Tools`
+  #   inside the menu that Alt+F1 had opened.
+  #
+  # THE KEYBOARD DOES WORK, and it is the only transport that does:
+  #
+  #     Alt+F1            the Applications menu   (frame: Accessories..System Tools)
+  #     Down x6           System Tools is the SIXTH item, not the second
+  #     Right             its submenu: Caja, dconfEditor, fish, Log File Viewer, MATE Disk
+  #                       Usage Analyzer, MATE System Monitor, MATE Terminal, Power Statistics
+  #     Down x6           MATE Terminal is the SEVENTH
+  #     Return            a terminal opens: `Welcome to fish...` / `docker@docker-ghostbsd ~>`
+  #
+  # The frame that proves it is a screenshot of that terminal running on that disk.
   - name: wake the screen
-    key: esc
-    settle: 4
-
-  - name: wake the screen again
     key: esc
     settle: 3
 
-  - name: open the applications menu
-    at: [72, 12]
-    settle: 5
-
-  - name: system tools
-    at: [120, 60]
+  - name: open the Applications menu
+    key: alt+f1
     settle: 4
 
-  - name: terminal
-    at: [160, 120]
-    settle: 12
+  # System Tools is the sixth entry: Accessories, Graphics, Internet, Office,
+  # Sound & Video, System Tools.
+  - name: choose System Tools
+    key: down
+    settle: 1
+
+  - name: choose System Tools 2
+    key: down
+    settle: 1
+
+  - name: choose System Tools 3
+    key: down
+    settle: 1
+
+  - name: choose System Tools 4
+    key: down
+    settle: 1
+
+  - name: choose System Tools 5
+    key: down
+    settle: 1
+
+  - name: choose System Tools 6
+    key: down
+    settle: 2
+
+  - name: open the System Tools submenu
+    key: right
+    settle: 3
+
+  # Inside it, MATE Terminal is the seventh of eight entries.
+  - name: choose MATE Terminal 1
+    key: down
+    settle: 1
+
+  - name: choose MATE Terminal 2
+    key: down
+    settle: 1
+
+  - name: choose MATE Terminal 3
+    key: down
+    settle: 1
+
+  - name: choose MATE Terminal 4
+    key: down
+    settle: 1
+
+  - name: choose MATE Terminal 5
+    key: down
+    settle: 1
+
+  - name: choose MATE Terminal 6
+    key: down
+    settle: 2
+
+  - name: open MATE Terminal
+    key: ret
+    settle: 15
 
   - name: install sshd
     run: |

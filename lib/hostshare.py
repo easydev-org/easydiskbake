@@ -102,6 +102,18 @@ def config_text(directory: str) -> str:
    workgroup = WORKGROUP
    server string = easydiskbake shared
    security = user
+   # THREE WAYS A CLIENT CAN ARRIVE, AND ALL THREE MUST BECOME THE GUEST.
+   #
+   # `Bad User` maps a name that is not an account. `Bad Password` maps a real name with a wrong
+   # password. `Never` would refuse an anonymous logon outright. samba's default of allowing
+   # anonymous only when guest ok is set is not enough: macOS's mount_smbfs sends `guest` with
+   # no password, Windows sends `""` with `""`, and a client that sends its own local name has
+   # to be turned into the guest rather than rejected:
+   #
+   #     The password is invalid for the share on the bridge address.
+   #
+   # is what a Windows client got from `map to guest = Bad User` alone, because `docker` is a
+   # well-formed name that simply has no SMB account here.
    map to guest = Bad User
    guest account = root
    log file = {LOG_PATH}
@@ -220,8 +232,18 @@ def mount_commands(host: str = "", user: str = "docker") -> dict[str, str]:
     return {
         "macos": (f"mkdir -p ~/shared && "
                   f"mount_smbfs //guest@{host}/{SHARE_NAME} ~/shared"),
+        # WINDOWS SENDS ITS OWN ACCOUNT NAME UNLESS TOLD OTHERWISE, AND THAT IS WHAT FAILED.
+        #
+        # `net use Z: \\host\share` logs in as the current user (`docker`) with the current
+        # password. This server has no such SMB account, and samba answered
+        #
+   #     The password is invalid for the share on the bridge address.
+        #
+        # run 42640504001. Naming an empty user and password is how a Windows client asks for
+        # the guest share: `"" /user:""` is the documented spelling, and `map to guest = Bad
+        # User` on the server turns that into the guest account.
         "windows": (f'if not exist "C:\\Users\\{user}\\shared" mkdir "C:\\Users\\{user}\\shared"'
-                    f' & net use Z: \\\\{host}\\{SHARE_NAME} /persistent:no'),
+                    f' & net use Z: \\\\{host}\\{SHARE_NAME} "" /user:"" /persistent:no'),
     }
 
 
