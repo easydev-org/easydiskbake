@@ -193,6 +193,28 @@
   </settings>
 
   <!-- =========================== offlineServicing =========================== -->
+  <!--
+    UAC IS OFF, AND THE STAGES AFTER THIS ONE DEPEND ON IT.
+
+    An ssh session gets a filtered token: the account is in Administrators, but the session
+    runs with standard rights and any elevation request raises a UAC prompt. There is no
+    desktop behind an ssh connection, so that prompt is a dialog nobody can click - the
+    installer waits, the step times out, and the log says nothing about a window.
+
+    Two things in windows/11/steps/dev.yaml would hit exactly that:
+
+        OpenJS.NodeJS.LTS   Scope: machine only, ElevationRequirement: elevatesSelf
+                            - "elevatesSelf" means the MSI asks for a prompt when it is not
+                            already elevated, which is a hang over ssh
+        Python.Python.3.13  installed at machine scope, which writes under Program Files
+
+    With EnableLUA=false there is no filtered token at all, so the session is genuinely
+    elevated and no prompt is ever raised.
+
+    REMOVING THIS LINE BREAKS THE DEV STAGE, not the install - which is the worst shape for a
+    dependency to have, because nothing here would fail and the failure lands an hour later in
+    a stage that looks unrelated.
+  -->
   <settings pass="offlineServicing">
     <component name="Microsoft-Windows-LUA-Settings"
                processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35"

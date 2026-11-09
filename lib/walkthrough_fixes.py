@@ -382,6 +382,34 @@ def main() -> int:
     check("windows dev installs the bootstrap launcher", "windows/11/steps/dev.yaml",
           any(s.get("bootstrap_install") for s in (win_dev_walk.get("steps") or [])))
 
+    # --- windows scope and elevation ----------------------------------------------------
+    #
+    # THREE PACKAGES, THREE DIFFERENT SCOPES IN THEIR MANIFESTS, so the stage names one.
+    #
+    #   Python.Python.3.13   burn    user AND machine   - winget prefers user without --scope
+    #   OpenJS.NodeJS.LTS    wix     machine only, ElevationRequirement: elevatesSelf
+    #   Git.Git              inno    user AND machine   - it decides by admin membership
+    #
+    # Without --scope they land in two different trees, and a launcher that named a path would
+    # be right about one of them.
+    win_dev_text = read("windows/11/steps/dev.yaml")
+    for pkg, step_name in (("Python.Python.3.13", "install python"),
+                           ("OpenJS.NodeJS.LTS", "install node"),
+                           ("Git.Git", "install git")):
+        step = next((s for s in (win_dev_walk.get("steps") or [])
+                     if s.get("name") == step_name), {})
+        check(f"{step_name} pins machine scope", "windows/11/steps/dev.yaml",
+              pkg in str(step.get("ssh") or "") and "--scope machine" in str(step.get("ssh") or ""))
+
+    # AND IT ONLY WORKS BECAUSE THE ANSWER FILE TURNS UAC OFF. `elevatesSelf` means a UAC prompt
+    # when the session is not already elevated, and a prompt over ssh is a dialog nobody can
+    # click - a hang, not an error. EnableLUA=false removes the filtered token entirely.
+    win_answer = read("windows/11/answer/Autounattend.xml")
+    check("the answer file leaves UAC off, which the dev stage depends on",
+          "windows/11/answer/Autounattend.xml", "EnableLUA>false" in win_answer)
+    check("that dependency is written down where it is used",
+          "windows/11/answer/Autounattend.xml", "elevatesSelf" in win_answer)
+
     # --- report ------------------------------------------------------------------------
     width = max(len(label) for label, _path, _ok in checks)
     failures = 0

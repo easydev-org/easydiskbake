@@ -106,18 +106,42 @@ steps:
   # %LOCALAPPDATA%\Programs\Python\Python313 - which is why the bootstrap launcher looks
   # there first and only then asks PATH. An all-users install would land in C:\Program Files
   # and need elevation, which this channel cannot answer.
+  # EXPLICIT `--scope machine` ON ALL THREE, BECAUSE OTHERWISE THEY LAND IN THREE PLACES.
+  #
+  # What the manifests actually say, read from microsoft/winget-pkgs rather than assumed:
+  #
+  #   Python.Python.3.13   burn    Scope: user AND machine   (InstallAllUsers=0 / =1)
+  #   OpenJS.NodeJS.LTS    wix     Scope: machine only, ElevationRequirement: elevatesSelf
+  #   Git.Git              inno    Scope: user AND machine   (it decides by admin membership)
+  #
+  # Without --scope, winget prefers the user installer when a manifest offers both - so Python
+  # would go to %LOCALAPPDATA%\Programs\Python\Python313 and node to C:\Program Files\nodejs,
+  # and a script that named either path would be right about one of them. `machine` makes all
+  # three land under Program Files, which is also what the launcher's search order assumes.
+  #
+  # THE ELEVATION IS WHY THIS WORKS AT ALL, AND IT IS NOT OBVIOUS. `elevatesSelf` means the
+  # installer asks Windows for a UAC prompt when it is not already elevated - and a prompt over
+  # ssh is a dialog nobody can click, which is a hang. It does not happen here because the
+  # answer file turns UAC off:
+  #
+  #     answer/Autounattend.xml, pass="offlineServicing"
+  #         Microsoft-Windows-LUA-Settings / EnableLUA = false
+  #
+  # With EnableLUA off there is no filtered token, so the session is genuinely elevated and the
+  # prompt is never raised. That is a dependency this stage has on the answer file, and it is
+  # worth knowing before anyone removes those two lines.
   - name: install python
-    ssh: winget install --id Python.Python.3.13 --exact --source winget --accept-source-agreements --accept-package-agreements --disable-interactivity
+    ssh: winget install --id Python.Python.3.13 --exact --source winget --scope machine --accept-source-agreements --accept-package-agreements --disable-interactivity
     timeout: 2400
     optional: true
 
   - name: install node
-    ssh: winget install --id OpenJS.NodeJS.LTS --exact --source winget --accept-source-agreements --accept-package-agreements --disable-interactivity
+    ssh: winget install --id OpenJS.NodeJS.LTS --exact --source winget --scope machine --accept-source-agreements --accept-package-agreements --disable-interactivity
     timeout: 2400
     optional: true
 
   - name: install git
-    ssh: winget install --id Git.Git --exact --source winget --accept-source-agreements --accept-package-agreements --disable-interactivity
+    ssh: winget install --id Git.Git --exact --source winget --scope machine --accept-source-agreements --accept-package-agreements --disable-interactivity
     timeout: 2400
     optional: true
 

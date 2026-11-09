@@ -141,6 +141,26 @@ steps:
     at: [1266, 663]
     settle: 25
 
+  # AND `Install Now` A SECOND TIME, BECAUSE THE MODAL DOES NOT LEAVE THE PANE.
+  #
+  # MEASURED, AND IT IS WHY THE ACCOUNT PANE WAS NEVER FILLED. On this image `Install Now`
+  # opens the `Write the changes to disks?` modal; dismissing that modal returns to the SAME
+  # `Installation type` pane, and only a SECOND press of `Install Now` starts the copy.
+  #
+  # Run after run pressed `Install Now` once, pressed `Continue` in the modal, and then typed
+  # the four account fields into an `Installation type` pane that had no text fields at all -
+  # every keystroke went nowhere. The disk was then installed with the installer's own
+  # defaults, which is why its LightDM kept answering
+  #
+  #     Invalid password, please try again
+  #
+  # to `admin` and to seven other candidates: the password on that disk was never set by this
+  # walk. The frame that proves the pane is still there after the modal comes from a local run
+  # on 2026-11-09.
+  - name: installation type - install now, after the modal
+    at: [1307, 726]
+    settle: 30
+
   # The time zone default is kept: on this cluster it is Shanghai, and changing it is one
   # more text field that can go wrong for no gain.
   - name: where are you
