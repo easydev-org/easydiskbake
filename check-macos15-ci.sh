@@ -73,6 +73,14 @@ done
 #                 read from `THE END` below.
 echo
 echo "=== did each stage run the whole file? ==="
+# READ THIS AGAINST THE RUN'S OWN FILES, NOT THIS CHECKOUT'S.
+#
+# The counts below are taken from the YAML on disk, so a run from before a file changed will
+# report a mismatch that is only the difference in age - run 42573249989 answered 17 ssh steps
+# because ssh.yaml had 17 then, and this file says 19 now. That is expected and it is why this
+# section names both numbers. What it is NOT is evidence that the run was wrong; the question
+# "did this run do what its own files asked" is answered by the pane names and THE END, which
+# do not drift.
 FAILED=0
 for pair in "macos15-setup:macos/15/steps/setup.yaml:sequence" \
             "desktop-drive-:macos/15/steps/sequoia.yaml:panes" \
