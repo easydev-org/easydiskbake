@@ -30,7 +30,9 @@ import shutil
 import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-for path in (REPO, os.path.join(REPO, "lib")):
+# `machine`, `opencore` AND `macos_recovery` ARE IN macos/15, NOT IN lib/. See the note in
+# macos/15/dev.py: asking lib for `machine` fails, and the failure arrives after a 16 GiB pull.
+for path in (REPO, os.path.join(REPO, "lib"), os.path.join(REPO, "macos", "15")):
     if path not in sys.path:
         sys.path.insert(0, path)
 

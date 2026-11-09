@@ -459,6 +459,29 @@ def main() -> int:
     check("the probe finds the user without relying on $USER", "lib/bootstrap_probe.py",
           "getpass" in probe)
 
+    # --- imports that resolve to the wrong directory -----------------------------------
+    #
+    # `from lib import machine` asks lib/ for a module called machine. It is not there - it is
+    # macos/15/machine.py, beside the stage - and the failure is
+    #
+    #     ImportError: cannot import name 'machine' from 'lib' (unknown location)
+    #
+    # which arrives AFTER a 16 GiB disk has been pulled, so the whole stage is spent on an
+    # import. Run 42624293500 lost its dev stage to exactly this.
+    for path in ("macos/15/dev.py", "lib/boot_machine.py"):
+        try:
+            body = read(path)
+        except Exception:                                 # noqa: BLE001
+            continue
+        # CODE, NOT PROSE. Both files explain this mistake in a comment - that is the point of
+        # the comment - so a check for the words would fail on the documentation that warns
+        # about them.
+        code = "\n".join(line for line in body.splitlines()
+                         if not line.lstrip().startswith("#"))
+        check(f"{path}: does not ask lib for macos/15's modules", path,
+              "from lib import machine" not in code
+              and "from lib import opencore" not in code)
+
     # --- report ------------------------------------------------------------------------
     width = max(len(label) for label, _path, _ok in checks)
     failures = 0

@@ -48,6 +48,17 @@ RELEASE = os.environ.get("MACOS_RELEASE", "15")
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, REPO)
+# AND THIS DIRECTORY, WHICH IS WHERE `machine`, `opencore` AND `macos_recovery` LIVE.
+#
+# `from lib import machine` asks lib/ for a module called machine. It is not there - it is
+# macos/15/machine.py, beside this file - and the failure is
+#
+#     ImportError: cannot import name 'machine' from 'lib' (unknown location)
+#
+# which arrives AFTER the 16 GiB disk has been pulled, so the whole stage is spent on an import.
+# macos/15/desktop.py carries the same note for the same reason; this file had the bug until
+# run 42624293500.
+sys.path.insert(0, HERE)
 
 from lib import compress, net, smoke  # noqa: E402
 
@@ -154,7 +165,8 @@ def main(argv: list[str]) -> int:
 
     import opencore
     import macos_recovery
-    from lib import machine, vm
+    import machine                     # macos/15/machine.py, via the path above
+    from lib import vm
 
     # THE RECOVERY IMAGE IS AN INPUT EVEN THOUGH THIS STAGE DOES NOT BOOT FROM IT. See
     # the longer note in ssh.py: opencore.build() extracts Apple's APFS driver out of it,
