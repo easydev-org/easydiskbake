@@ -232,6 +232,18 @@ steps:
     timeout: 30
     poll: 3
     optional: true
+    # `optional` IS DELIBERATE AND IT IS NOT LAZINESS - `wait for sshd` below is the verdict.
+    # But read what the optional costs, because this step was the site of a trap worth naming:
+    # with the matcher written as `[remote, login, on]` (unquoted, so `on` is a bool), the
+    # crash happened ONLY when the switch was on. `all()` short-circuits, so a screen that did
+    # not contain "remote" never asked the bool for its lowercase form. The stage therefore
+    # failed on the correct screen and passed on the wrong one, and CI - where the pane read
+    # 'No Results' and never contained "remote login" - showed
+    #
+    #     the switch is on: did not appear, and the step is optional
+    #
+    # and went green. The word is quoted at the top of this file's history for that reason;
+    # this comment is here so the next person reading a green run knows what green meant.
 
   # DONE, so the pane closes and the daemon settles rather than holding the change in a sheet.
   - name: close the pane
