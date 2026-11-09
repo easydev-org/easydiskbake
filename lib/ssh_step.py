@@ -307,37 +307,35 @@ def main(argv: list[str]) -> int:
             note(f"  letting the session settle for {settle}s before the terminal")
             time.sleep(settle)
 
-            # THE TERMINAL, WHICH IS THE ONLY WAY IN. See the module docstring.
-            note(f"opening a terminal with {'+'.join(TERMINAL_KEYS)}")
-            keys_q = q
-            keys_q.execute("input-send-event", events=[
-                {"type": "key", "data": {"down": True, "key": {"type": "qcode", "data": "ctrl"}}},
-                {"type": "key", "data": {"down": True, "key": {"type": "qcode", "data": "alt"}}},
-                {"type": "key", "data": {"down": True, "key": {"type": "qcode", "data": "t"}}},
-                {"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": "t"}}},
-                {"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": "alt"}}},
-                {"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": "ctrl"}}},
-            ])
-            time.sleep(TERMINAL_WAIT)
-
-            # TYPE THE TWO LINES. The first writes the script, the second runs it.
-            typed = the_lines(args.kind, args.password)
-            for index, line in enumerate(typed, start=1):
-                note(f"typing line {index}/{len(typed)} ({len(line)} chars)")
-                type_line(q, line)
-                # THE INSTALL IS THE SLOW PART AND ONLY THE LAST LINE IS IT.
-                wait = INSTALL_WAIT[FAMILY[args.kind]] if index == len(typed) else 6
-                note(f"  waiting {wait}s for it")
-                time.sleep(wait)
-
-            # THE PROOF, FROM OUTSIDE THE GUEST. A port that accepts a connection and refuses
-            # every command is not what the objective asks for.
-            note(f"waiting up to {args.boot_timeout}s for sshd on the forwarded port "
-                 f"{args.ssh_port}")
-            if not session.wait_for_ssh(args.ssh_port, args.boot_timeout, note):
-                note("=== sshd NEVER ANSWERED ON THE FORWARDED PORT ===")
+            # THE WALK IS A YAML FILE, THE SAME AS EVERY OTHER GUI STAGE HERE.
+            #
+            # It opens the terminal with `run:` (ctrl+alt+t), waits for the daemon with
+            # `require_ssh:`, and proves it with `ssh:` - the three actions
+            # macos/15/steps/ssh.yaml uses for the same job. The distribution only decides
+            # WHICH SCRIPT the run: step types, and that is what this module supplies.
+            #
+            # THE QMP SOCKET IS ALREADY OPEN, so this client is closed first: qemu serves one
+            # client per socket and steps.run_file opens its own.
+            q.close()
+            import steps as stepmod
+            walk = os.path.join(REPO, "linux", "ssh", "steps", "ssh.yaml")
+            blob = base64.b64encode(the_script(args.kind).encode()).decode()
+            note(f"=== the walk: {os.path.basename(walk)} (family {FAMILY[args.kind]}) ===")
+            ok, ran = stepmod.run_file(
+                walk, guest.paths.drive, work=work,
+                user=args.user, password=args.password,
+                ssh_port=args.ssh_port,
+                extra_vars={"args.script": blob},
+            )
+            note(f"{len(ran)} step(s) ran" if ok
+                 else f"the walkthrough failed after {len(ran)} step(s)")
+            if not ok:
                 return finish(1)
 
+            # THE LAST PROOF IS FROM OUTSIDE THE GUEST, AND IT IS THE ONE THE OBJECTIVE NAMES:
+            # another container sshing in and running a command. The walk's `ssh:` steps go
+            # over the same forwarded port, so this is a re-read of the same fact in the
+            # stage's own words - and it is what the verdict line reports.
             status, output = session.ssh(
                 args.ssh_port, "uname -a; (cat /etc/os-release || true) | head -3")
             note(f"ssh: uname -> {status}")

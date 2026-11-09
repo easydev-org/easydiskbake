@@ -1389,6 +1389,7 @@ def run_file(walkthrough: str, qmp_path: str, *, work: str = "",
              disk_path: str | None = None, ssh_port: int = 2222,
              start_at: str = "", stop_before: str = "",
              release: str = "15", frames: str = "",
+             extra_vars: dict[str, str] | None = None,
              log_prefix: str = "") -> tuple[bool, list[str]]:
     """Walk a YAML file against a running guest, from Python rather than from the CLI.
 
@@ -1439,8 +1440,14 @@ def run_file(walkthrough: str, qmp_path: str, *, work: str = "",
         {"args.user": user, "args.password": password}))
 
     try:
+        # `extra_vars` IS FOR A VAR THE CALLER COMPUTES, NOT FOR A FLAG. The ssh walkthrough
+        # needs the base64 install script, which is per-family and cannot be written in the
+        # file; everything else (`user`, `password`) already comes from the two named args.
+        overrides: dict[str, str] = {"args.user": user, "args.password": password}
+        if extra_vars:
+            overrides.update(extra_vars)
         return walk(driver, steps,
-                    overrides={"args.user": user, "args.password": password},
+                    overrides=overrides,
                     start_at=start_at, stop_before=stop_before, ssh_port=ssh_port)
     finally:
         driver.close()
