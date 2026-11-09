@@ -165,11 +165,27 @@ steps:
     timeout: 90
     poll: 3
 
-  # THE SWITCH. It reads "Off" until it is pressed, and pressing it also turns
-  # `Allow full disk access for remote users` ON - which is why nothing below presses that
-  # one: pressing it again would turn it off, and a remote session without Full Disk Access
-  # cannot run `diskutil` (measured: 'diskutil apfs trim WAS REFUSED (exit 1)').
+  # THE SWITCH IS A TOGGLE, SO IT IS ONLY PRESSED WHEN THE PANE SAYS IT IS OFF.
+  #
+  # This is not a nicety and it was measured: on a guest whose Remote Login was already on,
+  # the pane read 'Remote Login: on' before this step, the click turned it OFF, the read after
+  # it said 'off', and `wait for sshd` then failed with
+  #
+  #     connect to address 172.30.0.1 port 2222: Connection refused
+  #
+  # - the stage that exists to turn Remote Login ON turned it off and spent ten minutes
+  # waiting for a daemon it had just stopped. ssh.py has always had this guard for its Python
+  # path (the TCP probe above `enable_remote_login`); the YAML path had none, and a fresh CI
+  # disk hides the bug because there the switch really is off.
+  #
+  # `unless` is the vocabulary for exactly this: the step runs only if the screen does NOT
+  # already show the words. With the switch off the pane says "... lets users of other
+  # computers access this computer using SSH and SFTP"; with it on it says "to log in to this
+  # computer remotely, type ...". Both were read back from this guest in one run.
   - name: turn remote login on
+    unless: [log, in, to, this, computer]
+    region: [726, 300, 1200, 715]
+    scale: 2
     at: [1145, 353]
     settle: 4
 
