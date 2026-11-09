@@ -75,6 +75,22 @@ steps:
     key: ret
     settle: 14
 
+  # THE WINDOW HAS TO BE UP BEFORE ANYTHING IS TYPED INTO IT, and every click below assumes a
+  # layout that only exists once it is. Spotlight on a cold CI runner takes longer to resolve
+  # than the four seconds above, and a Return that arrives too early opens whatever row was
+  # highlighted - on one measured run that was a web suggestion, which opened Safari.
+  #
+  # This waits for the window's own title and is `optional` because a slow window is not a
+  # failure yet: the clicks below are the real test, and this only costs time when it is right.
+  - name: the settings window is up
+    until_any:
+      - [system, settings]
+      - [general]
+      - [wi-fi]
+    timeout: 90
+    poll: 3
+    optional: true
+
   # THE SEARCH FIELD, AT ITS MEASURED PIXEL. (715, 267) is the centre of a box whose interior
   # spans x 630..800, y 250..284 at 1920x1080.
   - name: search for remote login
