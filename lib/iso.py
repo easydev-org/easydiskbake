@@ -42,22 +42,20 @@ import time
 import urllib.error
 import urllib.request
 
-# URLLIB IGNORES THE PROXY ENVIRONMENT VARIABLES, UNLIKE curl.
+# A PROXY, IF THE ENVIRONMENT NAMES ONE - AND NOTHING OTHERWISE.
 #
-# This module talks to ghcr with urllib.request.urlopen, and that call reads NO proxy setting on
-# its own - `https_proxy` in the environment is consulted by urllib's default opener only for
-# schemes it knows, and the CI runner reaches ghcr.io solely through a proxy:
+# urllib.request.urlopen does not consult http_proxy/https_proxy by itself, and this module is
+# the only one in the repository that speaks HTTP directly (everything else shells out to curl,
+# which does). So a caller that sets them - a developer's machine behind a corporate proxy, say
+# - would find they were ignored here and nowhere else.
 #
-#     via proxy   https://ghcr.io/v2/                     401 (answered)
-#     direct      the same host                           Temporary failure in name resolution
+# THE DEFAULT IS NO PROXY, DELIBERATELY. GitHub's runners reach ghcr.io directly, and a
+# hard-coded proxy address in this file would be a host that does not exist there: the request
+# would go to a name nothing resolves and fail as
 #
-# Run 42626233852 lost the macOS dev stage to exactly that:
+#     URLError: <urlopen error [Errno -3] Temporary failure in name resolution>
 #
-#     urllib.error.URLError: <urlopen error [Errno -3] Temporary failure in name resolution>
-#
-# So every request in this file goes through `_open`, which installs a ProxyHandler built from
-# the environment. curl-based code elsewhere in this repository never needed it; this is the one
-# module that speaks HTTP itself.
+# which reads like a broken DNS server rather than a setting nobody meant to set.
 def _opener():
     proxies = {}
     for scheme in ("http", "https"):
@@ -70,28 +68,8 @@ def _opener():
 
 
 def _open(request, *, timeout: float):
-    """`urlopen`, with the proxy the environment names - or nothing when it names none.
-
-    IT SAYS WHICH, ONCE. Three CI runs were spent changing this and guessing: the failure is
-    `Temporary failure in name resolution`, which is what a request that bypassed the proxy
-    looks like - and from the log there was no way to tell whether the handler had a proxy in
-    it or not. One line per distinct answer, so a log answers the question instead of asking it.
-    """
-    proxies = {scheme: os.environ.get(name)
-               for scheme, name in (("http", "http_proxy"), ("https", "https_proxy"))}
-    proxies = {k: v for k, v in proxies.items() if v}
-    key = tuple(sorted(proxies.items()))
-    if key != _open.reported:                               # type: ignore[attr-defined]
-        _open.reported = key                            # type: ignore[attr-defined]
-        if proxies:
-            log(f"http: using proxy {', '.join(f'{k}={v}' for k, v in sorted(proxies.items()))}")
-        else:
-            log("http: NO PROXY IN THE ENVIRONMENT - a request to a host that needs one will "
-                "fail with 'name resolution', not with a connection error")
+    """`urlopen`, with the proxy the environment names - or none when it names none."""
     return _opener().open(request, timeout=timeout)
-
-
-_open.reported = None                                    # type: ignore[attr-defined]
 
 
 REGISTRY = os.environ.get("ISO_REGISTRY", "ghcr.io")

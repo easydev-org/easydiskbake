@@ -323,12 +323,6 @@ jobs:
     if: |
       always() && inputs.dev_run
       && (inputs.dev_from != '' || needs.ssh.outputs.tag != '')
-    # JOB-LEVEL, FOR THE SAME REASON AS macos15.yml's dev job: lib/iso.py talks to ghcr with
-    # urllib, which does not read these on its own, and this runner resolves nothing directly.
-    env:
-      https_proxy: http://mihomo.develop.svc.cluster.local:7890
-      http_proxy: http://mihomo.develop.svc.cluster.local:7890
-      no_proxy: "127.0.0.1,localhost,::1,172.30.0.0/24"
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     container:
@@ -481,10 +475,6 @@ jobs:
     if: |
       always() && inputs.launch_dev_run
       && (inputs.launch_dev_from != '' || needs.dev.outputs.tag != '')
-    env:
-      https_proxy: http://mihomo.develop.svc.cluster.local:7890
-      http_proxy: http://mihomo.develop.svc.cluster.local:7890
-      no_proxy: "127.0.0.1,localhost,::1,172.30.0.0/24"
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     container:

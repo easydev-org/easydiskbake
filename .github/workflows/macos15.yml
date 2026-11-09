@@ -127,11 +127,6 @@ on:
       publish_tag:
         description: "the tag to publish under; empty for macos15-<stage>"
         default: ""
-      proxy:
-        description: >-
-          https proxy for the host side of a stage. The dev stage downloads Xcode from
-          archive.org and this runner reaches the internet only through it.
-        default: "http://mihomo.develop.svc.cluster.local:7890"
       isolate:
         description: >-
           Run beside other macos15 runs instead of queueing behind them. Any short string;
@@ -474,26 +469,6 @@ jobs:
     if: |
       always() && inputs.dev_run
       && (inputs.dev_from != '' || needs.ssh.outputs.tag != '')
-    # JOB-LEVEL, NOT STEP-LEVEL, BECAUSE FOUR STEPS IN THIS JOB TALK TO GHCR.
-    #
-    # The failure that put this here:
-    #
-    #     urllib.error.URLError: <urlopen error [Errno -3] Temporary failure in name resolution>
-    #
-    # raised from macos_recovery.fetch_published. urllib does not read the proxy variables on
-    # its own, so lib/iso.py installs a handler from them - and then found them absent, because
-    # the export was inside one step and the failing code ran in another. An env at the job
-    # level reaches every step, which is what "this runner needs a proxy" actually means.
-    env:
-      https_proxy: ${{ inputs.proxy || 'http://mihomo.develop.svc.cluster.local:7890' }}
-      http_proxy: ${{ inputs.proxy || 'http://mihomo.develop.svc.cluster.local:7890' }}
-      # THE BRIDGE MUST NOT GO THROUGH IT. lib/net.py's 172.30.0.0/24 is this container's own
-      # tap - a forwarded port proxied would leave the container and come back.
-      #
-      # ghcr.io IS DELIBERATELY *NOT* HERE: this runner resolves nothing directly, so a request
-      # to ghcr that bypassed the proxy fails with "name resolution", which is the exact failure
-      # three runs were spent on.
-      no_proxy: "127.0.0.1,localhost,::1,172.30.0.0/24"
     runs-on: ubuntu-24.04
     # 240 MINUTES, BECAUSE XCODE IS THE SLOWEST STEP IN THE WHOLE CHAIN.
     #
@@ -547,19 +522,6 @@ jobs:
           command: |
             set -euo pipefail
             export GITHUB_TOKEN="${{ github.token }}"
-            # THE PROXY, BECAUSE XCODE IS DOWNLOADED FROM archive.org BY THIS STEP.
-            #
-            # The dev stage fetches a 2.7 GiB .xip from the host side (lib/xcode_asset.py),
-            # and this runner reaches the internet only through the proxy:
-            #
-            #     via proxy   https://archive.org/metadata/xcode-26.3   200
-            #     direct      same URL                                   connection failed
-            #
-            # Without this the fetch fails in the first two minutes of a stage that has already
-            # pulled a 16 GiB disk. The guest does NOT need it - the .xip is copied in over ssh
-            # - so it is exported here and not in the guest.
-            export https_proxy="${{ inputs.proxy || 'http://mihomo.develop.svc.cluster.local:7890' }}"
-            export http_proxy="$https_proxy"
             DISK=$(ls out/*.qcow2 | head -1)
             # NO --clean: the step below is the clean, and macos/15/dev.py no longer takes
             # the flag. The one it used to take wrote zeros with dd, which is the mechanism
@@ -646,12 +608,6 @@ jobs:
     if: |
       always() && inputs.launch_dev_run
       && (inputs.launch_dev_from != '' || needs.dev.outputs.tag != '')
-    # THE SAME PROXY AS THE dev JOB, because this one also reads ghcr with lib/iso.py (to pull
-    # the disk) and starts a machine that needs Apple's recovery image.
-    env:
-      https_proxy: ${{ inputs.proxy || 'http://mihomo.develop.svc.cluster.local:7890' }}
-      http_proxy: ${{ inputs.proxy || 'http://mihomo.develop.svc.cluster.local:7890' }}
-      no_proxy: "127.0.0.1,localhost,::1,172.30.0.0/24"
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     container:
