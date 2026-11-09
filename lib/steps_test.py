@@ -326,7 +326,7 @@ def test_ssh_step() -> None:
 
     real = session.ssh
 
-    def fake(port, command, timeout=30):
+    def fake(port, command, timeout=30, **kwargs):
         calls.append(command)
         return 0, "ran"
 
@@ -344,7 +344,7 @@ def test_ssh_step() -> None:
             "steps": [{"name": "bad", "ssh": "exit 7"}],
         }, path="inline")
 
-        def fake_fail(port, command, timeout=30):
+        def fake_fail(port, command, timeout=30, **kwargs):
             return 7, ""
 
         session.ssh = fake_fail
@@ -366,7 +366,7 @@ def test_ssh_step() -> None:
         }, path="inline")
         # THE OPTIONAL STEP FAILS AND THE ONE AFTER IT DOES NOT, which is the whole point:
         # the fake has to answer per command, not per run.
-        def fake_mixed(port, command, timeout=30):
+        def fake_mixed(port, command, timeout=30, **kwargs):
             return (1, "") if command == "exit 1" else (0, "")
 
         session.ssh = fake_mixed
