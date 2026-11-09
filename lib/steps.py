@@ -105,6 +105,11 @@ STEP_KEYS = {    "name",        # required: what the log calls this step
     "once",        # a pane answered at most ONCE, for a pane that starts a slow process
     "repeat",      # (count, settle) for a footer button pressed the same way N times
     "sweep",       # a band of clicks at one x, stopping when the sheet opens
+    "at_window",   # [x, dy] - click x at dy pixels below the window's top edge
+    "window_x",    # the column to scan for the window's top edge (default 500)
+    "window_from", # first y to scan (default 180)
+    "window_to",   # last y to scan (default 400)
+    "window_brightness",  # the brightness that counts as the window (default 40)
     "wait_for_change",  # until the screen stops looking like it did before
     "change_timeout",   # seconds wait_for_change may take
     "change_settle",    # seconds between fingerprints in wait_for_change
@@ -131,7 +136,8 @@ WAIT_STEPS = {"until", "until_any", "wait", "wait_for_change", "until_dark", "di
 
 # Everything above that actually drives the guest. A step with none of these is a check, and
 # a check that does nothing is reported rather than run.
-ACTION_KEYS = {"at", "double", "type", "key", "run", "ssh", "require_ssh", "sweep"}
+ACTION_KEYS = {"at", "double", "type", "key", "run", "ssh", "require_ssh", "sweep",
+               "at_window"}
 
 
 class Step:
@@ -958,6 +964,58 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222) -> None:
     # honest description of what a person does with an unreliable hit area, and it belongs in
     # the vocabulary rather than being written out as twenty-one `at:` steps that a reader
     # would have to count.
+    # --- at_window: A CONTROL THAT MOVES WITH ITS WINDOW -------------------------------
+    #
+    # Disk Utility centres its window vertically and REMEMBERS ITS HEIGHT, and both differ
+    # between runs - measured on two consecutive CI runs of this same stage:
+    #
+    #     run 42567290197   window top y=294  height 521   Erase icon y=309
+    #     run 42570035685   window top y=256  height 599   Erase icon y=271
+    #
+    # The icon was 15 pixels below the window's top edge in BOTH. Its x was identical to the
+    # pixel (1283..1295, centre 1289) in both. So the constant that survives is the offset
+    # from the window, and a fixed absolute y is wrong on whatever run has the other height -
+    # which is what made this coordinate look like it moved between runs for a dozen attempts.
+    #
+    # The top edge is found by scanning down a column for the first pixel brighter than the
+    # wallpaper's near-black, which needs no OCR and cannot be confused by a word in a dialog.
+    if step["at_window"]:
+        x, dy = (int(v) for v in step["at_window"])
+        column = int(step.get("window_x", 500))
+        region_top = int(step.get("window_from", 180))
+        region_bottom = int(step.get("window_to", 400))
+        threshold = int(step.get("window_brightness", 40))
+
+        if step.get("region"):
+            driver.look_at(step["region"], f"{step.name} - find the window",
+                           scale=int(step.get("scale", DEFAULT_CROP_SCALE)))
+        else:
+            driver.look(f"{step.name} - find the window")
+
+        top = None
+        if driver.ppm:
+            from PIL import Image
+            try:
+                image = Image.open(driver.ppm).convert("RGB")
+            except (OSError, ValueError):
+                image = None
+            if image is not None:
+                for y in range(region_top, min(region_bottom, image.height)):
+                    r, g, b = image.getpixel((min(column, image.width - 1), y))
+                    if (r + g + b) // 3 > threshold:
+                        top = y
+                        break
+
+        if top is None:
+            log(f"  {step.name}: no window edge found in column {column} "
+                f"between y={region_top} and y={region_bottom}; not clicking")
+            return
+
+        click_y = top + dy
+        log(f"  {step.name}: window top y={top}; clicking ({x}, {click_y})")
+        driver.click((x, click_y), step.name, settle=settle)
+        return
+
     if step["sweep"]:
         first, last, stride = step["sweep"]
         x = int(step.get("at")[0]) if step.get("at") else 0

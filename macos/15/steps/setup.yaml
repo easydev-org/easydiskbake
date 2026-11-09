@@ -138,29 +138,25 @@ steps:
   # collected (280 opened once, 306 opened once, the rest did nothing) describe where the
   # caption of one control ends and the caption of the next begins.
   - name: erase - open the sheet
-    # ONE COORDINATE, AND THE THING IT DEPENDS ON IS THE WINDOW'S HEIGHT - NOT THE DISK.
+    # THE CONTROL MOVES WITH ITS WINDOW, SO THE OFFSET IS THE CONSTANT - NOT THE PIXEL.
     #
-    # The control is the GLYPH, not the caption under it. Reading the toolbar's OCR boxes on
-    # this run's own frame:
+    # Disk Utility centres its window vertically AND REMEMBERS ITS HEIGHT, so two consecutive
+    # CI runs of this same stage put the identical toolbar at different heights:
     #
-    #     'Erase' caption centre (1290, 336)
-    #     'r=)'   glyph   centre (1288, 315)   <- the button
+    #     run 42567290197   window top y=294   Erase icon y=309
+    #     run 42570035685   window top y=256   Erase icon y=271
     #
-    # Clicking the caption does nothing; the toolbar draws a glyph with its caption underneath
-    # and the caption is a label. That much was measured twice, on two widgets.
+    # Measured off both frames: the icon is 15 pixels below the window's top edge in each, and
+    # its x is identical to the pixel (1283..1295, centre 1289). A fixed absolute y is therefore
+    # wrong on whichever run has the other window height - which is what made this coordinate
+    # look like a moving target through a dozen attempts and a sweep of 280..320.
     #
-    # WHY A FIXED COORDINATE IS SAFE HERE AND WAS NOT BEFORE: Disk Utility REMEMBERS ITS WINDOW
-    # SIZE, and it centres the window vertically. A guest whose Disk Utility had been dragged
-    # taller put the same toolbar 38 pixels higher:
-    #
-    #     521-tall window (a fresh disk, and every CI run)   top y=294   glyph y=315
-    #     599-tall window (a disk something had resized on)  top y=256   glyph y=277
-    #
-    # Verified by closing and reopening Disk Utility on the local guest: the window came back at
-    # 521 and the toolbar landed on (1288, 315) - the same pixel as this run's CI frame. So the
-    # number below is not a guess about a moving target; it is where a default-sized window puts
-    # the button, and CI always opens a default-sized one.
-    at: [1290, 315]
+    # `at_window` scans one column for the first pixel brighter than the wallpaper and clicks
+    # the offset below it. No OCR, so a word in a dialog cannot be mistaken for the window.
+    at_window: [1289, 15]
+    window_x: 500
+    window_from: 180
+    window_to: 400
     settle: 6
     expect_any:
       - [erase, deleted]
