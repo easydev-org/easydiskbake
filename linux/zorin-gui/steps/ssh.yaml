@@ -86,8 +86,11 @@ steps:
     settle: 5
     optional: true
 
+  # MEASURED ON ZORIN'S OWN FRAME (run 42582881513, t=90): the entry's interior is
+  # x=812..1108, y=611..644 - centre (960, 627). (936,628) was 24 px left of it, close
+  # enough to look right and far enough to land beside the text area.
   - name: greeter - the password box
-    at: [936, 628]
+    at: [960, 627]
     type: "{{ password }}"
     clear: false
     settle: 4
