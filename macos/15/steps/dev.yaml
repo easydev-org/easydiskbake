@@ -97,9 +97,14 @@ steps:
   # about to be published, and the step after it deletes the .xip once the app is expanded.
   - name: fetch xcode on the host
     python: macos_dev_asset:fetch_xcode
+    # IT NEVER LOOKS AT THE SCREEN. This downloads and verifies the .xip in the CONTAINER, and
+    # the next step copies it in over ssh - so declaring it saves this walkthrough from being
+    # refused a HeadlessDriver on the grounds that some `python:` step might need one.
+    python_screen: false
 
   - name: copy xcode into the guest
     python: macos_dev_asset:copy_xcode
+    python_screen: false
 
   # EXPANDING AND SELECTING IS ONE SCRIPT BECAUSE IT IS ONE OPERATION. `xip -x` prints nothing
   # for twenty minutes, `xcodebuild -license accept` must come before anything asks Xcode a

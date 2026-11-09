@@ -65,8 +65,17 @@ def main() -> int:
     # --- the interpreter ---------------------------------------------------------------
     check("at+type is ONE action, not a type then a click", "lib/steps.py",
           'elif step["at"] is None and step["type"] is not None:' in steps_src)
-    check("python: counts as needing a screen (both checks)", "lib/steps.py",
-          steps_src.count('s["python"] or s["run"] or s["key"]') == 2)
+    # A `python:` STEP NEEDS A SCREEN UNLESS IT SAYS OTHERWISE, IN BOTH PLACES THAT DECIDE.
+    #
+    # The default is conservative because most extensions drive the GUI - and forgetting it was
+    # a crash (`HeadlessDriver` has no `key`). But macos/15/steps/dev.yaml's two extensions fetch
+    # and copy a file over ssh, never touching the screen, and being told they needed a QMP
+    # socket is what stopped run 42632192846 before its first step. `python_screen: false` is the
+    # declaration, and it has to be honoured by BOTH needs_screen expressions or a walkthrough
+    # passes one check and dies in the other.
+    check("python: needs a screen unless the file says it does not (both checks)",
+          "lib/steps.py",
+          steps_src.count('s["python"] and s.get("python_screen") is not False') == 2)
     check("a cropped read puts the whole-frame words back", "lib/steps.py",
           "driver.words = whole" in steps_src)
     check("waits_for accepts alternatives, not one phrase", "lib/steps.py",

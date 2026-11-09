@@ -131,6 +131,7 @@ STEP_KEYS = {    "name",        # required: what the log calls this step
     "stuck_after", # seconds of no pane matching before the walk is declared stuck
     "release",     # which release this pane's numbers were measured on
     "python",      # an escape hatch: "module:function" for a measured exception
+    "python_screen",  # false when a python: step never touches the screen (ssh only)
     "press",       # for a python step: which footer control it should press by name
 }
 
@@ -2102,7 +2103,15 @@ def run_file(walkthrough: str, qmp_path: str, *, work: str = "",
         # classified headless it gets a driver with no socket, and the function waits out its
         # 120-second "no QMP socket at " (with an empty path) before giving up. A walkthrough
         # that delegates to an extension cannot be known to be headless.
-        or s["python"] or s["run"] or s["key"]
+        # AND A `python:` STEP MAY SAY IT DOES NOT. The conservative default is right - most
+        # extensions drive the GUI - but macos/15/steps/dev.yaml's two extensions fetch and copy
+        # a file over ssh and never look at the screen. Declaring `python_screen: false` is how
+        # a pure-ssh walkthrough stops being refused a HeadlessDriver it does not need:
+        #
+        #     StepError: macos/15/steps/dev.yaml has GUI steps and no --qmp was given
+        #
+        # which run 42632192846 raised before its first step.
+        or (s["python"] and s.get("python_screen") is not False) or s["run"] or s["key"]
         for s in steps.steps)
 
     if needs_screen:
@@ -2192,7 +2201,8 @@ def main(argv: list[str]) -> int:
     needs_screen = bool(steps.panes) or any(
         s["at"] or s["double"] or s["expect"] or s["expect_any"] or s["until"]
         or s["until_any"] or s["disk_settle"] or s["when"] or s["unless"]
-        or s["python"] or s["run"] or s["key"] for s in steps.steps)
+        or (s["python"] and s.get("python_screen") is not False)
+        or s["run"] or s["key"] for s in steps.steps)
     if needs_screen and not args.qmp:
         log("FAILED: this walkthrough has GUI steps; --qmp is required")
         return 1
