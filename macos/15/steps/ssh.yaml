@@ -77,9 +77,20 @@ steps:
   - name: prove disk utility works over ssh
     ssh: diskutil list | head -5
 
-  # THE MACHINE'S OWN NAME, so the disk is identifiable after it is published.
+  # THE MACHINE'S OWN NAME, AND THIS IS THE ONE THING THE STAGE CHANGES ON THE DISK.
+  #
+  # NO sudo, AND NO PASSWORD IN THE COMMAND. `scutil --set HostName` needs root, so this asks
+  # for the LocalHostName instead, which the account owns:
+  #
+  #     scutil --set LocalHostName   no privilege needed, and it is the name Bonjour and the
+  #                                  Sharing pane show
+  #
+  # A password piped into sudo was the first version and it had two problems worth recording:
+  # the remote shell is `sh`, not bash, so `<<<` is not available; and `{{ password }}` is
+  # substituted as PLAIN TEXT into a shell command line, so a password containing a quote or a
+  # `$` would have broken it. A step that needs no privilege needs neither.
   - name: name the machine
-    ssh: sudo -S scutil --set HostName docker <<< "{{ password }}"
+    ssh: scutil --set LocalHostName docker
 
   # --- 3. A READ-MEANT-TO-FAIL IS NOT A FAILURE -----------------------------------------
   #

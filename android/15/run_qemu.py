@@ -258,6 +258,90 @@ def _partition(disk: str, name: str) -> tuple[int | None, int | None]:
     return None, None
 
 
+# THE FOUR COMMANDS, AND THE FOURTH IS THE ONE THAT WAS MISSING FOR A LONG TIME.
+#
+#     ip link set eth0 up                    flags 0x1002 -> 0x1003, operstate up
+#     ip addr add 172.30.0.2/24 dev eth0
+#     ip route add default via 172.30.0.1 dev eth0
+#     ip rule add from all lookup main pref 31000
+#
+# ANDROID ROUTES BY POLICY, SO A DEFAULT ROUTE ALONE IS NOT ENOUGH. The rule table that
+# ships with the image does not consult `main` at all:
+#
+#     17000: iif lo oif dummy0 lookup dummy0
+#     18000: fwmark 0x0/0x10000 lookup legacy_system
+#     19000: fwmark 0x0/0x10000 lookup legacy_network
+#     20000: fwmark 0x0/0x10000 lookup local_network
+#     32000: from all unreachable          <- everything falls through to this
+#
+# so `ip route add default` answered "Network is unreachable" and an interface that was
+# up, addressed and correctly routed still had no way out. Adding the rule is what makes
+# the route reachable:
+#
+#     31000: from all lookup main
+#     172.30.0.1 ping: 2 transmitted, 2 received, 0% packet loss
+#
+# ALL FOUR GO THROUGH ONE `su 0 sh -c`, IN ONE adb CALL. Four separate calls would each
+# open a shell and a race is possible between them; init's own advice and the ORDER above
+# matter, since `ip route` before `ip addr` answers ENETUNREACH.
+NET_SETUP = (
+    "ip link set eth0 up; "
+    "ip addr add 172.30.0.2/24 dev eth0; "
+    "ip route add default via 172.30.0.1 dev eth0; "
+    "ip rule add from all lookup main pref 31000"
+)
+
+
+def adb(port: int, *args: str, timeout: int = 30) -> str:
+    """One adb call against this emulator, with the device serial filled in."""
+    result = subprocess.run(
+        ["adb", "-s", f"emulator-{port}", *args],
+        capture_output=True, text=True, timeout=timeout)
+    return ((result.stdout or "") + (result.stderr or "")).strip()
+
+
+def configure_network(port: int, seconds: int) -> bool:
+    """Wait for adb, then give the guest its address. True if it answered.
+
+    ADB IS THE RIGHT EXECUTOR AND init IS NOT. `adb shell` runs in u:r:shell:s0, which may
+    read /system/bin/ip; init's goldfish_setup domain may not - AOSP comments that rule out
+    in device/generic/goldfish/sepolicy/vendor/goldfish_setup.te:
+
+        #allow goldfish_setup system_file:file { execute getattr open read };
+
+    Five goes at doing this from init were refused for five different reasons (property
+    timing, exec, shell domain, file label, mode bits), and this one works with no policy
+    change at all.
+
+    A device that never appears is not a failure of this step - it is reported and the boot
+    continues, because the screenshot and the boot verdict do not depend on the network.
+    """
+    deadline = time.time() + max(seconds * 0.5, 90)
+    while time.time() < deadline:
+        if adb(port, "shell", "true", timeout=10) == "":
+            # an empty answer from `true` is success; `not found` is not
+            break
+        time.sleep(5)
+    else:
+        print(f"[run_qemu] adb device emulator-{port} never appeared", flush=True)
+        return False
+
+    print(f"[run_qemu] adb device emulator-{port} is up", flush=True)
+    out = adb(port, "shell", f"su 0 sh -c '{NET_SETUP}'", timeout=60)
+    state = adb(port, "shell",
+                "su 0 sh -c 'ip -o -4 addr show eth0; ip route'", timeout=30)
+    print(f"[run_qemu] guest network:\n  " +
+          "\n  ".join(line for line in state.splitlines() if line), flush=True)
+    if out:
+        print(f"[run_qemu] setup said: {out[:200]}", flush=True)
+
+    ping = adb(port, "shell", "su 0 ping -c2 -W2 172.30.0.1", timeout=30)
+    ok = "2 received" in ping or "2 packets received" in ping
+    print(f"[run_qemu] guest -> bridge: "
+          f"{'reachable' if ok else 'unreachable'}", flush=True)
+    return ok
+
+
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--dir", default="/a/android",
