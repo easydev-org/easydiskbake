@@ -1545,6 +1545,7 @@ def run_file(walkthrough: str, qmp_path: str, *, work: str = "",
     if needs_screen:
         if not qmp_path:
             raise StepError(f"{walkthrough} has GUI steps and no --qmp was given")
+        log(f"driver: qmp {qmp_path!r}")
         driver = Driver(qmp_path, here, width=steps.resolution[0],
                         height=steps.resolution[1], disk_path=disk_path)
     else:
