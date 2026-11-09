@@ -89,9 +89,25 @@ steps:
     key: ctrl+alt+t
     settle: 10
 
+  # BOTH LINES RUN AS ROOT, AND THE FIRST ONE HAD TO BE FIXED TO DO SO.
+  #
+  # `/etc/nixos/configuration.nix` is root's file - the installer writes it 0644 as root - and
+  # the original walk appended to it as `docker`:
+  #
+  #     sh: /etc/nixos/configuration.nix: Permission denied
+  #
+  # and then ran `nixos-rebuild switch` on an unchanged configuration, which succeeds, enables
+  # nothing, and looks exactly like a successful install in the recording. sudo is what makes
+  # both lines real, and `sh -c` is what keeps the redirect inside the privileged shell: a
+  # `sudo printf ... >> file` would still do the redirect as `docker`.
+  #
+  # `PermitRootLogin` IS NOT SET. It defaults to `prohibit-password`, and the account this
+  # stage proves is `docker`, not root - turning root logins on would open an account nothing
+  # here uses. The firewall IS turned off: the graphical install leaves it on and it drops 22,
+  # which is the difference this distribution has from every other one here.
   - name: install sshd
     run: |
-      printf '\n  services.openssh.enable = true;\n  services.openssh.settings.PasswordAuthentication = true;\n  services.openssh.settings.PermitRootLogin = "yes";\n  networking.firewall.enable = false;\n' >> /etc/nixos/configuration.nix
+      echo {{ password }} | sudo -S sh -c 'printf "\n  services.openssh.enable = true;\n  services.openssh.settings.PasswordAuthentication = true;\n  networking.firewall.enable = false;\n" >> /etc/nixos/configuration.nix'
       echo {{ password }} | sudo -S nixos-rebuild switch 2>&1 | tail -8
     terminal_wait: 0
     settle: 300
