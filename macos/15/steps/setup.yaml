@@ -138,21 +138,28 @@ steps:
   # collected (280 opened once, 306 opened once, the rest did nothing) describe where the
   # caption of one control ends and the caption of the next begins.
   - name: erase - open the sheet
-    # ONE COORDINATE, MEASURED ON THE 128G DISK THE WORKFLOW ACTUALLY BAKES.
+    # ONE COORDINATE, AND THE THING IT DEPENDS ON IS THE WINDOW'S HEIGHT - NOT THE DISK.
     #
-    # The control is the GLYPH, not the caption under it. Measured on this run's own frame
-    # (137.44 GB, which is a 128G qcow2) by reading the toolbar's OCR boxes:
+    # The control is the GLYPH, not the caption under it. Reading the toolbar's OCR boxes on
+    # this run's own frame:
     #
     #     'Erase' caption centre (1290, 336)
-    #     '=)'    glyph   centre (1288, 315)   <- the button
+    #     'r=)'   glyph   centre (1288, 315)   <- the button
     #
-    # Clicking the caption does nothing - verified on a 64G disk too, where the same two boxes
-    # sit 37 pixels higher (caption 299, glyph 277) because Disk Utility centres its window and
-    # the window's height follows the detail pane's table, which follows the disk size.
+    # Clicking the caption does nothing; the toolbar draws a glyph with its caption underneath
+    # and the caption is a label. That much was measured twice, on two widgets.
     #
-    # THAT IS WHY THE DISK SIZE IS FIXED HERE AND NOT A VARIABLE: 128G is what the workflow
-    # passes, so the toolbar is where it was measured. A 64G bake would put this button 37
-    # pixels higher and this coordinate would miss - which is what the local pod was doing.
+    # WHY A FIXED COORDINATE IS SAFE HERE AND WAS NOT BEFORE: Disk Utility REMEMBERS ITS WINDOW
+    # SIZE, and it centres the window vertically. A guest whose Disk Utility had been dragged
+    # taller put the same toolbar 38 pixels higher:
+    #
+    #     521-tall window (a fresh disk, and every CI run)   top y=294   glyph y=315
+    #     599-tall window (a disk something had resized on)  top y=256   glyph y=277
+    #
+    # Verified by closing and reopening Disk Utility on the local guest: the window came back at
+    # 521 and the toolbar landed on (1288, 315) - the same pixel as this run's CI frame. So the
+    # number below is not a guess about a moving target; it is where a default-sized window puts
+    # the button, and CI always opens a default-sized one.
     at: [1290, 315]
     settle: 6
     expect_any:
