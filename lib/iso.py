@@ -42,6 +42,38 @@ import time
 import urllib.error
 import urllib.request
 
+# URLLIB IGNORES THE PROXY ENVIRONMENT VARIABLES, UNLIKE curl.
+#
+# This module talks to ghcr with urllib.request.urlopen, and that call reads NO proxy setting on
+# its own - `https_proxy` in the environment is consulted by urllib's default opener only for
+# schemes it knows, and the CI runner reaches ghcr.io solely through a proxy:
+#
+#     via proxy   https://ghcr.io/v2/                     401 (answered)
+#     direct      the same host                           Temporary failure in name resolution
+#
+# Run 42626233852 lost the macOS dev stage to exactly that:
+#
+#     urllib.error.URLError: <urlopen error [Errno -3] Temporary failure in name resolution>
+#
+# So every request in this file goes through `_open`, which installs a ProxyHandler built from
+# the environment. curl-based code elsewhere in this repository never needed it; this is the one
+# module that speaks HTTP itself.
+def _opener():
+    proxies = {}
+    for scheme in ("http", "https"):
+        value = os.environ.get(f"{scheme}_proxy") or os.environ.get(f"{scheme.upper()}_PROXY")
+        if value:
+            proxies[scheme] = value
+    if not proxies:
+        return urllib.request.build_opener()
+    return urllib.request.build_opener(urllib.request.ProxyHandler(proxies))
+
+
+def _open(request, *, timeout: float):
+    """`urlopen`, with the proxy the environment names - or nothing when it names none."""
+    return _opener().open(request, timeout=timeout)
+
+
 REGISTRY = os.environ.get("ISO_REGISTRY", "ghcr.io")
 
 # http or https. ghcr.io is https; a registry on the cluster network is often plain
@@ -122,7 +154,7 @@ class Auth:
     def _detect(self, scope: str) -> str:
         url = f"{SCHEME}://{REGISTRY}/token?scope=repository:{scope}:pull&service={REGISTRY}"
         try:
-            with urllib.request.urlopen(
+            with _open(
                 urllib.request.Request(url, headers=self._basic_header()), timeout=30
             ) as resp:
                 # ghcr answers 200 with a JSON token; callers use _fetch_token to read
@@ -151,7 +183,7 @@ class Auth:
         for key, value in headers.items():
             request.add_header(key, value)
         try:
-            with urllib.request.urlopen(request, timeout=60) as resp:
+            with _open(request, timeout=60) as resp:
                 return json.load(resp)["token"]
         except urllib.error.HTTPError as exc:
             if exc.code not in (401, 403) or not headers:
@@ -159,7 +191,7 @@ class Auth:
                     f"{REGISTRY} refused a pull token for {scope}: HTTP {exc.code}"
                 ) from exc
 
-        with urllib.request.urlopen(
+        with _open(
             urllib.request.Request(url, headers=headers), timeout=60
         ) as resp:
             return json.load(resp)["token"]
@@ -175,7 +207,7 @@ def _manifest(repo: str, tag: str) -> dict:
         req.add_header(key, value)
     req.add_header("Accept", "application/vnd.oci.image.manifest.v1+json")
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with _open(req, timeout=60) as resp:
             return json.load(resp)
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403, 404):
@@ -254,7 +286,7 @@ def _download(url: str, dest: str, *, scope: str, expected_size: int | None) -> 
             req.add_header("Range", f"bytes={have}-")
 
         try:
-            with urllib.request.urlopen(req, timeout=BLOB_SPEED_WINDOW) as resp:
+            with _open(req, timeout=BLOB_SPEED_WINDOW) as resp:
                 # A 206 means the Range was honoured; 200 means it was not, and the body
                 # starts at byte zero.
                 resuming = have > 0 and resp.status == 206
