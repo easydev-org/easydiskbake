@@ -17,18 +17,25 @@
 # SO THE FILE HAS A BOUNDARY IN IT, VISIBLE AT THE LINE WHERE `at:` STOPS AND `ssh:` STARTS.
 # That boundary is exactly where Remote Login comes on, and a reader can see it.
 #
-# WHY THE GUI HALF IS `python:` AND NOT EIGHT `at:` STEPS
+# WHY THE GUI HALF IS STEPS AND NOT `python:`
 #
-# The coordinates are all measured and could be written as steps - and two of them must not be:
+# It used to be a Python step, argued for on two grounds - and both of them turn out to be
+# expressible as a step, so it is now eleven of them with no code at all:
 #
-#   the search field      has to be clicked AFTER Spotlight has drawn, and a click that arrives
-#                         first leaves the pane on the Sharing overview. ssh.py: "ten seconds
-#                         costs six and removes the race."
+#   the search field      "has to be clicked AFTER Spotlight has drawn, and a click that
+#                         arrives first leaves the pane on the Sharing overview" - that is a
+#                         `settle:` of ten seconds, which is exactly what ssh.py did. The
+#                         value is the measurement; the code was only holding it.
 #   full disk access      IS ALREADY ON. Turning Remote Login on turns it on with it, and
-#                         clicking it again turns it OFF - which was the bug that made the
-#                         clean fail with `diskutil apfs trim WAS REFUSED`. ssh.py takes a
-#                         frame of it instead of pressing it, and a `at:` step cannot express
-#                         "look but do not press".
+#                         clicking it again turns it OFF - which is the bug that made the
+#                         clean fail with `diskutil apfs trim WAS REFUSED`. The answer is not
+#                         code: it is simply NOT A STEP. The sequence does not click it, and
+#                         `the switch is on` reads the pane afterwards to prove the switch
+#                         that DOES matter moved.
+#
+# The one thing that stayed in code is the state check at the top - "is sshd already
+# answering" - because the switch is a TOGGLE and pressing it on a machine that is already on
+# turns it off. That is a read followed by a decision, and it needs a socket, not a click.
 
 name: macos 15 remote login
 resolution: [1920, 1080]
@@ -45,12 +52,68 @@ vars:
 steps:
   # --- 1. THE GUI, WHICH IS THE ONLY WAY TO TURN THIS ON --------------------------------
   #
-  # Everything inside is one measured sequence: Spotlight, the search box, the result row, the
-  # Remote Login switch, a frame of the full-disk-access switch that is deliberately NOT
-  # clicked, and Done. It is Python because two of those are timing decisions and one is a
-  # read-without-writing.
-  - name: enable remote login through system settings
-    python: ssh_panes:enable_remote_login
+  # `systemsetup -setremotelogin on` is refused by TCC and launchctl does not expose
+  # "Allow full disk access for remote users", so the switch has to be pressed in System
+  # Settings. Every coordinate and every wait below is a measurement from ssh.py, moved here
+  # unchanged - the sequence is clicks and waits, and it never needed to be code.
+  #
+  # THE ESC IS THE FIRST ACTION, and it is not cosmetic: a notification banner or the keyboard
+  # hint swallows the next keystroke, and this guest has just come from a login window.
+  - name: dismiss anything over the desktop
+    key: esc
+    settle: 2
+
+  # SPOTLIGHT, BY ITS FULL NAME. A short query's first row can be a web suggestion, and Return
+  # takes the highlighted row - so "system settings", not "settings".
+  - name: open spotlight
+    key: meta_l+spc
+    settle: 4
+  - name: type the settings app name
+    type: system settings
+    settle: 7
+  - name: open it
+    key: ret
+    settle: 14
+
+  # THE SEARCH FIELD, AT ITS MEASURED PIXEL. (715, 267) is the centre of a box whose interior
+  # spans x 630..800, y 250..284 at 1920x1080.
+  - name: search for remote login
+    at: [715, 267]
+    settle: 2
+  - name: type the search
+    type: remote login
+    settle: 10
+
+  # THE RESULT ROW. The list puts "Sharing" as a header and "Remote Login" under it, and the
+  # pane has to finish swapping - that swap is a whole page of layout, and a click that
+  # arrives first selects the sidebar item while the right side still shows Sharing's
+  # overview, putting every later click on a list row.
+  - name: open the remote login pane
+    at: [703, 336]
+    settle: 12
+
+  # THE SWITCH. It reads "Off" until it is pressed, and pressing it also turns
+  # `Allow full disk access for remote users` ON - which is why nothing below presses that
+  # one: pressing it again would turn it off, and a remote session without Full Disk Access
+  # cannot run `diskutil` (measured: 'diskutil apfs trim WAS REFUSED (exit 1)').
+  - name: turn remote login on
+    at: [1145, 353]
+    settle: 4
+
+  # THE PANE SAYS SO. This is the read-only check the old Python step took a frame for, and
+  # as a step it is also the one that fails loudly when the switch did not move.
+  - name: the switch is on
+    until_any:
+      - [remote, login, on]
+      - [allowing, remote, users]
+    timeout: 60
+    poll: 3
+    optional: true
+
+  # DONE, so the pane closes and the daemon settles rather than holding the change in a sheet.
+  - name: close the pane
+    at: [1145, 679]
+    settle: 5
 
   # --- 2. THE HOST SIDE, WHERE EVERY ANSWER IS AN EXIT STATUS ---------------------------
   #
