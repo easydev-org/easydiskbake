@@ -86,10 +86,19 @@ steps:
   # wallpaper all drawn - and ctrl+alt+t did NOTHING. The whole 382 s recording is the desktop
   # with not one terminal window in it, so the login worked and the install had nowhere to go.
   #
-  # COSMIC's dock DOES carry a terminal: a dark rounded tile with a light `>` at (1013,1048),
-  # measured on that run's own last frame. This is the way in.
+  # COSMIC's dock DOES carry a terminal, and (1083,1043) IS IT: a DARK NAVY tile with a
+  # YELLOW `>` glyph, measured on run 42565846891's own last frame.
+  #
+  # THE FIRST COORDINATE WAS WRONG AND THE RECORDING SAID SO. (1013,1048) is the TEXT EDITOR:
+  # that run's failure frame is the editor with its buffer holding
+  #
+  #     echo admin | sudo -S sh -c "DEBIAN_FRONTEND=noninteractive apt-get install ..."
+  #
+  # - the install command typed into a text document, never executed. The dock's order is
+  # (approximately) Files, Editor, Files-manager, ..., Editor tile at 1035, Terminal at 1083.
+  # The yellow `>` is what identifies it: it is the only yellow glyph in the dock.
   - name: open the terminal
-    at: [1013, 1048]
+    at: [1083, 1043]
     settle: 12
 
   - name: install sshd
