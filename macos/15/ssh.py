@@ -612,7 +612,7 @@ REMOTE_LOGIN_STEPS: list[str] = []  # replaced by the System Settings sequence
 REMOTE_LOGIN_CHECK = "netstat -an | grep -c '*.22 '"
 
 
-def _remote_login_listening(guest: vm.Guest) -> bool:
+def _remote_login_listening(guest: vm.Guest, port: int = 2222) -> bool:
     """Does anything answer on the guest's ssh port already?
 
     THE SWITCH IN SYSTEM SETTINGS IS A TOGGLE, NOT AN "ON" BUTTON, so pressing it on a machine
@@ -626,13 +626,18 @@ def _remote_login_listening(guest: vm.Guest) -> bool:
 
     Returns False - meaning "go ahead and press it" - when the port cannot be reached at all,
     which is the fresh-disk case this stage exists for.
+
+    `port` IS THE CALLER'S, NOT A CONSTANT. The first version hard-coded 2222, which is the
+    default but not the only value a stage may pass - so on a run using another port this probe
+    would always fail, always answer "not listening", and always press a switch that might have
+    been on already.
     """
     import socket
 
     import net
 
     try:
-        with socket.create_connection((net.FORWARD_HOST, 2222), timeout=4) as sock:
+        with socket.create_connection((net.FORWARD_HOST, port), timeout=4) as sock:
             sock.settimeout(4)
             banner = sock.recv(64)
     except OSError:
@@ -735,7 +740,10 @@ def enable_remote_login(guest: vm.Guest, q=None) -> None:
         # The cheapest honest state check is the daemon itself: if the port answers, there is
         # nothing to do. It also makes a resumed run cheap - the GUI sequence is most of a
         # minute of clicking.
-        if _remote_login_listening(guest):
+        # THE PORT LIVES ON THE MACHINE'S SHAPE, not on the socket paths - `Guest.start()`
+        # forwards `shape.ssh_port`, so that is the number the host side is listening on.
+        if _remote_login_listening(guest, getattr(getattr(guest, "shape", None),
+                                                  "ssh_port", 2222)):
             log("=== Remote Login is ALREADY on; nothing to press ===")
             return
 
