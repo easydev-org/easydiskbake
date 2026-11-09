@@ -140,12 +140,40 @@ steps:
   # 0b. THE TERMINAL, WHICH IS WHERE THE INSTALL IS TYPED
   # =======================================================================================
   #
-  # ctrl+alt+t is this desktop's own shortcut. The step EXISTS on its own - rather than being
-  # folded into the `run:` - because "did the terminal open" is the first question when an
-  # install produces nothing, and the recording now answers it.
+  # NixOS' DESKTOP IS GNOME, AND GNOME HAS NO ctrl+alt+t AND NO TERMINAL ON ITS DOCK.
+  #
+  # This file used to press `ctrl+alt+t`, which had never been measured on this image. The
+  # same desktop WAS measured on fedora-gui's disk in a local pod (2026-11-09), and the frame
+  # after that key is GNOME's OVERVIEW, not a shell: GNOME's dock ships Firefox, Calendar,
+  # Files, Software, Text Editor and Calculator, and pressing ctrl+alt+t is not a binding.
+  # Writing `ctrl+alt+t` here was the same assumption that failed there.
+  #
+  # NixOS' graphical ISO runs stock GNOME, so the measured path is the same one:
+  #
+  #     click the wallpaper   (960,700)   give the shell focus, or the overview never takes
+  #                                       the typing - measured on fedora, where pressing
+  #                                       Super straight after login left it unchanged twice
+  #     Super                             the overview and its search field
+  #     type "terminal"                   a result tile at (960,178)
+  #     click (960,178)                   a Terminal window opens
+  #
+  # The `run:` step below then types into that window, which is where GNOME Terminal's own
+  # `Terminal` application is the only thing that has focus.
+  - name: desktop - give the shell focus
+    at: [960, 700]
+    settle: 2
+
+  - name: open the overview
+    key: meta_l
+    settle: 4
+
+  - name: search for the terminal
+    type: terminal
+    settle: 4
+
   - name: open the terminal
-    key: ctrl+alt+t
-    settle: 10
+    at: [960, 178]
+    settle: 12
 
   # BOTH LINES RUN AS ROOT, AND THE FIRST ONE HAD TO BE FIXED TO DO SO.
   #
