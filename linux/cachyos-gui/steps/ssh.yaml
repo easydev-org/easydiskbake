@@ -71,6 +71,21 @@ steps:
   #
   # `clear: false` because the field is empty and a ctrl+a on a GDM entry selects nothing
   # useful; the password is typed straight in.
+  # WAKE THE SCREEN BEFORE TOUCHING THE KEYBOARD.
+  #
+  # The launch stage's verdict for this same disk is PASS and its frame is a DESKTOP
+  # (`42519158623`, `VERDICT PASS kind=fedora-gui`) - so the session is already logged in and
+  # what the ssh stage photographs is the LOCK SCREEN, not a greeter. An idle lock screen
+  # ignores synthetic keys until it has been woken, which is why three runs typed a password
+  # at (936,628), showed the caret in the entry, and left `Password` in it.
+  #
+  # Escape wakes it. The pause after it is the one the screen needs to raise the lock dialog
+  # and give the entry focus.
+  - name: greeter - wake the screen
+    key: esc
+    settle: 5
+    optional: true
+
   - name: greeter - the password box
     at: [936, 628]
     type: "{{ password }}"
