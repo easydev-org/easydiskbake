@@ -81,9 +81,11 @@ def main() -> int:
           "if owned:" in ssh_src)
     check("enable_remote_login closes only what it opened", "macos/15/ssh.py",
           "if q_owned:" in ssh_src)
+    # A CALL, NOT THE EXACT TEXT: the probe grew a port argument, and a check that pins the
+    # call's spelling makes every future signature change look like a missing fix.
     check("Remote Login is read before it is toggled", "macos/15/ssh.py",
           "def _remote_login_listening" in ssh_src
-          and "_remote_login_listening(guest)" in ssh_src)
+          and "_remote_login_listening(guest" in ssh_src)
 
     # --- the walkthrough ---------------------------------------------------------------
     by_name = {s.get("name"): s for s in seq.get("steps") or []}
