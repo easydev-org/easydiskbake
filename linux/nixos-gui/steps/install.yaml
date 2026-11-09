@@ -102,10 +102,16 @@ steps:
     settle: 15
 
   # =======================================================================================
-  # 3. LOCALE AND KEYBOARD. Both defaults are kept: the live session already has a locale,
+  # 3. LOCATION AND KEYBOARD. Both defaults are kept: the live session already has a locale,
   #    and every character this walk types is ASCII.
-  # =======================================================================================
-  - name: locale
+  #
+  # `locale` IS IN settings.conf BUT DOES NOT DRAW A PANE ON THIS IMAGE - measured on run
+  # 42544553424's video: Welcome goes straight to Keyboard at 01:19, and the sidebar shows
+  # `Location` as a step that never appears. Calamares' locale module hides its page when
+  # `useSystemTimezone` + a successful geoip lookup settle it, which is this build's config.
+  # So this walk presses Next ONCE from Welcome, and the next pane it is looking at is
+  # Keyboard - not a `locale` click that would land on the Users pane's password field.
+  - name: location
     at: [1324, 835]
     settle: 15
 
@@ -114,41 +120,62 @@ steps:
     settle: 15
 
   # =======================================================================================
-  # 4. USERS. FOUR FIELDS; `doReusePassword: false`, so root has no pair of its own here -
-  #    NixOS' module writes root's password from the account's.
+  # 4. USERS. SIX FIELDS AND A TICK, MEASURED ON THIS IMAGE'S OWN FRAME.
+  #
+  # THE PANE IS NOT THE SHAPE `users.conf` IMPLIES. Its `doReusePassword: false` reads as
+  # "the user has a password pair and root has none", and the frame at 01:20 of run
+  # 42544553424 shows the opposite: SIX entries, because the user's pair, then
+  # `Use the same password for the administrator account` UNTICKED, then the ADMINISTRATOR's
+  # pair. `doReusePassword: false` is what makes that tick start off.
+  #
+  # THE MEASURED BOXES (x 616..1059, so the centre is 837):
+  #
+  #     What is your name?                        y=377
+  #     What name do you want to use to log in?   y=429
+  #     Password                                  y=494
+  #     Repeat Password                           y=525
+  #     Administrator Password                    y=602
+  #     Administrator Repeat Password             y=634
+  #
+  # `Require strong passwords` IS TICKED and has to be cleared: with it on, `admin` is
+  # rejected with `Password is too short` beside BOTH pairs - measured, the first run typed
+  # an eight-character password into the name fields and never got past this pane.
   # =======================================================================================
-  - name: users - full name
-    at: [1050, 330]
+  - name: users - what is your name
+    at: [837, 377]
     type: "{{ user }}"
     settle: 2
   - name: users - login name
-    at: [1050, 380]
+    at: [837, 429]
     type: "{{ user }}"
     settle: 2
-  - name: users - host name
-    at: [1050, 430]
-    type: nixos
-    settle: 2
+
+  # THE TICK COMES OFF FIRST, BEFORE EITHER PASSWORD IS TYPED, so the pane's own validation
+  # never has a reason to mark the fields red.
+  - name: users - allow a short password
+    at: [630, 534]
+    settle: 3
+
   - name: users - password
-    at: [1050, 500]
+    at: [837, 494]
     type: "{{ password }}"
     settle: 2
-  - name: users - confirm password
-    at: [1050, 550]
+  - name: users - repeat password
+    at: [837, 525]
+    type: "{{ password }}"
+    settle: 2
+  - name: users - administrator password
+    at: [837, 602]
+    type: "{{ password }}"
+    settle: 2
+  - name: users - administrator repeat password
+    at: [837, 634]
     type: "{{ password }}"
     settle: 3
 
   - name: users
     at: [1324, 835]
     settle: 18
-
-  # `admin` is shorter than the pane's eight-character minimum, and `allowWeakPasswords: true`
-  # means Calamares asks rather than refuses. The confirmation is answered whether or not it
-  # is read: the point is blank space on the pane underneath when no dialog is up.
-  - name: accept the weak password, if it is asked
-    at: [1324, 835]
-    settle: 6
-    optional: true
 
   # =======================================================================================
   # 5. PACKAGE CHOOSER - THE DESKTOP. GNOME is the configured default.
