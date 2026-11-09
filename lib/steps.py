@@ -1043,10 +1043,21 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222) -> None:
     #
     # The constant that survives is the distance from the window's BOTTOM EDGE: the button's
     # centre is 15 px above that edge on both frames, and x is 1327. `dy` is measured UP.
+    #
+    # THE THRESHOLD IS NOT `window_brightness`, AND THAT WAS THE BUG IN THE FIRST VERSION.
+    # `at_window` looks for a pixel brighter than a NEAR-BLACK wallpaper (40). NixOS' live
+    # session paints a BLUE desktop, and measured on the failure frame:
+    #
+    #     wallpaper       (59, 75, 160)   brightness  98
+    #     window content  (239,239,239)   brightness 239
+    #
+    # so a threshold of 40 finds the wallpaper at the bottom of the screen and clicks 15 px
+    # above y=1079. What identifies a window's bottom here is that it is NEAR WHITE, and the
+    # default threshold is high enough that nothing in a wallpaper can pass it.
     if step["at_bottom"]:
         x, dy = (int(v) for v in step["at_bottom"])
         column = int(step.get("window_x", 960))
-        threshold = int(step.get("window_brightness", 40))
+        threshold = int(step.get("window_brightness", 200))
 
         if step.get("region"):
             driver.look_at(step["region"], f"{step.name} - find the window",
@@ -1062,7 +1073,7 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222) -> None:
             except (OSError, ValueError):
                 image = None
             if image is not None:
-                from_bottom = int(step.get("window_from_bottom", 120))
+                from_bottom = int(step.get("window_from_bottom", 260))
                 for y in range(image.height - 1, max(0, image.height - from_bottom), -1):
                     r, g, b = image.getpixel((min(column, image.width - 1), y))
                     if (r + g + b) // 3 > threshold:
@@ -1070,7 +1081,8 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222) -> None:
                         break
 
         if bottom is None:
-            log(f"  {step.name}: no window bottom found in column {column}; not clicking")
+            log(f"  {step.name}: no window bottom brighter than {threshold} in "
+                f"column {column}; not clicking")
             return
 
         click_y = bottom - dy
