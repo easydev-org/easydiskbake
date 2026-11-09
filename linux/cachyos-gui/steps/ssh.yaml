@@ -98,6 +98,44 @@ steps:
     settle: 12
     optional: true
 
+  # A TEXT CONSOLE, BECAUSE THIS GREETER DOES NOT TAKE SYNTHETIC KEYS.
+  #
+  # PROVEN ON ZORIN, 2026-11-09: run 42585057176's zorin walk went greeter -> this console
+  # block -> `install sshd`, and its verdict is PASS with `ssh: id/hostname -> 0:
+  # ['docker','docker']` and the PREROUTING jump in the log. mint is the control that shows the
+  # keyboard itself is fine - its LightDM answers `Invalid password, please try again` - while
+  # on this image the entry keeps its placeholder `Password` and never shows a bullet.
+  #
+  # Ctrl+Alt+F3 does not go through the greeter at all: every Linux here runs a getty on
+  # tty3, and a login there is a shell. The greeter steps stay above it, so a disk that
+  # autologins - or whose greeter does accept input - is unaffected.
+  #
+  # ALL OF IT IS `optional`, because a disk that already has a shell needs none of it.
+  - name: console - switch to tty3
+    key: ctrl+alt+f3
+    settle: 10
+    optional: true
+
+  - name: console - the login name
+    type: "{{ user }}"
+    settle: 3
+    optional: true
+
+  - name: console - the login name's Return
+    key: ret
+    settle: 4
+    optional: true
+
+  - name: console - the password
+    type: "{{ password }}"
+    settle: 3
+    optional: true
+
+  - name: console - the password's Return
+    key: ret
+    settle: 10
+    optional: true
+
   # =======================================================================================
   # 1. THE INSTALL, TYPED INTO THIS SESSION'S OWN TERMINAL
   # =======================================================================================

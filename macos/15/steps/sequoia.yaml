@@ -252,7 +252,19 @@ steps:
   # the word "use", which is why both steps are in one pane: the first answer opens the sheet
   # and the second one closes it, in the same pass.
   - name: enable location services
-    when: [location, services]
+    # `when: [location, services]` MATCHED THE ANALYTICS PAGE TOO. That page's body reads
+    #
+    #     Help Apple and app developers improve their products and services automatically.
+    #     ... Diagnostic data may include location information.
+    #
+    # so "location" and "services" are both on it. This step happens to sit after the analytics
+    # one, so the walk got the right answer by luck of ordering - which is not a thing to
+    # leave in a file that a future edit can reorder.
+    #
+    # 'approximate location' is on this page ("... use data including your approximate
+    # location.") and on none of the six others checked: Analytics, Data & Privacy, Create a
+    # Mac Account, Choose Your Look, Time Zone.
+    when: [approximate, location]
     do:
       - at: [1306, 810]
         settle: 6

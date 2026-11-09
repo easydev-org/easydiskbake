@@ -34,6 +34,7 @@ FRAMES = [
     ("analytics",     512),
     ("look",          540),
     ("timezone",      490),
+    ("location",      440),
 ]
 
 
@@ -60,23 +61,48 @@ def main() -> int:
         print(f"=== SKIPPED: no recording at {VIDEO} ===")
         return 0
     document = yaml.safe_load(open(WALK))
-    panes = [(s["name"], [s["when"]] if isinstance(s["when"], str) else s["when"])
-             for s in document["steps"] if s.get("when")]
+    panes = []
+    for s in document["steps"]:
+        if not s.get("when"):
+            continue
+        matcher = [s["when"]] if isinstance(s["when"], str) else s["when"]
+        panes.append((s["name"], matcher, s.get("region"), int(s.get("scale", 2))))
 
     columns = []
     for label, seconds in FRAMES:
-        columns.append((label, words_of(frame_at(seconds))))
+        columns.append((label, frame_at(seconds)))
 
-    width = max(len(n) for n, _ in panes)
+    def pane_reads(png, region, scale):
+        """The words this pane would actually be matched against.
+
+        A PANE WITH `region` IS READ IN A CROP, and pretending otherwise reports false
+        ambiguities: 'sign in to apple account' is limited to the title band precisely because
+        the ACCOUNT pane's body says '... reset with your Apple Account ... sign in with your
+        Apple Account in the next step', which satisfies every word of that matcher.
+        """
+        if not region:
+            return words_of(png)
+        ppm = os.path.splitext(png)[0] + f".r{region[1]}.ppm"
+        image = Image.open(png).convert("RGB")
+        box = tuple(region)
+        crop = image.crop(box)
+        crop = crop.resize(((box[2] - box[0]) * scale, (box[3] - box[1]) * scale),
+                           Image.LANCZOS)
+        crop.save(ppm)
+        text = assistant.ocr_text(ppm) or ""
+        return {"".join(c for c in w.lower() if c.isalnum()) for w in text.split()}
+
+    width = max(len(n) for n, _, _, _ in panes)
     header = "".join(f"{label[:9]:>11}" for label, _ in columns)
     print(f"{'pane':{width}} {header}")
     print("-" * (width + 11 * len(columns)))
 
     wrong = []
-    for name, matcher in panes:
+    for name, matcher, region, scale in panes:
         row = ""
         hits = []
-        for label, have in columns:
+        for (label, png) in columns:
+            have = pane_reads(png, region, scale)
             hit = all(w in have for w in matcher)
             row += f"{'HIT' if hit else '.':>11}"
             if hit:
