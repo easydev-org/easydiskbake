@@ -147,20 +147,32 @@ steps:
         type: "{{ password }}"
         modifier: meta_l
         settle: 3
-      # CONTINUE STARTS A PROCESS, NOT A TRANSITION. The pane answers by going
+      # CONTINUE STARTS A PROCESS, NOT A TRANSITION, AND IT TAKES UP TO THREE MINUTES.
+      #
+      # The pane answers by going
       #
       #     Creating account...
       #
-      # with Continue greyed out, for thirty to sixty seconds - and a loop that looks again in
-      # fifteen still sees the SAME PANE, so it runs this `do` list a second time and types
-      # `docker` into fields that already hold it. Measured on a live guest: three passes at
-      # this pane, and by the third the form was unusable - which is how the Apple Account
-      # pane ended up with 'admin' typed into its Email field.
+      # with Continue greyed out. A loop that looks again before it finishes sees the SAME
+      # pane, runs this `do` list a second time and types `docker` into fields that already
+      # hold it - measured on a live guest: three passes, and the form was unusable
+      # afterwards. That is how the Apple Account pane ended up with 'admin' typed into its
+      # Email field.
       #
-      # 90 seconds covers the slowest account creation seen here, and `once` stops the list
-      # from running again even if the pane outlasts it.
+      # 180 SECONDS IS drive.py's NUMBER, AND ITS HISTORY IS THE REASON:
+      #
+      #     6 -> 25 -> 80 -> 180, and 80 WAS STILL NOT ENOUGH
+      #
+      # Run 41855475794 clicked Continue at 15:32:37 and Set Up Later at 15:34:00 - eighty
+      # seconds later - and the recording shows the form still spinning. `Set Up Later` only
+      # exists on the Apple Account pane, so on a form that has not finished the click went
+      # somewhere else and the wizard came back and stayed. drive.py's own words: "the number
+      # that matters is not how long it takes but how long it can take - a first boot on a
+      # shared runner with a cold disk, writing a home directory, generating keys and talking
+      # to the keychain. Waiting too long costs idle seconds and is recoverable; clicking too
+      # early throws away the run."
       - at: [1306, 810]
-        settle: 90
+        settle: 180
 
   # --- the panes with their own way out --------------------------------------------------
 

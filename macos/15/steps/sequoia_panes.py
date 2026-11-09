@@ -67,12 +67,22 @@ def apple_account(driver, step) -> bool:
         #     sign in to apple account: seen 3 times and still up
         #
         # three times, on a pane whose only problem was that the sheet had not been confirmed.
-        driver.click(APPLE_SET_UP_LATER_15, "the 'Set Up Later' link (15)", settle=6.0)
+        # drive.py's MEASURED FOUR-ACTION SEQUENCE, IN ITS OWN ORDER AND TIMINGS:
+        #
+        #     click Set Up Later  settle 2
+        #     key   Return        settle 3      the sheet's default button needs it
+        #     click sheet Skip    settle 2      only if the sheet is up
+        #     key   Return        settle 2      Skip focused it, so Return fires it
+        #
+        # The last two are unconditional in drive.py and its comment says why: "the sheet only
+        # exists if the click worked. When the pane has already gone, this coordinate is empty
+        # space on the next pane - harmless - and when the sheet is up it is its Skip button."
+        # An unconditional click on empty space costs nothing; a conditional one that guesses
+        # wrong leaves the sheet up with the wizard behind it.
+        driver.click(APPLE_SET_UP_LATER_15, "the 'Set Up Later' link (15)", settle=2.0)
         driver.press("ret", gap=3.0)
-
-        driver.look("apple-sheet")
-        if driver.says("skip"):
-            driver.click(APPLE_SKIP_15, "the sheet's blue Skip (15)", settle=8.0)
+        driver.click(APPLE_SKIP_15, "the sheet's Skip, if there is one", settle=2.0)
+        driver.press("ret", gap=2.0)
 
         # THE VERDICT IS THE SCREEN, NOT "I CLICKED". Returning True unconditionally is how a
         # pane is answered three times in a row and then reported STUCK.
