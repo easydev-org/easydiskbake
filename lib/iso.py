@@ -70,8 +70,28 @@ def _opener():
 
 
 def _open(request, *, timeout: float):
-    """`urlopen`, with the proxy the environment names - or nothing when it names none."""
+    """`urlopen`, with the proxy the environment names - or nothing when it names none.
+
+    IT SAYS WHICH, ONCE. Three CI runs were spent changing this and guessing: the failure is
+    `Temporary failure in name resolution`, which is what a request that bypassed the proxy
+    looks like - and from the log there was no way to tell whether the handler had a proxy in
+    it or not. One line per distinct answer, so a log answers the question instead of asking it.
+    """
+    proxies = {scheme: os.environ.get(name)
+               for scheme, name in (("http", "http_proxy"), ("https", "https_proxy"))}
+    proxies = {k: v for k, v in proxies.items() if v}
+    key = tuple(sorted(proxies.items()))
+    if key != _open.reported:                               # type: ignore[attr-defined]
+        _open.reported = key                            # type: ignore[attr-defined]
+        if proxies:
+            log(f"http: using proxy {', '.join(f'{k}={v}' for k, v in sorted(proxies.items()))}")
+        else:
+            log("http: NO PROXY IN THE ENVIRONMENT - a request to a host that needs one will "
+                "fail with 'name resolution', not with a connection error")
     return _opener().open(request, timeout=timeout)
+
+
+_open.reported = None                                    # type: ignore[attr-defined]
 
 
 REGISTRY = os.environ.get("ISO_REGISTRY", "ghcr.io")
