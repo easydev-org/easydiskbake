@@ -295,44 +295,6 @@ def saturation(colour: tuple[float, float, float]) -> float:
     return (mx - min(colour)) / mx
 
 
-def _band_stats(width: int, height: int, pixels: bytes,
-                top: float, bottom: float, step: int = 4) -> tuple[tuple[float, float, float], float]:
-    """Mean colour and variance over a horizontal band.
-
-    `step` subsamples horizontally: a 1280-wide band is 1280 pixels per row and this
-    runs on every frame, so 4 is a 16x saving and changes none of these statistics
-    meaningfully.
-    """
-    y0 = int(height * top)
-    y1 = max(y0 + 1, int(height * bottom))
-
-    total = 0
-    sums = [0, 0, 0]
-    for y in range(y0, y1):
-        base = y * width * 3
-        for x in range(0, width, step):
-            off = base + x * 3
-            sums[0] += pixels[off]
-            sums[1] += pixels[off + 1]
-            sums[2] += pixels[off + 2]
-            total += 1
-
-    if total == 0:
-        return (0.0, 0.0, 0.0), 0.0
-
-    mean = (sums[0] / total, sums[1] / total, sums[2] / total)
-
-    var = 0.0
-    for y in range(y0, y1):
-        base = y * width * 3
-        for x in range(0, width, step):
-            off = base + x * 3
-            var += (pixels[off] - mean[0]) ** 2
-            var += (pixels[off + 1] - mean[1]) ** 2
-            var += (pixels[off + 2] - mean[2]) ** 2
-    return mean, var / (total * 3)
-
-
 def analyse(path: str) -> dict | None:
     """The numbers is_desktop() decides on. Useful in a log, and testable on its own."""
     parsed = read_ppm(path)
@@ -511,7 +473,12 @@ PASSWORD_FIELD_SCALE = 6                     # the text is 12px tall; 6x is what
 # THE MENU BAR, BY THE SAME ARGUMENT. A desktop's menu bar is a 22-pixel strip; tesseract's
 # page segmenter reads the whole 1920x1080 frame as empty (see is_macos_desktop). Crop the
 # strip and enlarge it, and the line reads cleanly.
-MENU_BAR = (0, 0, 700, 34)                   # x0, y0, x1, y1 - Apple menu through Help
+# `MENU_BAR_CROP`, NOT `MENU_BAR`. Two different rectangles were sharing one name and the
+# second definition silently replaced the first: this one is a CROP BOX (x0, y0, x1, y1) that
+# lib/steps.py's `ends_region` copies, while the one 350 lines above is a BAND as fractions of
+# the frame (`analyse` passes it to _band_stats). The shadowing cost a Windows bake its whole
+# run - `_band_stats() takes from 5 to 6 positional arguments but 7 were given`.
+MENU_BAR_CROP = (0, 0, 700, 34)              # x0, y0, x1, y1 - Apple menu through Help
 MENU_BAR_SCALE = 3                           # 12px text at 3x is what tesseract needs
 
 _OCR_CACHE: dict[str, list[str]] = {}
@@ -631,7 +598,7 @@ def is_macos_desktop(path: str, *, explain: bool = False) -> bool:
         return False
     try:
         image = Image.open(path).convert("RGB")
-        crop = image.crop(MENU_BAR)
+        crop = image.crop(MENU_BAR_CROP)
         big = crop.resize((crop.width * MENU_BAR_SCALE,
                            crop.height * MENU_BAR_SCALE), Image.LANCZOS)
     except Exception:                                  # noqa: BLE001 - unreadable frame

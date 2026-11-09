@@ -931,7 +931,8 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
         # `ssh_probe: echo ok`.
         probe = str(step.get("ssh_probe", "true"))
         log(f"  waiting up to {seconds}s for sshd on port {ssh_port}")
-        if not session.wait_for_ssh(ssh_port, seconds, user=login, probe=probe):
+        if not session.wait_for_ssh(ssh_port, seconds, user=login, probe=probe,
+                                    password=password):
             # A FRAME BEFORE FAILING, because the question that follows is always "what was
             # on screen". The ssh stage's first failures had nothing to look at, and the
             # answer - a lock screen, an empty terminal, a sudo prompt - was only visible in

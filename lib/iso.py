@@ -374,11 +374,20 @@ def fetch_tag(tag: str, dest: str) -> str:
     return dest
 
 
+def _sha1(path: str) -> str:
+    digest = hashlib.sha1()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def fetch_url(
     url: str,
     dest: str,
     *,
     sha256: str | None = None,
+    sha1: str | None = None,
     size: int | None = None,
 ) -> str:
     """Download a vendor's own URL, verified.
@@ -392,11 +401,17 @@ def fetch_url(
     a different build would install a different edition and nothing downstream
     would notice.
     """
+    # SHA1 IS A SECOND HASH BECAUSE NOT EVERY ARCHIVE PUBLISHES SHA256. archive.org records
+    # sha1 and md5 per file, and for an Apple .xip that sha1 is the same number Apple's own
+    # release index publishes - so it is a real identity check, not a weaker one taken on
+    # trust. A sha256 is still preferred when the source offers it.
+    check = (sha256, _sha256) if sha256 else ((sha1, _sha1) if sha1 else (None, None))
     if os.path.exists(dest) and os.path.getsize(dest) > 0:
-        if sha256:
-            actual = _sha256(dest)
-            if actual != sha256:
-                log(f"{dest} present but sha256 is {actual}, expected {sha256}; refetching")
+        if check[0]:
+            actual = check[1](dest)
+            if actual != check[0]:
+                log(f"{dest} present but the hash is {actual}, expected {check[0]}; "
+                    f"refetching")
                 os.unlink(dest)
             else:
                 log(f"{dest} already present and verified")
@@ -408,15 +423,15 @@ def fetch_url(
     log(f"downloading {url}")
     _download(url, dest, scope="", expected_size=size)
 
-    if sha256:
-        actual = _sha256(dest)
-        if actual != sha256:
+    if check[0]:
+        actual = check[1](dest)
+        if actual != check[0]:
             os.unlink(dest)
             raise IsoError(
-                f"sha256 mismatch for {url}\n  expected {sha256}\n  actual   {actual}\n"
+                f"hash mismatch for {url}\n  expected {check[0]}\n  actual   {actual}\n"
                 f"the vendor has probably published a new build; update the pin"
             )
-        log(f"sha256 verified: {sha256}")
+        log(f"hash verified: {check[0]}")
 
     return dest
 

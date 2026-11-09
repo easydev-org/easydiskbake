@@ -167,7 +167,8 @@ def scp(local: str, remote: str, *, port: int = 2222, timeout: int = 300,
 
 
 def wait_for_ssh(port: int, seconds: int, note=log, settle: int = 10,
-                 probe: str = "true", user: str | None = None) -> bool:
+                 probe: str = "true", user: str | None = None,
+                 password: str | None = None) -> bool:
     """Wait until sshd answers and the account can log in.
 
     A BANNER IS NOT ENOUGH - this runs a command, because a socket that accepts a
@@ -202,7 +203,7 @@ def wait_for_ssh(port: int, seconds: int, note=log, settle: int = 10,
     out = ""
     status = None
     while time.time() < deadline:
-        status, out = ssh(port, probe, timeout=20, user=user)
+        status, out = ssh(port, probe, timeout=20, user=user, password=password)
         if status == 0:
             note(f"ssh answers after {time.time() - started:.0f}s")
             return True
@@ -221,11 +222,12 @@ def wait_for_ssh(port: int, seconds: int, note=log, settle: int = 10,
     # failed connection or credential; 124 is this function's timeout; 127 is a missing client.
     note(f"  last status: {status}")
     note(f"  last output: {out[:300]}")
-    explain(port, probe, note, user=user)
+    explain(port, probe, note, user=user, password=password)
     return False
 
 
-def explain(port: int, probe: str, note=log, user: str | None = None) -> None:
+def explain(port: int, probe: str, note=log, user: str | None = None,
+            password: str | None = None) -> None:
     """One last attempt with ssh's own account of why, printed in full.
 
     THIS IS NOT A SECOND CHECK, IT IS THE EXPLANATION FOR THE FIRST ONE. Everything the run
@@ -252,7 +254,7 @@ def explain(port: int, probe: str, note=log, user: str | None = None) -> None:
         return
     argv = [
         "timeout", "30",
-        "sshpass", "-p", SSH_PASSWORD,
+        "sshpass", "-p", password or SSH_PASSWORD,
         "ssh", "-vvv", "-p", str(port),
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",

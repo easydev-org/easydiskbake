@@ -131,7 +131,7 @@ EXPECTED = {
     # the emulator's root console on ttyS0, not sshd, and the disk set is written by
     # mkdisks.py rather than by an installer - there is no filesystem to trim that this
     # repository would then be booting to check.
-    "android-qemu.yml": {"build": None, "boot": None},
+    "android-qemu.yml": {"sysimg": None, "disks": None, "ssh": None, "dev": None},
 }
 
 

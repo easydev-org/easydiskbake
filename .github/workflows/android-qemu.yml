@@ -1,89 +1,97 @@
 name: android-qemu
 
-# Android: turn the pinned AOSP system image into bootable disks, then boot them as a
-# plain qemu VM and photograph the result.
+# Android, built as a chain of disks, the way macOS and Windows are.
 #
-#     fetch the system image
-#         └─> build the disks (mkdisks.py)
-#               └─> boot them (run_qemu.py) ──> screen.png
+#     sysimg ──> disks ──> ssh ──> dev
 #
-# WHY THIS IS A SEPARATE WORKFLOW FROM android.yml
+# WHY A CHAIN AND NOT ONE JOB
 #
-# android.yml builds an AVD: it pulls a packed AVD from ghcr, starts `emulator -avd`, and
-# publishes an AVD archive. That artifact is a directory of Android images only the
-# emulator's AVD path can consume.
+# Each stage fails in a different place and deserves its own timeout and its own exit:
 #
-# This one does not use an AVD at all. It takes the system image's own system.img and
-# vendor.img - which are GPT disks - and supplies the three things a bare qemu boot needs
-# and the SDK does not ship as installable parts:
+#     sysimg   a 746 MB download from Google, verified against the sha1 in lib/images.py
+#     disks    mkdisks.py turning that image into bootable disks - CPU and IO only
+#     ssh      a Termux openssh running inside the guest, reachable from outside
+#     dev      a toolchain in the guest (LEFT EMPTY FOR NOW - see the job)
 #
-#     cache.img     system, metadata, super, vbmeta and boot, as GPT partitions
-#     userdata.img  an ext4 /data
-#     ramdisk.img   the SDK ramdisk plus an fstab naming those five
+# Starting from a tag is what makes a change to one stage testable without paying for the
+# ones before it. That is the same pair of inputs macOS and Windows use:
 #
-# which android/15/mkdisks.py builds and android/15/run_qemu.py boots. The output is a set
-# of disks a VM can start, not an AVD. Both workflows exist on purpose: they answer
-# different questions about the same upstream image, and until this one has run
-# repeatedly the other is the one with the history.
+#     <job>_run    should this job run
+#     <job>_from   the tag to pull; empty means "use what the job above produced"
 #
-# THE IMAGE IS src:HERE, NOT THE BAKE IMAGE
+# THERE IS NO `launch` JOB. LAUNCH IS A PHASE INSIDE EVERY JOB THAT HAS A GUEST.
 #
-# The bake image has no `lz4` (measured: `command -v lz4` -> MISSING), and mkdisks.py
-# needs it to append the fstab as a third legacy LZ4 stream. So this runs in
-# android/15/Containerfile.qemu, which carries the emulator, adb, lz4 and e2fsprogs and
-# nothing the other platforms would have to pull.
+# A job that has to change the disk has to boot it first - there is no way to install ssh
+# into a stopped VM - so "launch" is not a stage of its own, it is the first and last thing
+# every disk-touching job does:
 #
-# MANUAL ONLY. It boots a guest for minutes and downloads 746 MB when the runner is cold.
+#     pull the disks ──> launch ──> do the work ──> save ──> push
+#
+# and the launch is verified inside that job: the boot reaches sys.boot_completed, a
+# screenshot comes back through surfaceflinger, and - in the stages that have one - sshd is
+# proven to answer on the forwarded port. A separate verification job would boot the same
+# disk a second time to answer a question the job above already answered.
+#
+# WHAT A TAG HOLDS
+#
+# macOS and Windows hand over ONE qcow2. Android is three disks, and two of them are a pair:
+#
+#     cache.img      system + metadata + super; the key that opens /data lives in metadata
+#     userdata.img   /data, 64 GiB, where applications and the ssh prefix go
+#     ramdisk.img    the boot ramdisk with the first-stage fstab
+#
+# So a tag is a tar of those three, and `persist.py` is what makes the pair usable: the
+# guest never writes to the raw files, it writes to a qcow2 beside each one, and saving
+# folds both overlays back before the tar is made.
+#
+# MANUAL ONLY.
 
 on:
   workflow_dispatch:
     inputs:
       # --- what to run ---------------------------------------------------------------
-      build_run:
-        description: "Build the disks from the system image"
+      sysimg_run:
+        description: "sysimg: fetch and verify the AOSP system image"
         type: boolean
         default: true
-      boot_run:
-        description: "Boot the disks and photograph the screen"
+      disks_run:
+        description: "disks: turn it into bootable disks (~3 minutes)"
         type: boolean
         default: true
-
-      # --- how long to give the guest ------------------------------------------------
-      # 260 IS ENOUGH FOR A FRESH DEVICE AND NOT FOR A RESTORED ONE. A /data carried over
-      # from a previous run has to be decrypted and its package database re-read, which was
-      # measured slower than a cold boot - run 42475590459 stopped at apexd-bootstrap with
-      # the screenshot step never reached because the guest had used the whole window.
-      seconds:
-        description: "boot: seconds to keep the guest up (the screen is read near the end)"
-        default: "420"
-      ssh_port:
-        description: "boot: host port forwarded to the guest's ssh port"
-        default: "2222"
-
-      # --- publish -------------------------------------------------------------------
-      publish:
-        description: "Push the disk set to ghcr as android-15-qemu"
+      ssh_run:
+        description: "ssh: launch, install sshd, launch again to prove it (~10 minutes)"
+        type: boolean
+        default: true
+      dev_run:
+        description: "dev: launch and install a toolchain (not implemented yet)"
         type: boolean
         default: false
-      publish_tag:
-        description: "the tag to push; empty for android-15-qemu"
+
+      # --- where each job starts -----------------------------------------------------
+      sysimg_from:
+        description: "sysimg: pull this tag instead of fetching"
+        default: ""
+      disks_from:
+        description: "disks: pull this tag instead of the sysimg job's output"
+        default: ""
+      ssh_from:
+        description: "ssh: pull this tag instead of the disks job's output"
+        default: ""
+      dev_from:
+        description: "dev: pull this tag instead of the ssh job's output"
         default: ""
 
-      # --- keeping what was installed ------------------------------------------------
-      #
-      # A RUNNER IS DISCARDED AT THE END OF A JOB, so "keep my applications" has to mean
-      # "upload the /data pair and hand it back next time". The pair is cache.img +
-      # userdata.img and it is a PAIR: /data is encrypted and its key is in the metadata
-      # partition of cache.img, so /data alone boots to a device with nothing on it.
-      #
-      # Both files are sparse - 64 GiB of virtual size, about 2 GiB of blocks after a
-      # first boot - and upload-artifact stores them as they are, not expanded.
-      keep_userdata:
-        description: "boot: save cache.img + userdata.img as an artifact for reuse"
-        type: boolean
-        default: false
-      userdata_from:
-        description: "boot: an artifact name holding a saved pair; empty to start fresh"
+      # --- launch, which every disk-touching job runs ----------------------------------
+      seconds:
+        description: "launch: seconds to keep the guest up before the phase ends"
+        default: "420"
+      ssh_port:
+        description: "launch: host port forwarded to the guest's sshd"
+        default: "2222"
+
+      # --- publish ---------------------------------------------------------------------
+      publish_tag:
+        description: "tag suffix for this stage; empty for android-15-<stage>"
         default: ""
 
 concurrency:
@@ -92,38 +100,26 @@ concurrency:
 
 jobs:
   # ===========================================================================
-  # BUILD - the system image becomes a set of disks.
+  # SYSIMG - the one input that comes from outside this repository.
   # ===========================================================================
-  build:
-    if: inputs.build_run
+  sysimg:
+    if: inputs.sysimg_run || inputs.sysimg_from != ''
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 40
     container:
       image: ghcr.io/${{ github.repository }}:android-qemu
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-      # /dev/net/tun AND NET_ADMIN, BECAUSE THE GUEST'S NETWORK IS A TAP.
-      #
-      # Without them lib/net.py cannot create the bridge or the tap, and the emulator falls
-      # back to its userspace NAT - which for this guest means NO network at all:
-      #
-      #     lo 127.0.0.1/8
-      #     dummy0, ifb0, ifb1, tunl0, gre0 ...  all DOWN
-      #     ping: connect: Network is unreachable
-      #
-      # Measured on run with `options: --device /dev/kvm` alone. The macOS workflows have
-      # passed both of these since they moved off slirp for the same reason.
-      options: --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN
     permissions:
       contents: read
       checks: write
+      packages: write
+    outputs:
+      tag: ${{ inputs.sysimg_from || steps.publish.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
-      # KVM IS NOT FOR THE DOWNLOAD, IT IS FOR THE BOOT JOB. runner-check is asked here
-      # anyway, because a runner without /dev/kvm that gets as far as the boot job has
-      # already spent the download and the disk build discovering it.
       - name: prepare
         uses: easydev-org/easyactions/runner-check@main
         with:
@@ -131,6 +127,8 @@ jobs:
           disk-gb: '40'
           token: ${{ github.token }}
 
+      # THE PIN, PRINTED BEFORE ANYTHING IS DOWNLOADED. A stage that fails should say which
+      # upstream file it was looking at, and the sha1 is the answer to "did Google move it".
       - name: show the pin
         uses: easydev-org/easyactions/log-stream@main
         with:
@@ -141,13 +139,9 @@ jobs:
             set -euo pipefail
             python3 lib/android_pin.py
 
-      # THE SYSTEM IMAGE IS AN INPUT, AND IT IS THE ONLY THING FETCHED FROM GOOGLE.
-      #
-      # android/15/fetch_sysimg.py installs it into $ANDROID_SDK_ROOT and verifies the
-      # sha1 from lib/images.py - the same pin publish_android.py uses, so this flow and
-      # the AVD flow can never be looking at different upstream files.
       - name: fetch the system image
-        id: sysimg
+        id: fetch
+        if: inputs.sysimg_from == ''
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
@@ -155,8 +149,6 @@ jobs:
           interval: "15"
           command: |
             set -euo pipefail
-            # 'sysimg.log', NOT 'out.txt' - a FILE CALLED out.txt BESIDE A DIRECTORY
-            # CALLED out/ IS A TRAP, and this workflow has both.
             python3 android/15/fetch_sysimg.py | tee sysimg.log
             # THE DIRECTORY COMES FROM THE SCRIPT, NOT FROM A SECOND GUESS HERE.
             # lib/avd.py owns the layout (.../system-images/android-<api>/<flavour>/<abi>)
@@ -164,50 +156,28 @@ jobs:
             grep '^SYSTEM_IMAGE_DIR=' sysimg.log | cut -d= -f2- > sdk.txt
             test -s sdk.txt
 
-      - name: build the disks
-        uses: easydev-org/easyactions/log-stream@main
-        with:
-          token: ${{ github.token }}
-          name: android-qemu-disks
-          interval: "15"
-          command: |
-            set -euo pipefail
-            SDK=$(cat sdk.txt)
-            echo "system image: $SDK"
-            python3 android/15/mkdisks.py --sdk "$SDK" --out out/disks
-
-      # THE DISK SET IS THE ARTIFACT OF THIS JOB. It is uploaded even on failure, because a
-      # mkdisks.py that got as far as writing cache.img has something worth inspecting -
-      # whether the copy out of super landed on non-zero bytes is the question every
-      # offset bug in this file has answered wrongly and quietly.
-      - name: upload the disks
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-qemu-disks
-          path: |
-            out/disks/cache.img
-            out/disks/userdata.img
-            out/disks/ramdisk.img
-          if-no-files-found: warn
-          retention-days: 7
-
-      - name: push the disk set
-        if: success() && inputs.publish
+      # THE SYSTEM IMAGE IS 1.6 GB AND IS NEVER PUSHED AS A TAG OF ITS OWN HERE - it already
+      # exists as `sysimg-android-15-aosp`, published by artifacts-publish.yml from the same
+      # pin. This job's tag is the marker that "the pinned image is present and unpackable",
+      # which is cheap to verify and lets the disks job start from it.
+      - name: push the marker
+        if: success() && inputs.sysimg_from == ''
+        id: publish
         uses: easydev-org/easyactions/oci-push@main
         with:
-          path: out/disks/cache.img
-          kind: android-15-qemu
-          tag: ${{ inputs.publish_tag || 'android-15-qemu' }}
+          path: sdk.txt
+          kind: android-15-sysimg
+          tag: ${{ inputs.publish_tag || 'android-15-sysimg' }}
           token: ${{ github.token }}
 
   # ===========================================================================
-  # BOOT - start the disks and read the verdict off the guest.
+  # DISKS - the system image becomes the three disks a bare qemu boot needs.
   # ===========================================================================
-  boot:
-    needs: build
+  disks:
+    needs: sysimg
     if: |
-      always() && inputs.boot_run && needs.build.result == 'success'
+      always() && inputs.disks_run
+      && (inputs.disks_from != '' || needs.sysimg.outputs.tag != '')
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     container:
@@ -215,21 +185,12 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-      # /dev/net/tun AND NET_ADMIN, BECAUSE THE GUEST'S NETWORK IS A TAP.
-      #
-      # Without them lib/net.py cannot create the bridge or the tap, and the emulator falls
-      # back to its userspace NAT - which for this guest means NO network at all:
-      #
-      #     lo 127.0.0.1/8
-      #     dummy0, ifb0, ifb1, tunl0, gre0 ...  all DOWN
-      #     ping: connect: Network is unreachable
-      #
-      # Measured on run with `options: --device /dev/kvm` alone. The macOS workflows have
-      # passed both of these since they moved off slirp for the same reason.
-      options: --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN
     permissions:
       contents: read
       checks: write
+      packages: write
+    outputs:
+      tag: ${{ inputs.disks_from || steps.publish.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -240,16 +201,12 @@ jobs:
           disk-gb: '40'
           token: ${{ github.token }}
 
-      # THE BOOT JOB GETS ITS OWN COPY OF THE SYSTEM IMAGE, because a second job starts on
-      # a second runner. It is the same pinned file, verified the same way; the alternative
-      # - passing 1.6 GB of system.img between jobs through an artifact - is slower and
-      # gains nothing.
       - name: fetch the system image
         id: sysimg
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: android-qemu-boot-sysimg
+          name: android-qemu-disks-sysimg
           interval: "15"
           command: |
             set -euo pipefail
@@ -257,162 +214,239 @@ jobs:
             grep '^SYSTEM_IMAGE_DIR=' sysimg.log | cut -d= -f2- > sdk.txt
             test -s sdk.txt
 
-      # ARTIFACTS DO NOT PRESERVE THE DIRECTORY LAYOUT DEPENDABLY ENOUGH TO BOOT FROM, so
-      # the disks are rebuilt here from the same system image rather than downloaded. It
-      # costs about a minute and removes a class of failure - a missing kernel, a vendor
-      # image that silently did not upload - that presents as a SIGSEGV with no message.
-      # THE SAVED PAIR GOES IN BEFORE mkdisks RUNS, BECAUSE mkdisks KEEPS AN EXISTING /data.
+      # THREE DISKS, AND mkdisks.py IS THE WHOLE OF THIS STAGE.
       #
-      # That ordering is the whole mechanism: mkdisks only makes a filesystem when there is
-      # not one already, so a restored userdata.img survives it. Restoring afterwards would
-      # mean the disks were built for a fresh device and then partly overwritten.
-      # download-artifact ONLY SEES ARTIFACTS FROM THE RUN THAT IS EXECUTING. Measured:
-      #
-      #     Unable to download artifact(s): Artifact not found for name: android-qemu-userdata
-      #
-      # while the artifact was present and unexpired - it was uploaded by the PREVIOUS run.
-      # Reaching across runs needs `github-token` and an explicit `run-id`, and `run-id` must
-      # be a number, so the name is resolved to the newest matching artifact first.
-      # download-artifact ONLY SEES ARTIFACTS FROM THE RUN THAT IS EXECUTING. Measured:
-      #
-      #     Unable to download artifact(s): Artifact not found for name: android-qemu-userdata
-      #
-      # while the artifact was present and unexpired - it had been uploaded by the PREVIOUS
-      # run. Reaching across runs needs the REST API and `run-id`, and `run-id` is a number,
-      # so the newest matching artifact is resolved first.
-      #
-      # NO `gh` IN THIS IMAGE, so the API is called with curl and the token directly. That is
-      # the same interface `gh` uses; there is nothing here that needs the CLI.
-      - name: restore a saved /data
-        if: inputs.userdata_from != ''
-        uses: easydev-org/easyactions/log-stream@main
-        with:
-          token: ${{ github.token }}
-          name: android-qemu-restore
-          interval: "10"
-          command: |
-            set -euo pipefail
-            API="https://api.github.com/repos/${{ github.repository }}"
-            AUTH="Authorization: Bearer ${{ github.token }}"
-            mkdir -p out/disks
-
-            # THE NEWEST UNEXPIRED ARTIFACT WITH THAT NAME, ACROSS EVERY RUN.
-            curl -fsSL -H "$AUTH" "$API/actions/artifacts?per_page=100" \
-              | python3 -c "
-            import json,sys
-            want = sys.argv[1]
-            arts = [a for a in json.load(sys.stdin)['artifacts']
-                    if a['name'] == want and not a['expired']]
-            if not arts:
-                sys.exit(3)
-            a = max(arts, key=lambda x: x['created_at'])
-            print(a['id'], a['workflow_run']['id'])
-            " "${{ inputs.userdata_from }}" > /tmp/pick.txt || {
-              echo "=== no unexpired artifact named ${{ inputs.userdata_from }} ==="
-              exit 1
-            }
-            ID=$(cut -d" " -f1 /tmp/pick.txt); RUN=$(cut -d" " -f2 /tmp/pick.txt)
-            echo "artifact $ID from run $RUN"
-
-            # THE ARTIFACT IS A ZIP, and one large file inside it. curl follows the redirect
-            # the API answers with to the blob storage host.
-            curl -fsSL -H "$AUTH" -o /tmp/pair.zip \
-              "$API/actions/artifacts/$ID/zip"
-            python3 -c "
-            import zipfile
-            with zipfile.ZipFile('/tmp/pair.zip') as z:
-                for n in z.namelist():
-                    print('extracting', n)
-                z.extractall('out/disks')
-            "
-            ls -la out/disks | head
-
+      # It copies `system` out of super at the offset liblp names (AVB will not verify a
+      # logical partition), writes a 16 MiB ext4 for `metadata` - where /data's key goes -
+      # and appends the first-stage fstab to the SDK ramdisk as a third legacy-LZ4 stream.
       - name: build the disks
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: android-qemu-boot-disks
+          name: android-qemu-disks
           interval: "15"
           command: |
             set -euo pipefail
             python3 android/15/mkdisks.py --sdk "$(cat sdk.txt)" --out out/disks
 
-      # NO `set -e` AROUND THE VERDICT ON PURPOSE. run_qemu.py exits non-zero when the
-      # boot did not complete, and the log it leaves is what the failure has to be read
-      # from - killing the step early would upload the screenshots but not the reason.
-      - name: boot it and photograph the screen
+      # THE DISK SET, PLUS THE THREE FILES THAT COME FROM THE SYSTEM IMAGE.
+      #
+      # cache.img, userdata.img and ramdisk.img are the outputs of this stage. kernel,
+      # system.img and vendor.img are inputs that happen to be needed beside them at boot;
+      # they are 1.6 GB together and are re-staged from the pinned image by every downstream
+      # job rather than shipped in four tarballs.
+      #
+      # THE TAR IS WHAT A TAG HOLDS. macOS and Windows push one qcow2 because one file is
+      # their whole disk; this is three files that must stay a set - /data cannot be opened
+      # without the key in cache.img's metadata partition.
+      - name: pack the disk set
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: android-qemu-boot
+          name: android-qemu-pack
           interval: "15"
           command: |
-            set -uo pipefail
-            python3 android/15/run_qemu.py \
-              --dir out/disks \
-              --seconds "${{ inputs.seconds || '260' }}" \
-              --evidence out/screen.png
-            status=$?
-            echo "run_qemu exited $status"
-            exit $status
+            set -euo pipefail
+            cd out/disks
+            tar -cf ../android-15-disks.tar cache.img userdata.img ramdisk.img
+            cd ..
+            zstd -19 -f android-15-disks.tar -o android-15-disks.tar.zst
+            rm -f android-15-disks.tar
+            ls -la android-15-disks.tar.zst
 
-      # FOLD THE OVERLAYS IN BEFORE SAVING. The guest writes to a qcow2 beside each raw
-      # file, never to the raw file itself, so the raw is unchanged after a run that
-      # installed things - persist.py converts the overlay back and copies the pair.
-      - name: save the /data pair
-        if: always() && inputs.keep_userdata
+      - name: push the disk set
+        if: success() && inputs.disks_from == ''
+        id: publish
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/android-15-disks.tar.zst
+          kind: android-15-disks
+          tag: ${{ inputs.publish_tag || 'android-15-disks' }}
+          token: ${{ github.token }}
+
+  # ===========================================================================
+  # SSH - launch, install a Termux openssh, launch again to prove it, save.
+  # ===========================================================================
+  ssh:
+    needs: disks
+    if: |
+      always() && inputs.ssh_run
+      && (inputs.ssh_from != '' || needs.disks.outputs.tag != '')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/${{ github.repository }}:android-qemu
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      # /dev/net/tun AND NET_ADMIN, BECAUSE THE GUEST'S NETWORK IS A TAP.
+      #
+      # Without them lib/net.py cannot create the bridge or the tap and the emulator falls
+      # back to its userspace NAT, which for this guest means no network at all - and a
+      # guest with no network cannot be reached on 2222 whatever sshd is doing inside it.
+      options: --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+    outputs:
+      tag: ${{ inputs.ssh_from || steps.publish.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '40'
+          token: ${{ github.token }}
+
+      - name: fetch the system image
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: android-qemu-save
+          name: android-qemu-ssh-sysimg
+          interval: "15"
+          command: |
+            set -euo pipefail
+            python3 android/15/fetch_sysimg.py | tee sysimg.log
+            grep '^SYSTEM_IMAGE_DIR=' sysimg.log | cut -d= -f2- > sdk.txt
+            test -s sdk.txt
+
+      # THE DISK SET ARRIVES COMPRESSED, AND mkdisks.py KEEPS IT.
+      #
+      # mkdisks only makes a filesystem when there is not one already, so extracting the
+      # three disks first and then running it stages kernel/system/vendor around them
+      # without touching cache.img or userdata.img. Restoring afterwards would mean the
+      # disks were built for a fresh device and then partly overwritten.
+      - name: pull the disk set
+        if: inputs.ssh_from != ''
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: android-qemu-ssh-pull
+          interval: "15"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py pull "${{ inputs.ssh_from }}" out/android-15-disks.tar.zst
+            mkdir -p out/disks
+            tar -xf out/android-15-disks.tar.zst -C out/disks
+            ls -la out/disks
+
+      - name: build the disks
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: android-qemu-ssh-disks
+          interval: "15"
+          command: |
+            set -euo pipefail
+            python3 android/15/mkdisks.py --sdk "$(cat sdk.txt)" --out out/disks
+
+      # ---- LAUNCH ------------------------------------------------
+      # The phase, not a job: it starts the guest, configures the network over adb, installs
+      # sshd from the Termux payload, and proves sshd answers. Everything below runs on the
+      # same guest; nothing is rebooted between them.
+      - name: launch, install sshd, and prove it listens
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: android-qemu-ssh-launch
+          interval: "15"
+          command: |
+            set -euo pipefail
+            adb start-server >/dev/null 2>&1 || true
+            python3 android/15/run_qemu.py \
+              --dir out/disks \
+              --tap qemutap0 \
+              --ssh-port "${{ inputs.ssh_port || '2222' }}" \
+              --adb-port 5554 \
+              --seconds "${{ inputs.seconds || '420' }}" \
+              --ssh-payload out/termux-ssh.tar.zst \
+              --evidence out/screen.png
+
+      # ---- SAVE --------------------------------------------------
+      # The guest wrote to a qcow2 beside each raw file, never to the raw file itself. Folding
+      # both overlays back is what turns "the guest has sshd" into a disk the next job can
+      # start - and the two are saved together because /data cannot be opened without the
+      # key that lives in cache.img's metadata partition.
+      - name: save the disks
+        if: always()
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: android-qemu-ssh-save
           interval: "10"
           command: |
             set -euo pipefail
             python3 android/15/persist.py --save --dir out/disks --into out/keep
+            cd out/keep
+            tar -cf ../android-15-ssh.tar cache.img userdata.img
+            cd ..
+            zstd -19 -f android-15-ssh.tar -o android-15-ssh.tar.zst
+            rm -f android-15-ssh.tar
+            ls -la android-15-ssh.tar.zst
 
-      - name: keep the /data pair
-        if: always() && inputs.keep_userdata
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-qemu-userdata
-          path: |
-            out/keep/cache.img
-            out/keep/userdata.img
-          if-no-files-found: warn
-          retention-days: 30
-
-      # THE PICTURE IS THE PROOF. Everything else this workflow prints is a log line that
-      # a boot which stopped early produces just as readily.
       - name: keep the screen
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: android-qemu-screen
+          name: android-qemu-ssh-screen
           path: |
             out/screen.png
             out/disks/run.log
           if-no-files-found: warn
           retention-days: 14
 
-      - name: the verdict
-        if: always()
-        uses: easydev-org/easyactions/log-stream@main
+      - name: push the ssh disk set
+        if: success() && inputs.ssh_from == ''
+        id: publish
+        uses: easydev-org/easyactions/oci-push@main
         with:
+          path: out/android-15-ssh.tar.zst
+          kind: android-15-ssh
+          tag: ${{ inputs.publish_tag || 'android-15-ssh' }}
           token: ${{ github.token }}
-          name: android-qemu-verdict
-          interval: "10"
-          command: |
-            set -euo pipefail
-            echo "=== android-qemu ==="
-            if [ -f out/screen.png ]; then
-              echo "screen: $(stat -c %s out/screen.png) bytes"
-              # A PNG HEADER IS THE CLAIM. A truncated file, or a debugfs export that
-              # found nothing, is not a screenshot however the run described itself.
-              head -c 8 out/screen.png | od -An -tx1
-            else
-              echo "no screenshot was produced"
-            fi
-            if [ -f out/disks/run.log ]; then
-              echo "--- the guest's last words ---"
-              grep -v vqParseGuestToHostRequestLocked out/disks/run.log | tail -20
-            fi
+
+  # ===========================================================================
+  # DEV - launch and install a toolchain. DELIBERATELY EMPTY FOR NOW.
+  # ===========================================================================
+  dev:
+    needs: ssh
+    if: |
+      always() && inputs.dev_run
+      && (inputs.dev_from != '' || needs.ssh.outputs.tag != '')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/${{ github.repository }}:android-qemu
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '40'
+          token: ${{ github.token }}
+
+      # THE STAGE EXISTS SO THE CHAIN HAS ITS SHAPE AND THE INPUTS ONES ARE NAMED. What it
+      # will do is launch the ssh disk, run the toolchain's own installer over the forwarded
+      # port, save, and push `android-15-dev` - the same four phases the ssh job above has.
+      #
+      # It stops here rather than pretending: a job that boots a disk and does nothing to it
+      # would push a tag identical to its input and claim a stage had run.
+      - name: not implemented
+        run: |
+          echo "=== DEV IS NOT IMPLEMENTED YET ==="
+          echo "  its input tag is ${{ inputs.dev_from || needs.ssh.outputs.tag }}"
+          echo "  the shape it will have is the ssh job's: pull, launch, install, save, push"
+          exit 1
