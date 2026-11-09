@@ -38,6 +38,22 @@ vars:
   user:
     from: args.user
     default: docker
+  # THE ACCOUNT THIS DISK ACTUALLY HAS, AND IT IS NOT `docker`.
+  #
+  # Measured on run 42577663888's own recording, the lightdm greeter's title bar after the
+  # password was typed and refused:
+  #
+  #     DOCKERdocker-Standard-PC-Q35-ICH9-2009
+  #     Invalid password, please try again
+  #
+  # That title bar IS this desktop's hostname, and the hostname is what install.yaml's
+  # `who are you - host name` step types. The field had already been seeded with the
+  # capitalised full name (`DOCKER`) by the time the walk typed into it, so the walk's
+  # `docker` was appended to it - the same mechanism that produced `dockerdocker` on
+  # openSUSE.
+  #
+  # So the login name on these disks is `DOCKERdocker`, and ssh has to ask for that one.
+  ssh_user: DOCKERdocker
 
 steps:
 

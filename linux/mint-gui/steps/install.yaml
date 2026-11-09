@@ -44,6 +44,7 @@ name: mint-gui - the ubiquity walk
 resolution: [1920, 1080]
 
 vars:
+  display_name: Docker User
   user:
     from: args.user
     default: docker
@@ -147,9 +148,22 @@ steps:
   #
   # THE HOSTNAME IS DERIVED FROM THE MACHINE MODEL - `docker-Standard-PC-Q35` - and is
   # replaced with the user name so the disk has one canonical name in it.
+  # THE FULL NAME IS A DISPLAY NAME, AND THE HOST NAME IS DERIVED FROM IT.
+  #
+  # This walk used to type `docker` into BOTH fields. Ubiquity capitalises the full name as
+  # it goes - `DOCKER` - and seeds the host name from it, so the second press appended the
+  # walk's `docker` to what Ubiquity had already put there. Measured on run 42577663888's
+  # own lightdm title bar:
+  #
+  #     DOCKERdocker-Standard-PC-Q35-ICH9-2009
+  #
+  # and the login name on that disk is `DOCKERdocker`, not `docker`.
+  #
+  # `Docker User` is the same display name popos-gui types, and it is the shape Ubiquity
+  # expects: a human name with a space, from which a clean login name follows.
   - name: who are you - full name
     at: [965, 347]
-    type: "{{ user }}"
+    type: "{{ display_name }}"
     settle: 2
   - name: who are you - host name
     at: [877, 375]
