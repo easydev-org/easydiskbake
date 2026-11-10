@@ -230,7 +230,39 @@ def frame_is_painted(ppm: str) -> tuple:
     varying = total - common
     # SEE THE DOCSTRING: the colour count separates a greeter from a console, and the area
     # floor only has to reject a literally flat frame.
-    painted = distinct >= 24 and varying > total * 0.005
+    #
+    # THE COLOUR COUNT ALONE IS NOT ENOUGH, AND CACHYOS IS WHY. Its SDDM is a FLAT two-colour
+    # theme - one background and one text colour - and run d8baf01's ssh stage called it
+    #
+    #     2 colours, 14.2% not the most common (222361 of 259200 samples)
+    #
+    # "not painted", failed the stage before the walk that logs in on that very screen, and
+    # published nothing. 14.2% of a 1920x1080 frame is 294,000 pixels that are not the
+    # background: that is a login form, drawn. A blank framebuffer is 0.00% and an 80x25 text
+    # console is 5 colours at 7.14%, so the pair below separates all three:
+    #
+    #     blank / flat     1 colour,  0.00%      -> not painted
+    #     text console     5 colours, 7.14%      -> not painted (too few colours AND the
+    #                                              glyphs are the only thing drawn)
+    #     cachyos SDDM     2 colours, 14.2%      -> PAINTED: two colours, but a fifth of the
+    #                                              frame is not the background
+    #
+    # A CONSOLE HAS GLYPHS THAT COVER A TENTH OF THE FRAME TOO, so area alone would pass one.
+    # What separates them is that a console's non-background pixels are TEXT on a fixed grid,
+    # and this cannot see a grid - so the test is on the PAIR: many colours (which a console
+    # cannot have without antialiasing it does not do), OR enough area that something was
+    # deliberately drawn (which a blank frame cannot have).
+    # AND THE DISCRIMINATION IS "IS ANYTHING DRAWN AT ALL", WHICH IS THE QUESTION THE CALLER ASKS.
+    #
+    # `launch_linux` uses this to answer "did the desktop come up" for a stage with no other way
+    # in. The ssh stage uses it to answer "has the machine stopped booting", and then LOGS IN on
+    # whatever is there - its walk starts with a greeter step for exactly that reason. Telling a
+    # console from a greeter is not a question either caller needs answered, and a threshold that
+    # tries costs a real disk: cachyos' two-colour SDDM sat at 14.2% against a console's 7.14%,
+    # eight points apart, which is not a decision this should be making on a screenshot.
+    #
+    # What it must reject is a frame with NOTHING on it: one colour, or all black.
+    painted = distinct >= 2 and varying > total * 0.005
     return painted, (f"{distinct} colours, {100 * varying / total:.1f}% not the most common"
                      f" ({common} of {total} samples)")
 
