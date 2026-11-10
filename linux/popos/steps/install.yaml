@@ -20,8 +20,8 @@
 #
 # 2. THE FULL NAME IS NOT THE USER NAME. With both fields holding `docker` the footer's `Next`
 #    stays GREY: measured, three presses in a run at 9d4e83a left the pane unchanged. Typing
-#    `Docker User` instead makes the installer derive `dockeruser` and the button turns green
-#    at once. So the display name is `Docker User` and the login is `docker`.
+#    `VM User` instead makes the installer derive `vmuser` and the button turns green
+#    at once. So the display name is `VM User` and the login is `docker`.
 #
 # AND ONE THAT COST THIS RUN TODAY: A GTK ENTRY VALIDATES ON FOCUS-OUT.
 #
@@ -36,7 +36,7 @@ resolution: [1920, 1080]
 vars:
   user:
     from: args.user
-    default: docker
+    default: vmuser
   password:
     from: args.password
     default: admin
@@ -125,7 +125,7 @@ steps:
   #     User Name    docker|
   #     Next                         <- grey
   #
-  # - the walk had just typed `Docker User` into Full Name and nothing landed, because
+  # - the walk had just typed `VM User` into Full Name and nothing landed, because
   # `type_into` is click, ctrl+a, sixty BackSpaces, then type, and THIS PANE'S ENTRIES SIT
   # BESIDE THE ARTWORK PICKER: a ctrl+a or a BackSpace that lands on the wrong control
   # selects the avatar and opens a GTK file chooser over the form. So the pane is CLICK AND

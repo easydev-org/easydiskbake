@@ -33,7 +33,7 @@ resolution: [1920, 1080]
 vars:
   user:
     from: args.user
-    default: docker
+    default: vmuser
   password:
     from: args.password
     default: admin
@@ -332,7 +332,7 @@ steps:
   #     Confirm Password ( 960, 630)
   #
   # AND FEDORA'S USERNAME FOLLOWS `Full Name` EXACTLY - typing `docker` gave
-  # `Username docker`, not the `dockeruser` that Pop!_OS' installer produces from the same
+  # `Username docker`, not the `vmuser` that Pop!_OS' installer produces from the same
   # input. That is why this pane needs no override and why it is one field.
   #
   # Run 42405729683 filled this pane twice. GNOME's initial setup copies whatever is typed

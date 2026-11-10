@@ -66,7 +66,7 @@ except ModuleNotFoundError:  # pragma: no cover - depends on how the caller adde
 # testing the driver itself against a plain sshd on the same host, and a hard-coded
 # 172.30.0.1 makes that impossible without patching this file. So the defaults are unchanged
 # and reading them is the only thing that changed.
-SSH_USER = os.environ.get("SSH_USER") or "docker"
+SSH_USER = os.environ.get("SSH_USER") or "vmuser"
 SSH_PASSWORD = os.environ.get("SSH_PASSWORD") or "admin"
 
 # THE FORWARDED PORT EXISTS ON THE BRIDGE ADDRESS AND NOWHERE ELSE. Connecting to

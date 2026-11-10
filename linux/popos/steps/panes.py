@@ -106,14 +106,15 @@ def fill_account_name(driver, step) -> bool:
     typed a password into this form because it had not settled): `Full Name` is on this pane
     and nowhere else, and typing into a card that has not drawn yet lands nowhere.
     """
-    user = str((getattr(driver, "values", {}) or {}).get("user") or "docker")
+    user = str((getattr(driver, "values", {}) or {}).get("user") or "vmuser")
 
     # THE DISPLAY NAME MUST DIFFER FROM THE LOGIN NAME, AND THE LOGIN MUST STILL BE `docker`.
     #
     # TWO CONSTRAINTS, AND THEY ARE BOTH MEASURED:
     #
     #   pop-os-installer DERIVES the login from the display name by lowercasing it and
-    #   dropping spaces. `Docker User` -> `dockeruser` (run 42570186630's prompt, and
+    #   dropping spaces. `Vmuser` -> `vmuser`, `VM User` -> `vmuser` (run 42570186630's own
+    #   prompt read `dockeruser` under the old word; the rule is the same one).
     #   `id -un` on 9e2168b's ssh stage).
     #
     #   IT ALSO REFUSES WHEN THE TWO ARE THE SAME NAME, AND THE CHECK IGNORES CASE.
@@ -142,7 +143,23 @@ def fill_account_name(driver, step) -> bool:
     # EVERY EARLIER ATTEMPT WAS ONE HALF OF THIS TABLE: `Docker` was tried because the check
     # looked case-sensitive (run e242215: footer grey), and typing `docker` over the derived
     # name was tried because the check looked like a string compare (run d579610: footer gone).
-    display = user.capitalize() + " User"
+    # `VM User` -> `vmuser`: THE ONLY SHAPE THAT DERIVES THE LOGIN THIS REPOSITORY ASKS FOR.
+    #
+    # The pane refuses when Full Name and the derived User Name are the same string after
+    # lowercasing and stripping spaces, so every single-word display is refused:
+    #
+    #     `vmuser`  -> derives `vmuser`  same -> DISABLED
+    #     `Vmuser`  -> derives `vmuser`  same -> DISABLED
+    #     `VMUSER`  -> derives `vmuser`  same -> DISABLED
+    #
+    # A display WITH A SPACE derives the space-stripped form, which is a different string:
+    #
+    #     `VM User`     -> derives `vmuser`      different -> ENABLED
+    #     `Vmuser User` -> derives `vmuseruser`  different -> ENABLED
+    #
+    # - and only the first derives the login this repository uses. Measured against the real
+    # pane in a local pod (`Docker User`/`dockeruser` behaved identically under the old word).
+    display = "VM User" if user == "vmuser" else user.capitalize() + " User"
 
     deadline = time.time() + float(step.get("timeout", 90))
     seen = ""

@@ -27,7 +27,7 @@ resolution: [1920, 1080]
 vars:
   user:
     from: args.user
-    default: docker
+    default: vmuser
   password:
     from: args.password
     default: admin
@@ -127,14 +127,14 @@ steps:
   # THE USER NAME FIELD IS ALREADY FILLED BY YAST, AND TYPING INTO IT APPENDS.
   #
   # MEASURED, TWICE. YaST derives the login name from the full name as it is typed, and the
-  # walk then typed the same value into the derived field - so the disk carried `dockerdocker`
+  # walk then typed the same value into the derived field - so the disk carried `vmuservmuser`
   # (run 42573078551's prompt, and again on 2b2f81f's ssh stage: `id -un` returned
-  # `dockerdocker`). The install worked and sshd was up; `ssh docker@` was refused for an
+  # `vmuservmuser`). The install worked and sshd was up; `ssh docker@` was refused for an
   # account that did not exist.
   #
   # THIS IS MINT'S HOST-NAME BUG IN A DIFFERENT FIELD, so it gets the same three presses: the
   # field is click, ctrl+a, backspace, and only then typed. One `type_into` is what produced
-  # `dockerdocker` - the clear has to be its own steps with a settle between them.
+  # `vmuservmuser` - the clear has to be its own steps with a settle between them.
   - name: local user - user name, select all
     at: [1106, 483]
     settle: 2

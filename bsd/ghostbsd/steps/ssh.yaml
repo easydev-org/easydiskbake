@@ -37,7 +37,7 @@ vars:
     default: admin
   user:
     from: args.user
-    default: docker
+    default: vmuser
 
 steps:
   # =======================================================================================

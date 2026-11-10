@@ -37,24 +37,24 @@ vars:
     default: admin
   user:
     from: args.user
-    default: docker
-  # THE ACCOUNT ON THIS DISK IS `dockeruser`, AND THE INSTALLER CANNOT PRODUCE ANYTHING ELSE.
+    default: vmuser
+  # THE ACCOUNT ON THIS DISK IS `vmuser`, AND THE INSTALLER CANNOT PRODUCE ANYTHING ELSE.
   #
   # MEASURED ON THE REAL PANE, one variable at a time (steps/panes.py carries the table):
   #
   #     Full Name `docker`        -> User Name `docker`      footer DISABLED
   #     Full Name `Docker`        -> User Name `docker`      footer DISABLED   (case is ignored)
-  #     Full Name `Docker User`   -> User Name `dockeruser`  footer ENABLED
+  #     Full Name `VM User`   -> User Name `vmuser`  footer ENABLED
   #
   # pop-os-installer refuses to advance when the display name and the login name are the same
   # after lowercasing and stripping spaces. The ONLY display names that derive `docker` are
   # `docker` and `Docker`, and both are the same string to that check - so this image cannot
-  # have a `docker` account at all, and `dockeruser` is what it has.
+  # have a `docker` account at all, and `vmuser` is what it has.
   #
   # THIS FILE CARRIED THIS OVERRIDE BEFORE, was changed to remove it on the belief that
   # `Docker` would work, and run e242215 showed the footer grey. The override is back and now
   # has the measurement behind it rather than a guess.
-  ssh_user: dockeruser
+  ssh_user: vmuser
 
 steps:
 
@@ -64,7 +64,7 @@ steps:
   #
   # MEASURED ON RUN 42557318416, AND IT IS THE REASON THE FIRST ssh STAGE INSTALLED NOTHING.
   # Pop!_OS' launch screenshot is not a desktop at all - it is COSMIC's LOCK SCREEN with
-  # `Docker User` and a `Password:` box. `frame_is_painted` is right that something drew, but
+  # `VM User` and a `Password:` box. `frame_is_painted` is right that something drew, but
   # ctrl+alt+t does NOTHING on a greeter, so the terminal never opened and the install was
   # typed into nothing.
   #

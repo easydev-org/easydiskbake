@@ -40,7 +40,7 @@ vars:
     default: admin
   user:
     from: args.user
-    default: docker
+    default: vmuser
 
 steps:
 
@@ -50,7 +50,7 @@ steps:
   #
   # MEASURED ON RUN 42557318416, AND IT IS THE REASON THE FIRST ssh STAGE INSTALLED NOTHING.
   # Pop!_OS' launch screenshot is not a desktop at all - it is COSMIC's LOCK SCREEN with
-  # `Docker User` and a `Password:` box. `frame_is_painted` is right that something drew, but
+  # `VM User` and a `Password:` box. `frame_is_painted` is right that something drew, but
   # ctrl+alt+t does NOTHING on a greeter, so the terminal never opened and the install was
   # typed into nothing.
   #

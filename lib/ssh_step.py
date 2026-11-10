@@ -149,7 +149,7 @@ def main(argv: list[str]) -> int:
     p.add_argument("--mem", type=int, default=4096)
     p.add_argument("--cpus", type=int, default=4)
     p.add_argument("--ssh-port", type=int, default=2222)
-    p.add_argument("--user", default=os.environ.get("SSH_USER") or "docker")
+    p.add_argument("--user", default=os.environ.get("SSH_USER") or "vmuser")
     p.add_argument("--password", default=os.environ.get("SSH_PASSWORD") or "admin")
     p.add_argument("--resolution", default="1920x1080")
     p.add_argument("--no-clean", action="store_true",

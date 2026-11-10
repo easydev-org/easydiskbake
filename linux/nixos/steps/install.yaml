@@ -42,7 +42,7 @@ resolution: [1920, 1080]
 vars:
   user:
     from: args.user
-    default: docker
+    default: vmuser
   password:
     from: args.password
     default: admin
@@ -171,9 +171,9 @@ steps:
   # `docker` already. The old step then typed `docker` into it as well, and the frame read
   #
   #     What is your name?          docker
-  #     What name ... to log in?    dockerdocker          <- the old bug, in the field itself
+  #     What name ... to log in?    vmuservmuser          <- the old bug, in the field itself
   #
-  # `dockerdocker` is a legal user name, so nothing failed at this pane; the install went on
+  # `vmuservmuser` is a legal user name, so nothing failed at this pane; the install went on
   # and the account it created was not the one the ssh stage logs in as. THE FIX IS TO CLEAR
   # THE FIELD FIRST and then type, the same three presses the mint host-name fix uses.
   - name: users - login name, select all

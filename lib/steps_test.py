@@ -156,10 +156,10 @@ def test_unknown_key() -> None:
 # --- 4. a step acts once: `at` + `type` types, it does not also click twice --------------
 def test_no_step_acts_twice() -> None:
     print("\n=== a step with `at` and `type` types into the point, exactly once")
-    walk = walk_of([{"name": "user", "at": [5, 6], "type": "docker", "settle": 0}])
+    walk = walk_of([{"name": "user", "at": [5, 6], "type": "vmuser", "settle": 0}])
     driver, (ok, _ran) = run(walk)
     check(ok, "the walk succeeds")
-    check(driver.typed == [((5, 6), "docker")], "one type, at the measured point")
+    check(driver.typed == [((5, 6), "vmuser")], "one type, at the measured point")
     # ONE ACTION, NOT TWO. A step carrying `at` and `type` must type into the field, and
     # type_into() clicks the field itself - so `driver.clicks` stays empty and the step must
     # not ALSO run the plain-click branch. The earlier assertion here was `clicks == []`,
@@ -207,17 +207,17 @@ def test_vars() -> None:
     print("\n=== vars are substituted, and a name that is not declared is refused")
     document = walk_of(
         [{"name": "user", "at": [1, 2], "type": "{{ user }}", "settle": 0}],
-        vars={"user": {"from": "args.user", "default": "docker"}},
+        vars={"user": {"from": "args.user", "default": "vmuser"}},
     )
     driver, (ok, _ran) = run(document)
-    check(ok and driver.typed == [((1, 2), "docker")], "the default was used")
+    check(ok and driver.typed == [((1, 2), "vmuser")], "the default was used")
 
     driver, (ok, _ran) = run(document, overrides={"args.user": "admin"})
     check(ok and driver.typed == [((1, 2), "admin")], "the override wins")
 
     bad = walk_of(
         [{"name": "user", "at": [1, 2], "type": "{{ nope }}", "settle": 0}],
-        vars={"user": "docker"},
+        vars={"user": "vmuser"},
     )
     try:
         run(bad)
@@ -424,7 +424,7 @@ def test_pane_do_list() -> None:
         "steps": [
             {"name": "create a mac account", "when": ["full", "name"],
              "do": [
-                 {"at": [1, 1], "type": "docker", "settle": 0},
+                 {"at": [1, 1], "type": "vmuser", "settle": 0},
                  {"at": [2, 2], "type": "admin", "settle": 0},
                  {"at": [3, 3], "settle": 0},
              ]},
@@ -448,7 +448,7 @@ def test_pane_do_list() -> None:
     # THREE ACTIONS IN ONE PASS, NOT THREE PASSES. A loop that ran one action per pass left the
     # pane on the first field forever - the second pass matched the same pane, saw the full name
     # already typed, and stopped.
-    check(driver.typed == [((1, 1), "docker"), ((2, 2), "admin")],
+    check(driver.typed == [((1, 1), "vmuser"), ((2, 2), "admin")],
           f"both fields typed in one pass, got {driver.typed}")
     check(driver.clicks == [(3, 3)], f"and the Continue clicked once, got {driver.clicks}")
     check(answered == ["create a mac account"], f"one pane answered, got {answered}")

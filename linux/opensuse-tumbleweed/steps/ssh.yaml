@@ -37,12 +37,12 @@ vars:
     default: admin
   user:
     from: args.user
-    default: docker
+    default: vmuser
   # THE ACCOUNT IS `docker`, AND IT TOOK A FIX IN install.yaml TO MAKE THAT TRUE.
   #
   # YaST derives the login name from the full name as it is typed, and the old walk typed into
-  # BOTH fields - so the disk carried `dockerdocker` (run 42573078551's prompt, and again on
-  # 2b2f81f's ssh stage where `id -un` returned `dockerdocker`). `ssh docker@` was refused for
+  # BOTH fields - so the disk carried `vmuservmuser` (run 42573078551's prompt, and again on
+  # 2b2f81f's ssh stage where `id -un` returned `vmuservmuser`). `ssh docker@` was refused for
   # an account that did not exist.
   #
   # install.yaml now CLEARS the derived field before typing it, so the login is `docker` and
@@ -56,7 +56,7 @@ steps:
   #
   # MEASURED ON RUN 42557318416, AND IT IS THE REASON THE FIRST ssh STAGE INSTALLED NOTHING.
   # Pop!_OS' launch screenshot is not a desktop at all - it is COSMIC's LOCK SCREEN with
-  # `Docker User` and a `Password:` box. `frame_is_painted` is right that something drew, but
+  # `VM User` and a `Password:` box. `frame_is_painted` is right that something drew, but
   # ctrl+alt+t does NOTHING on a greeter, so the terminal never opened and the install was
   # typed into nothing.
   #
