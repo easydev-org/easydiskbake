@@ -665,6 +665,42 @@ def main() -> int:
     check("the client no longer argues the wait is unavoidable", "lib/qmp.py",
           "no version of this that avoids the wait" not in qmp_src)
 
+    # --- A JOB'S OUTPUT NAMES WHAT IT PUBLISHED, NOT WHAT IT WAS GIVEN ----------------
+    #
+    # The chain was broken for weeks and every stage "succeeded". Each job declared
+    #
+    #     outputs:
+    #       tag: ${{ inputs.desktop_from || steps.publish.outputs.tag }}
+    #
+    # so a run started with `desktop_from=macos15-setup` published `macos15-desktop` and then
+    # told the NEXT stage to pull `macos15-setup` - the disk it had been given, not the one it
+    # built. `ssh` therefore booted the Setup Assistant every time, and the failure read as
+    # "the wizard never finished", which sent rounds of debugging into the wizard.
+    #
+    # Run 42860953845 is the measurement: desktop's oci-push published digest 3bf133ab3b68 from
+    # input f7bd5255e8b0, and the ssh job's own oci-pull printed
+    #
+    #     pulling ghcr.io/easydev-org/easydiskbake:macos15-setup
+    #     layer sha256:f7bd5255e8b0...
+    #
+    # - the input. The one screenshot that explained it is the ssh stage's last frame: the Setup
+    # Assistant's country list, with VoiceOver reading "table, Row 1 of 257".
+    macos_workflow = load_yaml(".github/workflows/macos15.yml")
+    for job, built in (("setup", "macos15-setup"), ("desktop", "macos15-desktop"),
+                       ("ssh", "macos15-ssh"), ("vm-configure", "macos15-vm-configure"),
+                       ("dev", "macos15-dev")):
+        declared = (macos_workflow["jobs"][job].get("outputs") or {}).get("tag")
+        check(f"the {job} job outputs what it published", ".github/workflows/macos15.yml",
+              declared is not None and built in declared)
+    # AND NOTHING POINTS AT THE OLD NAME. `share` became `vm-configure`, and the dev job's
+    # condition kept saying `needs.share.outputs.tag` - a reference to a job that does not
+    # exist, which quietly made the condition true only when `dev_from` was passed by hand.
+    # CODE, NOT PROSE: the comment above explains the old name, which is the point of it.
+    wf_code = "\n".join(line for line in read(".github/workflows/macos15.yml").splitlines()
+                        if not line.lstrip().startswith("#"))
+    check("no job still needs a job that was renamed", ".github/workflows/macos15.yml",
+          "needs.share." not in wf_code)
+
     # AND EACH STAGE RECORDS ITS INPUT'S DIGEST BEFORE IT MOVES THE DISK, so the push can tell
     # whether the stage produced anything.
     #

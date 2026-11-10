@@ -178,7 +178,7 @@ jobs:
       checks: write
       packages: write
     outputs:
-      tag: ${{ inputs.setup_from || steps.publish.outputs.tag }}
+      tag: ${{ inputs.publish_tag || 'macos15-setup' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -275,7 +275,7 @@ jobs:
       checks: write
       packages: write
     outputs:
-      tag: ${{ inputs.desktop_from || steps.publish.outputs.tag }}
+      tag: ${{ inputs.publish_tag || 'macos15-desktop' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -424,7 +424,7 @@ jobs:
       checks: write
       packages: write
     outputs:
-      tag: ${{ inputs.ssh_from || steps.publish.outputs.tag }}
+      tag: ${{ inputs.publish_tag || 'macos15-ssh' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -562,7 +562,7 @@ jobs:
       checks: write
       packages: write
     outputs:
-      tag: ${{ inputs.vm_configure_from || steps.publish.outputs.tag }}
+      tag: ${{ inputs.publish_tag || 'macos15-vm-configure' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -641,9 +641,17 @@ jobs:
 
   dev:
     needs: vm-configure
+    # THE LAST STAGE THAT PRODUCES A DISK, SO ITS OUTPUT IS WHAT launch_dev PULLS.
+    #
+    # It was missing entirely, and the `needs.share.outputs.tag` below it was dead too: `share`
+    # was renamed `vm-configure` and this job kept pointing at the old name, so the condition
+    # only ever passed when `dev_from` was given by hand. A stage that can only run when you
+    # name its input is a stage the chain never reaches.
+    outputs:
+      tag: ${{ inputs.publish_tag || 'macos15-dev' }}
     if: |
       always() && inputs.dev_run
-      && (inputs.dev_from != '' || needs.share.outputs.tag != '')
+      && (inputs.dev_from != '' || needs.vm-configure.outputs.tag != '')
     runs-on: ubuntu-24.04
     # 240 MINUTES, BECAUSE XCODE IS THE SLOWEST STEP IN THE WHOLE CHAIN.
     #
