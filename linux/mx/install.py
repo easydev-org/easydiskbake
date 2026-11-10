@@ -32,9 +32,23 @@ BAKE = livebake.Bakery(
     # entry with no keystroke. The entry loads `/antiX/vmlinuz` and `/antiX/initrd.gz` - the
     # same two members this file used to extract - and passes its own `lang=en_US tz=UTC`.
     #
-    # 60 s IS THE LONGEST MENU HERE, and it is inside the 210-second desktop budget, so the
-    # wait covers it. If this image ever stops auto-booting the fix is `grub_key='ret'` with a
-    # `grub_delay` past 60, the way mint's is set.
+    # AND A SECOND MENU AFTER IT, WHICH IS WHY THIS ONE NEEDS A KEYPRESS.
+    #
+    # Run 12e6add's last frame is not GRUB - it is MX's OWN boot menu, drawn by its sysvinit
+    # boot code at 1024x768:
+    #
+    #     Welcome to MX-25.3_Xfce (Infinity)!
+    #       ===> Language - Keyboard - Timezone
+    #           Language (lang=en_US)          <- highlighted
+    #           Keyboard (kbd=us)
+    #           Timezone (tz=America/New_York)
+    #
+    # and it waits there. So the ISO has TWO menus and only the first has a timeout: GRUB
+    # (`set timeout=60`) takes its entry, then this one stops. One Return takes `Language`.
+    #
+    # THE `lang=en_US` ON IT IS THE SAME VALUE the extracted-kernel cmdline used to pass, so
+    # the B path never saw this screen at all - it had already been answered by the cmdline.
+    #
     # AND, NOT OR, BUT AGAINST THE WORDS THE A BOOT ACTUALLY SHOWS.
     #
     # MX's own driver used `"mx" in text and "install" in text`, and that was right for the B
@@ -49,9 +63,15 @@ BAKE = livebake.Bakery(
     # no `install` anywhere, so the old AND matched nothing and the bake waited out its budget
     # on a desktop that was already up. `welcome` and `mx` are on that frame together and on no
     # earlier one.
+    grub_key='ret',
+    # 75 s: GRUB's own 60-second timeout, then this menu's first paint.
+    grub_delay=75.0,
     desktop=livebake.DesktopWhen(all_of=('welcome', 'mx')),
     mem_mb=4096,
-    timeout=210,
+    # 400 s, UP FROM 210. The budget now covers GRUB's 60-second timeout, the keypress at 75,
+    # and the live session after it - the old 210 was measured against the B boot, which had
+    # neither menu to wait through.
+    timeout=400,
 )
 
 
