@@ -300,7 +300,8 @@ def _wait_for_desktop(drv, bakery: Bakery, seconds: int) -> bool:
     return False
 
 
-def _second_boot(bakery: Bakery, args, work: str, disk: str, walk_path: str) -> bool:
+def _second_boot(bakery: Bakery, args, work: str, disk: str, walk_path: str,
+                 first_guest=None) -> bool:
     """Boot the finished disk alone and run the walk from `bakery.second_boot`.
 
     THIS IS FEDORA'S SHAPE AND IT IS NOT COSMETIC. Anaconda installs a system with NO USER, by
@@ -317,6 +318,26 @@ def _second_boot(bakery: Bakery, args, work: str, disk: str, walk_path: str) -> 
     going to appear there (run 8ffbb31).
     """
     import qmp as _qmp
+
+    # THE INSTALLER'S GUEST HAS TO BE GONE BEFORE THE DISK IS ATTACHED AGAIN.
+    #
+    # qemu takes an exclusive write lock on a qcow2, and this method is called from inside
+    # `run_bake`'s `try`, whose `finally` is what normally stops the first guest. Run 6eeff43
+    # started the second guest while the first still held the disk:
+    #
+    #     13:33:30  === booting the finished disk on its own ===
+    #     13:33:33  === QEMU EXITED (1) BEFORE ITS QMP SOCKET ===
+    #
+    # - and the exit was the lock, not the socket. The diagnostic line added for the previous
+    # failure is what made that readable.
+    if first_guest is not None:
+        log(bakery.name, "stopping the installer's guest before the disk is re-attached")
+        try:
+            first_guest.stop(acpi_first=False)
+        except Exception:                              # noqa: BLE001
+            pass
+        # THE LOCK IS RELEASED BY THE PROCESS EXITING, not by the stop() call returning.
+        time.sleep(3)
 
     log(bakery.name, "=== booting the finished disk on its own ===")
     disk_work = work
@@ -548,7 +569,7 @@ def run_bake(bakery: Bakery, args) -> int:
             # disk is started on its own, with no medium, because what is being tested is that
             # the firmware finds the system the installer wrote.
             if ok and bakery.second_boot:
-                ok = _second_boot(bakery, args, work, disk, walk_path)
+                ok = _second_boot(bakery, args, work, disk, walk_path, guest)
     finally:
         # THE POST-MORTEM FRAME, EVEN WHEN THE WALK RAISED. A failed run's most useful
         # artifact is the last thing the screen showed, and the `finally` is the only place
