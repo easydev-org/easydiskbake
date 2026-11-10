@@ -405,7 +405,8 @@ MACOS_ASSETS = {
 # the sha256 used for Windows; it is what the publisher provides, and it still catches
 # a truncated or replaced download, which is what the check is for.
 ANDROID = {
-    "sysimg:android-15-aosp": {        "url": "https://dl.google.com/android/repository/sys-img/android/"
+    "sysimg:android-15-aosp": {
+        "url": "https://dl.google.com/android/repository/sys-img/android/"
                "x86_64-35_r02.zip",
         "sha1": "2d857d170c0d1b827149565da34b3383e5306f7f",
         "sha256": None,
@@ -422,6 +423,39 @@ ANDROID = {
         "api": 35,
         "abi": "x86_64",
         "flavour": "default",
+    },
+}
+
+# BlissOS: Android-x86, and the only Android in this repository that a stock qemu boots.
+#
+# IT IS DELIBERATELY NOT IN all_images(). That function decides which tags
+# lib/publish_artifacts.py mirrors automatically, and an ISO added to it would change what
+# every scheduled mirror run tries to publish. This pin is read by
+# android/blissos16/fetch_iso.py alone, and that stage decides when it runs.
+#
+# THE SHA256 IS MEASURED, NOT QUOTED. SourceForge publishes no checksum file beside this
+# image, so there is no upstream number to copy - the value below came from hashing a
+# complete download (2,342,518,784 bytes). It catches a truncated, replaced or
+# partly-mirrored file, which is what the check is for; it is a weaker claim than a
+# vendor-published hash and is written down here rather than dressed up as one.
+#
+# WHY 16.9.7 AND NOT A NEWER BLISSOS. 16.9.7 is Android 13, not 15, and that is the newest
+# publicly published image there is: the site says "Public images are paused" with no ETA,
+# the BlissOS17 (Android 14) and Voyager/18 (Android 15) directories on SourceForge exist
+# but contain no ISO, and BlissOS/stable_releases v17.8.3 pins android-14.0.0_r53. Android 15
+# exists only as source in platform_manifest's voyager-qpr2-x86 tree, which would have to be
+# built - 350 GB and hours, not a download.
+BLISSOS = {
+    "iso:blissos-16.9.7": {
+        "url": "https://sourceforge.net/projects/blissos-x86/files/Official/"
+               "BlissOS16/FOSS/Generic/"
+               "Bliss-v16.9.7-x86_64-OFFICIAL-foss-20241011.iso/download",
+        "sha256": "735cb962ec6bd92b62eb82a812831a38d79a0dfdf12b7973d2d0f7ab001ba68e",
+        "sha1": None,
+        "size": 2_342_518_784,
+        "android": "13",
+        # The three files qemu is handed, in the ISO's own names.
+        "members": ("kernel", "initrd.img", "system.efs"),
     },
 }
 

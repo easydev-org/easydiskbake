@@ -660,13 +660,14 @@ def test_share_mount_step() -> None:
     disk. So the step refuses to continue when the share did not start - and this checks that
     it does, rather than logging and carrying on.
     """
-    print("\n=== share_mount starts the host server, or fails the step")
+    print("\n=== share_serve starts the host server, share_mount only mounts")
     import hostshare
     import session
 
     started: list[str] = []
     mounted: list[str] = []
     real_start, real_ssh = hostshare.start, session.ssh
+    real_listening = hostshare.listening
 
     def fake_start(directory, **kwargs):
         started.append(directory)
@@ -680,25 +681,31 @@ def test_share_mount_step() -> None:
         started.append(directory)
         return False
 
+    # TWO STEPS, TWO ACTS - and this is the shape a walkthrough now writes.
     document = steps.Walk({
         "name": "share",
-        "steps": [{"name": "mount", "share_mount": True, "share_family": "windows"}],
+        "steps": [
+            {"name": "serve", "share_serve": True},
+            {"name": "mount", "share_mount": True, "share_family": "windows"},
+        ],
     }, path="inline")
 
     hostshare.start, session.ssh = fake_start, fake_ssh
+    hostshare.listening = lambda *a, **k: True
     try:
         ok, ran = steps.walk(FakeDriver(), document, ssh_port=2222)
     finally:
         hostshare.start, session.ssh = real_start, real_ssh
-    check(ok, f"the step passes when the host serves the directory, ran={ran}")
+        hostshare.listening = real_listening
+    check(ok, f"both steps pass when the host serves the directory, ran={ran}")
     check(len(started) == 1, f"the host was asked to serve once, got {started}")
     check(any("net use" in c for c in mounted),
           f"the windows client command reached the guest, got {mounted}")
 
-    # AND A SHARE THAT DID NOT START IS NOT A STEP THAT CARRIES ON.
+    # AND A SERVER THAT DID NOT START IS NOT A STEP THAT CARRIES ON.
     document2 = steps.Walk({
         "name": "share",
-        "steps": [{"name": "mount", "share_mount": True, "share_family": "macos"}],
+        "steps": [{"name": "serve", "share_serve": True}],
     }, path="inline")
     hostshare.start = fake_start_broken
     failed = False
@@ -706,11 +713,30 @@ def test_share_mount_step() -> None:
         steps.walk(FakeDriver(), document2, ssh_port=2222)
     except steps.StepError:
         # A STEP THAT CANNOT DO ITS JOB RAISES, and `walk` lets it out - the same shape as a
-        # failed `ssh:` or a pane that never matched. Carrying on would be the silent version.
+        # failed `ssh:`. Carrying on would be the silent version.
         failed = True
     finally:
         hostshare.start = real_start
     check(failed, "a share the host could not serve stops the walk")
+
+    # AND MOUNTING WITH NOTHING SERVING IS A DIFFERENT FAILURE WITH A DIFFERENT MESSAGE.
+    #
+    # This is the whole point of the split: "the guest could not mount" used to be the message
+    # for a host with no smbd AND a credential the guest could not use.
+    document3 = steps.Walk({
+        "name": "share",
+        "steps": [{"name": "mount", "share_mount": True, "share_family": "windows"}],
+    }, path="inline")
+    hostshare.listening = lambda *a, **k: False
+    message = ""
+    try:
+        steps.walk(FakeDriver(), document3, ssh_port=2222)
+    except steps.StepError as exc:
+        message = str(exc)
+    finally:
+        hostshare.listening = real_listening
+    check("nothing is serving on port 445" in message,
+          f"mounting with nothing served names the server, got {message!r}")
 
 
 def test_scp_and_script_steps() -> None:

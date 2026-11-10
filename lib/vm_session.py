@@ -64,14 +64,24 @@ def log_to(prefix: str = "vm"):
 
 
 def start(family: str, disk: str, work: str, *, ssh_port: int = 2222,
-          boot_timeout: int = 900, copy: bool = True, share: str | None = None,
+          boot_timeout: int = 900, wait_for_ssh: bool = True, copy: bool = True,
+          share: str | None = None,
           cpus: int = 4, mem_mb: int = 0, discard: bool = True, log=print):
-    """Serve the share, boot `disk`, wait for sshd.
+    """Serve the share, boot `disk`, and - IF ASKED - wait for sshd.
 
-    Returns `(guest, reached, overlay)`: `reached` is True when sshd answered, None when the
-    machine came up and never did, and `(None, None, None)` when nothing could be started at all.
-    A caller that only needs to know whether to continue can test the second value; the guest is
-    returned either way so the failure can be photographed before it is stopped.
+    `wait_for_ssh=False` IS FOR A WALKTHROUGH THAT DRIVES THE SCREEN. A stage that installs an OS
+    has no sshd until the OS is installed; a stage that photographs a desktop may have one but
+    does not need it; and one that is about to type into a GUI has to start looking before any
+    login shell exists. Requiring sshd before the first step is a stage that cannot start.
+
+    The caller that wants ssh says so, and `require_ssh:` is the step that does it - so the wait
+    is visible in the walkthrough where it belongs, with its own timeout, instead of hidden inside
+    the boot.
+
+    Returns `(guest, reached, overlay)`: `reached` is True when sshd answered (or when nobody
+    asked), None when the machine came up and never did, and `(None, None, None)` when nothing
+    could be started at all. A caller that only needs to know whether to continue can test the
+    second value; the guest is returned either way so the failure can be photographed.
 
     THE THIRD VALUE IS THE OVERLAY WHEN `copy=True`, and its `close()` is what proves the base was
     never written. A caller that ignores it leaks a temporary file; a caller that calls `close()`
@@ -133,6 +143,22 @@ def start(family: str, disk: str, work: str, *, ssh_port: int = 2222,
 
     import session
 
+    # ANDROID HAS NO sshd TO WAIT FOR, AND WAITING FOR ONE IS NOT A SHORT DELAY - it is the
+    # whole boot_timeout spent on a port nothing will ever open. Android's remote access is
+    # adb on 5555, and what proves this guest is a painted desktop, which the caller reads
+    # from the screen. Returning `True` here says "the machine started", not "it answered on
+    # ssh" - and for the one family with no ssh that is the only honest answer available.
+    if family == "android":
+        log("android-x86: not waiting for sshd (there is none); the screen is the verdict")
+        return guest, True, run_overlay
+
+    if not wait_for_ssh:
+        # NOT A SHORTCUT - A DIFFERENT CONTRACT. The machine is up when qemu is running; whether
+        # an sshd answers inside it is a property of the DISK, and a stage that installs an OS is
+        # looking at a disk that has none yet. `require_ssh:` is the step that asks.
+        log("not waiting for sshd; the walkthrough asks when it needs it")
+        return guest, True, run_overlay
+
     log(f"waiting up to {boot_timeout}s for sshd")
     if not session.wait_for_ssh(ssh_port, boot_timeout, log, probe="echo ok"):
         log("=== THE DISK DID NOT ANSWER ON SSH ===")
@@ -151,6 +177,87 @@ def _discard_overlay(run_overlay, log) -> None:
         log(f"  {exc}")
 
 
+def _android_x86(disk: str, work: str, ssh_port: int, cpus: int, mem_mb: int, log):
+    """Start an Android-x86 guest: -kernel, -initrd, and two disks.
+
+    WHY THIS IS NOT A `-drive` BOOT LIKE THE OTHERS
+
+    Every other family here boots a disk that carries its own bootloader, so qemu gets a
+    drive and the firmware does the rest. Android-x86 does not work that way: its initrd
+    finds the system image, mounts it, and mounts a writable ext4 for /data. Booting its
+    disk through SeaBIOS gets nowhere, because the published image is not a partitioned
+    disk with a bootloader - it is a set of files.
+
+    `disk` IS A DIRECTORY HERE, NOT A FILE. The same three names mkdisks.py had to
+    synthesise for the goldfish path, except these come out of the ISO:
+
+        kernel       a real bzImage (HdrS at 0x1F1, boot flag 55aa, protocol 2.15) -
+                     unlike kernel-ranchu, which is why stock qemu can load this one
+        initrd.img   Android-x86's init
+        system.efs   EROFS, attached read-only as /dev/vda
+
+    AND /data IS CREATED BESIDE THEM, because it is not in the ISO: a live boot keeps
+    /data on tmpfs and loses everything at power-off.
+
+    SRC= MUST BE EMPTY. Measured: pinning it starts a 137-dot detection scan that does not
+    finish inside a boot budget, while empty auto-detect finds /dev/vda in about a second.
+    DATA= MUST BE PINNED, or the initrd treats the run as a live CD.
+
+    THERE IS NO sshd AND THIS DOES NOT WAIT FOR ONE. Android's remote access is adb on
+    5555; the desktop is the verdict. `wait_for_ssh` is therefore False for this family in
+    vm_session.start() - see the caller.
+    """
+    import os
+    import subprocess
+
+    import vm
+
+    for name in ("kernel", "initrd.img", "system.efs"):
+        path = os.path.join(disk, name)
+        if not os.path.isfile(path):
+            log(f"=== {path} IS MISSING ===")
+            log("  android/blissos16/fetch_iso.py unpacks these three from the ISO")
+            return None
+
+    data = os.path.join(work, "data.img")
+    if not os.path.exists(data) or os.path.getsize(data) == 0:
+        log(f"creating {data} (16 GiB ext4 for /data)")
+        with open(data, "wb") as fh:
+            fh.truncate(16 << 30)
+        made = subprocess.run(["mkfs.ext4", "-q", "-F", data], capture_output=True, text=True)
+        if made.returncode != 0:
+            log(f"=== mkfs.ext4 FAILED: {made.stderr[-400:]} ===")
+            return None
+
+    shape = vm.Shape(
+        cpus=cpus, mem_mb=mem_mb or 4096, machine="q35",
+        # A FRAMEBUFFER, BECAUSE THE HWC DRIVER EXPECTS ONE. HWC=drm_minigbm is told to use
+        # DRM/KMS, and a guest with no graphics device draws nothing - which reads exactly
+        # like a boot that failed.
+        vga="std", ssh_port=ssh_port,
+        # THE COMMAND LINE GOES THROUGH Shape, NOT THE ARGUMENT VECTOR, so the one place
+        # that knows how to spell a kernel command line stays the one place.
+        kernel_append=(
+            "root=/dev/ram0 console=ttyS0 quiet "
+            "SRC= DATA=/dev/vdb "
+            "HWC=drm_minigbm GRALLOC=minigbm_arcvm"
+        ),
+    )
+    guest = vm.Guest(
+        work,
+        extra=[
+            "-kernel", os.path.join(disk, "kernel"),
+            "-initrd", os.path.join(disk, "initrd.img"),
+            "-drive", f"file={os.path.join(disk, 'system.efs')},if=virtio,format=raw,readonly=on",
+            "-drive", f"file={data},if=virtio,format=raw",
+        ],
+        shape=shape,
+        stdout=os.path.join(work, "console.log"),
+    ).start()
+    log(f"started android-x86; the QMP socket is {guest.paths.drive}")
+    return guest
+
+
 def _start_machine(family: str, disk: str, work: str, ssh_port: int, cpus: int,
                    mem_mb: int, log, discard: bool = True, qga: bool = True):
     """The machine each family boots on - reused from the stage that built the disk.
@@ -160,6 +267,12 @@ def _start_machine(family: str, disk: str, work: str, ssh_port: int, cpus: int,
     disk with no agent installed: the port exists, nothing listens, and the caller falls back.
     """
     import vm
+
+    # ANDROID-X86 IS NOT A DISK WITH A BOOTLOADER. It is handed a kernel and an initrd, and
+    # the initrd assembles the root itself. See _android_x86() for why that is the only way
+    # this guest can start at all.
+    if family == "android":
+        return _android_x86(disk, work, ssh_port, cpus, mem_mb, log)
 
     # THE AGENT'S SOCKET, MADE BEFORE THE MACHINE SO QEMU CAN BIND IT.
     #
@@ -338,6 +451,16 @@ def stop(guest, *, acpi_first: bool = True, family: str = "", password: str = "a
         if overlay is not None:
             log("the guest is on an overlay; killing it rather than waiting for a shutdown")
             guest.stop(acpi_first=False)
+        elif family == "android":
+            # ANDROID-X86 HAS NO sshd AND NO GUEST AGENT, so two of the three ways to ask it
+            # to shut down do not exist. ACPI is tried with a SHORT timeout and then it is
+            # killed: the guest writes to a plain ext4 it created, ext4 journals, and a
+            # twenty-minute ACPI wait on a guest that ignores the power button is the one
+            # outcome this stage cannot afford.
+            log("android-x86: no sshd and no agent; ACPI briefly, then killing it")
+            maybe = getattr(guest, "stop", None)
+            if maybe:
+                guest.stop(acpi_first=True, acpi_timeout=90)
         else:
             done = False
             # 1. THE AGENT, IF THE MACHINE WAS STARTED WITH ONE.

@@ -119,6 +119,13 @@ steps:
   #
   # So the share is a SESSION, and the step below supplies the credential again in its own command
   # rather than inheriting this one's - which is also exactly what the logon hook does.
+  # TWO STEPS NOW, BECAUSE IT WAS ALWAYS TWO ACTS. "the guest could not mount the share" used to
+  # be the message for a host with no smbd, a credential the guest could not use, and a network
+  # that did not route - three repairs, one sentence.
+  - name: serve the host share
+    share_serve: true
+    timeout: 60
+
   - name: mount the host share
     share_mount: true
     share_family: windows
@@ -141,9 +148,35 @@ steps:
   #
   # A Task Scheduler task at ONLOGON, running the launcher through
   # `powershell.exe -WindowStyle Hidden` so no console flashes on the desktop.
-  - name: install the bootstrap launcher
-    bootstrap_install: true
-    share_family: windows
+  #
+  # THREE STEPS, BECAUSE "install the bootstrap launcher" WAS THREE THINGS on this side too: write
+  # the launcher, copy it, write and run the task registration. One step meant a failure said
+  # `the launcher install exited 1` and named neither the file nor the action.
+  - name: write the launcher
+    python: bootstrap_files:launcher
+    family: windows
+    python_screen: false
+    timeout: 60
+
+  - name: write the task registration script
+    python: bootstrap_files:windows_task
+    python_screen: false
+    timeout: 60
+
+  - name: copy the launcher in
+    scp: ["bootstrap-launcher.ps1", "C:/Users/{{ user }}/bootstrap-launcher.ps1"]
+    timeout: 300
+
+  - name: copy the task registration script in
+    scp: ["bootstrap-install.ps1", "C:/Users/{{ user }}/bootstrap-install.ps1"]
+    timeout: 300
+
+  # THE ONLY STEP THAT RUNS ANYTHING. `schtasks /Create` prints its own refusal, and the exit
+  # code is checked - a registration that failed would otherwise look like a step that worked and
+  # a logon hook that silently never fires.
+  - name: register the logon task
+    ssh: |
+      powershell -NoProfile -ExecutionPolicy Bypass -File C:/Users/{{ user }}/bootstrap-install.ps1
     timeout: 300
 
   # THE TASK HAS TO EXIST AND HAS TO NAME THE LAUNCHER. A registration that failed prints an

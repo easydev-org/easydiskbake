@@ -394,10 +394,14 @@ def main() -> int:
                   "install the guest agent" in names)
             check(f"{path} proves the agent answers", path,
                   "prove the guest agent answers" in names)
-            check(f"{path} still configures the share", path,
-                  "mount the host share" in names)
+            check(f"{path} serves the share", path, "serve the host share" in names)
+            check(f"{path} mounts the share", path, "mount the host share" in names)
+            # THE HOOK BECAME SEVERAL STEPS, so this follows what they do rather than one entry
+            # that used to do all of it.
             check(f"{path} still installs the login hook", path,
-                  "install the bootstrap launcher" in names)
+                  any("launcher" in (n or "") for n in names)
+                  and any(("login agent" in (n or "") or "logon task" in (n or ""))
+                          for n in names))
     except Exception as exc:                          # noqa: BLE001
         check(f"qga imports ({exc})", "lib/qga.py", False)
 
@@ -673,7 +677,9 @@ def main() -> int:
     for path in ("macos/15/steps/vm-configure.yaml", "windows/11/steps/vm-configure.yaml"):
         walk = load_yaml(path)
         names = [s.get("name") for s in (walk.get("steps") or [])]
-        check(f"{path} installs the launcher", path, "install the bootstrap launcher" in names)
+        check(f"{path} writes the launcher", path,
+              any((n or "").startswith("write the launcher") for n in names))
+        check(f"{path} serves the share", path, "serve the host share" in names)
         check(f"{path} mounts the share", path, "mount the host share" in names)
         # AND INSTALLS NO TOOLCHAIN, which is what lets it run on a disk straight out of bake.
         body = read(path)
@@ -755,8 +761,11 @@ def main() -> int:
         # no Homebrew yet - the toolchain stage comes after this one - so `cp` into it answered
         # "No such file or directory", which reads like a missing source and is a missing
         # directory. Run 42755669848.
-        check("2. the daemon install creates /usr/local/bin", "lib/steps.py",
-              "mkdir -p /Library/LaunchDaemons /usr/local/bin" in read("lib/steps.py"))
+        # THE DAEMON INSTALL MOVED INTO THE WALKTHROUGH when the five-in-one step was split, so
+        # the check reads the file that now performs it.
+        check("2. the daemon install creates /usr/local/bin", "macos/15/steps/vm-configure.yaml",
+              "mkdir -p /Library/LaunchDaemons /usr/local/bin" in
+              read("macos/15/steps/vm-configure.yaml"))
         # AND THE DAEMON MUST NOT RETRY IN A TIGHT LOOP. `KeepAlive SuccessfulExit false` alone
         # restarts it whenever it exits non-zero, and the script exits 1 after its own minute of
         # retries - so any machine without a share running (the clean stage, a published disk

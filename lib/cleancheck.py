@@ -126,6 +126,12 @@ EXPECTED = {
     # mkdisks.py rather than by an installer - there is no filesystem to trim that this
     # repository would then be booting to check.
     "android-qemu.yml": {"sysimg": None, "disks": None, "ssh": None, "dev": None},
+    # blissos16.yml IS ANDROID-X86, AND IT IS THE ONE ANDROID PATH HERE THAT NEEDS NO
+    # sshd AT ALL. Its guest is a desktop that boots on a stock qemu; what proves it is the
+    # painted frame, read by the same lib/desktop.py test the macOS and Windows launches use.
+    # A trim stage has nothing to reach either: /data is a plain ext4 file this repository
+    # creates, not a disk an installer laid down with unused blocks in it.
+    "blissos16.yml": {"install": None, "launch": None},
 }
 
 

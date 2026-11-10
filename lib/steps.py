@@ -91,10 +91,10 @@ STEP_KEYS = {    "name",        # required: what the log calls this step
     "script",      # a body written on the host, copied in, and run by path
     "script_shell",  # the interpreter that runs `script`: "cmd", "powershell", "sh"
     "script_name",   # the file name `script` is written as
-    "share_mount",   # start the host's smbd for a directory, and mount it in the guest
+    "share_serve",   # START THE HOST'S smbd for a directory - one act, not two
+    "share_mount",   # the GUEST mounts what share_serve: is serving
     "share_dir",     # the host directory to share (default ~/shared)
     "share_family",  # which client the guest uses: macos, windows, linux
-    "bootstrap_install",  # install the login launcher that runs ~/shared/bootstrap.py
     "settle",      # seconds to wait after the action
     "wait",        # seconds to wait with nothing clicked
     "expect",      # words that must appear afterwards; a mismatch fails the step
@@ -142,7 +142,10 @@ STEP_KEYS = {    "name",        # required: what the log calls this step
     "boot",        # start the machine: needs family + disk; the file owns the guest
     "reboot",      # reset it through QMP and reconnect, so the steps after it still see a screen
     "shutdown",    # stop it the way the caller declared (graceful or kill)
-    "family",      # for boot/shutdown: macos, windows, linux
+    "family",      # for boot/shutdown: macos, windows, linux, android
+                   #            `android` is Android-x86: -kernel/-initrd and two files,
+                   #            so `disk` names a DIRECTORY of kernel, initrd.img and
+                   #            system.efs, not one qcow2. No sshd to wait for.
     "graceful",    # for shutdown: ask the guest to close its disks first (default true)
 }
 
@@ -151,7 +154,7 @@ STEP_KEYS = {    "name",        # required: what the log calls this step
 # already decided that, and they cannot be a pane themselves.
 ACTION_ONLY_KEYS = {"at", "double", "type", "clear", "key", "run", "ssh", "scp", "script",
                     "script_shell", "script_name", "share_mount", "share_dir",
-                    "share_family", "bootstrap_install", "keep_alive",
+                    "share_serve", "share_family", "keep_alive",
                     "settle", "terminal_wait", "timeout", "modifier", "type_gap"}
 
 # Steps that wait for something to happen rather than doing something. `expect` does not apply
@@ -161,8 +164,9 @@ WAIT_STEPS = {"until", "until_any", "wait", "wait_for_change", "until_dark", "di
 
 # Everything above that actually drives the guest. A step with none of these is a check, and
 # a check that does nothing is reported rather than run.
-ACTION_KEYS = {"at", "double", "type", "key", "run", "ssh", "scp", "script", "share_mount",
-               "bootstrap_install", "require_ssh", "sweep",
+ACTION_KEYS = {"at", "double", "type", "key", "run", "ssh", "scp", "script", "share_serve",
+               "share_mount",
+               "require_ssh", "sweep",
                "at_window", "at_bottom",
                # THE MACHINE'S OWN LIFECYCLE. A file may own its guest - see LIFECYCLE below.
                "boot", "reboot", "shutdown"}
@@ -799,9 +803,23 @@ class MachineSession:
                 "this file booted a machine already; a second `boot:` would replace it without "
                 "stopping it. Put the second boot in its own file.")
         import vm_session
+
+        # ANDROID-X86'S "DISK" IS A DIRECTORY, SO THE OVERLAY HAS TO GO.
+        #
+        # `copy=True` wraps the disk in a qcow2 backing chain so a verification stage cannot
+        # write to a published artifact. That is right for one qcow2 and wrong here: the guest
+        # is handed three separate files and creates its own /data, so there is nothing to
+        # overlay. Booting it with copy=False is also honest about what this stage does - it
+        # starts the extracted set and photographs it, and the /data it writes lives in `work`
+        # exactly like every other family's overlay does.
+        android = (family or self.family) == "android"
+        if android and self.share is not None:
+            log("android-x86: no host share (this guest mounts no smb filesystem)")
+            self.share = None
+
         guest, reached, overlay = vm_session.start(
             family or self.family, self.disk, self.work,
-            ssh_port=ssh_port, copy=True, share=self.share,
+            ssh_port=ssh_port, wait_for_ssh=False, copy=not android, share=self.share,
             cpus=self.cpus, mem_mb=self.mem_mb, log=log)
         if guest is None:
             raise StepError("the machine could not be started")
@@ -1107,6 +1125,12 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
         if session is None:
             raise StepError(f"{step.name}: boot needs a session; run this file through run_file")
         family = str(step.get("family") or "macos")
+        # `boot:` IS OVER WHEN QEMU IS RUNNING. Nothing else.
+        #
+        # AN SSHD INSIDE THE GUEST IS A DIFFERENT FACT, AND `require_ssh:` IS THE STEP THAT ASKS
+        # FOR IT. Keeping the two apart is what makes a walkthrough able to install an OS (no
+        # sshd exists yet) or drive a GUI (a login shell is irrelevant) - and it puts the wait
+        # where a reader can see it, with its own timeout, instead of hiding it in a boot.
         session.boot(family, ssh_port=ssh_port, log=log)
         # THE DRIVER HAS TO SEE THE NEW SOCKET. A boot in the middle of a sequence replaces the
         # machine, and a Driver built before it holds a connection to a qemu that no longer runs.
@@ -1124,9 +1148,10 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
         else:
             raise StepError(
                 f"{step.name}: reboot needs a screen driver; a headless file cannot survive one")
-        # AND THE GUEST HAS TO COME BACK. A reset that returns but never boots is the failure
-        # this step exists to catch - it waits for sshd the same way a boot does.
-        session.wait_for_ssh(ssh_port, int(step.get("timeout", 900)))
+        # `reboot:` IS OVER WHEN THE RESET IS DONE AND THE SCREEN IS BACK - the same rule as
+        # `boot:`. Whether an sshd answers afterwards is `require_ssh:`'s business, and it is the
+        # step after this one in every file that cares. Waiting here as well would make a
+        # GUI-only walkthrough unable to reboot, and would hide the wait from the reader.
         return
 
     if step["shutdown"]:
@@ -1275,234 +1300,31 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
             raise StepError(f"{step.name}: the script exited {status}")
         return
 
-    # --- bootstrap_install: THE LOGIN HOOK THAT RUNS THE SHARE'S bootstrap -----------
+    # --- share_serve: THE HOST STARTS SERVING, AND NOTHING ELSE ----------------------
     #
-    # THE HALF THE SHARE ALONE DOES NOT DO. A directory the guest can read is a directory
-    # somebody has to open; the point of putting a bootstrap on the host is that the machine
-    # runs it without being asked. So this installs the launcher and the trigger, and leaves
-    # the script itself to the person - the launcher does nothing until the share carries a
-    # bootstrap.sh (or .ps1), which is what makes it safe to bake into a published disk.
+    # ONE STEP, ONE ACT. Starting smbd and mounting it in the guest used to be one step, and that
+    # made a failure ambiguous: "the guest could not mount the share" was the message for a host
+    # with no smbd, a credential the guest could not use, and a network that did not route - three
+    # repairs, one sentence.
     #
-    # NO PYTHON ON EITHER DISK. This stage runs before the toolchain exists, so the launcher is
-    # `/bin/sh` on macOS and PowerShell 5.1 on Windows - see lib/bootstrap.py for why that is a
-    # requirement rather than a preference.
-    if step["bootstrap_install"]:
-        import bootstrap
+    # Splitting them also lets a walkthrough serve the share in one stage and mount it in another,
+    # which is what a stage that only proves the host side needs.
+    if step["share_serve"]:
         import hostshare
-        import net
-        import session
 
-        family = str(step.get("share_family") or "macos")
-        # THE SERVER IS WRITTEN INTO THE LAUNCHER, because nothing else the launcher could look
-        # at survives a reboot: the mount does not, and an empty ~/shared directory is a
-        # perfectly convincing stand-in for a mounted one.
-        local = bootstrap.write_launcher(driver.work or ".", family, host=net.BRIDGE_IP,
-                                         user=hostshare.SMB_USER, share=hostshare.SHARE_NAME,
-                                         password=hostshare.SMB_PASSWORD)
-        # THE LAUNCHER IS A SHELL SCRIPT ON macOS AND A .ps1 ON WINDOWS, because each disk runs
-        # the language it already has - the share is installed before any toolchain.
-        name = bootstrap.launcher_name(family)
-        # THE REMOTE PATH IS THE GUEST'S OWN. `/tmp` is a macOS path; on Windows the profile is
-        # where the launcher lives, because there is no /tmp and `C:\Windows\Temp` needs the
-        # privileges this channel does not have.
-        home = f"C:/Users/{login or 'docker'}"
-        remote = f"{home}/{name}" if family == "windows" else f"/tmp/{name}"
-        status, output = session.scp(local, remote, port=ssh_port, timeout=300,
-                                     user=login, password=password)
-        log(f"  launcher -> {remote} -> {status}")
-        if status != 0:
+        directory = str(step.get("share_dir") or hostshare.DEFAULT_DIR)
+        if not hostshare.start(directory):
             if not step["optional"]:
-                raise StepError(f"{step.name}: the launcher copy exited {status}")
+                raise StepError(f"{step.name}: the host could not serve {directory}")
+            log(f"  {step.name}: the share did not start, and the step is optional")
             return
-
-        if family == "macos":
-            # THE PLIST NAMES A PATH UNDER THE ACCOUNT'S HOME, so the launcher is moved there
-            # first - launchd will not run something in /tmp, which is wiped.
-            #
-            # THE PLIST IS WRITTEN ON THE HOST AND COPIED, not assembled by a heredoc inside a
-            # shell command: it is XML with quotes in it, and every attempt to build one inline
-            # is an attempt to get the quoting right through ssh. The path substitution is the
-            # only thing that has to happen in the guest, and `sed` does that on one line.
-            plist_local = os.path.join(driver.work or ".", "bootstrap.plist")
-            with open(plist_local, "w") as fh:
-                fh.write(bootstrap.macos_plist("__LAUNCHER__"))
-            plist_remote = "/tmp/bootstrap.plist"
-            status, output = session.scp(plist_local, plist_remote, port=ssh_port,
-                                         timeout=300, user=login, password=password)
-            if status != 0:
-                if not step["optional"]:
-                    raise StepError(f"{step.name}: the plist copy exited {status}")
-                return
-            # THE TARGET IS BY ABSOLUTE PATH, BUILT IN THE GUEST.
-            #
-            # `~/Library/...` IS NOT EXPANDED INSIDE A REDIRECTION by every shell that could run
-            # this, and `$HOME` written into a Python string here is expanded by the CONTAINER's
-            # shell - giving /github/home, a path that exists on the host and not in the guest.
-            # Both mistakes end in `test -f` reporting "the plist was not written", which says
-            # nothing about which of them it was.
-            #
-            # So the script asks the guest for its own HOME and writes into that:
-            #
-            #     launchd_home=$(eval echo "~$(id -un)")
-            #
-            # `eval echo ~<user>` is the portable spelling; `$HOME` under sudo or a login shell
-            # can be another account's.
-            # AND THE DAEMON THAT MOUNTS, BEFORE THE AGENT THAT RUNS.
-            #
-            # A non-root mount_smbfs against Samba is refused; the agent runs as the user. So the
-            # mount is a LaunchDaemon (root, at boot) and the bootstrap is a LaunchAgent (user, at
-            # login), and the file the agent waits for is the handover between them.
-            # ONE SUDO PREFIX FOR THE WHOLE SCRIPT, built from the account's password. `-S`
-            # reads it from stdin and `-p ''` stops the prompt text landing in the output.
-            sudo = f"printf '%s\\n' {shlex.quote(password or 'admin')} | sudo -S -p '' "
-            # THE NAME THE DAEMON PRESENTS IS THE ONE SAMBA MAPS TO ITS GUEST, not the share's
-            # real account: mount_smbfs cannot be handed a password from here, and the mapped
-            # name needs none. See lib/hostshare.py's mount_commands.
-            mount_script = bootstrap.macos_mount_script(
-                net.BRIDGE_IP, hostshare.SMB_USER, hostshare.SHARE_NAME,
-                hostshare.SMB_PASSWORD, home=f"/Users/{login or 'docker'}")
-            mount_local = os.path.join(driver.work or ".", "smbmount.sh")
-            with open(mount_local, "w") as fh:
-                fh.write(mount_script)
-            status, output = session.scp(mount_local, "/tmp/smbmount.sh", port=ssh_port,
-                                         timeout=300, user=login, password=password)
-            if status != 0:
-                if not step["optional"]:
-                    raise StepError(f"{step.name}: the mount script copy exited {status}")
-                return
-
-            daemon_local = os.path.join(driver.work or ".", "smbmount.plist")
-            with open(daemon_local, "w") as fh:
-                fh.write(bootstrap.macos_mount_plist("__SCRIPT__"))
-            status, output = session.scp(daemon_local, "/tmp/smbmount.plist", port=ssh_port,
-                                         timeout=300, user=login, password=password)
-            if status != 0:
-                if not step["optional"]:
-                    raise StepError(f"{step.name}: the daemon copy exited {status}")
-                return
-
-            target_expr = f"$launchd_home/Library/LaunchAgents/{bootstrap.MACOS_LABEL}.plist"
-            script = (
-                "set -e\n"
-                "launchd_home=$(eval echo \"~$(id -un)\")\n"
-                "echo \"home: $launchd_home\"\n"
-                "mkdir -p \"$launchd_home/Library/LaunchAgents\"\n"
-                f"cp /tmp/{name} \"$launchd_home/{name}\"\n"
-                f"chmod +x \"$launchd_home/{name}\"\n"
-                # SINGLE-QUOTED PATTERN AND A GUEST-SIDE VARIABLE, so neither the container's
-                # HOME nor the container's shell can reach into the substitution.
-                f"sed 's|__LAUNCHER__|'\"$launchd_home\"'/{name}|' "
-                f"/tmp/bootstrap.plist > \"{target_expr}\"\n"
-                # THE PLIST IS INSTALLED, NOT LOADED, AND THAT IS THE WHOLE POINT.
-                #
-                # `launchctl bootstrap gui/$uid` answers
-                #
-                #     Bootstrap failed: 125: Domain does not support specified action
-                #
-                # over ssh, because there IS no gui domain for this account: a gui domain is
-                # created by the window server when a person logs in at the screen, and an ssh
-                # session never makes one. Every form of `launchctl` that targets a user domain
-                # fails the same way from here.
-                #
-                # THAT IS NOT A PROBLEM TO WORK AROUND. A LaunchAgent in ~/Library/LaunchAgents
-                # is loaded at the NEXT GRAPHICAL LOGIN by launchd itself - which is exactly
-                # when this is supposed to run, and exactly the moment the share is mounted.
-                # Loading it now would be loading it into a session that is about to end when
-                # the stage stops the machine.
-                #
-                "# THE FILE IS THE INSTALL. Its presence in ~/Library/LaunchAgents is what\n"
-                "# makes launchd run it at the next login.\n"
-                f"test -f \"{target_expr}\" || "
-                "{ echo '=== THE PLIST WAS NOT WRITTEN ==='; "
-                "ls -la \"$launchd_home/Library/LaunchAgents\" 2>&1 | head -5; exit 1; }\n"
-                f"test -x \"$launchd_home/{name}\" || "
-                "{ echo '=== THE LAUNCHER IS NOT EXECUTABLE ==='; exit 1; }\n"
-                "# plutil CATCHES A MALFORMED PLIST NOW RATHER THAN AT THE NEXT LOGIN, where\n"
-                "# nobody would connect the failure to this stage.\n"
-                f"plutil -lint \"{target_expr}\"\n"
-                # --- THE MOUNT DAEMON -------------------------------------------------
-                #
-                # /Library/LaunchDaemons NEEDS ROOT, and this channel has it through `sudo -S`
-                # the same way macos/15/steps/ssh.yaml sets the host name.
-                #
-                # THE PREFIX IS BUILT HERE, NOT AS `{{ password }}`, because this string is run
-                # through the same {{ }} substitution as every other step - and a literal
-                # placeholder would be looked up as a variable and fail at run time.
-                f"{sudo}sh -c '"
-                # /usr/local/bin IS NOT ON A STOCK macOS. It is where Homebrew puts things, and
-                # this disk has no Homebrew yet - the toolchain stage comes after this one. The
-                # first attempt answered "cp: /usr/local/bin/vm-smbmount.sh: No such file or
-                # directory", which reads like a missing SOURCE and is a missing DIRECTORY.
-                "mkdir -p /Library/LaunchDaemons /usr/local/bin && "
-                "cp /tmp/smbmount.sh /usr/local/bin/vm-smbmount.sh && "
-                # 0700, BECAUSE THE SCRIPT CARRIES THE SHARE PASSWORD. root runs it; nobody else
-                # has any business reading it, and no keychain exists to hold it instead.
-                "chmod 700 /usr/local/bin/vm-smbmount.sh && "
-                "chown root:wheel /usr/local/bin/vm-smbmount.sh && "
-                "sed \"s|__SCRIPT__|/usr/local/bin/vm-smbmount.sh|\" "
-                f"/tmp/smbmount.plist > /Library/LaunchDaemons/{bootstrap.MACOS_MOUNT_LABEL}.plist && "
-                f"chmod 644 /Library/LaunchDaemons/{bootstrap.MACOS_MOUNT_LABEL}.plist && "
-                "chown root:wheel "
-                f"/Library/LaunchDaemons/{bootstrap.MACOS_MOUNT_LABEL}.plist'\n"
-                # UNMOUNT FIRST, SO THE DAEMON IS WHAT MOUNTS.
-                #
-                # The step above mounted ~/shared to prove the credential works. If that mount
-                # is still there, the daemon finds it and exits 0 having done nothing - and the
-                # thing this stage is meant to leave behind, a disk that mounts itself at boot,
-                # would be untested. `umount` is the only way to tell the two apart.
-                f"{sudo}umount ~/shared 2>&1 || true\n"
-                f"{sudo}launchctl bootout system/{bootstrap.MACOS_MOUNT_LABEL} 2>/dev/null || true\n"
-                # A SYSTEM DOMAIN EXISTS FROM BOOT, so unlike the agent this CAN be loaded over
-                # ssh - and loading it now is what proves the mount works before the disk is
-                # published, rather than one launch later.
-                f"{sudo}launchctl bootstrap system "
-                f"/Library/LaunchDaemons/{bootstrap.MACOS_MOUNT_LABEL}.plist\n"
-                # THE DAEMON RETRIES, so the mount appears a few seconds after the bootstrap
-                # rather than instantly; this waits for it instead of racing it.
-                "i=0\n"
-                "while ! mount | grep -q ' on /Users/'; do\n"
-                "  i=$((i + 1)); [ \"$i\" -gt 30 ] && break; sleep 2\n"
-                "done\n"
-                "mount | grep ' on /Users/' || {\n"
-                "  echo '=== THE DAEMON DID NOT MOUNT THE SHARE ==='\n"
-                f"  {sudo}launchctl print system/{bootstrap.MACOS_MOUNT_LABEL} | head -20\n"
-                f"  {sudo}tail -5 /var/log/{bootstrap.MACOS_MOUNT_LABEL}.err 2>&1\n"
-                "  exit 1\n"
-                "}\n"
-                "ls -la ~/shared | head -5\n"
-                "echo INSTALLED_FOR_NEXT_LOGIN\n"
-            )
-        else:
-            # THE LAUNCHER IS ALREADY IN THE PROFILE - scp'd there two blocks up - so this only
-            # writes and runs the task registration.
-            #
-            # A `copy /Y X X` stood here, copying the launcher onto itself: it had been scp'd to
-            # the profile AND to /tmp, so the copy was a no-op that read as "put it in place".
-            ps1 = bootstrap.windows_ps1(f"{home}/{name}")
-            local_ps1 = os.path.join(driver.work or ".", "bootstrap-install.ps1")
-            with open(local_ps1, "w") as fh:
-                fh.write(ps1)
-            remote_ps1 = f"{home}/bootstrap-install.ps1"
-            status, output = session.scp(local_ps1, remote_ps1, port=ssh_port, timeout=300,
-                                         user=login, password=password)
-            if status != 0:
-                if not step["optional"]:
-                    raise StepError(f"{step.name}: the installer copy exited {status}")
-                return
-            # THE LAUNCHER IS ALREADY HERE - it was scp'd into the profile above - so this only
-            # registers the task that runs it.
-            script = (f"powershell -NoProfile -ExecutionPolicy Bypass -File {remote_ps1}")
-
-        status, output = session.ssh(ssh_port, script, timeout=int(step.get("timeout", 300)),
-                                     user=login, password=password)
-        log(f"  install -> {status}")
-        for line in (output or "").splitlines()[:15]:
-            log(f"    {line[:150]}")
-        if status != 0 and not step["optional"]:
-            raise StepError(f"{step.name}: the launcher install exited {status}")
+        log(f"  serving {directory} on {hostshare.net.BRIDGE_IP}:445")
         return
 
-    # --- share_mount: A HOST DIRECTORY THE GUEST CAN READ AND WRITE -------------------
+    # --- share_mount: THE GUEST MOUNTS WHAT THE HOST IS SERVING -----------------------
+    #
+    # IT DOES NOT START THE SERVER. If nothing is serving, that is the failure and it should be
+    # named as one - `share_serve:` is the step that starts it.
     #
     # TWO THINGS IN ONE STEP, because one without the other is not a fact anyone can check:
     # the host starts serving the directory, and the guest mounts it and is asked to read
@@ -1520,13 +1342,10 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
         import hostshare
         import session
 
-        directory = str(step.get("share_dir") or hostshare.DEFAULT_DIR)
         family = str(step.get("share_family") or "macos")
-        if not hostshare.start(directory):
-            if not step["optional"]:
-                raise StepError(f"{step.name}: the host could not serve {directory}")
-            log(f"  {step.name}: the share did not start, and the step is optional")
-            return
+        if not hostshare.listening():
+            raise StepError(
+                f"{step.name}: nothing is serving on port 445; a `share_serve:` step comes first")
 
         command = hostshare.mount_commands(user=login or "docker",
                                           login_password=password or "admin")[family]
