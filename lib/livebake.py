@@ -346,28 +346,47 @@ def _second_boot(bakery: Bakery, args, work: str, disk: str, walk_path: str) -> 
     #     11:05:26  === the walk (second boot, from 'first boot') ===
     #               ConnectionRefusedError: [Errno 111] Connection refused
     #
-    # SO THE WAIT IS HERE, ON THE PATH, AND IT SAYS WHY WHEN IT GIVES UP. Run c4ff854 waited
-    # 60 s and then reported nothing useful - and its own frame shows the disk had reached the
-    # Fedora DESKTOP (`Nov 10 11:30 AM`, the stock wallpaper), so the guest was running and
-    # the socket was the thing that was late.
+    # THE PATH EXISTING IS NOT THE SAME AS QEMU LISTENING ON IT, AND RUN ea0eee4 PROVED IT
+    # TWICE OVER: the wait below saw the path, `steps.Driver` connected, and got
     #
-    # THE DIAGNOSIS IS THE POINT: the process, the path, and whether qemu ever made one.
-    import qmp as _qmp2
+    #     File ".../lib/qmp.py", line 69, in __init__
+    #       self.sock.connect(path)
+    #     ConnectionRefusedError: [Errno 111] Connection refused
+    #
+    # So the question to ask is not "is the file there" - qemu creates it early and binds
+    # later - but "does a connect succeed". This asks THAT, with its own socket, and closes it
+    # immediately so `steps.run_file` can have the single client the socket allows.
+    import socket as _socket
+
     ready_by = time.time() + 300
+    last_error = ""
     while time.time() < ready_by:
-        if os.path.exists(disk_guest.paths.drive):
-            break
         if disk_guest.proc.poll() is not None:
             log(bakery.name,
                 f"=== QEMU EXITED ({disk_guest.proc.returncode}) BEFORE ITS QMP SOCKET ===")
             return False
-        time.sleep(2)
+        probe = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        probe.settimeout(2)
+        try:
+            probe.connect(disk_guest.paths.drive)
+            probe.close()
+            break
+        except OSError as exc:
+            last_error = str(exc)
+            probe.close()
+            time.sleep(2)
     else:
         log(bakery.name,
-            f"=== NO QMP SOCKET AT {disk_guest.paths.drive} AFTER 300s "
-            f"(qemu pid {disk_guest.proc.pid}, alive={disk_guest.proc.poll() is None}) ===")
+            f"=== NO QMP ON {disk_guest.paths.drive} AFTER 300s "
+            f"(qemu pid {disk_guest.proc.pid}, alive={disk_guest.proc.poll() is None}, "
+            f"last error {last_error!r}) ===")
         return False
-    log(bakery.name, "the second guest's QMP socket is up")
+    # A BEAT BETWEEN THE PROBE'S CLOSE AND `steps.run_file`'s CONNECT. The socket serves ONE
+    # client; the probe has just been one, and the next connect can land while qemu is still
+    # releasing it. `steps.Driver.reconnect` documents the same window and sleeps a second for
+    # it.
+    time.sleep(2)
+    log(bakery.name, "the second guest is listening on QMP")
 
     frames = os.path.join(work, "frames-disk")
     os.makedirs(frames, exist_ok=True)
