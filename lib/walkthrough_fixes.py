@@ -867,7 +867,26 @@ def main() -> int:
           'mac: str = ""' in body or 'mac: str = ""' in net_src)
     check("a different guest gets the one address", "lib/net.py",
           "dnsmasq.vm.mac" in net_src and "served != mac.strip().lower()" in net_src)
-    vm_src = read("lib/vm.py")
+    # AND THE LEASE FILE HAS TO GO WITH THE RESTART, BECAUSE dnsmasq READS IT BACK.
+    #
+    # The first attempt at this bug restarted dnsmasq for the new MAC and stopped there. The
+    # guest then asked 185 times and was never answered:
+    #
+    #     DHCPDISCOVER(qemubr0) 00:16:cb:17:61:d5 no address available
+    #
+    # The new instance had adopted the OLD lease from dnsmasq's default file, and the range is
+    # ONE ADDRESS - so the restart meant to free it freed nothing. Run 42905230912.
+    #
+    # dnsmasq's own log is what settled it, and that log line is now collected on a failed clean
+    # (`clean_step.py`), which is how the difference between "never asked" and "was refused"
+    # became visible at all.
+    check("dnsmasq has a lease file this module can clear", "lib/net.py",
+          "LEASE_FILE =" in net_src and "leasefile={LEASE_FILE}" in net_src)
+    check("a restart clears the lease it is freeing", "lib/net.py",
+          "os.unlink(LEASE_FILE)" in net_src)
+    check("a failed clean reports what DHCP saw", "lib/clean_step.py",
+          "DHCPDISCOVER" in read("lib/clean_step.py")
+          or "dnsmasq.vm.log" in read("lib/clean_step.py"))
     check("the guest start passes its MAC to the bridge", "lib/vm.py",
           "mac=self.shape.tap_mac" in vm_src)
     # AND THE DEFAULTS HAVE TO BE FILLED FIRST, or the MAC arrives empty and the check above is

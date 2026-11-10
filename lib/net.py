@@ -121,6 +121,13 @@ FORWARD_HOST = BRIDGE_IP
 # would otherwise be handed an address that changes between boots.
 GUEST_MAC = os.environ.get("VM_GUEST_MAC", "52:54:00:56:4d:01")
 
+# THE LEASE FILE IS PART OF THE CONTRACT, NOT AN IMPLEMENTATION DETAIL.
+#
+# The range is one address, so a lease that outlives the guest that holds it makes the next guest
+# unbootable-on-the-network. That lease lives in this file, and a restart only frees the address
+# if the file goes with the process. See the note in up().
+LEASE_FILE = os.environ.get("VM_DNSMASQ_LEASES", "/var/run/dnsmasq.vm.leases")
+
 
 def _run(args: list[str], *, check: bool = False) -> subprocess.CompletedProcess:
     return subprocess.run(args, capture_output=True, text=True, check=check)
@@ -243,10 +250,25 @@ def up(*, ssh_port: int = 2222, rdp_port: int = 3389,
                 served = fh.read().strip().lower()
         except OSError:
             served = ""
+    # WHO HELD THE ADDRESS BEFORE THIS CALL. Only for the log line: the lease file itself is
+    # always cleared before a start, because a stopping server has no leases worth keeping.
+    old_guest = served if (running and served and mac
+                           and served != mac.strip().lower()) else ""
     if running and mac and served and served != mac.strip().lower():
         log(f"dnsmasq is running for {served}, but this guest is {mac}; "
             f"restarting it so the one address can be leased")
+        if old_guest:
+            log(f"  the lease {old_guest} held goes with it")
         running = False
+
+    # A RESTART ALONE IS NOT ENOUGH, AND THAT IS NOT A GUESS. Run 42905230912 restarted dnsmasq
+    # for the new MAC and the guest then asked 185 times with
+    #
+    #     DHCPDISCOVER(qemubr0) 00:16:cb:17:61:d5 no address available
+    #
+    # and was never answered, because the new instance read the OLD lease back out of dnsmasq's
+    # default file and the range is one address. Clearing the file is what makes "restart" mean
+    # "free" - and it is done in the branch below, right before every start.
 
     if running:
         log("dnsmasq is already running; leaving its leases and its socket alone")
@@ -263,6 +285,17 @@ def up(*, ssh_port: int = 2222, rdp_port: int = 3389,
     else:
         _sh("pkill -x dnsmasq")
         time.sleep(1)
+        # AND THE OLD LEASE FILE GOES TOO, ALWAYS - NOT ONLY WHEN A GUEST CHANGED.
+        #
+        # A dnsmasq that is being started has no leases, so a file here can only describe a guest
+        # that is gone. Leaving it is what let run 42905230912 answer `no address available` 185
+        # times after a restart that was supposed to free the address.
+        try:
+            os.unlink(LEASE_FILE)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            log(f"  could not clear {LEASE_FILE} ({exc}); the address may still be held")
         # NO MAC BINDING. The first version of this pinned the lease to GUEST_MAC, and every
         # stage afterwards handed the guest a DIFFERENT MAC - OpenCore generates the identity per
         # work directory, and `machine.shape()` passes it to the NIC - so dnsmasq logged
@@ -283,6 +316,17 @@ def up(*, ssh_port: int = 2222, rdp_port: int = 3389,
             f"dhcp-option=option:mtu,{MTU};"
             f"interface={BRIDGE};bind-interfaces;no-ping;filter-AAAA;"
             f"pid-file=/var/run/dnsmasq.vm.pid;log-facility=/var/log/dnsmasq.vm.log;"
+            # A LEASE FILE THIS MODULE OWNS, BECAUSE IT HAS TO BE ABLE TO CLEAR IT.
+            #
+            # dnsmasq defaults to /var/lib/misc/dnsmasq.leases and READS IT BACK ON STARTUP, so
+            # killing the process does not free the one address - the next instance adopts the
+            # old lease and answers the new guest exactly as it did before:
+            #
+            #     DHCPDISCOVER(qemubr0) 00:16:cb:17:61:d5 no address available   (x185)
+            #
+            # which is run 42905230912: the range is `--dhcp-range=A,A`, one address, and the
+            # restart meant to release it released nothing.
+            f"leasefile={LEASE_FILE};"
         )
         started = _sh(f"dnsmasq --conf-file=/dev/null {''.join('--' + opt + ' ' for opt in cfg.rstrip(';').split(';'))}")
         if started.returncode != 0:
