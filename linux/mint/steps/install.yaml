@@ -240,12 +240,14 @@ steps:
   - name: who are you - host name
     type: "{{ user }}"
     settle: 2
-    # THE LOGIN NAME IS CHECKED HERE, WHERE THE DISK GETS IT. Run 6eeff43 published an image
-    # whose account was `vm` while every step below reported success; Ubiquity derives the
-    # login from the FIRST WORD of the full name above, and nothing in this file read the
-    # result. If the derivation is not `{{ user }}`, the walk now stops on the pane that
-    # caused it instead of at a `Permission denied` ten minutes later.
-    expect: ["{{ user }}"]
+  # NO `expect:` ON THIS PANE, AND IT WAS TRIED. Ubiquity's form fields are not in the text
+  # layer the walk reads - run 8b763bd's own log shows this pane OCRing as
+  #
+  #     Install | Linux | Mint | Installation | type
+  #
+  # which is the window title and the left sidebar, not the four inputs. A check here could
+  # not fail for the right reason, so the account is verified where it can be: the ssh stage
+  # logs in and asks `id -un`.
   - name: who are you - password
     at: [877, 458]
     type: "{{ password }}"

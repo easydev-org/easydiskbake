@@ -110,12 +110,24 @@ steps:
   #
   # AND THE MARKER THAT SAYS IT WORKED IS THE NEXT PANE'S NAME, not this one's: `installation
   # method` is the sidebar row of the pane this click is going TO.
+  # THE CHECK NAMED A WORD THE PANE BEING LEFT ALREADY CARRIES, SO IT COULD NOT FAIL.
+  #
+  # `expect_any: [installation, method]` is right - that is the sidebar row of the pane this
+  # click goes TO. `[let's, install]` was the second alternative, and it is THE WELCOME PAGE'S
+  # OWN TITLE (`Welcome. Let's install Fedora now.`). A click that did nothing therefore
+  # matched, and run 8b763bd walked on with the screen exactly where it started:
+  #
+  #     look welcome - after:            26 words :: Welcome. | Let's | install | Fedora ...
+  #     look installation method - after: 26 words :: Welcome. | Let's | install | Fedora ...
+  #     === installation method: DID NOT ADVANCE ===
+  #
+  # The NEXT step's check is what caught it - which is why the two live in the same file - but
+  # the report named the wrong pane. Only the pane being reached may be named here.
   - name: welcome
     at: [729, 1002]
     settle: 15
     expect_any:
       - [installation, method]
-      - [let's, install]
 
   # 3. THE PANES BETWEEN WELCOME AND THE POINT OF NO RETURN.
   #
