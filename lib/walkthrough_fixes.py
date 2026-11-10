@@ -991,6 +991,30 @@ def main() -> int:
     check("the screen step precedes the ssh install", "windows/11/steps/ssh.yaml",
           win_ssh_yaml.index("keep the screen on before ssh exists")
           < win_ssh_yaml.index("name: install openssh"))
+    # AND THE SSH COMMAND OPENS THE FIREWALL, BECAUSE sshd LISTENING IS NOT THE SAME AS REACHABLE.
+    #
+    # Run 42923725037's post-mortem frame was readable for the first time - the screen is kept on
+    # before the install now - and it showed the whole guest side working:
+    #
+    #     Found OpenSSH Preview [Microsoft.OpenSSH.Preview] Version 10.4.0.0
+    #     Successfully installed
+    #     STEP1=ok      Set-Service sshd -StartupType Automatic
+    #     STEP2=ok      the sshd_config rewrite
+    #     STEP3=ok      Start-Service sshd
+    #     22            Get-NetTCPConnection -State Listen -LocalPort 22
+    #
+    # sshd was listening on 22 and the host's forward to it timed out, because the firewall was
+    # dropping the inbound connection - and the rule that opens it had been in the original one-
+    # liner until 8fd3e91 rewrote that line to print STEP marks and dropped it.
+    #
+    # `b8c51ff` had `New-NetFirewallRule -Name sshd-22 ...`; the rewrite lost it. Asserted against
+    # the file, and against the run above, because "the service is up" is the exact claim that
+    # hid this for three runs.
+    win_ssh = read("windows/11/steps/ssh.yaml")
+    check("the ssh command opens the firewall port", "windows/11/steps/ssh.yaml",
+          "New-NetFirewallRule -Name sshd-22" in win_ssh)
+    check("the firewall step reports its own result", "windows/11/steps/ssh.yaml",
+          "STEP4" in win_ssh)
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))
