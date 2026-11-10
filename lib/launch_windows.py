@@ -147,13 +147,24 @@ def main(argv: list[str]) -> int:
         source = pulled
         note(f"pulled {args.tag}: {os.path.getsize(source) >> 20} MiB")
 
-    # NOTHING IS WRITTEN TO THE PUBLISHED DISK. qemu opens it read-write regardless, so
-    # the working copy is the disk that gets started; a launch that modified the artifact
-    # would make the next launch a test of something else.
-    disk = os.path.join(work, "disk.qcow2")
-    if os.path.abspath(source) != os.path.abspath(disk):
-        note(f"copying {source} -> {disk}")
-        shutil.copyfile(source, disk)
+    # NOTHING IS WRITTEN TO THE PUBLISHED DISK, AND NOW THAT IS ENFORCED RATHER THAN ARRANGED.
+    #
+    # This used to `shutil.copyfile` the source so the working disk was a different file. That
+    # works, and it costs a full copy of a 12-27 GiB image per launch, and it protects the source
+    # only by nobody opening it.
+    #
+    # A QCOW2 BACKING CHAIN IS THE SAME GUARANTEE, CHEAPER AND STRONGER: the overlay holds what
+    # this launch writes, and qemu opens the base READ-ONLY, so the published disk cannot be
+    # touched at all. `overlay.close()` then checks the base's size and mtime and fails loudly if
+    # they moved - "I did not write to it" is an assumption, and lib/overlay.py exists to not
+    # leave those lying around.
+    #
+    # IT ALSO MEANS THIS LAUNCH CAN BE KILLED. The disk it reads is not the disk it writes, so a
+    # power-off destroys nothing; see lib/vm_session.py's stop().
+    import overlay as overlaymod
+    run_overlay = overlaymod.Overlay(base=source, work=work, name="disk.qcow2")
+    disk = run_overlay.open()
+    note(f"booting {os.path.basename(source)} read-only, on an overlay")
 
     # --- 2. what is on the disk, before starting it ----------------------------
     #
@@ -293,7 +304,11 @@ def main(argv: list[str]) -> int:
     finally:
         if kb is not None:
             kb.close()
-        guest.stop(acpi_first=arrived)
+        # THIS GUEST IS ON AN OVERLAY, SO IT IS KILLED RATHER THAN ASKED. Nothing it wrote is
+        # being kept, and a polite shutdown is the step that has failed to arrive more than once.
+        # close() deletes the overlay and checks the published base is untouched.
+        guest.stop(acpi_first=False)
+        run_overlay.close()
         sshstage.stop_swtpm(work)
 
     note(f"=== {'A DESKTOP IS ON SCREEN' if arrived else 'NO DESKTOP'} ===")

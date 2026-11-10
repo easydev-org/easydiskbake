@@ -303,8 +303,14 @@ def main() -> int:
         session_src = read("lib/vm_session.py")
         check("macos is shut down with a command, not the power button", "lib/vm_session.py",
               "shutdown -h now" in session_src)
-        check("acpi stays as the fallback", "lib/vm_session.py",
-              session_src.index("shutdown_command(") < session_src.index("guest.stop("))
+        # AND A GUEST ON AN OVERLAY SKIPS THE WHOLE CONVERSATION. Its disk is a throwaway child
+        # of a read-only parent, so a kill destroys nothing - and both polite paths have failure
+        # modes here (macOS ignores the power button; a loaded guest outlasts any timeout), each
+        # of which costs minutes. The careful path stays for a guest that owns the real disk.
+        check("an overlay guest is killed, not asked", "lib/vm_session.py",
+              "overlay is not None" in session_src and "acpi_first=False" in session_src)
+        check("acpi stays the fallback without an overlay", "lib/vm_session.py",
+              session_src.index("shutdown_command(") < session_src.rindex("guest.stop("))
         check("the power-button timeout is still generous", "lib/vm.py",
               "acpi_timeout: int = 300" in read("lib/vm.py"))
         # AND THE PROCESS IS REAPED BEFORE THE DISK IS READ. `poll()` says the process left the
@@ -398,6 +404,23 @@ def main() -> int:
               "discard=False" in read("lib/clean_step.py"))
         check("vm_session can omit discard", "lib/vm_session.py",
               "TARGET_DRIVE_PLAIN" in read("lib/vm_session.py"))
+
+        # AND THE VERIFICATION PATHS BOOT AN OVERLAY, NOT A COPY.
+        #
+        # `shutil.copyfile` on a 15-27 GiB disk cost minutes and a second copy of everything, and
+        # protected the source only by nobody opening it. A qcow2 backing chain is the same
+        # guarantee for the price of what the run writes, and qemu opens the parent READ-ONLY -
+        # so the artifact cannot be written at all, not merely "is a different file".
+        check("vm_session boots a copy on an overlay", "lib/vm_session.py",
+              "overlaymod.Overlay(" in read("lib/vm_session.py"))
+        check("the launch self-test is on an overlay", "lib/boot_machine.py",
+              "run_overlay" in read("lib/boot_machine.py"))
+        check("the windows launch is on an overlay", "lib/launch_windows.py",
+              "overlaymod.Overlay(" in read("lib/launch_windows.py"))
+        # AND THE BASE IS CHECKED, because "I did not write to it" is the assumption this whole
+        # mechanism exists to stop making.
+        check("the overlay proves the base unchanged", "lib/overlay.py",
+              "the base is a published artifact and must never be written to" in read("lib/overlay.py"))
     except Exception as exc:                          # noqa: BLE001
         check(f"containerfile reads ({exc})", "Containerfile", False)
 

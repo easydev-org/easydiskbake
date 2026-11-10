@@ -68,10 +68,14 @@ def start(family: str, disk: str, work: str, *, ssh_port: int = 2222,
           cpus: int = 4, mem_mb: int = 0, discard: bool = True, log=print):
     """Serve the share, boot `disk`, wait for sshd.
 
-    Returns `(guest, reached)`: `reached` is True when sshd answered, None when the machine came
-    up and never did, and `(None, None)` when nothing could be started at all. A caller that only
-    needs to know whether to continue can test the second value; the guest is returned either way
-    so the failure can be photographed before it is stopped.
+    Returns `(guest, reached, overlay)`: `reached` is True when sshd answered, None when the
+    machine came up and never did, and `(None, None, None)` when nothing could be started at all.
+    A caller that only needs to know whether to continue can test the second value; the guest is
+    returned either way so the failure can be photographed before it is stopped.
+
+    THE THIRD VALUE IS THE OVERLAY WHEN `copy=True`, and its `close()` is what proves the base was
+    never written. A caller that ignores it leaks a temporary file; a caller that calls `close()`
+    gets the check. `stop()` does it.
 
     THE SHARE GOES UP FIRST. A disk built by this repository carries a launchd job that mounts
     172.30.0.1 the moment the system starts; if the server comes up second, the daemon has already
@@ -81,17 +85,31 @@ def start(family: str, disk: str, work: str, *, ssh_port: int = 2222,
     `share=None` MEANS ~/shared. Passing "" means do not serve one - which is only right for a
     disk built before the share stage existed, and the caller should say so where it calls this.
     """
+    import overlay as overlaymod
     import vm
 
+    os.makedirs(work, exist_ok=True)
+
+    # AN OVERLAY INSTEAD OF A COPY, AND THAT CHANGES WHAT STOPPING MEANS.
+    #
+    # `copy=True` used to `shutil.copyfile` a 15-27 GiB disk so the caller's artifact could not be
+    # written to. The copy cost minutes and disk space, and it did not actually guarantee anything:
+    # a run that corrupted its copy left the original alone only because they were different
+    # files, which is true but expensive.
+    #
+    # A qcow2 backing chain is the same guarantee for the price of the clusters this run writes,
+    # and it makes one more thing true that matters here: THE BASE IS OPENED READ-ONLY. So a
+    # verification stage does not need a clean shutdown at all - it can be killed, and the disk it
+    # read is still the disk that was published. That is why these stages can stop being careful
+    # about ACPI and `shutdown -h now`: there is nothing to flush.
+    #
+    # `copy=False` still means "open this disk itself", which is what the clean stage wants - it
+    # writes, and its output is the artifact.
+    run_overlay = None
     running = disk
     if copy:
-        running = os.path.join(work, "session-disk.qcow2")
-        if os.path.exists(running):
-            os.unlink(running)
-        log(f"copying {os.path.basename(disk)} -> {running} (the original is not opened)")
-        shutil.copyfile(disk, running)
-
-    os.makedirs(work, exist_ok=True)
+        run_overlay = overlaymod.Overlay(base=disk, work=work, name="session-overlay.qcow2")
+        running = run_overlay.open()
 
     # THE SERVER BEFORE THE MACHINE. See the note above; this is the one ordering decision this
     # module exists to hold, and it is the one clean_step.py got wrong by omission.
@@ -103,22 +121,34 @@ def start(family: str, disk: str, work: str, *, ssh_port: int = 2222,
             log(f"=== THE HOST COULD NOT SERVE {served} ===")
             log("  the disk carries a job that mounts it at boot; without it that job fails and")
             log("  retries. Booting anyway would test a state the disk never ships in.")
-            return None, None
+            _discard_overlay(run_overlay, log)
+            return None, None, None
 
     guest = _start_machine(family, running, work, ssh_port, cpus, mem_mb, log,
                            discard=discard)
     if guest is None:
+        _discard_overlay(run_overlay, log)
         hostshare.stop()
-        return None, None
+        return None, None, None
 
     import session
 
     log(f"waiting up to {boot_timeout}s for sshd")
     if not session.wait_for_ssh(ssh_port, boot_timeout, log, probe="echo ok"):
         log("=== THE DISK DID NOT ANSWER ON SSH ===")
-        return guest, None
+        return guest, None, run_overlay
 
-    return guest, True
+    return guest, True, run_overlay
+
+
+def _discard_overlay(run_overlay, log) -> None:
+    """Throw away an overlay when the guest never started, so a failure leaves no stray file."""
+    if run_overlay is None:
+        return
+    try:
+        run_overlay.close()
+    except SystemExit as exc:                               # the base was written to
+        log(f"  {exc}")
 
 
 def _start_machine(family: str, disk: str, work: str, ssh_port: int, cpus: int,
@@ -229,24 +259,42 @@ SHUTDOWN_COMMAND = {
 
 
 def stop(guest, *, acpi_first: bool = True, family: str = "", password: str = "admin",
-         share: bool = True, log=print) -> None:
-    """Stop the guest and the share it was using. Both, because a leftover smbd holds the port.
+         share: bool = True, overlay=None, log=print) -> None:
+    """Stop the guest, close its overlay, and stop the share.
 
-    THE SHUTDOWN COMMAND IS TRIED FIRST, AND ACPI IS THE FALLBACK. A failed ssh (a guest whose
-    network has gone) should still get the power button, because that costs nothing and sometimes
-    works.
+    A GUEST ON AN OVERLAY IS KILLED, NOT ASKED NICELY, AND THAT IS THE POINT OF THE OVERLAY.
+    Everything a graceful shutdown protects - filesystem consistency, an unmounted volume, a
+    journal that does not need replaying - applies to the disk the guest writes to. When that disk
+    is a throwaway overlay whose parent is opened read-only, a kill destroys nothing: the parent
+    is still the published artifact, byte for byte, and the overlay is deleted either way.
+
+    So `overlay` being set skips the shutdown conversation entirely. It is also what makes these
+    stages predictable: `shutdown -h now` and ACPI both have failure modes here (macOS ignores the
+    power button; a guest under load can take longer than any timeout), and none of them can
+    damage something that is read-only.
+
+    WITHOUT an overlay the guest owns the real disk and gets the careful path: ssh `shutdown -h
+    now` first, ACPI as the fallback, kill only if both fail.
     """
     try:
-        command = SHUTDOWN_COMMAND.get(family)
-        done = False
-        if command:
-            done = guest.shutdown_command(command.format(password=password), STOP_TIMEOUT,
-                                          password=password)
-        if not done:
-            guest.stop(acpi_first=acpi_first, acpi_timeout=STOP_TIMEOUT)
+        if overlay is not None:
+            log("the guest is on an overlay; killing it rather than waiting for a shutdown")
+            guest.stop(acpi_first=False)
+        else:
+            command = SHUTDOWN_COMMAND.get(family)
+            done = False
+            if command:
+                done = guest.shutdown_command(command.format(password=password), STOP_TIMEOUT,
+                                              password=password)
+            if not done:
+                guest.stop(acpi_first=acpi_first, acpi_timeout=STOP_TIMEOUT)
     except Exception as exc:                                # noqa: BLE001
         log(f"stop: {exc}")
     finally:
+        if overlay is not None:
+            # close() DELETES THE OVERLAY AND CHECKS THE BASE. A base that changed is a hard
+            # error, not a warning: it is a published artifact.
+            overlay.close()
         if share:
             hostshare.stop()
 
@@ -256,12 +304,13 @@ def open(family: str, disk: str, work: str, *, ssh_port: int = 2222,
          boot_timeout: int = 900, copy: bool = True, share: str | None = None,
          cpus: int = 4, mem_mb: int = 0, password: str = "admin", log=print):
     """`start()` as a context manager. Stops the guest and the share on the way out."""
-    guest, reached = start(family, disk, work, ssh_port=ssh_port, boot_timeout=boot_timeout,
-                           copy=copy, share=share, cpus=cpus, mem_mb=mem_mb, log=log)
+    guest, reached, run_overlay = start(
+        family, disk, work, ssh_port=ssh_port, boot_timeout=boot_timeout,
+        copy=copy, share=share, cpus=cpus, mem_mb=mem_mb, log=log)
     try:
         yield guest if reached else None
     finally:
         if guest is not None:
-            stop(guest, family=family, password=password, log=log)
+            stop(guest, family=family, password=password, overlay=run_overlay, log=log)
         else:
             hostshare.stop()

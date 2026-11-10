@@ -165,9 +165,14 @@ def main(argv: list[str]) -> int:
     # That is not a missing line here. It is three places starting a guest and one of them knowing
     # what the guest expects, so the machine and the environment around it are now one call.
     #
-    # `copy=False`, BECAUSE CLEANING IS THE POINT. boot_machine copies so a self-test cannot touch
-    # the artifact; this stage modifies the disk in place on purpose - it is the last step before
-    # compress and publish, and cleaning a copy would mean moving it back.
+    # `copy=False`, BECAUSE CLEANING IS THE POINT, AND IT IS THE ONLY STAGE THAT MEANS IT.
+    #
+    # Everything else now boots an OVERLAY (lib/overlay.py): a read-only parent plus a throwaway
+    # child, which is why a self-test can be killed without a shutdown. This stage cannot use one
+    # - what it writes IS the artifact, and it is the last step before compress and publish, so an
+    # overlay would have to be flattened back and the flatten is the step that could fail after
+    # the clean succeeded. So there is no overlay here, `stop` gets none, and the careful shutdown
+    # path applies.
     # THE DISK IS CHECKED BEFORE IT IS BOOTED, AND THAT IS NOT PARANOIA.
     #
     # This stage is handed the artifact the previous stage just wrote - on macOS, `qemu-img

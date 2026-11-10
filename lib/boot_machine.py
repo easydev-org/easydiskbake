@@ -41,12 +41,17 @@ import hostshare  # noqa: E402
 
 def start(family: str, disk: str, work: str, *, ssh_port: int = 2222,
           boot_timeout: int = 900, log=print):
-    """Boot `disk` from a COPY, so the artifact the caller named is never modified.
+    """Boot `disk` on a throwaway OVERLAY, so the artifact the caller named is never modified.
 
-    THE COPY IS NOT PARANOIA. This test logs in and mounts a share; both write to the disk. A
-    launch that started the original would leave a machine whose `~/hello.txt` and whose
-    launchd/Scheduled-Task state are whatever the test did - and the caller's disk is the thing
-    a later stage or a person might publish.
+    AN OVERLAY, NOT A COPY. This test logs in and mounts a share; both write to the disk. The old
+    answer was `shutil.copyfile` of a 15-27 GiB image, which cost minutes and a second copy of
+    everything. A qcow2 backing chain gives the same guarantee for the price of what the run
+    writes, and a stronger one: qemu opens the base READ-ONLY, so the artifact cannot be modified
+    even by a bug.
+
+    AND IT CHANGES WHAT STOPPING MEANS. A guest on an overlay can be killed - there is nothing to
+    flush that anybody keeps - which is why a self-test no longer has to reason about ACPI or
+    `shutdown -h now`. lib/vm_session.py's stop() does that when it is given the overlay.
 
     THE MACHINE AND THE SHARE BOTH COME FROM lib/vm_session.py NOW. This used to build them
     itself, and so did lib/clean_step.py, and so did the stage scripts - three descriptions of one
@@ -58,11 +63,16 @@ def start(family: str, disk: str, work: str, *, ssh_port: int = 2222,
     """
     import vm_session
 
-    guest, reached = vm_session.start(
+    guest, reached, run_overlay = vm_session.start(
         family, disk, work, ssh_port=ssh_port, boot_timeout=boot_timeout,
         copy=True, share="", log=log)
     if guest is None or not reached:
+        if run_overlay is not None:
+            run_overlay.close()
         return None
+    # THE CALLER STOPS THE GUEST, so the overlay rides along on it - stop() needs it to know the
+    # guest can be killed and to check the base afterwards.
+    setattr(guest, "overlay", run_overlay)
     return guest
 
 
@@ -134,8 +144,17 @@ def mount(family: str, guest, user: str, password: str, *, log=print) -> bool:
     return status == 0
 
 
-def stop(guest, *, acpi_first: bool = True) -> None:
+def stop(guest, *, acpi_first: bool = False) -> None:
+    """Kill the guest and close its overlay.
+
+    `acpi_first=False` BECAUSE THIS GUEST IS ON AN OVERLAY. Its disk is a throwaway child of a
+    read-only parent, so there is nothing in it worth a polite shutdown - and the polite paths
+    have failure modes of their own (macOS ignores the power button; a loaded guest can outlast
+    any timeout), each of which costs minutes. See lib/vm_session.py's stop().
+    """
     try:
-        guest.stop(acpi_first=acpi_first)
+        overlay = getattr(guest, "overlay", None)
+        import vm_session
+        vm_session.stop(guest, acpi_first=acpi_first, overlay=overlay, share=False)
     except Exception as exc:                                # noqa: BLE001
         print(f"[selftest] stop: {exc}", flush=True)
