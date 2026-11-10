@@ -505,6 +505,12 @@ def main() -> int:
               bootstrap.WINDOWS_TASK == "vm-bootstrap")
         check("2. the mount daemon is org.vm.smbmount", "lib/bootstrap.py",
               bootstrap.MACOS_MOUNT_LABEL == "org.vm.smbmount")
+        # AND /usr/local/bin HAS TO BE CREATED. It is where Homebrew puts things and this disk has
+        # no Homebrew yet - the toolchain stage comes after this one - so `cp` into it answered
+        # "No such file or directory", which reads like a missing source and is a missing
+        # directory. Run 42755669848.
+        check("2. the daemon install creates /usr/local/bin", "lib/steps.py",
+              "mkdir -p /Library/LaunchDaemons /usr/local/bin" in read("lib/steps.py"))
         # AND NOTHING ANYWHERE STILL SAYS THE OLD NAME, which is how a rename half-happens.
         for path in ("lib/bootstrap.py", "lib/steps.py", "lib/launch_selftest.py",
                      "macos/15/steps/share.yaml", "windows/11/steps/share.yaml"):

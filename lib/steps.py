@@ -1220,7 +1220,11 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
                 # through the same {{ }} substitution as every other step - and a literal
                 # placeholder would be looked up as a variable and fail at run time.
                 f"{sudo}sh -c '"
-                "mkdir -p /Library/LaunchDaemons && "
+                # /usr/local/bin IS NOT ON A STOCK macOS. It is where Homebrew puts things, and
+                # this disk has no Homebrew yet - the toolchain stage comes after this one. The
+                # first attempt answered "cp: /usr/local/bin/vm-smbmount.sh: No such file or
+                # directory", which reads like a missing SOURCE and is a missing DIRECTORY.
+                "mkdir -p /Library/LaunchDaemons /usr/local/bin && "
                 "cp /tmp/smbmount.sh /usr/local/bin/vm-smbmount.sh && "
                 # 0700, BECAUSE THE SCRIPT CARRIES THE SHARE PASSWORD. root runs it; nobody else
                 # has any business reading it, and no keychain exists to hold it instead.
