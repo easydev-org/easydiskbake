@@ -68,15 +68,6 @@ sys.path.insert(0, HERE)
 import machine  # noqa: E402  - macos/15/machine.py, beside this file
 
 
-def _wallpaper_test():
-    import importlib.util
-
-    path = os.path.join(REPO, "lib", "desktop.py")
-    spec = importlib.util.spec_from_file_location("lib_desktop", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
 # The password the desktop stage was given. Remote Login is turned on from a root shell
 # started with sudo, so this is the account's password, not root's.
 GUEST_USER = os.environ.get("MACOS_USER", "docker")
@@ -173,29 +164,18 @@ def main(argv: list[str]) -> int:
     assets = opencore.build(RELEASE, work)
     log(f"identity {assets['identity']['serial']} / {assets['identity']['mac']}")
 
-    # THE MACHINE IS STARTED BY THE FILE'S `boot:` STEP, NOT HERE.
-    #
-    # What this stage prepares is everything a step cannot be: the writable disk (or its
-    # overlay), the recovery image opencore needs, and the OpenCore assets. The boot, the login,
-    # the System Settings sequence, the ssh assertions and the shutdown are all in
-    # macos/15/steps/ssh.yaml, so the file that describes the sequence is the file that runs it.
-    #
-    # `boot_options` carries what the file cannot know without parsing this stage's arguments:
-    # which disk, which overlay. run_file owns the guest from then on.
-    boot_options = {
-        "disk": disk,
-        "overlay": run_overlay,
-        "assets": assets,
-        "cpus": args.cpus,
-        "mem_mb": args.mem,
-        "ssh_port": args.ssh_port,
-    }
-
     frames = os.path.join(work, "frames")
     os.makedirs(frames, exist_ok=True)
+
+    # THE RECORDING SOCKET IS COMPUTED, NOT ASKED FOR. This stage no longer starts qemu - the
+    # file's `boot:` step does - so there is no guest to read `paths.record` from yet, and the
+    # sampler has to be running BEFORE the machine is, or the login window it exists to explain
+    # would be the one boot nobody photographed. `vm.Paths` is where that name comes from, and
+    # lib/snapshots.py waits for the socket to appear (60 x 2s) rather than requiring it.
+    record_socket = vm.Paths(work).record
     snap = subprocess.Popen(
         [sys.executable, os.path.join(REPO, "lib", "snapshots.py"),
-         guest.paths.record, frames,
+         record_socket, frames,
          os.environ.get("SNAPSHOT_INTERVAL", "1")],
         stdout=open(os.path.join(frames, "snapshots.log"), "wb"),
         stderr=subprocess.STDOUT,
@@ -230,117 +210,41 @@ def main(argv: list[str]) -> int:
     )
 
     ok = False
+    session = None
     try:
-        # BOOT, WAIT A FIXED TIME, TYPE THE PASSWORD. NO DETECTION.
+        # THE WALKTHROUGH OWNS THE WHOLE MACHINE: the boot, the login window, the System Settings
+        # sequence, the ssh assertions and the shutdown. What this stage keeps is everything a
+        # step cannot be - the disk, the overlay, the OpenCore assets and the recording.
         #
-        # THIS DISK ALWAYS BOOTS TO A LOCK SCREEN, so waiting for a desktop was waiting for
-        # something this stage can cause but never observe. desktop.py finishes by letting the
-        # guest settle and stopping it - it never logs in - so the published disk starts at
-        # the login window every time: wallpaper, clock, account tile, password field.
-        #
-        # THE WALLPAPER TEST CANNOT SEE THAT. It wants a dark menu bar across the top and a
-        # lock screen draws wallpaper there instead, so it correctly says "not a desktop"
-        # about a machine that is healthy and waiting. Measured on run 42028663003: the login
-        # window was on screen by 12:48, the test spent until 13:02 saying no, and the same
-        # machine showed a full desktop 25 seconds after the password was typed. Fifteen
-        # minutes of the timeout bought nothing.
-        #
-        # A FIXED WAIT IS HONEST HERE BECAUSE THE NUMBER IS MEASURED. A booted macOS shows its
-        # login window two to four minutes after qemu starts - this disk has no installer to
-        # run, only the system to bring up. 120 seconds is the settle the rest of this file
-        # uses for a boot, and typing the password early is not a mistake: the keystrokes go
-        # to a machine that is not listening yet and are simply lost, and unlock() is followed
-        # by the ssh check that is the real verdict.
-        # WAIT FOR THE WINDOW, WITH THE FIXED NUMBER AS THE CEILING RATHER THAN THE DELAY.
-        #
-        # The comment above measures the login window at "two to four minutes after qemu
-        # starts", and the previous code slept a flat 120 - the BOTTOM of that range. On a
-        # slower runner the keystrokes then went to a machine that had not drawn its window
-        # yet and were simply lost, which reads later as "the password was wrong".
-        #
-        # `reached_lock_screen` is the same test the desktop stage uses (the password field's
-        # twelve-pixel placeholder, cropped and enlarged), so this waits for the thing it is
-        # about to type into. MACOS_LOGIN_DELAY stays as the ceiling: whatever the number is,
-        # the wait ends as soon as the window is up.
-        delay = int(os.environ.get("MACOS_LOGIN_DELAY", "240"))
-        log(f"waiting up to {delay}s for the login window")
-        from lib import desktop as desktoplib
-        deadline = time.time() + delay
-        seen = False
-        while time.time() < deadline:
-            if desktoplib.reached_lock_screen(frames):
-                log(f"  the login window is up after "
-                    f"{delay - int(deadline - time.time())}s")
-                seen = True
-                break
-            time.sleep(5)
-        if not seen:
-            log(f"  no login window in {delay}s; typing anyway, which is what the old "
-                f"fixed wait always did")
-
-        log(f"=== logging in as {GUEST_USER} ===")
-        unlock(guest)
-
-        # THE KEYBOARD DIALOG COMES UP WITH THE FIRST DESKTOP SESSION, so it is dismissed
-        # here - before anything is typed at Spotlight, because it swallows the next key.
-        dismiss_keyboard_assistant(guest)
-
-        # AND NOW THE DESKTOP IS REACHABLE. The wallpaper test is kept, with a short budget,
-        # because it is the only thing that can confirm the password was accepted - and if it
-        # was not, the ssh check below would fail for a reason that reads like a broken sshd.
-        #
-        # 180 SECONDS WAS NOT ENOUGH, AND THE PROOF IS THIS RUN'S OWN LAST FRAME.
-        # Run 42383829203 typed the password at 15:01:35, spent twelve seconds on the
-        # keyboard-assistant clicks, and gave up at 15:05:07 - and `macos15-ssh-last-frame`
-        # from that same run is a clean Sequoia desktop: the menu bar reads
-        # "Finder File Edit View Go Window Help", the clock says 7:05 AM, and there is no
-        # dialog over it. The machine had arrived; the window had closed first.
-        #
-        # It is not a slow login in the usual sense. This is a first session on a disk that
-        # has never had one: the Dock is built, Spotlight starts indexing fourteen gigabytes,
-        # and the window server composites a wallpaper it has not cached. Five minutes is the
-        # budget desktop.py already gives the same transition, and waiting is free - the next
-        # thing this stage does is type at a machine that is already sitting there.
-        desktop_timeout = int(os.environ.get("MACOS_DESKTOP_TIMEOUT", "300"))
-        if not wait_for_desktop(guest, frames, desktop_timeout):
-            log("=== THE DISK DID NOT REACH A DESKTOP AFTER LOGGING IN ===")
-            log("  the password was typed and the screen still is not a desktop; check the")
-            log("  recording - the login window shakes its field when the password is wrong")
-            return 1
-
-        # THE WALKTHROUGH OWNS EVERYTHING FROM HERE: THE GUI SEQUENCE, THE SSH ASSERTIONS, AND
-        # THE SHUTDOWN. It also owns the login and the boot, because `boot:` is a step.
-        #
-        # THE TOGGLE PROBLEM IS NOW IN THE FILE, WHERE IT CAN BE READ. `turn remote login on`
-        # carries an `unless: [log, in, to, this, computer]`, so a disk that already has the
-        # daemon on does not get it pressed - and pressing it would turn it OFF, which is what
-        # this stage used to do on a re-run.
-        #
-        # The host-side socket check that used to guard it is gone with it: `unless:` reads the
-        # pane, which is the same fact the switch itself shows, rather than a second opinion from
-        # a different layer.
+        # THE TOGGLE PROBLEM IS IN THE FILE, WHERE IT CAN BE READ. `turn remote login on` carries
+        # an `unless: [log, in, to, this, computer]`, so a disk that already has the daemon on
+        # does not get the switch pressed - and pressing it turns it OFF, which is what this stage
+        # used to do on a re-run.
         import steps as stepslib
+
+        # THE SHUTDOWN METHOD IS A FACT ABOUT THIS RUN, NOT ABOUT THE SCREEN, so it arrives as a
+        # var: an overlay can be killed because nothing it wrote survives, and a disk this stage
+        # owns has to be closed with `shutdown -h now`. See the two comments in ssh.yaml.
+        shutdown_method = "kill" if run_overlay is not None else "ssh"
+
         session = stepslib.MachineSession(
             "macos", disk, work,
             overlay=run_overlay, ssh_port=args.ssh_port,
             cpus=args.cpus, mem_mb=args.mem,
-            boot_options={"assets": assets, "disk": disk, "overlay": run_overlay})
+            # `copy: False` WHEN THERE IS NO OVERLAY. The disk is then a working copy this stage
+            # already moved into `work`, and it is the file the artifact is made from - wrapping
+            # it in a second overlay would send every write somewhere that is never published.
+            boot_options={"assets": assets, "copy": run_overlay is None})
         ok, ran = stepslib.run_file(
             WALK, "", work=work,
             user=GUEST_USER, password=os.environ.get("MACOS_PASSWORD", "admin"),
             ssh_port=args.ssh_port, release="15", frames=frames,
+            extra_vars={"args.shutdown": shutdown_method},
             session=session,
         )
         log(f"{len(ran)} step(s) answered" if ok
             else f"the walkthrough failed after {len(ran)} step(s)")
         if not ok:
-            return 1
-
-        log(f"checking that the guest's sshd answers on the host's port {args.ssh_port}")
-        if not wait_for_ssh(args.ssh_port, timeout=180):
-            log("=== REMOTE LOGIN IS NOT ANSWERING ===")
-            log("  the preference was set but sshd never came up; the frames say what "
-                "Terminal showed")
             return 1
 
         ok = True
@@ -401,49 +305,15 @@ def main(argv: list[str]) -> int:
                 # it was made from, so the published artifact is produced by reading the chain
                 # and writing one standalone file - which is what flatten() does.
                 run_overlay.flatten(out)
+                # AND THEN IT IS RELEASED, WHICH IS ALSO THE CHECK. `close()` deletes the diff and
+                # compares the base's size and mtime against what it recorded before qemu started:
+                # "I did not write to it" is an assumption, and this stage has been wrong about
+                # assumptions. It happens AFTER the flatten because the flatten reads it.
+                run_overlay.close()
                 log(f"BAKED macos15 ssh -> {out} ({os.path.getsize(out) >> 20} MiB)")
             else:
                 compress.compress(disk, out)
                 log(f"BAKED macos15 ssh -> {out} ({os.path.getsize(out) >> 20} MiB)")
-
-
-def wait_for_desktop(guest: vm.Guest, frames: str, timeout: int) -> bool:
-    """The wallpaper test again - see macos/15/desktop.py for why it is this one.
-
-    THE RECORDING'S FRAMES, NOT drive.py's SCREENSHOTS. macos/15/desktop.py already had
-    this right and this copy had it wrong:
-
-        desktop.py    shots = frames               <- one per second for the whole run
-        ssh.py        shots = os.path.join(frames, "shots")   <- a few dozen wizard panes
-
-    `frames/shots` is where drive.py puts the handful of pictures it takes around its own
-    clicks. This stage does not run drive.py at all - it boots the desktop disk and waits -
-    so that directory holds whatever the previous stage left at the same paths, none of
-    them this boot's desktop. `reached_desktop` looks at the newest five frames in whatever
-    it is given, so it was examining the wrong pictures for the whole 900 seconds.
-
-    Run 42020622755 is what that costs: the guest had ALREADY reached its desktop - the run's
-    own last-frame.png shows the Sonoma wallpaper, the clock, the account picture and a
-    password field - and the stage reported
-
-        === THE DISK DID NOT REACH A DESKTOP ===
-
-    after waiting out the full timeout on a machine that was sitting there.
-    """
-    from lib import desktop
-
-    shots = frames
-    deadline = time.time() + timeout
-    started = time.time()
-    while time.time() < deadline:
-        if not guest.alive():
-            log("qemu exited before a desktop appeared")
-            return False
-        if _wallpaper_test().reached_desktop(shots, kind="macos"):
-            log(f"a macOS desktop is on screen ({(time.time() - started):.0f}s)")
-            return True
-        time.sleep(5)
-    return False
 
 
 # THE KEYBOARD SETUP ASSISTANT'S Quit BUTTON, IN 1920x1080 PIXELS.

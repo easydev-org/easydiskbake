@@ -280,6 +280,33 @@
           <Path>bcdedit.exe /timeout 0</Path>
           <Description>Do not wait at the boot menu</Description>
         </RunSynchronousCommand>
+        <!-- THE QEMU GUEST AGENT, INSTALLED BY SETUP RATHER THAN BY A LATER STAGE.
+
+             WHY HERE AND NOT OVER SSH LATER. The agent is what lets this machine be shut down
+             without a dialog and without a working sshd - so installing it over ssh on a disk
+             that already has ssh is the long way round, and it left the disk's FIRST boot with
+             no agent at all. The MSI travels on the answer CD (lib/winiso.py copies it out of
+             the virtio-win ISO), and this is the pass that runs while that CD is still attached.
+
+             THE DRIVE LETTER IS SEARCHED FOR, NOT ASSUMED. This machine has three CD-ROMs - the
+             install ISO, this answer CD and the virtio drivers - and their letters depend on
+             what the firmware enumerated first. Hard-coding D: would work until the day it did
+             not, and the failure would be an install that silently produced a disk with no agent.
+
+             `%i` IS A FOR-LOOP VARIABLE IN cmd, so this is one line with no batch file: for each
+             candidate letter, if the MSI is there, install it. `if exist` is what makes the loop
+             safe on the letters that hold a different CD.
+
+             `start /wait` IS NOT DECORATION. msiexec is a GUI-subsystem executable, so cmd does
+             NOT wait for a plain `msiexec /i ...` to finish - the RunSynchronousCommand would
+             return, Setup would carry on to the next pass and eventually reboot, and the install
+             would be interrupted somewhere in the middle. `start /wait` blocks until it exits,
+             which is the whole point of running it here instead of in a later stage. -->
+        <RunSynchronousCommand wcm:action="add">
+          <Order>6</Order>
+          <Path>cmd.exe /c "for %i in (D E F G H I J) do @if exist %i:\agent\qemu-ga-x86_64.msi start /wait msiexec /i %i:\agent\qemu-ga-x86_64.msi /qn /norestart /l*v C:\Windows\Temp\qemu-ga-install.log"</Path>
+          <Description>Install the QEMU guest agent</Description>
+        </RunSynchronousCommand>
       </RunSynchronous>
     </component>
   </settings>

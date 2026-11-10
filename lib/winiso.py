@@ -62,6 +62,10 @@ import tempfile
 # a virtio disk visible during windowsPE.
 WINPE_DRIVER_DIR = "$WinPEDriver$"
 
+# WHERE THE AGENT MSI GOES ON THE ANSWER DISC. A plain directory: it is installed by a command
+# in the answer file, not loaded by Setup, so it needs no special name.
+AGENT_DIR = "agent"
+
 # WHAT THE INSTALL NEEDS, AND ONE OF THESE IS NOT FOR windowsPE AT ALL.
 #
 #     viostor    the disk. Without it windowsPE cannot see the target and setup stops.
@@ -77,6 +81,16 @@ WINPE_DRIVER_DIR = "$WinPEDriver$"
 # device for, and the installed system picks it up from the same directory. The alternative is a
 # second driver injection in vm-configure, which would need the ISO there too.
 WINPE_DRIVERS = ["viostor", "vioscsi", "NetKVM", "Balloon", "vioserial"]
+
+# THE GUEST AGENT, INSTALLED DURING SETUP RATHER THAN AFTER IT.
+#
+# WHERE IT LIVES ON THE UPSTREAM ISO, and why it is copied onto the answer disc instead of being
+# read from the virtio CD: the virtio CD is a separate drive whose letter is not known while an
+# answer file is being written, and a `RunSynchronous` path that guesses a letter is a path that
+# works until the day there are three CD-ROMs. The answer CD is already staged by this module,
+# so its file is at a path this module chooses.
+AGENT_MSI_MEMBER = "guest-agent/qemu-ga-x86_64.msi"
+AGENT_MSI_NAME = "qemu-ga-x86_64.msi"
 
 
 def log(msg: str) -> None:
@@ -163,8 +177,30 @@ def extract_drivers(virtio_iso: str, stage: str) -> list[str]:
     return found
 
 
+def extract_agent_msi(virtio_iso: str, stage: str) -> str | None:
+    """Copy guest-agent/qemu-ga-x86_64.msi out of the virtio-win ISO into `stage`.
+
+    RETURNS None WHEN THE ISO DOES NOT HAVE IT, rather than raising. A drivers-only repack (the
+    56 MiB virtiso-whql cut this repository used to fetch) has no guest-agent directory at all,
+    and a bake that failed on that would be a bake that could not install Windows with drivers
+    it does have. The absence is reported, and the answer file is built without the agent step -
+    which lib/images.py's comment explains, because the fix is to fetch the upstream ISO.
+    """
+    if not os.path.isfile(virtio_iso):
+        return None
+    if not shutil.which("7z"):
+        return None
+    result = subprocess.run(
+        ["7z", "e", "-y", f"-o{stage}", virtio_iso, AGENT_MSI_MEMBER],
+        capture_output=True, text=True)
+    target = os.path.join(stage, AGENT_MSI_NAME)
+    if result.returncode != 0 or not os.path.isfile(target):
+        return None
+    return target
+
+
 def answer_iso(answer_dir: str, out: str, *, label: str = "ANSWER",
-               drivers: str | None = None) -> str:
+               drivers: str | None = None, with_agent: bool = True) -> str:
     """Build a small ISO holding Autounattend.xml and, optionally, the drivers.
 
     The volume label matters more than it looks: setup scans removable media, and a
@@ -186,6 +222,33 @@ def answer_iso(answer_dir: str, out: str, *, label: str = "ANSWER",
             winpe = os.path.join(stage, WINPE_DRIVER_DIR)
             os.makedirs(winpe, exist_ok=True)
             extract_drivers(drivers, winpe)
+            # AND THE AGENT, ON THE SAME DISC, AT A PATH THIS MODULE OWNS.
+            #
+            # `\agent\qemu-ga-x86_64.msi` is what the answer file's specialize step runs. It is
+            # not under $WinPEDriver$ because that directory is for drivers Setup loads itself;
+            # this is a program a command installs.
+            if with_agent:
+                agent_dir = os.path.join(stage, AGENT_DIR)
+                os.makedirs(agent_dir, exist_ok=True)
+                got = extract_agent_msi(drivers, agent_dir)
+                if got:
+                    log(f"guest agent: {AGENT_DIR}/{AGENT_MSI_NAME} "
+                        f"({os.path.getsize(got) >> 10} KiB)")
+                else:
+                    # LOUD, NOT A WARNING. The answer file's specialize pass installs this file
+                    # by path, so an ISO without it produces a Windows disk that boots, answers
+                    # nothing on its agent port, and only says so two stages later when a
+                    # `shutdown: guest_agent` refuses. A missing agent is a broken input, and the
+                    # two ways to get one are both fixable by the reader: republish
+                    # `iso-virtio-win` from the upstream ISO, or pass an ISO that has it.
+                    raise IsoError(
+                        f"the virtio-win ISO at {drivers} has no {AGENT_MSI_MEMBER}.\n"
+                        f"  The answer file installs the guest agent from that path on the answer\n"
+                        f"  CD, so this ISO cannot produce a disk with an agent.\n"
+                        f"  A drivers-only repack (qemus/virtiso-whql, 56 MiB) is exactly this case;\n"
+                        f"  Fedora's upstream virtio-win.iso (836 MiB) has it under guest-agent/.\n"
+                        f"  Republish the artifact: gh workflow run artifacts-publish.yml "
+                        f"-f which=iso-virtio-win")
 
         if os.path.exists(out):
             os.unlink(out)

@@ -77,18 +77,37 @@ WINDOWS = {
     },
 }
 
-# virtio-win: the drivers without which setup cannot see the disk it is installing to.
-# The failure without this CD is a pane with an empty disk list, which the answer
-# file's WillShowUI=OnError would show as a dialog nobody is watching.
+# virtio-win: the drivers without which setup cannot see the disk it is installing to,
+# AND the QEMU guest agent that lets the machine be shut down without a dialog.
 #
-# Not from Microsoft: qemus/virtiso-whql republishes the upstream virtio-win ISO under
-# a version tag, which is what dockur/windows consumes for the same purpose.
-# No sha256: the tag pins the release and setup itself fails loudly if the drivers are
-# wrong for the guest. The size is recorded so a truncated download is caught.
+# THE UPSTREAM ISO, NOT THE REPACK, AND THE GUEST AGENT IS WHY.
+#
+# This was qemus/virtiso-whql's virtio-win-1.9.61.iso - 56 MiB, a drivers-only cut that
+# dockur/windows also uses. It carries $WinPEDriver$-loadable drivers and NOTHING ELSE: a scan
+# of the image finds one .msi (virtio-win-gt-x64.msi) and zero occurrences of "guest-agent" or
+# "qemu-ga". So the agent had to be installed later, from the guest-tools bundle, and that
+# bundle's WiX Burn bootstrapper never returned under /quiet on this guest (runs 42797556702,
+# 42800603925 - ten and twelve minutes, no output, no exit).
+#
+# Fedora's own ISO is 836 MiB and carries everything:
+#
+#     virtio-win-gt-x64.msi        the drivers, as before
+#     guest-agent/qemu-ga-x86_64.msi    the agent
+#     guest-agent/qemu-ga-i386.msi
+#
+# The cost is the download and it is paid ONCE, because this is a published artifact
+# (`iso-virtio-win` on ghcr) that every bake pulls from the registry rather than from Fedora.
+#
+# IT IS LARGER THAN THE DRIVERS THE BAKE NEEDS, and that is the trade: one ISO that can install
+# the agent during Setup beats a second installer that has to be run later over ssh on a machine
+# whose disk is already published.
+#
+# No sha256: Fedora rotates the file under this path, and setup itself fails loudly if the
+# drivers are wrong for the guest. The bake records the size it got.
 VIRTIO = {
     "virtio-win": {
-        "url": "https://github.com/qemus/virtiso-whql/releases/download/v1.9.61-0/"
-               "virtio-win-1.9.61.iso",
+        "url": "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/"
+               "stable-virtio/virtio-win.iso",
         "sha256": None,
         "size": None,
     },

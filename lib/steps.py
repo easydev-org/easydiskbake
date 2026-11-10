@@ -797,18 +797,33 @@ class MachineSession:
         self.mem_mb = mem_mb
         self.cpus = cpus
         # THE OVERLAY MAY ALREADY EXIST, when a stage made it (macos/15/ssh.py does: it decides
-        # between an overlay and a working copy before the file runs). Otherwise `boot:` makes
-        # one, and either way `stop()` closes it - which is what proves the base was not written.
+        # between an overlay and a working copy before the file runs). `boot:` then starts the
+        # machine on THAT one instead of wrapping the disk a second time, and the stage keeps
+        # ownership: it is the one that flattens the overlay into the artifact.
+        #
+        # THIS WAS `self.overlay = overlay` FOLLOWED BY `self.overlay = None` FOUR LINES LATER,
+        # which threw the caller's overlay away and made a second one on top of a disk whose
+        # parent was already an overlay. Two attributes with one name and no test between them.
         self.overlay = overlay
         self.ssh_port = ssh_port
+        # WHO CLOSES THE OVERLAY. `boot:` that MAKES one closes it, because nothing else knows it
+        # exists. One the CALLER passed is the caller's: macos/15/ssh.py flattens it into the
+        # artifact and then closes it, and a `shutdown:` that deleted it first would throw away
+        # the only copy of everything the run wrote.
+        self._owns_overlay = overlay is None
         # WHAT THE STAGE KNOWS THAT THE FILE CANNOT. `assets` is the OpenCore build (a dict of
         # paths and an identity); a stage that made one passes it here rather than making the
         # walkthrough fetch it a second time. Everything else a stage passes is a disk fact.
         self.boot_options = dict(boot_options or {})
         self.guest = None
-        self.overlay = None
         self.qmp_path = ""
         self.stopped = False
+        # THE ACCOUNT AND THE PASSWORD THIS RUN'S STEPS USE. `shutdown: ssh` needs both and
+        # neither is a property of the machine: the same disk can be installed with any account.
+        # `boot()` fills them from the walkthrough's own values before the first step runs, so a
+        # `shutdown:` later in the file does not have to guess.
+        self.login = ""
+        self.password = "admin"
 
     def boot(self, family: str, *, ssh_port: int = 2222, log=print) -> None:
         if self.guest is not None:
@@ -837,10 +852,30 @@ class MachineSession:
                 log(f"android-x86: ignoring the host share {share!r} (this guest has no cifs)")
             share = ""
 
+        # A CALLER'S OVERLAY IS THE ONE THIS RUNS ON. See __init__: a stage that chose between
+        # an overlay and a working copy before the file ran has already made the only disk this
+        # boot may write to, and wrapping it again would put a second diff over the first.
+        if self.overlay is not None:
+            guest, reached = self._boot_on_existing_overlay(assets, ssh_port, log)
+            self.guest = guest
+            self.qmp_path = guest.paths.drive
+            if not reached:
+                raise StepError(
+                    f"the machine started but never answered on ssh port {ssh_port}; "
+                    f"the console is in {self.work}/console.log")
+            return
+
         guest, reached, overlay = vm_session.start(
             family or self.family, self.disk, self.work,
-            ssh_port=ssh_port, wait_for_ssh=False, copy=not android, share=share,
-            cpus=self.cpus, mem_mb=self.mem_mb, log=log)
+            ssh_port=ssh_port, wait_for_ssh=False,
+            # THE CALLER MAY SAY THE DISK IS ALREADY THIS RUN'S TO WRITE. A stage that made a
+            # working copy has one file that is meant to be modified and published, and wrapping
+            # it in an overlay would send every write into a diff nobody flattens. `copy` is that
+            # statement; unset means "protect the disk I was given", which is the safe default.
+            copy=(self.boot_options.get("copy")
+                  if self.boot_options.get("copy") is not None else not android),
+            share=share,
+            cpus=self.cpus, mem_mb=self.mem_mb, log=log, boot_options=self.boot_options)
         if guest is None:
             raise StepError("the machine could not be started")
         self.guest, self.overlay = guest, overlay
@@ -859,7 +894,14 @@ class MachineSession:
                 "OpenCore build the stage made. Pass boot_options={'assets': assets}.")
         guest, reached = vm_session.start_on(
             self.disk, self.work, family=self.family, assets=assets,
-            ssh_port=ssh_port, cpus=self.cpus, mem_mb=self.mem_mb, log=log)
+            ssh_port=ssh_port, cpus=self.cpus, mem_mb=self.mem_mb,
+            # A CALLER'S OVERLAY MEANS THE CALLER DECIDED WHAT THIS RUN IS. It made the disk, so
+            # it knows whether that disk carries the launchd job that mounts a share. Serving one
+            # unasked is the mistake vm_session.start()'s own note records for Android: an smbd
+            # that cannot bind fails a boot over something the guest never wanted. `None` in
+            # `boot()` keeps its old meaning (~/shared) because there the file is starting a disk
+            # this session was handed; here the disk is already this run's.
+            share=(self.share or ""), log=log)
         if guest is None:
             raise StepError("the machine could not be started on the overlay")
         return guest, reached
@@ -870,7 +912,8 @@ class MachineSession:
             raise StepError(
                 f"the machine did not come back on ssh port {ssh_port} within {seconds}s")
 
-    def shutdown(self, *, method: str = "kill", log=print) -> None:
+    def shutdown(self, *, method: str = "kill", user: str = "", password: str = "",
+                 log=print) -> None:
         """Stop the guest by ONE named method. No fallback - see the `shutdown:` step.
 
         THE METHOD IS A CAPABILITY, AND A MISSING ONE STOPS THE RUN. `guest_agent` on a disk with
@@ -882,15 +925,25 @@ class MachineSession:
         import capabilities
         import vm_session
 
+        # ONLY AN OVERLAY THIS SESSION MADE IS CLOSED BY `vm_session.stop`. The caller's own is
+        # flattened into the artifact by the stage that made it; passing it here would delete the
+        # run's writes a moment before they are read.
+        owned = self.overlay if self._owns_overlay else None
+
         if method in ("guest_agent", "agent", "qga"):
             capabilities.require("qga", guest=self.guest)
-            vm_session.stop(self.guest, family=self.family, overlay=self.overlay,
+            vm_session.stop(self.guest, family=self.family, overlay=owned,
                             share=False, method="guest_agent", log=log)
         elif method == "ssh":
+            # THE ACCOUNT IS THE STAGE'S, AND `Shape` DOES NOT CARRY ONE. This read
+            # `self.guest.shape.ssh_user`, an attribute vm.Shape has never had - so a file that
+            # asked for `shutdown: ssh` raised AttributeError inside the capability check, before
+            # any shutdown was attempted. `user` comes from the walkthrough's own `vars` (the same
+            # one its `ssh:` steps use); `docker` is what every disk here was installed with.
             capabilities.require("ssh", port=self.guest.shape.ssh_port,
-                                 user=self.guest.shape.ssh_user or "docker")
-            vm_session.stop(self.guest, family=self.family, overlay=self.overlay,
-                            share=False, method="ssh", log=log)
+                                 user=user or "docker", password=password or "admin")
+            vm_session.stop(self.guest, family=self.family, overlay=owned,
+                            share=False, method="ssh", password=password or "admin", log=log)
         elif method == "acpi":
             # THE POWER BUTTON IS NOT UNIVERSAL, AND THE FILE HAS TO SAY IT KNOWS.
             #
@@ -902,13 +955,13 @@ class MachineSession:
                     "`shutdown: acpi` cannot work on macOS: it receives the power button as the "
                     "Restart/Sleep/Cancel/Shut Down dialog and waits for a click. Use "
                     "`shutdown: guest_agent` (with qga installed) or `shutdown: ssh`.")
-            vm_session.stop(self.guest, family=self.family, overlay=self.overlay,
+            vm_session.stop(self.guest, family=self.family, overlay=owned,
                             share=False, method="acpi", log=log)
         elif method in ("kill", "graceful"):
             # `graceful` IS THE OLD SPELLING and it still means "the careful path" for a caller
             # that has not been updated. It is resolved the same way vm_session.stop did before:
             # agent, ssh, acpi. New files should name a method.
-            vm_session.stop(self.guest, family=self.family, overlay=self.overlay,
+            vm_session.stop(self.guest, family=self.family, overlay=owned,
                             share=False, method=("graceful" if method == "graceful" else "kill"),
                             log=log)
         else:
@@ -917,9 +970,19 @@ class MachineSession:
         self.stopped = True
 
     def stop_if_running(self, *, log=print) -> None:
-        """What `run_file` calls on the way out, so a failed file does not leave a machine up."""
+        """What `run_file` calls on the way out, so a failed file does not leave a machine up.
+
+        `shutdown:` IS THE FILE'S DECISION, NOT THIS FUNCTION'S. It used to call
+        `self.shutdown(graceful=True)`, which is a TypeError - `shutdown()` takes `method`, and
+        `graceful` is not a parameter of it. So the safety net that exists to stop a qemu holding
+        /dev/kvm raised instead, and the guest kept the device.
+
+        The last step of a file that cares names its method. When it does not, `kill` is the
+        honest default: everything already flushed, nothing left to protect.
+        """
         if self.guest is not None and not self.stopped:
-            self.shutdown(graceful=True, log=log)
+            log("the file did not stop its machine; stopping it now")
+            self.shutdown(method="kill", log=log)
 
 
 # --- the interpreter ------------------------------------------------------------------
@@ -1235,6 +1298,13 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
         # sshd exists yet) or drive a GUI (a login shell is irrelevant) - and it puts the wait
         # where a reader can see it, with its own timeout, instead of hiding it in a boot.
         session.boot(family, ssh_port=ssh_port, log=log)
+        # AND THE ACCOUNT IT WILL NEED LATER, from the same values the file's `ssh:` steps use.
+        # A `shutdown: ssh` at the bottom of the file is therefore the same account as the
+        # assertions above it, rather than a second guess at what the disk was installed with.
+        # READ FROM THE DRIVER, NOT FROM `login` BELOW: this block runs before that local is set.
+        values_here = getattr(driver, "values", {}) or {}
+        session.login = values_here.get("ssh_user") or ""
+        session.password = password or "admin"
         # THE DRIVER HAS TO SEE THE NEW SOCKET. A boot in the middle of a sequence replaces the
         # machine, and a Driver built before it holds a connection to a qemu that no longer runs.
         if hasattr(driver, "reconnect") and session.qmp_path:
@@ -1279,7 +1349,8 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
         if session is None:
             raise StepError(f"{step.name}: shutdown needs a session")
         method = step["shutdown"] if isinstance(step["shutdown"], str) else "graceful"
-        session.shutdown(method=str(method), log=log)
+        session.shutdown(method=str(method), user=session.login, password=session.password,
+                         log=log)
         return
 
     # THE ACCOUNT ON THIS DISK, WHEN THE FILE SAYS IT IS NOT THE USUAL ONE.
@@ -2508,7 +2579,12 @@ def run_file(walkthrough: str, qmp_path: str, *, work: str = "",
         session = MachineSession(
             family, disk_path or "", here,
             share=opts.get("share"), mem_mb=int(opts.get("mem_mb") or 0),
-            cpus=int(opts.get("cpus") or 4))
+            cpus=int(opts.get("cpus") or 4),
+            # THE REST OF WHAT THE STAGE KNOWS. `assets` (the OpenCore build), `copy` and
+            # `ssh_port` are facts about this run that the file cannot hold; dropping them here
+            # made a caller's boot_options half-effective, which reads in a log as a rebuild
+            # that should not have happened.
+            ssh_port=ssh_port, boot_options=opts)
 
     needs_screen = bool(steps.panes) or any(
         s["at"] or s["double"] or s["expect"] or s["expect_any"] or s["until"]
@@ -2544,11 +2620,23 @@ def run_file(walkthrough: str, qmp_path: str, *, work: str = "",
         or s["reboot"]
         for s in steps.steps)
 
-    if needs_screen and owns_machine:
+    # THE SOCKET MAY NOT EXIST YET, AND THAT IS NOT ONLY TRUE WHEN THIS FUNCTION STARTS THEMACHINE.
+    #
+    # `boot:` MAKES the socket, so a Driver built the normal way would wait out its socket_timeout
+    # for a file nothing has written - 180 seconds, on a file that was about to work. The original
+    # condition was `owns_machine`, which is true only when this function CREATES the session. A
+    # stage that passes its own session (macos/15/ssh.py: it made the disk and the overlay, and
+    # wants the file to drive them) therefore got a Driver with an empty qmp path and died before
+    # the first step with
+    #
+    #     StepError: .../ssh.yaml has GUI steps and no --qmp was given
+    #
+    # - a message about a missing argument, for a file whose first step creates what it is looking
+    # for. The socket is deferred whenever the FILE declares a boot, whoever made the session.
+    boots_here = any(s["boot"] for s in steps.steps)
+    if needs_screen and (owns_machine or boots_here):
         # THE SOCKET DOES NOT EXIST YET - `boot:` MAKES IT. So the driver is created without
-        # connecting and attaches when the first boot step has started the machine. A Driver
-        # built the normal way here would wait out its socket_timeout for a file nothing has
-        # written, which is exactly the 180 seconds this change removes.
+        # connecting and attaches when the first boot step has started the machine.
         log("driver: deferred until the first `boot:` step has a socket")
         driver = DeferredDriver(here, width=steps.resolution[0],
                                 height=steps.resolution[1], disk_path=disk_path)
@@ -2663,9 +2751,18 @@ def main(argv: list[str]) -> int:
         return 1
 
     if needs_screen:
-        driver = Driver(args.qmp, work,
-                        width=steps.resolution[0], height=steps.resolution[1],
-                        disk_path=args.disk)
+        if boots and not args.qmp:
+            # THE SOCKET DOES NOT EXIST YET - the file's own `boot:` makes it. Same reason as
+            # run_file's: a Driver built the normal way waits out its socket timeout for a file
+            # nothing has written. The primitives walkthrough is run exactly this way.
+            log("driver: deferred until the first `boot:` step has a socket")
+            driver = DeferredDriver(work,
+                                   width=steps.resolution[0], height=steps.resolution[1],
+                                   disk_path=args.disk)
+        else:
+            driver = Driver(args.qmp, work,
+                            width=steps.resolution[0], height=steps.resolution[1],
+                            disk_path=args.disk)
     else:
         driver = HeadlessDriver(work, disk_path=args.disk)
     session = None

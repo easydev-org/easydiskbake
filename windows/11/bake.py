@@ -396,6 +396,18 @@ class Baker:
             tpm_socket=tpm_sock,
             vga="std",
             rdp_port=self.args.rdp_port,
+            # THE AGENT'S CHANNEL, DURING THE INSTALL THAT INSTALLS THE AGENT.
+            #
+            # qemu-ga attaches to a virtio-serial port named org.qemu.guest_agent.0 and exits if
+            # there is no such device. The answer file installs it in the specialize pass, which
+            # runs INSIDE THIS BOOT - so without the port here the service would be installed and
+            # then fail to start on the very boot that created it, and the first run of the next
+            # stage would be the first time it ever worked.
+            #
+            # The socket is a host path in qemu's argv, not something written into the disk, so
+            # it costs the published artifact nothing.
+            qga_socket=os.path.join(self.work, "qga.sock"),
+            qga_transport="virtio",
         )
 
         # Three CDs at most, and the order matters only for the boot device: the

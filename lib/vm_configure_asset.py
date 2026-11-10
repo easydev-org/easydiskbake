@@ -30,35 +30,23 @@ import os
 import subprocess
 import sys
 
-# WHAT EACH PLATFORM NEEDS, AND WHY THEY ARE DIFFERENT FILES.
+# ONE PLATFORM, BECAUSE THE OTHER ONE MOVED.
 #
 #   macOS    mav2287/mac-guest-agent - a native agent for macOS under QEMU. Apple's own does not
 #            load here; see the note in macos/15/steps/vm-configure.yaml.
-#   Windows  guest-agent/qemu-ga-x86_64.msi, EXTRACTED FROM THE virtio-win ISO.
+#   Windows  NOT HERE. qemu-ga is installed by Setup, from the answer file's specialize pass, out
+#            of the MSI lib/winiso.py puts on the answer CD.
 #
-# WHY NOT virtio-win-guest-tools.exe, WHICH IS WHAT THIS STARTED WITH
-#
-# It is a WiX Burn bundle with a `NetFxChainer` - it manages a .NET Framework prerequisite - and
-# under /quiet it did not return at all on this guest: two runs sat in `install the guest agent`
-# for ten and twelve minutes with no output, and the command itself never finished, so not even
-# the Wait-Process deadline could report (runs 42797556702, 42800603925).
-#
-# The MSI IS THE THING THE BUNDLE WOULD HAVE INSTALLED, and the ISO carrying it is 56 MiB - the
-# same order as the bundle's 31 MiB. The bake already pulls it (`iso-virtio-win` from ghcr) for
-# the drivers, so this is a file the pipeline already has.
+# WHY WINDOWS MOVED, IN ONE SENTENCE: the disk this stage is given has already booted once, and a
+# first boot with no agent is a boot that cannot be shut down by one. It is also one fewer 7z call
+# and one fewer 12 MB copy per re-run, and the bundle this repository started with -
+# virtio-win-guest-tools.exe, a WiX Burn bootstrapper with a NetFxChainer - never returned under
+# /quiet at all (runs 42797556702, 42800603925).
 ASSETS = {
     "mac-guest-agent": {
         "url": "https://github.com/mav2287/mac-guest-agent/releases/latest/download/mac-guest-agent",
         "name": "mac-guest-agent",
         "executable": True,
-    },
-    # THE MSI, OUT OF THE ISO - see the note above. `member` says which path inside the archive,
-    # so the same fetch() can either download a file or extract one.
-    "qemu-ga-msi": {
-        "from_iso": True,
-        "member": "guest-agent/qemu-ga-x86_64.msi",
-        "name": "qemu-ga-x86_64.msi",
-        "executable": False,
     },
 }
 
@@ -106,66 +94,27 @@ def fetch(key: str, work: str = "") -> str:
     return target
 
 
-def fetch_from_iso(key: str, iso_path: str, work: str = "") -> str:
-    """Extract ASSETS[key]["member"] out of `iso_path` into the work directory.
-
-    THE SAME ISO THE BAKE ALREADY HAS. `iso-virtio-win` is pulled for the drivers during install;
-    the guest agent is inside the same archive, under guest-agent/. 7z reads an ISO as an archive
-    with no privileges, which is what lib/winiso.py's extract_drivers already relies on.
-    """
-    spec = ASSETS[key]
-    if not os.path.isfile(iso_path):
-        raise SystemExit(f"no virtio-win ISO at {iso_path}")
-    target_dir = os.path.join(work or ".", "guest-agent")
-    os.makedirs(target_dir, exist_ok=True)
-    target = os.path.join(target_dir, spec["name"])
-    if os.path.isfile(target) and os.path.getsize(target) > 1024:
-        log(f"{spec['name']} is already extracted ({os.path.getsize(target) >> 10} KiB)")
-        return target
-    log(f"extracting {spec['member']} from {os.path.basename(iso_path)}")
-    result = subprocess.run(
-        ["7z", "e", "-y", f"-o{target_dir}", iso_path, spec["member"]],
-        capture_output=True, text=True)
-    if result.returncode != 0 or not os.path.isfile(target):
-        raise SystemExit(
-            f"could not extract {spec['member']} from {iso_path}: "
-            f"{(result.stderr or result.stdout).strip()[:300]}")
-    log(f"  {target} ({os.path.getsize(target) >> 10} KiB)")
-    return target
-
-
 def fetch_guest_agent(driver, step, **_kwargs) -> bool:
     """The walkthrough step. The file says which platform with `family:`.
 
     NO GUESSING. A step that does not say gets an error naming what it should have said, because
-    the two assets are a Mach-O binary and a Windows installer and copying the wrong one fails in
-    the guest with a message about a corrupt file rather than about a wrong walkthrough.
+    the asset is a Mach-O binary and copying the wrong thing fails in the guest with a message
+    about a corrupt file rather than about a wrong walkthrough.
+
+    WINDOWS IS NOT HERE ANY MORE. Its agent is installed by Setup, from the answer file's
+    specialize pass, with the MSI that lib/winiso.py copies onto the answer CD
+    (`guest-agent/qemu-ga-x86_64.msi` out of the same virtio-win ISO the drivers come from). The
+    extraction that used to live here was a SECOND copy of that same 7z call, and it ran on a
+    disk whose first boot had already had no agent - see windows/11/steps/vm-configure.yaml.
     """
     family = str(step.get("family") or "")
-    work = getattr(driver, "work", "") or "."
-    if family == "macos":
-        key = "mac-guest-agent"
-        path = fetch(key, work)
-    elif family == "windows":
-        # THE MSI OUT OF THE ISO. Which ISO is the bake's own choice, so this asks lib/images
-        # for the artifact rather than hard-coding a URL a second time.
-        import images
-        import iso as isomod
-        iso_path = os.path.join(work, "virtio-win.iso")
-        if not os.path.isfile(iso_path):
-            # THE WORK DIRECTORY OF A VM-CONFIGURE JOB MAY NOT HAVE IT - the bake's did. Pulling
-            # it here is the same call the bake makes, so there is one description of where it
-            # comes from.
-            iso_path = isomod.fetch_iso("virtio-win", iso_path)
-        path = fetch_from_iso("qemu-ga-msi", iso_path, work)
-        log(f"  ready for the copy: {path}")
-        return True
-    else:
+    if family != "macos":
         raise SystemExit(
             f"{getattr(step, 'name', 'this step')}: `python: vm_configure_asset:fetch_guest_agent` "
-            f"needs `family: macos` or `family: windows` on the step, got {family!r}")
+            f"is for `family: macos`; Windows gets its agent during Setup "
+            f"(windows/11/answer/Autounattend.xml), and got {family!r}")
     work = getattr(driver, "work", "") or "."
-    path = fetch(key, work)
+    path = fetch("mac-guest-agent", work)
     # THE STEP AFTER THIS ONE IS AN `scp:` THAT NAMES THE PATH, so it is returned in the log
     # where a failing copy can be compared against it.
     log(f"  ready for the copy: {path}")

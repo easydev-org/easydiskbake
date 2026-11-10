@@ -381,7 +381,7 @@ jobs:
           dest: out
           token: ${{ github.token }}
 
-      - name: the share and the logon hook
+      - name: configure the vm (share, logon hook)
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}

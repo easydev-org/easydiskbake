@@ -67,6 +67,15 @@ vars:
   password:
     from: args.password
     default: admin
+  # THE SHUTDOWN METHOD, BECAUSE IT IS A FACT ABOUT THE RUN AND NOT ABOUT THE SCREEN.
+  #
+  # `kill` when the stage handed this file a throwaway overlay (nothing it wrote survives), `ssh`
+  # when the guest owns the real disk (the filesystem this file is about to publish has to be
+  # closed, and macOS answers the power button with a dialog nobody clicks). The stage passes it;
+  # the default is the careful one, so a standalone run of this file cannot publish a torn disk.
+  shutdown:
+    from: args.shutdown
+    default: ssh
 
 steps:
   # --- 0. THE MACHINE, IN THE FILE -------------------------------------------------------
@@ -77,10 +86,14 @@ steps:
   #
   # BOOT IS OVER WHEN QEMU IS RUNNING - it does not wait for sshd. The disk this stage is given
   # has never been logged into, so there is no sshd until this file turns it on.
+  #
+  # NO `requires:` HERE, AND THAT IS THE POINT. `overlay` is checked against a machine that is
+  # already running, and this is the step that starts one - so asking before it runs can only
+  # ever fail. The stage that made (or did not make) the overlay is the one that knows, and it
+  # says so in `shutdown:` at the bottom of this file.
   - name: boot the disk
     boot: true
     family: macos
-    requires: [overlay]
     timeout: 900
 
   # THE ACCOUNT'S PASSWORD, INTO THE LOGIN WINDOW.
@@ -89,6 +102,17 @@ steps:
   # to a login window: wallpaper, clock, account tile, password field. Nothing is wrong with it
   # and nothing can be done on it - Spotlight, Terminal and `systemsetup` all need a session.
   #
+  # THE WAIT BEFORE THE CLICK IS A LOOP OVER THE RECORDING, NOT A SLEEP. A login window has no
+  # words on it - tesseract reads zero of the whole frame - so the only way to know it is up is
+  # lib/desktop.py's password-field crop, which is what macos/15/desktop.py uses for the same
+  # window. `python:` because a loop is the one shape the vocabulary does not have; `optional`
+  # because a window that never appears is not a failure here - the desktop wait below is the
+  # verdict, and typing into a machine that is not listening only costs the keystrokes.
+  - name: wait for the login window
+    python: ssh_panes:wait_for_login_window
+    timeout: 240
+    optional: true
+
   # THE ESCAPE COMES FIRST because a wake hint or a notification banner swallows the next
   # keystroke, and it also takes focus off the field. The click afterwards is the one place this
   # file uses a coordinate that is not a decision about what is on screen: (965, 981) is the
@@ -108,6 +132,29 @@ steps:
   - name: press return
     key: ret
     settle: 20
+
+  # THE KEYBOARD SETUP ASSISTANT COMES UP WITH THE FIRST DESKTOP SESSION, and it eats the next
+  # keystroke - which is how sshd was never enabled on six runs: the Return meant for Spotlight
+  # went to the dialog (run 42034256322). Quit, not Continue: Continue asks the guest to identify
+  # a keyboard, which is another wizard and needs hardware this guest does not have.
+  #
+  # THREE CLICKS SPACED OUT, because a click that arrives before the dialog is drawn lands on
+  # wallpaper and looks identical in the log to one that dismissed it (run 42162859846).
+  - name: dismiss the keyboard assistant
+    python: ssh_panes:dismiss_keyboard_assistant
+    timeout: 180
+    optional: true
+
+  # AND NOW THE PASSWORD CAN BE JUDGED. This is the only step that can tell an accepted password
+  # from a rejected one: a failed login leaves the same window up and shakes the field, and the
+  # ssh failure two dozen steps later reads like a broken daemon rather than a wrong password.
+  #
+  # FIVE MINUTES IS MEASURED, not cautious: a first session builds the Dock, starts Spotlight
+  # indexing fourteen gigabytes, and composites a wallpaper it has not cached. A run that gave up
+  # after 180 s (42383829203) reported failure over a clean desktop.
+  - name: wait for the desktop
+    python: ssh_panes:wait_for_desktop
+    timeout: 300
 
   # --- 1. THE GUI, WHICH IS THE ONLY WAY TO TURN THIS ON --------------------------------
   #
@@ -388,3 +435,23 @@ steps:
   - name: note what is absent
     ssh: command -v brew || true
     optional: true
+
+  # --- 4. THE MACHINE IS STOPPED BY THE FILE THAT STARTED IT -----------------------------
+  #
+  # WHICH METHOD IS NOT A DECISION THIS FILE CAN MAKE FROM THE SCREEN, so it arrives as a `var`
+  # and the stage that owns the disk supplies it. That is the same rule the account and the
+  # password follow: a fact about the run, not about the screen.
+  #
+  #     --overlay   the writes are a throwaway diff over a read-only parent, so there is nothing
+  #                 a graceful shutdown could protect. `kill` is correct AND cheaper, and the
+  #                 artifact is produced by flattening the overlay afterwards.
+  #     no overlay  the guest owns the real disk. `ssh` runs `shutdown -h now`, which closes the
+  #                 filesystem this stage is about to publish. ACPI is not an option: macOS
+  #                 answers the power button with a dialog nobody clicks.
+  #
+  # `shutdown: ssh` REFUSES BY NAME when nothing answers on the port - lib/steps.py checks the
+  # capability before the step runs - so a broken ssh fails here with "ssh: ..." rather than
+  # after a five-minute timeout that reads like a hung guest.
+  - name: stop the machine
+    shutdown: "{{ shutdown }}"
+    timeout: 300

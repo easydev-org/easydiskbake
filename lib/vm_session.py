@@ -269,7 +269,7 @@ def _android_x86(disk: str, work: str, ssh_port: int, cpus: int, mem_mb: int, lo
 
 
 def start_on(disk: str, work: str, *, family: str, assets: dict, ssh_port: int = 2222,
-             cpus: int = 4, mem_mb: int = 0, log=print):
+             cpus: int = 4, mem_mb: int = 0, share: str | None = None, log=print):
     """Start a macOS guest on a disk that already exists - an overlay a stage made.
 
     WHY THIS IS SEPARATE FROM start(). `start()` decides whether to make an overlay; a stage that
@@ -277,13 +277,27 @@ def start_on(disk: str, work: str, *, family: str, assets: dict, ssh_port: int =
     copy before the walkthrough runs) must not have a second one made on top. It also already
     has the OpenCore assets, and rebuilding them would fetch the recovery image again.
 
+    THE SHARE IS STARTED HERE FOR THE SAME REASON `start()` STARTS IT: the disk carries a launchd
+    job that mounts it the moment the system comes up, so a server that appears second has already
+    been missed. `share=""` means do not serve one.
+
     Returns `(guest, reached)`, and NOT an overlay: the caller owns that one and closes it.
     """
     import session
 
+    served = None
+    if share != "":
+        served = os.path.expanduser(share or hostshare.DEFAULT_DIR)
+        os.makedirs(served, exist_ok=True)
+        if not hostshare.start(served):
+            log(f"=== THE HOST COULD NOT SERVE {served} ===")
+            return None, None
+
     guest = _start_machine(family, disk, work, ssh_port, cpus, mem_mb, log,
                            discard=True, boot_options={"assets": assets})
     if guest is None:
+        if served:
+            hostshare.stop()
         return None, None
     log(f"started on the caller's overlay; qmp is {guest.paths.drive}")
     if not session.wait_for_ssh(ssh_port, 1, log, probe="echo ok"):

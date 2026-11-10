@@ -387,11 +387,14 @@ def main() -> int:
         check("the guest agent is tried before ssh", "lib/vm_session.py",
               vs.index("_shutdown_via_agent") < vs.index("SHUTDOWN_COMMAND.get"))
         # AND THE STAGE THAT INSTALLS IT IS NAMED FOR THE MACHINE, NOT THE SHARE.
+        #
+        # WINDOWS IS THE EXCEPTION AND IT IS A MOVE, NOT A RELAXATION: its agent is installed by
+        # Setup from the answer file (see the checks below), because a disk whose FIRST boot has
+        # no agent cannot be shut down by one. So the shared checks here are the two that are
+        # still true of both files, and the per-platform install lives where it happens.
         for path in ("macos/15/steps/vm-configure.yaml", "windows/11/steps/vm-configure.yaml"):
             walk = load_yaml(path)
             names = [s.get("name") for s in (walk.get("steps") or [])]
-            check(f"{path} installs the guest agent", path,
-                  "install the guest agent" in names)
             check(f"{path} proves the agent answers", path,
                   "prove the guest agent answers" in names)
             check(f"{path} serves the share", path, "serve the host share" in names)
@@ -417,28 +420,61 @@ def main() -> int:
     # and the command never finished, so not even a deadline could report (42797556702,
     # 42800603925). The MSI it would have installed comes out of the virtio-win ISO the bake
     # already pulls, and msiexec finishes.
+    #
+    # AND IT IS NOW SETUP THAT RUNS IT, NOT THIS STAGE. The install moved to the answer file's
+    # specialize pass, so the disk's FIRST boot already has an agent: a shutdown by that route was
+    # impossible on exactly the disk that had never been configured, which is the disk a
+    # verification stage is given. What this stage owes is the proof, and a proof is only worth
+    # something if the step that produces it is still there.
     win_conf = read("windows/11/steps/vm-configure.yaml")
-    check("the windows agent is installed from the MSI", "windows/11/steps/vm-configure.yaml",
-          "msiexec" in win_conf and "qemu-ga-x86_64.msi" in win_conf)
-    check("the windows agent install asks for no bundle", "windows/11/steps/vm-configure.yaml",
-          "guest-tools.exe" not in win_conf)
-    # AND IT HAS A DEADLINE, because an installer that hangs must say so rather than hold the
-    # stage. msiexec finishes; the timeout is for the one that does not.
-    check("the windows installer cannot hang the stage", "windows/11/steps/vm-configure.yaml",
-          "timeout: 600" in win_conf)
-    # AND THE MSI COMES FROM THE ISO, not from a second URL that has to be kept in step.
-    asset_src = read("lib/vm_configure_asset.py")
-    check("the windows MSI is extracted from the virtio-win ISO", "lib/vm_configure_asset.py",
-          "fetch_from_iso" in asset_src and "guest-agent/qemu-ga-x86_64.msi" in asset_src)
-    # AND IT DOES NOT SELECT A DRIVER FEATURE INSTEAD OF THE AGENT. `ADDLOCAL=FE_vioserial_driver`
-    # installs that one driver and skips qemu-ga - the opposite of what the step is for.
-    # THE WORD SURVIVES IN THE COMMENT THAT EXPLAINS WHY IT IS ABSENT, so the check is for the
-    # argument rather than for the spelling: no line that runs the installer may carry it.
-    installer_lines = [ln for ln in win_conf.splitlines()
-                       if "virtio-win-guest-tools.exe" in ln or "Start-Process" in ln]
-    check("the windows install asks for the agent, not one driver",
+    win_answer = read("windows/11/answer/Autounattend.xml")
+    check("the windows agent is installed by Setup", "windows/11/answer/Autounattend.xml",
+          "msiexec" in win_answer and "qemu-ga-x86_64.msi" in win_answer)
+    check("the windows agent install asks for no bundle", "windows/11/answer/Autounattend.xml",
+          "guest-tools.exe" not in win_answer)
+    # THE DRIVE LETTER IS SEARCHED FOR. Three CD-ROMs are attached and their letters follow the
+    # firmware's enumeration; a hard-coded D: would work until it did not, and the failure would
+    # be a silent disk with no agent.
+    check("the windows install finds the answer cd, not a guessed letter",
+          "windows/11/answer/Autounattend.xml",
+          "for %i in (D E F G H I J) do @if exist %i:\\agent\\qemu-ga-x86_64.msi start /wait" in win_answer)
+    # AND THE STAGE SAYS SO RATHER THAN QUIETLY REINSTALLING IT: one path, and a re-run of this
+    # stage must not become a second one.
+    check("the windows stage no longer installs the agent itself",
           "windows/11/steps/vm-configure.yaml",
-          not any("ADDLOCAL" in ln for ln in installer_lines))
+          "install the guest agent" not in win_conf)
+    check("the windows stage still proves the agent", "windows/11/steps/vm-configure.yaml",
+          "prove the guest agent answers" in win_conf)
+    # AND THE MSI COMES OUT OF THE virtio-win ISO, not from a second URL that has to be kept in
+    # step - the extraction now happens in the module that BUILDS the answer CD, which is the
+    # only place that can put the file where the answer file's path points.
+    winiso_src = read("lib/winiso.py")
+    check("the answer iso extracts the agent from the virtio-win iso", "lib/winiso.py",
+          "guest-agent/qemu-ga-x86_64.msi" in winiso_src and "extract_agent_msi" in winiso_src)
+    # AND THE BAKE PUTS IT ON THE ANSWER DISC, which is the half that makes the specialize step
+    # able to find it at all.
+    check("the answer iso carries the agent msi", "lib/winiso.py",
+          "AGENT_MSI_MEMBER" in winiso_src)
+    check("the answer iso puts it where the answer file looks", "lib/winiso.py",
+          'AGENT_DIR = "agent"' in winiso_src)
+    # AND THE HTTP HALF OF THAT FETCH IS GONE, so a Windows stage cannot reinstall what Setup
+    # already installed. One path, and the module says so.
+    asset_src = read("lib/vm_configure_asset.py")
+    check("the windows agent is not fetched over http any more", "lib/vm_configure_asset.py",
+          "fetch_from_iso" not in asset_src and '"qemu-ga-msi"' not in asset_src)
+    # AND AN ISO WITHOUT THE AGENT IS REFUSED, not silently accepted. The answer file installs
+    # the file by path, so a drivers-only repack produces a Windows disk that boots, answers
+    # nothing on its agent port, and only says so two stages later. Run 42804093226 is that
+    # failure: a 56 MiB ISO, a specialize step pointing at a file that was not there, and a
+    # `7z` extraction that reported "no files to process" into a log nobody read.
+    check("an iso with no agent is a hard error", "lib/winiso.py",
+          "has no {AGENT_MSI_MEMBER}" in winiso_src)
+    # AND THE BAKE GIVES THE GUEST THE PORT THE AGENT TALKS ON. The answer file installs it in
+    # the same boot, so a machine without the device installs a service it cannot start.
+    bake_src = read("windows/11/bake.py")
+    check("the windows bake carries the agent channel", "windows/11/bake.py",
+          'qga_socket=os.path.join(self.work, "qga.sock")' in bake_src
+          and 'qga_transport="virtio"' in bake_src)
 
     # --- A STEP DECLARES WHAT IT NEEDS, AND A MISSING CAPABILITY STOPS THE RUN -----------
     #
