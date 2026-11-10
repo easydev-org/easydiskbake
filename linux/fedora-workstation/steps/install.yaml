@@ -303,15 +303,28 @@ steps:
   #
   # and taking a row sets `EST (UTC-05) New York, United States`. The rows are ordered by
   # distance from the city, so the first is stable.
-  - name: time zone - search for New York
-    at: [960, 462]
-    type: new york
-    settle: 5
-
-  - name: time zone - take the first result
-    at: [960, 497]
-    settle: 6
-
+  # THE SEARCH IS GONE, BECAUSE IT IS WHAT PUT `york` ON THE DISK.
+  #
+  # Run 6eeff43's published image was booted in a local pod and asked directly:
+  #
+  #     $ getent passwd york
+  #     york:x:1000:1000:york:/home/york:/bin/bash
+  #     $ timedatectl | grep 'Time zone'
+  #     Time zone: Asia/Yakutsk (+09, +0900)
+  #
+  # TWO FACTS FROM THAT PAIR. The time zone was never set to New York - it is still the
+  # geoip default - so the search box never received `new york`. And the ACCOUNT IS `york`,
+  # which is the SECOND WORD of the string this step typed.
+  #
+  # That is the click-then-type race `type_into` has: the click at (960,462) lands, 1.2 s
+  # pass, the typing starts - and on this build the pane under the pointer was already the
+  # ACCOUNT pane, whose Full Name field took the text. `new ` was spent before the field had
+  # focus and `york` is what stayed in it; GNOME then derived the login from it, so the disk
+  # shipped `york` and ssh answered `Permission denied` for `vmuser`.
+  #
+  # THE TIME ZONE IS NOT A REQUIREMENT HERE (no distribution in this repository sets one -
+  # see the note in mint's install.yaml), so the step that names one is removed rather than
+  # repaired. What is left is the footer click that leaves whatever pane this is.
   - name: time zone
     at: [1432, 181]
     settle: 12
@@ -347,6 +360,10 @@ steps:
     at: [1000, 528]
     type: "{{ user }}"
     settle: 2
+    # THE ACCOUNT NAME IS CHECKED, NOT ASSUMED. This pane is where run 6eeff43 lost the
+    # name - the disk shipped `york` while every later step reported success - so the walk
+    # now fails HERE, naming the pane, if the field did not take `{{ user }}`.
+    expect: ["{{ user }}"]
 
   - name: about you
     at: [1432, 181]

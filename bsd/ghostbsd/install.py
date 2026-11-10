@@ -627,9 +627,15 @@ def main(argv: list[str]) -> int:
     p.add_argument("--mem", type=int, default=4096)
     p.add_argument("--cpus", type=int, default=4)
     p.add_argument("--timeout", type=int, default=5400)
-    # THE ACCOUNT THE INSTALLER CREATES. `docker`/`admin` is what every other bake here
+    # THE ACCOUNT THE INSTALLER CREATES. `vmuser`/`admin` is what every other bake here
     # uses; gbi also sets root's password to the same value, which it says above the form.
-    p.add_argument("--user", default=os.environ.get("GHOSTBSD_USER", "docker"))
+    #
+    # THIS DEFAULT WAS `docker` AFTER commit 6eeff43 RENAMED EVERYTHING ELSE, because that
+    # commit's sweep was over `steps/*.yaml` and `lib/`, and this file is neither. The disk it
+    # produced carried whichever way this default pointed, and the ssh stage - which reads its
+    # account from `steps/ssh.yaml`, a file the sweep DID change - then asked for `vmuser`
+    # against a disk whose installer form had been filled with the old word.
+    p.add_argument("--user", default=os.environ.get("GHOSTBSD_USER", "vmuser"))
     p.add_argument("--password", default=os.environ.get("GHOSTBSD_PASSWORD", "admin"))
     p.add_argument("--firmware-code", default=os.environ.get(
         "FIRMWARE_CODE", "/usr/share/OVMF/OVMF_CODE_4M.fd"))

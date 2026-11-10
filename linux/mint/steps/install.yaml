@@ -44,7 +44,10 @@ name: mint - the ubiquity walk
 resolution: [1920, 1080]
 
 vars:
-  display_name: VM User
+  # THE FIRST WORD OF THIS IS THE LOGIN NAME. Ubiquity on Mint lowercases the first word of
+  # the full name and uses it as the account, so `VM User` becomes `vm` - see the note at the
+  # full-name step. Pop!_OS' installer behaves differently with the same string.
+  display_name: Vmuser User
   user:
     from: args.user
     default: vmuser
@@ -184,8 +187,20 @@ steps:
   #
   # and the login name on that disk is `VMUSERvmuser`, not `docker`.
   #
-  # `VM User` is the same display name popos types, and it is the shape Ubiquity
-  # expects: a human name with a space, from which a clean login name follows.
+  # `VM User` WAS THE WRONG SHAPE, AND RUN 6eeff43 MEASURED WHAT UBUNTU'S UBIQUITY ACTUALLY
+  # DOES WITH IT. The comment that used to sit here said "a human name with a space, from
+  # which a clean login name follows" - and the disk that run published answers differently:
+  #
+  #     vm@vmuser:~$          <- the login is `vm`, the FULL NAME's FIRST WORD
+  #
+  # Ubiquity on Mint derives the login from the first word of the full name, lowercased. It
+  # does NOT strip the spaces the way Pop!_OS' installer does (`VM User` -> `vmuser` there,
+  # `vm` here), and the difference is invisible until a stage tries to log in: the disk's own
+  # terminal is the evidence, and ssh answered `Permission denied` for `vmuser` against a disk
+  # whose account is `vm`.
+  #
+  # SO THE FIRST WORD HAS TO BE THE WHOLE LOGIN NAME. `Vmuser User` derives `vmuser`; `vmuser`
+  # and `Vmuser` do too, and the space is what keeps the display name a human name.
   - name: who are you - full name
     at: [965, 347]
     type: "{{ display_name }}"
@@ -225,6 +240,12 @@ steps:
   - name: who are you - host name
     type: "{{ user }}"
     settle: 2
+    # THE LOGIN NAME IS CHECKED HERE, WHERE THE DISK GETS IT. Run 6eeff43 published an image
+    # whose account was `vm` while every step below reported success; Ubiquity derives the
+    # login from the FIRST WORD of the full name above, and nothing in this file read the
+    # result. If the derivation is not `{{ user }}`, the walk now stops on the pane that
+    # caused it instead of at a `Permission denied` ten minutes later.
+    expect: ["{{ user }}"]
   - name: who are you - password
     at: [877, 458]
     type: "{{ password }}"
