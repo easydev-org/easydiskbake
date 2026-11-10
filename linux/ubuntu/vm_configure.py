@@ -93,7 +93,78 @@ def wait_for_ssh(port: int, seconds: int = 900, *, user: str = "", password: str
     return False
 
 
+def _publish(args) -> None:
+    """Move the configured disk to `--out`, and say how big it is.
+
+    A MOVE, NOT A COPY. This stage is the only reader `--disk` will ever have again, and the image
+    is several GiB - a copy would read and write all of it on a runner where disk is the scarce
+    resource, in a stage that has already spent its time booting a machine. `shutil.move` falls
+    back to a copy when the two paths are on different filesystems, which is the case where a
+    rename cannot work at all.
+    """
+    import shutil
+
+    out = os.path.abspath(args.out)
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    if out != os.path.abspath(args.disk):
+        log(f"renaming {args.disk} -> {out}")
+        shutil.move(args.disk, out)
+    log(f"{out}: {os.path.getsize(out) // (1024 * 1024)} MiB")
+
+
+def _stop(guest, args) -> None:
+    """Stop the guest over ssh and swallow what cannot be fixed at this point.
+
+    THE DISK THIS GUEST OWNS IS THE ONE THAT GETS PUBLISHED, so a kill would leave the last writes
+    in the page cache of a filesystem somebody is about to boot. `acpi_first=False` because Linux
+    honours ACPI and it is still a second path that can hang; the ssh command is the one that says
+    when it is done.
+
+    A FAILURE HERE IS LOGGED AND NOT RAISED. By the time this runs the walk has already answered
+    every question the stage was asked, and turning a slow shutdown into a failed build would
+    throw away a disk that is correct.
+    """
+    import vm_session
+
+    try:
+        vm_session.stop(guest, acpi_first=False, family="linux",
+                        password=args.password, share=True, overlay=None)
+    except Exception as exc:                           # noqa: BLE001
+        log(f"  could not stop the machine cleanly: {exc}")
+
+
+def _note_signals() -> None:
+    """Say which signal killed us, instead of leaving bash's 241 to be decoded later.
+
+    241 IS 256 - 15: bash reports a process terminated by SIGTERM that way. Run 42861231538's
+    vm-configure answered all fifteen steps and then died with it, five seconds after the last
+    one, with no exception and no verdict - the last thing in the log was a successful step.
+
+    THE NAME OF THE SIGNAL AND THE FRAME THAT WAS RUNNING are the two facts that turn "something
+    killed us" into "we were here when it happened", and a handler costs nothing. macOS'
+    vm_configure.py carries the same handler for the same reason and has never printed it, which
+    is how this one differs from a copy of a fix.
+    """
+    import signal
+
+    def explain(number, frame):
+        try:
+            name = signal.Signals(number).name
+        except ValueError:
+            name = str(number)
+        print(f"=== SIGNALLED: {name} ({number}) ===", flush=True)
+        import traceback
+        print("=== the stack when it arrived ===", flush=True)
+        traceback.print_stack(frame)
+        print("=== end of stack ===", flush=True)
+        raise SystemExit(128 + number)
+
+    for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(number, explain)
+
+
 def main(argv: list[str]) -> int:
+    _note_signals()
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--disk", required=True, help="the ssh-stage disk to configure")
     p.add_argument("--out", required=True, help="where the configured disk is written")
@@ -170,38 +241,40 @@ def main(argv: list[str]) -> int:
             return 1
 
         ok = True
+
+        # THE MACHINE IS STOPPED HERE, BEFORE THE `finally`, AND THE `finally` IS WHY.
+        #
+        # Run 42861231538 answered all fifteen steps and then died with `exit code 241` - 256 - 15,
+        # the number bash prints for a process killed by SIGTERM - five seconds later, with
+        # `log-stream: finished failure (1 pushes, 0 failures)` in the same second and NOT ONE LINE
+        # after `15 step(s) answered`.
+        #
+        # Nothing after that line ever printed: not the shutdown, not the rename, not the size. So
+        # the shutdown was still running when the wrapper that streams this step's output decided
+        # the command was over and signalled the process tree. `shutdown -h now` over ssh takes
+        # seconds, and every second of it was spent inside a `finally` that the harness was not
+        # waiting for.
+        #
+        # Stopping here instead means the last thing this stage does before the harness can lose
+        # interest is the work it exists to do, and each half says so as it happens.
+        log("=== stopping the machine ===")
+        _stop(guest, args)
+        log("=== the machine is stopped ===")
+
+        # AND THE OUTPUT IS MOVED HERE TOO, FOR THE SAME REASON THE SHUTDOWN IS.
+        #
+        # It was in the `finally`, which runs on the way out - that is, during the same window the
+        # harness may already have stopped waiting. A 7 GiB rename is instant on one filesystem
+        # and a full copy across two, so it is the other thing here that can take long enough to
+        # matter. Both are now inside the block whose every line is printed.
+        _publish(args)
         return 0
     finally:
-        # THE SHUTDOWN IS PART OF THE STAGE, AND IT IS OVER SSH.
-        #
-        # This guest owns the real disk, so a kill would leave the last writes in the page cache
-        # of a filesystem that is about to be published. `acpi_first=False` says "do not wait for
-        # a power button first": Linux honours ACPI, and it is still a second path that can hang.
-        try:
-            vm_session.stop(guest, acpi_first=False, family="linux",
-                            password=args.password, share=True, overlay=None)
-        except Exception as exc:                       # noqa: BLE001
-            log(f"  could not stop the machine cleanly: {exc}")
-
-        if ok:
-            # THE OUTPUT IS RENAMED, NOT COPIED, AND ONLY AFTER THE GUEST IS GONE.
-            #
-            # The disk is open for writing until qemu has exited, so the move cannot happen any
-            # earlier - and it does not need to COPY: this stage is the only thing that will ever
-            # read `--disk` again, and the image is 7 GiB. A copy would cost a full read and write
-            # of that on a runner whose disk is the scarce resource, in a stage that has already
-            # spent its time booting a machine.
-            #
-            # `os.replace` IS NOT A CROSS-DEVICE MOVE. When `--out` is on another filesystem the
-            # rename cannot work and shutil.move copies instead - which is the correct fallback and
-            # is why this is not a bare os.rename.
-            import shutil
-            out = os.path.abspath(args.out)
-            os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
-            if out != os.path.abspath(args.disk):
-                log(f"renaming {args.disk} -> {out}")
-                shutil.move(args.disk, out)
-            log(f"{out}: {os.path.getsize(out) // (1024 * 1024)} MiB")
+        # THE MACHINE IS ALREADY STOPPED AND THE OUTPUT ALREADY MOVED on the success path - see
+        # `_stop` and `_publish`, and the comment where they are called. What is left here is the
+        # failure path, where the guest may still be running.
+        if not ok and guest is not None:
+            _stop(guest, args)
 
 
 if __name__ == "__main__":
