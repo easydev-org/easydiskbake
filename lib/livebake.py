@@ -336,6 +336,32 @@ def _second_boot(bakery: Bakery, args, work: str, disk: str, walk_path: str) -> 
     disk_guest.start()
     log(bakery.name, f"disk guest qemu pid {disk_guest.pid}")
 
+    # THE QMP SOCKET FILE EXISTS BEFORE QEMU LISTENS ON IT.
+    #
+    # `steps.run_file` waits for the PATH and then connects; qemu creates the path during
+    # startup and starts accepting a moment later, so connecting on the first poll is a race
+    # that qemu usually wins and occasionally loses. Run 921cde2 lost it:
+    #
+    #     11:05:26  disk guest qemu pid 12810
+    #     11:05:26  === the walk (second boot, from 'first boot') ===
+    #               ConnectionRefusedError: [Errno 111] Connection refused
+    #
+    # THE FIRST GUEST DOES NOT NEED THIS because `_wait_for_desktop` runs a `look` loop for
+    # seconds before any walk begins. This one is connected to immediately, so it waits here:
+    # the same question `steps.Driver` asks, asked before it asks it.
+    import qmp as _qmp2
+    ready_by = time.time() + 60
+    while time.time() < ready_by:
+        try:
+            probe = _qmp2.QMP(disk_guest.paths.drive)
+            probe.close()
+            break
+        except Exception:                              # noqa: BLE001
+            time.sleep(2)
+    else:
+        log(bakery.name, "=== THE SECOND GUEST NEVER ANSWERED QMP ===")
+        return False
+
     frames = os.path.join(work, "frames-disk")
     os.makedirs(frames, exist_ok=True)
     snap = subprocess.Popen(
