@@ -164,6 +164,10 @@ def config_text(directory: str) -> str:
    state directory = {PRIVATE_DIR}
    cache directory = {PRIVATE_DIR}
    pid directory = {PRIVATE_DIR}
+   # THE PIDFILE THIS MODULE STOPS, BY NAME. `pid directory` alone tells smbd where a pidfile
+   # WOULD go; without `pid file` it does not write one, and stop() then has nothing to read -
+   # which is why the previous implementation reached for `pkill -f` and hoped.
+   pid file = {PID_PATH}
    # AND THE PIPE DIRECTORY, WHICH smbd CREATES AT STARTUP AND smbpasswd NEVER TOUCHES.
    #
    # This is the one that only appears when smbd actually runs:
@@ -308,6 +312,7 @@ def start(directory: str = DEFAULT_DIR, *, wait: float = 10.0) -> bool:
     while time.time() < deadline:
         if listening():
             log(f"  smbd is listening on {net.BRIDGE_IP}:445")
+            _record_pid()
             return True
         time.sleep(0.5)
     log(f"=== smbd DID NOT BIND {net.BRIDGE_IP}:445 IN {wait:.0f}s ===")
@@ -379,10 +384,64 @@ def log_tail(lines: int = 40) -> None:
         log(f"    {line.rstrip()[:190]}")
 
 
+def _record_pid() -> None:
+    """Write the pid of the smbd serving THIS config, so stop() does not have to search later.
+
+    `smbd -D` daemonises, so the process that `subprocess.run` waited on is gone and its return
+    code says nothing about the daemon. Samba's own `pid file` did not materialise here (it is
+    written by the parent before the daemonise, and this container's /tmp is not where it looks
+    first), so the pid is discovered once, at the moment the port is proven open, and kept.
+
+    THE SEARCH IS NARROW: `pgrep -f` over the exact `-s <conf>` this module writes, not over
+    "smbd" in general - a container may be running other samba instances and killing one of those
+    would be somebody else's outage.
+    """
+    try:
+        found = subprocess.run(["pgrep", "-f", f"smbd .*-s {CONF_PATH}"],
+                               capture_output=True, text=True)
+        pids = [int(x) for x in (found.stdout or "").split() if x.isdigit()]
+    except (OSError, ValueError):
+        return
+    if not pids:
+        return
+    with open(PID_PATH, "w") as fh:
+        fh.write(str(pids[0]))
+
+
 def stop() -> None:
-    """Stop the smbd this module started, and only that one."""
-    result = subprocess.run(["pkill", "-f", f"smbd.*-s {CONF_PATH}"], capture_output=True)
-    del result
+    """Stop the smbd this module started, and only that one.
+
+    BY PID, NOT BY PATTERN. `pkill -f "smbd.*-s <conf>"` matches any command line containing those
+    strings, and this runs inside a Python process whose own argv is decided by its caller - which
+    is not a guarantee anybody can read off the code. A pidfile is the process this module started
+    and nothing else.
+
+    (The pattern version had been in place for a while; it was replaced while chasing a stage that
+    died with SIGTERM seconds after the guest powered off, and the honest reason to change it is
+    that the pidfile is strictly better, not that the pattern was proven guilty.)
+    """
+    pid = None
+    try:
+        with open(PID_PATH) as fh:
+            pid = int(fh.read().strip())
+    except (OSError, ValueError):
+        return
+    for signal_number in (15, 9):
+        try:
+            os.kill(pid, signal_number)
+        except ProcessLookupError:
+            break
+        except PermissionError:
+            break
+        time.sleep(0.5)
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+    try:
+        os.unlink(PID_PATH)
+    except OSError:
+        pass
 
 
 def mount_commands(host: str = "", user: str = "docker",

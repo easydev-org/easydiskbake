@@ -112,7 +112,32 @@ def wait_for_ssh(port: int, seconds: int = 180) -> bool:
     return False
 
 
+def _note_signals() -> None:
+    """Say which signal killed us, instead of leaving bash's 241 to be decoded later.
+
+    241 IS 256 - 15: bash reports a process terminated by SIGTERM that way, and it is what the
+    share stage printed twice, 0.6 seconds after `[disk] reading the MBR`, with no exception and
+    no verdict from the check that was running. Whether that signal comes from the runner, from a
+    process-group kill, or from something this repository does, the name of it is the next fact
+    anybody needs - and a handler costs nothing.
+    """
+    import signal
+
+    def explain(number, frame):
+        del frame
+        try:
+            name = signal.Signals(number).name
+        except ValueError:
+            name = str(number)
+        print(f"=== SIGNALLED: {name} ({number}) ===", flush=True)
+        raise SystemExit(128 + number)
+
+    for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(number, explain)
+
+
 def main(argv: list[str]) -> int:
+    _note_signals()
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--disk", required=True, help="the ssh-stage disk")
     p.add_argument("--out", default="out/macos15-share.qcow2")
@@ -243,7 +268,16 @@ def main(argv: list[str]) -> int:
         import vm_session
         vm_session.stop(guest, acpi_first=ok, family="macos", password=SSH_PASSWORD)
         if ok:
-            if not smoke.check_disk(disk, root_fs="apfs"):
+            # SAY SO BEFORE AND AFTER, BECAUSE THIS IS WHERE THE PROCESS KEPT DISAPPEARING.
+            #
+            # Run 42765341998 printed `[disk] reading the MBR` and then `exit code 241` 0.6 seconds
+            # later, with no exception and no verdict. 241 is what bash reports for a process that
+            # was terminated by a signal, so the question is not "which check failed" but "who
+            # signalled us" - and a line on either side of the call answers it.
+            log("=== checking the disk ===")
+            disk_ok = smoke.check_disk(disk, root_fs="apfs")
+            log(f"=== the disk check returned {disk_ok} ===")
+            if not disk_ok:
                 log("=== THE DISK FAILED ITS CHECKS ===")
                 raise SystemExit(1)
             log("compressing")
