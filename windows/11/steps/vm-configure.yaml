@@ -92,9 +92,15 @@ steps:
       powershell -NoProfile -ExecutionPolicy Bypass -Command "$p = Start-Process -FilePath 'C:\Users\{{ user }}\virtio-win-guest-tools.exe' -ArgumentList '/S','/v','/qn /norestart' -Wait -PassThru; Write-Output ('installer exit ' + $p.ExitCode); Get-Service QEMU-GA -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Status; Get-Service QEMU-GA -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name"
     timeout: 900
 
+  # THE SERVICE AND THE DEVICE, BECAUSE THEY FAIL DIFFERENTLY.
+  #
+  # `QEMU-GA` Running with no device underneath is the failure that looks like success: the
+  # agent installed, started, and has no port to talk on - which is what happens when the
+  # vioserial driver was not injected by Setup (see lib/winiso.py's WINPE_DRIVERS). The
+  # Powershell Get-PnpDevice line is the one that tells them apart.
   - name: prove the guest agent answers
     ssh: |
-      powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-Service QEMU-GA | Format-List Name,Status,StartType; Get-ChildItem 'C:\Program Files\qemu-ga' -ErrorAction SilentlyContinue | Select-Object -First 3 -ExpandProperty Name"
+      powershell -NoProfile -ExecutionPolicy Bypass -Command "$s = Get-Service QEMU-GA -ErrorAction SilentlyContinue; if ($s) { Write-Output ('service: ' + $s.Status + ' / ' + $s.StartType) } else { Write-Output 'service: ABSENT' }; $d = Get-PnpDevice -Class Ports -ErrorAction SilentlyContinue | Where-Object { $_.FriendlyName -match 'Guest Agent|virtio' }; if ($d) { $d | ForEach-Object { Write-Output ('device: ' + $_.FriendlyName + ' / ' + $_.Status) } } else { Write-Output 'device: NO virtio-serial port' }"
     timeout: 120
 
   # =========================================================================

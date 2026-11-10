@@ -405,8 +405,7 @@ MACOS_ASSETS = {
 # the sha256 used for Windows; it is what the publisher provides, and it still catches
 # a truncated or replaced download, which is what the check is for.
 ANDROID = {
-    "sysimg:android-15-aosp": {
-        "url": "https://dl.google.com/android/repository/sys-img/android/"
+    "sysimg:android-15-aosp": {        "url": "https://dl.google.com/android/repository/sys-img/android/"
                "x86_64-35_r02.zip",
         "sha1": "2d857d170c0d1b827149565da34b3383e5306f7f",
         "sha256": None,

@@ -62,10 +62,21 @@ import tempfile
 # a virtio disk visible during windowsPE.
 WINPE_DRIVER_DIR = "$WinPEDriver$"
 
-# What windowsPE needs to see the disk, plus what the installed system wants for
-# network and ballooning. The virtio-win ISO carries a tree per OS version; these are
-# the directories that hold a loadable .inf for each.
-WINPE_DRIVERS = ["viostor", "vioscsi", "NetKVM", "Balloon"]
+# WHAT THE INSTALL NEEDS, AND ONE OF THESE IS NOT FOR windowsPE AT ALL.
+#
+#     viostor    the disk. Without it windowsPE cannot see the target and setup stops.
+#     vioscsi    the same for a SCSI-attached disk; harmless when the disk is virtio-blk.
+#     NetKVM     the network. Server 2025 has no in-box driver for virtio-net.
+#     Balloon    memory ballooning. Nothing depends on it; it is here so the driver CD is the
+#                one place a driver can be added.
+#     vioserial  THE QEMU GUEST AGENT'S PORT. qemu-ga talks over a virtio-serial device named
+#                org.qemu.guest_agent.0, and without this driver that device is an unknown PCI
+#                serial controller - the agent installs, starts, and cannot reach the host.
+#
+# vioserial IS NOT A windowsPE DRIVER and is here anyway: windowsPE ignores an .inf it has no
+# device for, and the installed system picks it up from the same directory. The alternative is a
+# second driver injection in vm-configure, which would need the ISO there too.
+WINPE_DRIVERS = ["viostor", "vioscsi", "NetKVM", "Balloon", "vioserial"]
 
 
 def log(msg: str) -> None:

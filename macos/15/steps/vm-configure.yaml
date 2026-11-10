@@ -100,10 +100,18 @@ steps:
       printf '%s\n' '{{ password }}' | sudo -S -p '' pgrep -fl mac-guest-agent
     timeout: 600
 
+  # THE PROCESS AND THE DEVICE NODE, BECAUSE THEY FAIL DIFFERENTLY.
+  #
+  # A running agent with no /dev/cu.serial* is the failure that looks like success: the daemon
+  # started, found no port, and is logging an error it will never recover from. That is exactly
+  # what Apple's own agent does under QEMU, which is why this file uses a different one.
   - name: prove the guest agent answers
     ssh: |
       printf '%s\n' '{{ password }}' | sudo -S -p '' pgrep -fl mac-guest-agent &&
-      ls -l /dev/cu.serial* 2>/dev/null || true
+      echo '--- serial ports the agent can use ---' &&
+      ls -l /dev/cu.serial* 2>/dev/null &&
+      echo '--- what it logged ---' &&
+      printf '%s\n' '{{ password }}' | sudo -S -p '' tail -8 /var/log/mac-guest-agent.log 2>/dev/null || true
     timeout: 120
 
   # =========================================================================
