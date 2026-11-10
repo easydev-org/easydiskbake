@@ -131,6 +131,12 @@ class Bakery:
     # How the walk is expected to leave the disk. 64 MiB is the "nothing was written" floor
     # every bake here uses: a written system is gigabytes, a sparse image is kilobytes.
     min_disk_mb: int = 64
+    # A MENU THAT WAITS HAS TO BE ANSWERED. Set for a medium whose own GRUB stops (Mint was
+    # measured still waiting at t=390s); left None for one that auto-starts, because a stray
+    # Enter into a running session clicks whatever is under the pointer. Both real values are
+    # measured - see `_boot_args`.
+    grub_key: str | None = None
+    grub_delay: float = 25.0
 
     def __post_init__(self) -> None:
         if (self.after is None) == (self.desktop is None):
@@ -155,22 +161,33 @@ class Bakery:
 def _boot_args(bakery: Bakery, iso: str, work: str) -> tuple[list[str], str | None]:
     """The `-drive`/`-kernel`/`-initrd`/`-append` list, and the kernel path if one is used.
 
-    TWO WAYS A LIVE MEDIUM BOOTS, AND THEY ARE NOT INTERCHANGEABLE.
+    A IS THE DEFAULT AND B EXISTS FOR ONE REASON: THE LANGUAGE.
 
-    THE MEDIUM'S OWN GRUB (`kernel` is empty). NixOS, EndeavourOS, Manjaro, Pop!_OS and Zorin
-    boot the way they boot for a person: the firmware runs the ISO's own menu entry, which is
-    what sets up the live session's tmpfs and its overlay. Extracting the kernel here would
-    bypass that entry and land in a session the installer does not expect.
+    THE MEDIUM'S OWN GRUB (`kernel` is empty). The firmware runs the ISO's menu entry the way
+    it runs for a person. MEASURED ON THIS POD, three distributions, all of them reaching a
+    desktop this way:
 
-    AN EXTRACTED KERNEL AND A MEASURED CMDLINE. Casper and dracut-based mediums (Ubuntu,
-    Kubuntu, Mint, MX, Fedora, openSUSE, CachyOS) are started with the ISO's kernel pulled out
-    of the image and given `-append` directly. That is not a shortcut: it is what lets the
-    bake pass a cmdline the ISO's own menu does not have, and it makes the boot independent of
-    which menu entry the firmware happens to highlight.
+        kubuntu   auto-starts, English, `Install Kubuntu` on screen at t=90s
+        cachyos   auto-starts, English, `CachyOS Hello` on screen at t=90s
+        mint      STOPS AT THE MENU and needs one Enter, desktop 30s after it
 
-    THE CMDLINES CARRY LABELS THAT COME FROM THE ISO'S OWN GRUB CONFIG, NOT FROM A GUESS:
-    `COS_202608`, `Fedora-WS-Live-43`, `openSUSE_Tumbleweed_KDE_Live`. They are constants in
-    each Bakery for the same reason a coordinate is - they were read off the artifact.
+    THE LANGUAGE QUESTION IS SETTLED: it is NOT the cmdline. `install.yaml` in cachyos/ says
+    it in its own words - "on the runners it is English, and on a machine whose egress reports
+    China it is Simplified Chinese" - and this pod's egress is Hong Kong while the runners'
+    is the United States, so both are English. A `locale=` on the kernel line would change
+    the SESSION's locale, which is a different string from what the installer picks from the
+    network. That is a real bug in the old comments, not a reason for this branch.
+
+    AN EXTRACTED KERNEL AND A MEASURED CMDLINE. Kept for the distributions where the menu was
+    measured to be a problem, and because a medium whose own entry does not come up within the
+    boot budget has no other way in.
+
+    `grub_key` IS WHAT MAKES A SURVIVABLE. Mint's menu has no timeout and sits there forever
+    (measured: still on screen at t=390s); one Enter takes the highlighted entry, and both
+    other images ignore the keystroke because they are already past the menu. So a
+    distribution whose menu stops declares `grub_key="ret"` and `grub_delay`, and a
+    distribution whose menu auto-starts declares neither - pressing Enter into a running
+    session would click whatever button happens to be under the pointer.
     """
     args: list[str] = []
     kernel: str | None = None
@@ -294,6 +311,23 @@ def run_bake(bakery: Bakery, args) -> int:
     guest.start()
     log(bakery.name,
         f"qemu pid {guest.pid}, vnc {guest.shape.vnc_bind}:{5900 + guest.shape.vnc_display}")
+
+    # THE MEDIUM'S OWN MENU, WHEN IT WAITS. `grub_key` is set only for a distribution whose
+    # GRUB was measured to stop - see `_boot_args`. It is sent from here rather than from
+    # `_boot_args` because qemu has to be running for a key to reach it.
+    if bakery.grub_key:
+        import qmp as _qmp
+        time.sleep(bakery.grub_delay)
+        try:
+            q = _qmp.QMP(guest.paths.drive)
+            try:
+                _qmp.key(q, bakery.grub_key)
+            finally:
+                q.close()
+            log(bakery.name,
+                f"took the boot menu entry ({bakery.grub_key}) after {bakery.grub_delay:.0f}s")
+        except Exception as exc:                       # noqa: BLE001
+            log(bakery.name, f"=== COULD NOT REACH THE BOOT MENU: {exc} ===")
 
     snap = subprocess.Popen(
         [sys.executable, os.path.join(REPO, "lib", "snapshots.py"),

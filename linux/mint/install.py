@@ -26,8 +26,11 @@ import livebake     # noqa: E402
 
 BAKE = livebake.Bakery(
     name="mint",
-    kernel=('casper/vmlinuz','casper/initrd.lz'),
-    cmdline='boot=casper locale=en_US.UTF-8 quiet splash',
+    # THE MEDIUM BOOTS ITSELF. Measured on this ISO in a local pod: its GRUB has NO TIMEOUT
+    # and was still on screen at t=390s, so one Enter takes the highlighted entry and the live
+    # desktop follows 30 seconds later - and the real walk then ran all 19 steps from it.
+    grub_key='ret',
+    grub_delay=25.0,
     desktop=livebake.DesktopWhen(any_of=('install linux mint', 'menu mint',)),
     mem_mb=4096,
 )
