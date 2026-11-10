@@ -514,12 +514,38 @@ def main() -> int:
           "msiexec" in win_answer and "qemu-ga-x86_64.msi" in win_answer)
     check("the windows agent install asks for no bundle", "windows/11/answer/Autounattend.xml",
           "guest-tools.exe" not in win_answer)
-    # THE DRIVE LETTER IS SEARCHED FOR. Three CD-ROMs are attached and their letters follow the
-    # firmware's enumeration; a hard-coded D: would work until it did not, and the failure would
-    # be a silent disk with no agent.
+    # THE DRIVE LETTER IS ENUMERATED, NOT GUESSED. Three CD-ROMs are attached and their letters
+    # follow the firmware's enumeration; a hard-coded D: would work until it did not, and the
+    # failure would be a silent disk with no agent.
+    #
+    # THIS ASSERTION USED TO PIN `start /wait`. IT WAS ASSERTING THE BUG. `start /wait` blocks
+    # until the child exits and has no deadline, so an msiexec that does not return holds the
+    # specialize pass forever - which is run 42822577507: the install finished, the machine
+    # rebooted into it (Boot000A "Windows Boot Manager" on the console), and no desktop appeared
+    # for the remaining 85 minutes. A previous run of the same stage without this pass reached
+    # its desktop in 1192s.
     check("the windows install finds the answer cd, not a guessed letter",
           "windows/11/answer/Autounattend.xml",
-          "for %i in (D E F G H I J) do @if exist %i:\\agent\\qemu-ga-x86_64.msi start /wait" in win_answer)
+          "Get-PSDrive -PSProvider FileSystem" in win_answer
+          and "agent\\qemu-ga-x86_64.msi" in win_answer)
+    # AND IT CANNOT HOLD THE MACHINE. A synchronous installer is a pass that can never end.
+    check("the windows agent install has a deadline", "windows/11/answer/Autounattend.xml",
+          "WaitForExit(600000)" in win_answer and "$p.Kill()" in win_answer)
+    check("the windows agent install says what happened", "windows/11/answer/Autounattend.xml",
+          "qemu-ga-status.txt" in win_answer)
+    # AND NO RunSynchronousCommand ANYWHERE MAY WAIT FOREVER.
+    #
+    # specialize runs BEFORE the desktop and before any of this repository's deadlines exist:
+    # the bake's own --timeout is watching the screen, and a pass that never returns is not a
+    # screen that never changes. So the one unbounded construct that matters here is a
+    # synchronous wait, and the answer file may only use one with a deadline on it.
+    import re as _re
+    sync_paths = _re.findall(r"<Path>(.*?)</Path>", win_answer, _re.S)
+    blocking = [p for p in sync_paths
+                if "start /wait" in p or ("msiexec" in p and "WaitForExit(" not in p)]
+    check("no answer-file pass waits without a deadline", "windows/11/answer/Autounattend.xml",
+          not blocking)
+
     # AND THE STAGE SAYS SO RATHER THAN QUIETLY REINSTALLING IT: one path, and a re-run of this
     # stage must not become a second one.
     check("the windows stage no longer installs the agent itself",

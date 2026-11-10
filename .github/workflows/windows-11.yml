@@ -226,6 +226,46 @@ jobs:
               --timeout 5400
             python3 windows/11/verify.py out/windows11.qcow2
 
+      # THE RECORDING AND THE LAST FRAME, UPLOADED ON FAILURE TOO.
+      #
+      # windows/11/bake.py has always written out/install.mp4 and out/last-frame.png through
+      # lib/live.py - kept current every twenty seconds, so a run that is cancelled at minute
+      # eighty still has a playable file. NOTHING UPLOADED THEM. The macOS workflow has done
+      # this for months; Windows did not, and run 42822577507 is what that costs: 90 minutes
+      # timed out at "no desktop", and the only artefact was a log whose console output was
+      # 630 bytes of UEFI boot lines. The one thing that would say which screen the machine
+      # was sitting on - the screen - was written to the runner and thrown away.
+      #
+      # `if: always()` because a failed bake is exactly when this is worth having.
+      - name: keep the recording
+        if: always() && inputs.base_from == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows11-base-recording
+          path: |
+            out/install.mp4
+            out/last-frame.png
+          if-no-files-found: warn
+          retention-days: 14
+
+      # AND THE FRAMES THEMSELVES, which are what `is_windows_desktop` actually reads.
+      #
+      # The mp4 is for a person; these are for the test. A bake that times out leaves the
+      # frames that were measured, and `python3 lib/desktop.py out/frames/shots/frame-*.jpg`
+      # reports drop/ratio/saturation for each one - which is the difference between "the
+      # desktop test is wrong" and "the machine never drew a desktop".
+      - name: keep the frames the desktop test read
+        if: always() && inputs.base_from == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows11-base-frames
+          path: |
+            out/frames/shots/frame-*.jpg
+            out/frames/shots/snapshots.log
+          if-no-files-found: warn
+          retention-days: 7
+          compression-level: 0
+
       # NO BOOTSTATE ARTIFACT. The disk carries its own loader at \EFI\BOOT\BOOTX64.EFI,
       # so there is nothing beside it to upload - and an artifact that exists only to make
       # the next job work is the dependency this bake just removed.

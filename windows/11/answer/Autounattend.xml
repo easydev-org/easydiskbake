@@ -288,24 +288,34 @@
              no agent at all. The MSI travels on the answer CD (lib/winiso.py copies it out of
              the virtio-win ISO), and this is the pass that runs while that CD is still attached.
 
-             THE DRIVE LETTER IS SEARCHED FOR, NOT ASSUMED. This machine has three CD-ROMs - the
-             install ISO, this answer CD and the virtio drivers - and their letters depend on
-             what the firmware enumerated first. Hard-coding D: would work until the day it did
-             not, and the failure would be an install that silently produced a disk with no agent.
+             A SYNCHRONOUS `msiexec` IN THIS PASS CAN COST THE WHOLE BAKE, AND DID.
 
-             `%i` IS A FOR-LOOP VARIABLE IN cmd, so this is one line with no batch file: for each
-             candidate letter, if the MSI is there, install it. `if exist` is what makes the loop
-             safe on the letters that hold a different CD.
+             Run 42822577507 is the measurement. It installed Windows, rebooted into it -
 
-             `start /wait` IS NOT DECORATION. msiexec is a GUI-subsystem executable, so cmd does
-             NOT wait for a plain `msiexec /i ...` to finish - the RunSynchronousCommand would
-             return, Setup would carry on to the next pass and eventually reboot, and the install
-             would be interrupted somewhere in the middle. `start /wait` blocks until it exits,
-             which is the whole point of running it here instead of in a later stage. -->
+                 BdsDxe: starting Boot0001 "UEFI QEMU DVD-ROM"        <- the install DVD
+                 BdsDxe: starting Boot000A "Windows Boot Manager"     <- the disk it wrote
+
+             - and then never reached a desktop for the remaining eighty-five minutes. A run of
+             the same stage before this pass existed reached its desktop in 1192 seconds and the
+             whole job took 34 minutes, so this is not slowness: specialize never finished.
+
+             So the install is BOUNDED. Ten minutes is several times what copying 12 MB and
+             registering a service takes; past that the process is killed and the pass continues,
+             because a setup that cannot be interrupted must not be able to hold the machine.
+             The outcome is written to C:\Windows\Temp\qemu-ga-status.txt, which survives on the
+             disk and can be read from the next stage - a failure that says why instead of a
+             timeout that says nothing.
+
+             THE DRIVES ARE ENUMERATED, NOT GUESSED. `Get-PSDrive -PSProvider FileSystem` lists
+             what is actually mounted; a hard-coded D: works until the firmware enumerates the
+             three CD-ROMs differently, and the failure is a silent disk with no agent.
+
+             NO `start /wait`. It was the previous spelling and it blocks forever if msiexec
+             does; Start-Process -PassThru gives a handle that can be given a deadline. -->
         <RunSynchronousCommand wcm:action="add">
           <Order>6</Order>
-          <Path>cmd.exe /c "for %i in (D E F G H I J) do @if exist %i:\agent\qemu-ga-x86_64.msi start /wait msiexec /i %i:\agent\qemu-ga-x86_64.msi /qn /norestart /l*v C:\Windows\Temp\qemu-ga-install.log"</Path>
-          <Description>Install the QEMU guest agent</Description>
+          <Path>powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$msi = Get-PSDrive -PSProvider FileSystem | ForEach-Object { Join-Path $_.Root 'agent\qemu-ga-x86_64.msi' } | Where-Object { Test-Path $_ } | Select-Object -First 1; if (-not $msi) { 'NO_MSI_ON_ANY_DRIVE' | Out-File -Encoding ascii C:\Windows\Temp\qemu-ga-status.txt; exit 0 }; $p = Start-Process msiexec.exe -ArgumentList @('/i', $msi, '/qn', '/norestart', '/l*v', 'C:\Windows\Temp\qemu-ga-install.log') -PassThru; if ($p.WaitForExit(600000)) { ('EXIT=' + $p.ExitCode) | Out-File -Encoding ascii C:\Windows\Temp\qemu-ga-status.txt } else { $p.Kill(); 'TIMEOUT_600s' | Out-File -Encoding ascii C:\Windows\Temp\qemu-ga-status.txt }"</Path>
+          <Description>Install the QEMU guest agent, bounded at ten minutes</Description>
         </RunSynchronousCommand>
       </RunSynchronous>
     </component>
