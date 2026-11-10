@@ -611,6 +611,34 @@ def main() -> int:
     except Exception as exc:                          # noqa: BLE001
         check(f"capabilities imports ({exc})", "lib/capabilities.py", False)
 
+    # --- ONE QMP CONNECTION PER SOCKET, ENFORCED IN THE CLIENT -------------------------
+    #
+    # qemu's `-qmp unix:...,server=on,wait=off` serves ONE client per socket, and a second
+    # connect() SUCCEEDS and then never gets a greeting - so the failure is a HANG, not an
+    # error, and it happens inside whatever timeout the caller happens to have. Four stages
+    # fixed that at four call sites by remembering to pass `q=` down; the fifth forgot, and
+    # `dismiss_post_login_windows` sat in its 240-second timeout producing no output at all.
+    #
+    # So the guarantee is a property of the CLIENT now, and these read that rather than reading
+    # each call site for a keyword. A future caller cannot get it wrong because there is nothing
+    # to get right.
+    qmp_src = read("lib/qmp.py")
+    check("the qmp client shares one connection per socket", "lib/qmp.py",
+          "_open: \"dict[str, QMP]\" = {}" in qmp_src and "def __new__" in qmp_src)
+    check("a live connection is handed to the next caller", "lib/qmp.py",
+          "existing._holders += 1" in qmp_src and "existing.alive()" in qmp_src)
+    check("a closed connection is not handed out", "lib/qmp.py", "def alive" in qmp_src)
+    # AND CLOSING IS REFERENCE COUNTED, because every stage does `q = QMP(...); ...; q.close()`
+    # and the first close used to be the last. A step that closed while another was reading was
+    # `OSError: Bad file descriptor` on a connection that looked fine - a run this repository
+    # has already paid for.
+    check("closing releases one holder, not the socket", "lib/qmp.py",
+          "if self._holders > 0:" in qmp_src)
+    # AND THE OLD ADVICE IS GONE. The docstring used to argue the wait was unavoidable and set
+    # the greeting timeout to 120 seconds instead, which turns a hang into a longer hang.
+    check("the client no longer argues the wait is unavoidable", "lib/qmp.py",
+          "no version of this that avoids the wait" not in qmp_src)
+
     # AND `copy` IS NEVER DERIVED FROM `run_overlay`, BECAUSE THEY ARE THE SAME THING TWICE.
     #
     # `copy=True` asks vm_session for a PROTECTIVE overlay over the disk it was handed. A stage

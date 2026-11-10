@@ -803,8 +803,12 @@ class Guest:
             log("asking the guest to shut down")
             client.execute("system_powerdown")
         except (OSError, RuntimeError) as exc:
+            # NO `client.close()` HERE: the `finally` below owns it. This block used to close and
+            # then fall into a `finally` that closed again - harmless while a connection was one
+            # object owned by one caller, and NOT harmless now that the client is shared and
+            # reference counted: the second close would release another holder's claim and shut
+            # a socket somebody else is still reading.
             log(f"system_powerdown failed ({exc}); killing instead")
-            client.close()
             return
         finally:
             client.close()

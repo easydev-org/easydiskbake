@@ -189,12 +189,23 @@ def dismiss_post_login_windows(driver, step) -> bool:
     """
     import qmp as qmpmod
 
+    # ONE CONNECTION, MADE BY THIS FUNCTION AND GIVEN TO EVERYTHING IT CALLS.
+    #
+    # qemu's -qmp unix:... ACCEPTS ONE CLIENT PER SOCKET. This function first opened its own
+    # connection and then called `dismiss_keyboard_assistant` WITHOUT passing it - so that
+    # function opened a second one, which blocks on the greeting forever, because the first is
+    # still held here. The step then sits inside its 240-second timeout with no output at all.
+    #
+    # `dismiss_keyboard_assistant(guest, q=...)` is the documented way to share (see its own
+    # note: "Closing a caller's socket takes the walkthrough's own screen reader down"), and
+    # `_Guest` is the one attribute it reads.
     q = qmpmod.QMP(driver.qmp_path)
     try:
         # THE KEYBOARD ASSISTANT FIRST. It is the one that ENABLES the VoiceOver tutorial, so
         # closing it first is what stops a second sheet from arriving behind the first.
         import ssh as sshstage
 
+        driver.log("  closing the Keyboard Setup Assistant, if it is up")
         sshstage.dismiss_keyboard_assistant(_Guest(driver.qmp_path), q=q)
 
         # AND THEN WHATEVER ACCESSIBILITY SHEET IS ON TOP. Not conditional on recognising it:
@@ -212,6 +223,7 @@ def dismiss_post_login_windows(driver, step) -> bool:
             time.sleep(2)
     finally:
         q.close()
+    driver.log("  the post-login overlays are closed")
     driver.look("post-login-windows-dismissed")
     return True
 
@@ -271,6 +283,14 @@ def wait_for_desktop(driver, step) -> bool:
                         time.sleep(1)
                 except (OSError, RuntimeError) as exc:      # noqa: BLE001
                     driver.log(f"  the dismissal keys could not be sent: {exc}")
+                    # RELEASE IT, THEN FORGET IT. Setting `q = None` without closing drops the
+                    # process's only reference to a shared connection: the client's holder count
+                    # never reaches zero, and the next `QMP(same path)` hands out an object whose
+                    # socket is still open but whose peer has gone. `close()` here, `None` after.
+                    try:
+                        q.close()
+                    except Exception:                       # noqa: BLE001
+                        pass
                     q = None
             time.sleep(5)
     finally:

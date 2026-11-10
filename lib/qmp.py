@@ -39,6 +39,10 @@ import time
 # framebuffer size, so pixel coordinates are converted here.
 ABS_MAX = 32767
 
+
+def log(message: str) -> None:
+    print(f"[qmp] {message}", flush=True)
+
 SCREEN_W = int(os.environ.get("SCREEN_W", "1920"))
 SCREEN_H = int(os.environ.get("SCREEN_H", "1080"))
 
@@ -46,10 +50,8 @@ SCREEN_H = int(os.environ.get("SCREEN_H", "1080"))
 class QMP:
     """A QMP connection.
 
-    QEMU SERVES ONE CLIENT AT A TIME on a socket, and this repository opens two kinds: the
-    frame recorder (lib/snapshots.py, which holds its connection for the whole bake) and the
-    driver that types and clicks. A second connection is accepted by the listening socket and
-    then queued - so the connect() succeeds and the GREETING never arrives:
+    QEMU SERVES ONE CLIENT AT A TIME on a socket. A second connection is accepted by the
+    listening socket and then queued - so connect() succeeds and the GREETING never arrives:
 
         File "lib/qmp.py", line 52, in __init__
             self.greeting = self._read_message()
@@ -57,21 +59,91 @@ class QMP:
 
     which is run 41886018594, after the desktop had drawn.
 
-    There is no version of this that avoids the wait - the socket is single-client by design
-    - so the wait is explicit and long enough for a frame write, rather than a 30-second
-    timeout that reads as "qemu is dead". A caller that has one connection and keeps it (see
-    a caller that opens one connection and keeps it) never pays this.
+    THIS CLASS USED TO ARGUE THE WAIT WAS UNAVOIDABLE AND LENGTHEN THE TIMEOUT TO 120 SECONDS.
+    That was the wrong answer to the right observation. The constraint is real, but it is a
+    constraint on the SOCKET, not on each caller - so two callers that want the same socket are
+    the same client, and this class hands them the same object (see `_open` below). A second
+    connection is now impossible rather than unlikely, and every "remember to pass q= down"
+    at a call site stops being load-bearing.
+
+    WHAT PROMPTED IT: four separate stages fixed the same bug at four call sites.
+    `dismiss_post_login_windows` opened its own connection and then called
+    `dismiss_keyboard_assistant` without passing it, so the inner call opened a second one and
+    blocked on the greeting for its whole 240-second timeout with no output. The fix at that
+    call site was one argument; the fix here is that there is no such argument to forget.
     """
 
+    # --- ONE CONNECTION PER SOCKET, FOR THE WHOLE PROCESS -------------------------------
+    #
+    # THE CONSTRAINT IS QEMU'S, SO IT IS ENFORCED HERE ONCE RATHER THAN AT TWENTY-FOUR CALL
+    # SITES. `-qmp unix:...,server=on,wait=off` serves ONE client per socket: a second connect()
+    # succeeds at the TCP/unix level and then never gets a greeting, because the first client is
+    # still being served. Every "pass q=... down" in this repository was a call site remembering
+    # that, and each one that forgot cost a stage:
+    #
+    #     dismiss_post_login_windows opened its own and called dismiss_keyboard_assistant
+    #     without passing it; the inner call opened a second and blocked on the greeting
+    #     forever, inside a 240-second timeout, producing no output at all.
+    #
+    # The docstring below used to argue the wait was unavoidable and lengthened the timeout to
+    # 120 seconds. It is avoidable: two callers that want the same socket are the same client,
+    # and handing them one object makes "a second connection" impossible rather than unlikely.
+    #
+    # REFERENCE COUNTED, because `with`-less code all over this repository does
+    #
+    #     q = QMP(path); ...; q.close()
+    #
+    # and closing on the first `close()` would break the caller that is still using it. The
+    # socket closes when the last holder does. `_forget()` drops the entry so a LATER process
+    # or a rebooted qemu gets a new connection rather than a dead object.
+    _open: "dict[str, QMP]" = {}
+
+    def __new__(cls, path, *, greeting_timeout: int = 120):
+        existing = cls._open.get(path)
+        if existing is not None and existing.alive():
+            existing._holders += 1
+            log(f"reusing the QMP connection to {path} (holder {existing._holders})")
+            return existing
+        self = super().__new__(cls)
+        self._holders = 1
+        return self
+
     def __init__(self, path, *, greeting_timeout: int = 120):
+        # __new__ MAY HAVE RETURNED A LIVE OBJECT, and re-running __init__ on it would send a
+        # second `qmp_capabilities` and reset the greeting - so the work happens once.
+        if getattr(self, "_connected", False):
+            self.path = path
+            return
+        self.path = path
+        self._connected = False
+        self._closed = False
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.sock.settimeout(greeting_timeout)
-        self.sock.connect(path)
+        try:
+            self.sock.connect(path)
+        except OSError:
+            self._holders = 0
+            raise
         self.buf = b""
         self.greeting = self._read_message()
         # Once the greeting is in, a request should be answered promptly again.
         self.sock.settimeout(30)
         self.execute("qmp_capabilities")
+        self._connected = True
+        type(self)._open[path] = self
+
+    def alive(self) -> bool:
+        """Is this connection still usable? A dead one must not be handed to a new caller."""
+        if getattr(self, "_closed", True) or self.sock is None:
+            return False
+        try:
+            return self.sock.fileno() >= 0
+        except (OSError, ValueError):
+            return False
+
+    def _forget(self) -> None:
+        if type(self)._open.get(getattr(self, "path", "")) is self:
+            type(self)._open.pop(self.path, None)
 
     def _read_message(self):
         while b"\n" not in self.buf:
@@ -94,8 +166,21 @@ class QMP:
                 return msg
 
     def close(self):
+        """Release one hold. The socket closes when the LAST holder lets go.
+
+        A caller that closed the shared connection while another step was still reading would
+        turn a working walkthrough into "OSError: Bad file descriptor" - which this repository
+        has already spent a run on (see macos/15/ssh.py's note about closing a caller's socket
+        taking the screen reader down with it).
+        """
+        self._holders = getattr(self, "_holders", 1) - 1
+        if self._holders > 0:
+            return
+        self._closed = True
+        self._forget()
         try:
-            self.sock.close()
+            if self.sock is not None:
+                self.sock.close()
         except OSError:
             pass
 
