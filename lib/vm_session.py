@@ -123,8 +123,20 @@ def start(family: str, disk: str, work: str, *, ssh_port: int = 2222,
 
     # THE SERVER BEFORE THE MACHINE. See the note above; this is the one ordering decision this
     # module exists to hold, and it is the one clean_step.py got wrong by omission.
+    #
+    # `share=""` MEANS "DO NOT SERVE ONE", AND THE OLD TEST GOT THAT BACKWARDS. It read
+    # `if share is not None:` and then `share or DEFAULT_DIR`, so the empty string - the value
+    # this module's own docstring names as "do not serve" - fell through to the DEFAULT
+    # directory and started an smbd. Measured: an Android-x86 guest with no cifs client still
+    # paid 10 seconds for smbd and then failed the boot on
+    #
+    #     === smbd DID NOT BIND 172.30.0.1:445 IN 10s ===
+    #
+    # which is the right message for a macOS disk that needs the share and the wrong failure
+    # for a guest that never asked for one. None still means "serve ~/shared", which is what
+    # every existing caller passes when it omits the argument.
     served = None
-    if share is not None:
+    if share != "":
         served = os.path.expanduser(share or hostshare.DEFAULT_DIR)
         os.makedirs(served, exist_ok=True)
         if not hostshare.start(served):

@@ -405,6 +405,28 @@ def main() -> int:
     except Exception as exc:                          # noqa: BLE001
         check(f"qga imports ({exc})", "lib/qga.py", False)
 
+    # --- THE WINDOWS INSTALLER IS A WiX BURN BUNDLE, AND ITS SILENT FLAG IS `/quiet` ------
+    #
+    # The first version passed `/S /v "/qn /norestart"` - NSIS's flag followed by an MSI property
+    # string. Burn does not recognise `/S`, so it showed its window and waited; `-Wait` waited
+    # with it; and an `ssh:` step prints nothing until its command returns, so the stage sat for
+    # ten minutes with no output at all (run 42797556702).
+    win_conf = read("windows/11/steps/vm-configure.yaml")
+    check("the windows installer is run with burn's own flag", "windows/11/steps/vm-configure.yaml",
+          "'/quiet'" in win_conf and "'/S'" not in win_conf)
+    # AND IT HAS A DEADLINE, because a bootstrap that hangs must say so rather than hold the stage.
+    check("the windows installer cannot hang the stage", "windows/11/steps/vm-configure.yaml",
+          "Wait-Process -Timeout" in win_conf)
+    # AND IT DOES NOT SELECT A DRIVER FEATURE INSTEAD OF THE AGENT. `ADDLOCAL=FE_vioserial_driver`
+    # installs that one driver and skips qemu-ga - the opposite of what the step is for.
+    # THE WORD SURVIVES IN THE COMMENT THAT EXPLAINS WHY IT IS ABSENT, so the check is for the
+    # argument rather than for the spelling: no line that runs the installer may carry it.
+    installer_lines = [ln for ln in win_conf.splitlines()
+                       if "virtio-win-guest-tools.exe" in ln or "Start-Process" in ln]
+    check("the windows install asks for the agent, not one driver",
+          "windows/11/steps/vm-configure.yaml",
+          not any("ADDLOCAL" in ln for ln in installer_lines))
+
     # --- A RELATIVE `scp:` PATH CAN COME FROM TWO PLACES ---------------------------------
     #
     # A file checked in with the walkthrough lives under REPO; a file a `python:` step generated

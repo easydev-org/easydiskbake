@@ -82,14 +82,29 @@ steps:
     scp: ["guest-agent/virtio-win-guest-tools.exe", "C:/Users/{{ user }}/virtio-win-guest-tools.exe"]
     timeout: 600
 
-  # SILENT, NO REBOOT, AND THEN THE SERVICE HAS TO EXIST.
+  # `/quiet`, NOT `/S`, BECAUSE THIS IS A WiX BURN BUNDLE.
   #
-  # `-Wait` because the installer spawns and returns otherwise; the exit code is what says whether
-  # it worked, and a stage that carried on after a failed install would look fine and shut down
-  # badly for the rest of its life.
+  # The first version passed `/S /v "/qn /norestart"` - NSIS's silent flag followed by an MSI
+  # property string - to a `WiX Toolset Bootstrapper`. Burn does not recognise `/S`, so it did
+  # what Burn does with an unknown argument: showed its window and waited. `-Wait` then waited
+  # with it, and the step sat for ten minutes with no output (run 42797556702) until the SSH
+  # timeout, because an `ssh:` step prints nothing until its command returns.
+  #
+  # Burn's own flags are `/quiet` (no UI at all) and `/norestart`. The MSI properties still have
+  # to be forwarded, and Burn forwards them with `/v` - quoted, because the value contains spaces.
+  #
+  # NO `ADDLOCAL`. It selects FEATURES OF THE DRIVER MSI, and the agent is a separate package
+  # inside the same bundle - `ADDLOCAL=FE_vioserial_driver` would install that one driver and
+  # skip qemu-ga entirely, which is the opposite of what this step is for. The drivers are
+  # already on the disk (bake injects them via $WinPEDriver$); what is wanted here is the agent,
+  # and `/quiet` alone installs everything the bundle carries.
+  #
+  # AND IT IS GIVEN A DEADLINE. A bootstrap that hangs must say so rather than hold the stage:
+  # `Wait-Process -Timeout` fails loudly, and the service check after it reports what state the
+  # machine was left in.
   - name: install the guest agent
     ssh: |
-      powershell -NoProfile -ExecutionPolicy Bypass -Command "$p = Start-Process -FilePath 'C:\Users\{{ user }}\virtio-win-guest-tools.exe' -ArgumentList '/S','/v','/qn /norestart' -Wait -PassThru; Write-Output ('installer exit ' + $p.ExitCode); Get-Service QEMU-GA -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Status; Get-Service QEMU-GA -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name"
+      powershell -NoProfile -ExecutionPolicy Bypass -Command "$exe='C:\Users\{{ user }}\virtio-win-guest-tools.exe'; $args=@('/quiet','/norestart'); Write-Output ('running: ' + $exe + ' ' + ($args -join ' ')); $p = Start-Process -FilePath $exe -ArgumentList $args -PassThru; try { $p | Wait-Process -Timeout 600 -ErrorAction Stop; Write-Output ('installer exit ' + $p.ExitCode) } catch { Write-Output 'INSTALLER DID NOT FINISH IN 600s'; $p | Stop-Process -Force -ErrorAction SilentlyContinue }; $s = Get-Service QEMU-GA -ErrorAction SilentlyContinue; if ($s) { Write-Output ('service: ' + $s.Status) } else { Write-Output 'service: ABSENT' }"
     timeout: 900
 
   # THE SERVICE AND THE DEVICE, BECAUSE THEY FAIL DIFFERENTLY.
