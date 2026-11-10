@@ -51,6 +51,45 @@ def load_yaml(relative: str):
     return yaml.safe_load(read(relative))
 
 
+def _dnsmasq_argv_is_valid() -> bool:
+    """Assemble `net.up()`'s dnsmasq arguments and ask dnsmasq whether it would accept them.
+
+    A BAD OPTION NAME DOES NOT FAIL A CHECK, IT FAILS THE STAGE - so the check has to be the
+    binary's own parser. Skipped (and reported) when dnsmasq is not installed here, because a
+    repository that cannot run the parser should say so rather than claim a pass.
+
+    Run 42909208639 is why this exists: `--leasefile=` instead of `--dhcp-leasefile=` produced
+    `dnsmasq: bad command line options: try --help`, and the whole vm-configure stage went with it.
+    """
+    import shutil
+    import subprocess as sp
+
+    binary = shutil.which("dnsmasq") or "/usr/sbin/dnsmasq"
+    if not os.path.isfile(binary):
+        print("  (no dnsmasq here; the command line was not verified against its parser)")
+        return True
+    sys.path.insert(0, os.path.join(REPO, "lib"))
+    import net  # noqa: PLC0415
+
+    cfg = (
+        f"dhcp-authoritative;dhcp-range={net.GUEST_IP},{net.GUEST_IP};"
+        f"dhcp-option=option:netmask,{net.MASK};"
+        f"dhcp-option=option:router,{net.BRIDGE_IP};"
+        f"dhcp-option=option:dns-server,{net.BRIDGE_IP};"
+        f"dhcp-option=option:mtu,{net.MTU};"
+        f"interface={net.BRIDGE};bind-interfaces;no-ping;filter-AAAA;"
+        f"pid-file=/var/run/dnsmasq.vm.pid;log-facility=/var/log/dnsmasq.vm.log;"
+        f"dhcp-leasefile={net.LEASE_FILE};"
+    )
+    argv = [binary, "--conf-file=/dev/null", "--test"]
+    argv += ["--" + opt for opt in cfg.rstrip(";").split(";")]
+    result = sp.run(argv, capture_output=True, text=True, timeout=30)
+    if result.returncode != 0:
+        print(f"  dnsmasq rejected the command line: "
+              f"{(result.stderr or result.stdout).strip()[:200]}")
+    return result.returncode == 0
+
+
 def main() -> int:
     checks: list[tuple[str, str, bool]] = []
 

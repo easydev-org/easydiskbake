@@ -326,7 +326,7 @@ def up(*, ssh_port: int = 2222, rdp_port: int = 3389,
             #
             # which is run 42905230912: the range is `--dhcp-range=A,A`, one address, and the
             # restart meant to release it released nothing.
-            f"leasefile={LEASE_FILE};"
+            f"dhcp-leasefile={LEASE_FILE};"
         )
         started = _sh(f"dnsmasq --conf-file=/dev/null {''.join('--' + opt + ' ' for opt in cfg.rstrip(';').split(';'))}")
         if started.returncode != 0:
