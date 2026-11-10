@@ -243,10 +243,14 @@ def main(argv: list[str]) -> int:
         ok = True
         return 0
     finally:
-        # SSH FIRST - see the note in macos/15/share.py: macOS puts up a dialog on an ACPI power
-        # button and never shuts down, so the request has to be a command.
+        # TWO MODES, DECIDED BY WHERE THE WRITES GO - see the longer note in macos/15/ssh.py.
+        #
+        # An overlay guest is killed (nothing it wrote is kept; the flatten is the artifact). A
+        # guest on the real disk gets the careful path: ssh `shutdown -h now`, because macOS
+        # ignores an ACPI power button and shows a dialog instead.
         import vm_session
-        vm_session.stop(guest, acpi_first=ok, family="macos", password=SSH_PASSWORD)
+        vm_session.stop(guest, acpi_first=ok, family="macos", password=SSH_PASSWORD,
+                        overlay=run_overlay)
         if ok:
             if not smoke.check_disk(disk, root_fs="apfs"):
                 log("=== THE DISK FAILED ITS CHECKS ===")

@@ -358,6 +358,46 @@ def main() -> int:
     except Exception as exc:                          # noqa: BLE001
         check(f"vm_session imports ({exc})", "lib/vm_session.py", False)
 
+    # --- A YAML FILE CAN OWN ITS MACHINE -------------------------------------------------
+    #
+    # `boot:`, `reboot:` and `shutdown:` are steps, so the whole qemu lifecycle can be declared
+    # instead of living in a stage script. Three things have to hold for that to work, and each
+    # one was a way it could silently not.
+    try:
+        import steps as _steps
+        check("the lifecycle steps exist", "lib/steps.py",
+              {"boot", "reboot", "shutdown"} <= _steps.LIFECYCLE)
+        # A FILE THAT BOOTS ITS OWN MACHINE CANNOT BE HANDED A SOCKET, because the socket does
+        # not exist until the first step runs. A Driver built the normal way waits out its 180
+        # seconds for a file nothing has written.
+        check("a booting file gets a deferred driver", "lib/steps.py",
+              "isinstance(driver, DeferredDriver)" in read("lib/steps.py")
+              or "DeferredDriver(" in read("lib/steps.py"))
+        # AND THE FILE IS RESPONSIBLE FOR WHAT IT STARTED: a failed walkthrough that leaves qemu
+        # running holds /dev/kvm for every later job in the same container.
+        check("a booting file stops what it started", "lib/steps.py",
+              "stop_if_running" in read("lib/steps.py"))
+        # THE MACHINE COMES FROM vm_session, so there is still one description of a macOS guest.
+        check("the lifecycle reuses vm_session", "lib/steps.py",
+              "vm_session.start(" in read("lib/steps.py"))
+        # AND A REBOOT RECONNECTS. The OCR Screen holds a QMP connection; the first step after a
+        # reset talks to a closed socket unless the driver rebuilds it.
+        check("a reboot rebuilds the connection", "lib/steps.py",
+              "def reconnect" in read("lib/steps.py"))
+        # THE EXAMPLE IS A FILE THAT PARSES, because an example that does not is a lie about the
+        # vocabulary.
+        example = load_yaml("macos/15/steps/lifecycle.yaml")
+        names = [s.get("name") for s in (example.get("steps") or [])]
+        check("the lifecycle example boots", "macos/15/steps/lifecycle.yaml",
+              "boot the disk" in names)
+        check("the lifecycle example reboots", "macos/15/steps/lifecycle.yaml",
+              "reboot into the same system" in names)
+        check("the lifecycle example shuts down without waiting", "macos/15/steps/lifecycle.yaml",
+              any(s.get("shutdown") and s.get("graceful") is False
+                  for s in (example.get("steps") or [])))
+    except Exception as exc:                          # noqa: BLE001
+        check(f"lifecycle imports ({exc})", "lib/steps.py", False)
+
     # --- ONE qemu-img, AND IT IS NOT THE ANDROID ONE ---------------------------------------
     #
     # THE ROOT CAUSE OF SIX RUNS OF FAILURES, and of a workaround in three modules. The

@@ -647,6 +647,39 @@ class Guest:
             self.proc.wait(timeout=5)
         log("qemu stopped")
 
+    def reset(self, *, wait: float = 10.0) -> None:
+        """Reset the guest through QMP and wait for the monitor to answer again.
+
+        `system_reset` IS THE VIRTUAL POWER BUTTON HELD DOWN - it does not ask the guest, it
+        restarts it. That is what a YAML `reboot:` step wants: the guest's own shutdown path is
+        the thing being avoided (macOS puts up a dialog on ACPI; Windows may install updates).
+
+        THE SOCKET FILE IS THE SIGNAL THAT IT WORKED. qemu keeps the same path but unlinks and
+        recreates it across a reset, so waiting for it to exist again is waiting for the monitor
+        to be back. A reset that never completed leaves the file gone and this says so.
+        """
+        import time
+        import qmp as qmpmod
+
+        try:
+            client = qmpmod.QMP(self.paths.drive)
+        except (OSError, RuntimeError, ImportError) as exc:
+            raise RuntimeError(f"could not open QMP to reset the guest: {exc}") from exc
+        try:
+            log("resetting the guest")
+            client.execute("system_reset")
+        finally:
+            client.close()
+
+        # THE FILE GOES AWAY AND COMES BACK. Polling for its absence first would race a reset
+        # that had already finished, so this only waits for it to be THERE, with a settle.
+        deadline = time.time() + wait
+        while time.time() < deadline:
+            if os.path.exists(self.paths.drive):
+                break
+            time.sleep(0.2)
+        time.sleep(1.0)
+
     def shutdown_command(self, command: str, timeout: int, *, user: str = "docker",
                          password: str = "admin") -> bool:
         """Run an in-guest shutdown command and wait. Returns True if qemu exited.

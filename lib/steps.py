@@ -134,6 +134,16 @@ STEP_KEYS = {    "name",        # required: what the log calls this step
     "python",      # an escape hatch: "module:function" for a measured exception
     "python_screen",  # false when a python: step never touches the screen (ssh only)
     "press",       # for a python step: which footer control it should press by name
+    # --- THE VM ITSELF -------------------------------------------------------------------
+    #
+    # These three are a SEQUENCE-ONLY vocabulary and they change what `run_file` returns. A
+    # walkthrough that boots its own machine is not a walkthrough over a guest somebody else
+    # started: it owns the machine, and the stage above it becomes "run this file".
+    "boot",        # start the machine: needs family + disk; the file owns the guest
+    "reboot",      # reset it through QMP and reconnect, so the steps after it still see a screen
+    "shutdown",    # stop it the way the caller declared (graceful or kill)
+    "family",      # for boot/shutdown: macos, windows, linux
+    "graceful",    # for shutdown: ask the guest to close its disks first (default true)
 }
 
 # THE KEYS AN ACTION INSIDE `do` MAY CARRY. A pane's actions are the same vocabulary as a
@@ -153,7 +163,14 @@ WAIT_STEPS = {"until", "until_any", "wait", "wait_for_change", "until_dark", "di
 # a check that does nothing is reported rather than run.
 ACTION_KEYS = {"at", "double", "type", "key", "run", "ssh", "scp", "script", "share_mount",
                "bootstrap_install", "require_ssh", "sweep",
-               "at_window", "at_bottom"}
+               "at_window", "at_bottom",
+               # THE MACHINE'S OWN LIFECYCLE. A file may own its guest - see LIFECYCLE below.
+               "boot", "reboot", "shutdown"}
+
+# A STEP THAT STARTS, RESETS OR STOPS THE MACHINE. These are the only steps that act on the guest
+# as a PROCESS rather than through it, and they are why `run_file` can return a guest instead of
+# requiring one.
+LIFECYCLE = {"boot", "reboot", "shutdown"}
 
 
 class Step:
@@ -663,6 +680,157 @@ class Driver:
         except Exception:                              # noqa: BLE001
             pass
 
+    def reconnect(self, socket_timeout: int = 300) -> None:
+        """Drop the QMP connection, wait for the socket to come back, and open a new one.
+
+        WHY A YAML FILE NEEDS THIS. A `reboot:` step asks qemu to reset the guest; qemu keeps the
+        same socket, but the CONNECTION dies with the machine's session - and an OCR `Screen`
+        holds one. Without this, the first step after a reboot talks to a closed socket and
+        reports a guest that is not there.
+
+        THE SOCKET FILE IS THE SIGNAL. It is removed while the machine resets and recreated when
+        the monitor is listening again, so waiting on the file is waiting on the thing that
+        actually has to happen. Same test Driver.__init__ makes at startup - this is that code
+        made repeatable rather than a second copy of it.
+        """
+        self.close()
+        deadline = time.time() + socket_timeout
+        while not os.path.exists(self.qmp_path):
+            if time.time() > deadline:
+                raise StepError(
+                    f"the QMP socket {self.qmp_path} did not come back within {socket_timeout}s")
+            time.sleep(1)
+        # AND A MOMENT FOR THE MONITOR TO ACCEPT A CLIENT. The file can exist a beat before
+        # qemu is listening on it, and a connect in that window blocks on the greeting.
+        time.sleep(1)
+        import ocr
+        # THE GEOMETRY COMES FROM THE SCREEN THAT IS BEING REPLACED, not from a constant: a
+        # walkthrough may declare any resolution and the OCR crop tables are measured against it.
+        self.screen = ocr.Screen(self.qmp_path, os.path.join(self.work, "shots"),
+                                 width=self.screen.width, height=self.screen.height)
+        self.q = self.screen.q
+
+
+class DeferredDriver(Driver):
+    """A Driver that connects to nothing until the file's own `boot:` step has started a machine.
+
+    WHY THIS EXISTS. `Driver.__init__` waits for the QMP socket, because every walkthrough before
+    this one was handed a running guest. A file that declares `boot:` has no socket when its
+    driver is built - the first step creates it - so the wait would time out on a file that was
+    about to work.
+
+    IT SUBCLASSES Driver ON PURPOSE. Every method of Driver asks `self.screen` for something, and
+    the only thing this changes is when that exists. A second, parallel class would be a second
+    copy of several hundred lines of click/type/read logic that must stay identical.
+    """
+
+    def __init__(self, work: str, *, width: int = 1920, height: int = 1080,
+                 disk_path: str | None = None) -> None:
+        # NOT super().__init__ - THAT IS THE WAIT. Everything Drivers store, set directly.
+        import ocr
+        import qmp as qmpmod
+
+        self.qmpmod = qmpmod
+        self._ocr = ocr
+        self.work = work
+        os.makedirs(os.path.join(work, "shots"), exist_ok=True)
+        self.qmp_path = ""
+        self.disk_path = disk_path
+        self.width = width
+        self.height = height
+        self.screen = None
+        self.q = None
+        self.n = 0
+        self.samples = 0
+        self.ppm = None
+        self.words = []
+
+    def reconnect(self, socket_timeout: int = 300) -> None:
+        """Attach for the first time, or reattach after a reset. Both are the same act."""
+        deadline = time.time() + socket_timeout
+        if not self.qmp_path:
+            raise StepError("a `boot:` step did not give this driver a socket")
+        while not os.path.exists(self.qmp_path):
+            if time.time() > deadline:
+                raise StepError(
+                    f"the QMP socket {self.qmp_path} did not appear within {socket_timeout}s")
+            time.sleep(1)
+        time.sleep(1)
+        if self.q is not None:
+            try:
+                self.q.close()
+            except Exception:                          # noqa: BLE001
+                pass
+        self.screen = self._ocr.Screen(self.qmp_path, os.path.join(self.work, "shots"),
+                                       width=self.width, height=self.height)
+        self.q = self.screen.q
+
+
+class MachineSession:
+    """The guest a walkthrough owns, when the file declares `boot:`.
+
+    WHY THIS IS NOT IN lib/vm_session.py. That module answers "start a disk and hand me the
+    guest"; this one answers "a YAML file is driving, so the guest's lifetime belongs to the
+    file". The difference matters at the end: `vm_session.start` returns a guest the CALLER
+    stops, while here the file may stop it itself with `shutdown:` and the runner must not stop
+    it twice. The machine itself still comes from vm_session, so there is one description of what
+    a macOS or Windows guest is.
+
+    `boot:` MAY APPEAR ONLY ONCE. Two boots in one file would mean the second silently replaces
+    the first and everything between them ran against a machine nobody stopped.
+    """
+
+    def __init__(self, family: str, disk: str, work: str, *, share=None,
+                 mem_mb: int = 0, cpus: int = 4) -> None:
+        self.family = family
+        self.disk = disk
+        self.work = work
+        self.share = share
+        self.mem_mb = mem_mb
+        self.cpus = cpus
+        self.guest = None
+        self.overlay = None
+        self.qmp_path = ""
+        self.stopped = False
+
+    def boot(self, family: str, *, ssh_port: int = 2222, log=print) -> None:
+        if self.guest is not None:
+            raise StepError(
+                "this file booted a machine already; a second `boot:` would replace it without "
+                "stopping it. Put the second boot in its own file.")
+        import vm_session
+        guest, reached, overlay = vm_session.start(
+            family or self.family, self.disk, self.work,
+            ssh_port=ssh_port, copy=True, share=self.share,
+            cpus=self.cpus, mem_mb=self.mem_mb, log=log)
+        if guest is None:
+            raise StepError("the machine could not be started")
+        self.guest, self.overlay = guest, overlay
+        self.qmp_path = guest.paths.drive
+        if not reached:
+            raise StepError(
+                f"the machine started but never answered on ssh port {ssh_port}; "
+                f"the console is in {self.work}/console.log")
+
+    def wait_for_ssh(self, ssh_port: int, seconds: int) -> None:
+        import session as sessmod
+        if not sessmod.wait_for_ssh(ssh_port, seconds, log, probe="echo ok"):
+            raise StepError(
+                f"the machine did not come back on ssh port {ssh_port} within {seconds}s")
+
+    def shutdown(self, *, graceful: bool = True, log=print) -> None:
+        if self.guest is None or self.stopped:
+            return
+        import vm_session
+        vm_session.stop(self.guest, acpi_first=graceful, family=self.family,
+                        overlay=self.overlay, share=False, log=log)
+        self.stopped = True
+
+    def stop_if_running(self, *, log=print) -> None:
+        """What `run_file` calls on the way out, so a failed file does not leave a machine up."""
+        if self.guest is not None and not self.stopped:
+            self.shutdown(graceful=True, log=log)
+
 
 # --- the interpreter ------------------------------------------------------------------
 
@@ -917,7 +1085,7 @@ def _run_until_disk_settles(driver: Driver, step: Step) -> bool:
 
 
 def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
-               password: str | None = None) -> None:
+               password: str | None = None, session=None) -> None:
     """Everything a step does, in the order that makes one step one action.
 
     Separated from walk() because the pane loop and the sequence loop must do exactly the same
@@ -925,6 +1093,47 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
     keeps paying for.
     """
     settle = float(step.get("settle", 2.0))
+
+    # --- THE MACHINE'S OWN LIFECYCLE -------------------------------------------------------
+    #
+    # A YAML FILE MAY OWN ITS GUEST. `boot:` starts it, `reboot:` resets it, `shutdown:` stops
+    # it. That is what makes the whole qemu lifecycle declarable instead of living in a stage
+    # script - and it is why the three are sequence-only: a pane is matched against a screen that
+    # has to exist, and "start the machine" is the step that makes one.
+    #
+    # `session` CARRIES THE GUEST BETWEEN STEPS. It is created by `boot:` and consumed by every
+    # later step that needs the socket; `run_file` owns it and stops it if the file forgets.
+    if step["boot"]:
+        if session is None:
+            raise StepError(f"{step.name}: boot needs a session; run this file through run_file")
+        family = str(step.get("family") or "macos")
+        session.boot(family, ssh_port=ssh_port, log=log)
+        # THE DRIVER HAS TO SEE THE NEW SOCKET. A boot in the middle of a sequence replaces the
+        # machine, and a Driver built before it holds a connection to a qemu that no longer runs.
+        if hasattr(driver, "reconnect") and session.qmp_path:
+            driver.qmp_path = session.qmp_path
+            driver.reconnect()
+        return
+
+    if step["reboot"]:
+        if session is None or session.guest is None:
+            raise StepError(f"{step.name}: reboot needs a machine that boot: started")
+        session.guest.reset()
+        if hasattr(driver, "reconnect"):
+            driver.reconnect()
+        else:
+            raise StepError(
+                f"{step.name}: reboot needs a screen driver; a headless file cannot survive one")
+        # AND THE GUEST HAS TO COME BACK. A reset that returns but never boots is the failure
+        # this step exists to catch - it waits for sshd the same way a boot does.
+        session.wait_for_ssh(ssh_port, int(step.get("timeout", 900)))
+        return
+
+    if step["shutdown"]:
+        if session is None:
+            raise StepError(f"{step.name}: shutdown needs a session")
+        session.shutdown(graceful=bool(step.get("graceful", True)))
+        return
 
     # THE ACCOUNT ON THIS DISK, WHEN THE FILE SAYS IT IS NOT THE USUAL ONE.
     #
@@ -1743,7 +1952,8 @@ def _run_python(driver: Driver, step: Step, walk_path: str) -> bool:
 
 
 def walk_panes(driver: Driver, steps: Walk, values: dict[str, str], *,
-               ssh_port: int = 2222, password: str | None = None) -> tuple[bool, list[str]]:
+               ssh_port: int = 2222, password: str | None = None,
+               session=None) -> tuple[bool, list[str]]:
     """The macOS shape: look at the screen, run the one pane that matches, look again.
 
     THE END IS A WORD, NOT A RAN OUT OF PANES. macos/15/drive_read.py ends on `finder`, which is
@@ -1994,7 +2204,7 @@ def walk_panes(driver: Driver, steps: Walk, values: dict[str, str], *,
                     _do_action(driver, Step(dict(action, name=f"{here.name} #{position + 1}"),
                                             step.index), ssh_port=ssh_port)
             else:
-                _do_action(driver, here, ssh_port=ssh_port, password=password)
+                _do_action(driver, here, ssh_port=ssh_port, password=password, session=session)
 
             counts[here.name] = counts.get(here.name, 0) + 1
             answered.append(here.name)
@@ -2023,7 +2233,7 @@ def walk_panes(driver: Driver, steps: Walk, values: dict[str, str], *,
 def walk(driver: Driver, steps: Walk, *, overrides: dict[str, str] | None = None,
          password: str | None = None,
          start_at: str = "", stop_before: str = "",
-         ssh_port: int = 2222) -> tuple[bool, list[str]]:
+         ssh_port: int = 2222, session=None) -> tuple[bool, list[str]]:
     """Run the walkthrough. Returns (ok, the names of the steps that ran).
 
     `start_at` / `stop_before` exist because the same file describes the installer walk AND
@@ -2033,7 +2243,8 @@ def walk(driver: Driver, steps: Walk, *, overrides: dict[str, str] | None = None
     """
     values = steps.values(overrides)
     if steps.panes:
-        return walk_panes(driver, steps, values, ssh_port=ssh_port)
+        return walk_panes(driver, steps, values, ssh_port=ssh_port, password=password,
+                          session=session)
 
     ran: list[str] = []
     started = not start_at
@@ -2143,7 +2354,7 @@ def walk(driver: Driver, steps: Walk, *, overrides: dict[str, str] | None = None
             continue
 
         # --- the action ------------------------------------------------------------------
-        _do_action(driver, here, ssh_port=ssh_port, password=password)
+        _do_action(driver, here, ssh_port=ssh_port, password=password, session=session)
 
         # --- the verdict, and it only ever produces one ---------------------------------
         #
@@ -2234,7 +2445,8 @@ def run_file(walkthrough: str, qmp_path: str, *, work: str = "",
              start_at: str = "", stop_before: str = "",
              release: str = "15", frames: str = "",
              extra_vars: dict[str, str] | None = None,
-             log_prefix: str = "") -> tuple[bool, list[str]]:
+             log_prefix: str = "", session=None,
+             boot_options: dict | None = None) -> tuple[bool, list[str]]:
     """Walk a YAML file against a running guest, from Python rather than from the CLI.
 
     THIS IS HOW A STAGE JOINS ITS YAML WITHOUT GIVING UP WHAT IT ALREADY DOES. macos/15/bake.py
@@ -2251,6 +2463,25 @@ def run_file(walkthrough: str, qmp_path: str, *, work: str = "",
 
     here = work or os.path.dirname(os.path.abspath(walkthrough))
     os.makedirs(here, exist_ok=True)
+
+    # A FILE THAT DECLARES `boot:` OWNS ITS MACHINE, AND THAT CHANGES THREE THINGS.
+    #
+    # No QMP socket is required from the caller - the file makes one. The driver cannot be built
+    # before the first step runs, because the socket it needs does not exist yet. And this
+    # function has to stop the guest if the file did not, because a failed walkthrough that
+    # leaves a qemu running holds /dev/kvm for every later job in the container.
+    #
+    # `session` MAY BE PASSED IN when the caller already has a machine and only wants the file to
+    # drive it - that is the old contract, unchanged.
+    owns_machine = any(s["boot"] for s in steps.steps) and session is None
+    if session is None and owns_machine:
+        first = next(s for s in steps.steps if s["boot"])
+        family = str(first.get("family") or "macos")
+        opts = dict(boot_options or {})
+        session = MachineSession(
+            family, disk_path or "", here,
+            share=opts.get("share"), mem_mb=int(opts.get("mem_mb") or 0),
+            cpus=int(opts.get("cpus") or 4))
 
     needs_screen = bool(steps.panes) or any(
         s["at"] or s["double"] or s["expect"] or s["expect_any"] or s["until"]
@@ -2281,9 +2512,20 @@ def run_file(walkthrough: str, qmp_path: str, *, work: str = "",
         #
         # which run 42632192846 raised before its first step.
         or (s["python"] and s.get("python_screen") is not False) or s["run"] or s["key"]
+        # `reboot:` NEEDS THE SCREEN BECAUSE IT REBUILDS IT; `boot:` AND `shutdown:` DO NOT -
+        # they act on the machine, and a file of nothing but boot/shutdown/ssh is headless.
+        or s["reboot"]
         for s in steps.steps)
 
-    if needs_screen:
+    if needs_screen and owns_machine:
+        # THE SOCKET DOES NOT EXIST YET - `boot:` MAKES IT. So the driver is created without
+        # connecting and attaches when the first boot step has started the machine. A Driver
+        # built the normal way here would wait out its socket_timeout for a file nothing has
+        # written, which is exactly the 180 seconds this change removes.
+        log("driver: deferred until the first `boot:` step has a socket")
+        driver = DeferredDriver(here, width=steps.resolution[0],
+                                height=steps.resolution[1], disk_path=disk_path)
+    elif needs_screen:
         if not qmp_path:
             raise StepError(f"{walkthrough} has GUI steps and no --qmp was given")
         log(f"driver: qmp {qmp_path!r}")
@@ -2321,9 +2563,14 @@ def run_file(walkthrough: str, qmp_path: str, *, work: str = "",
         return walk(driver, steps,
                     overrides=overrides,
                     start_at=start_at, stop_before=stop_before, ssh_port=ssh_port,
-                    password=password)
+                    password=password, session=session)
     finally:
         driver.close()
+        # A MACHINE THIS FILE STARTED IS ITS RESPONSIBILITY, NOT THE CALLER'S. A failed
+        # walkthrough that left qemu running would hold /dev/kvm and the forwarded ports for
+        # every later job in the same container - and the caller was never told it existed.
+        if owns_machine and session is not None:
+            session.stop_if_running(log=log)
 
 
 def main(argv: list[str]) -> int:
@@ -2339,6 +2586,14 @@ def main(argv: list[str]) -> int:
     p.add_argument("--ssh-port", type=int, default=2222)
     p.add_argument("--start-at", default="")
     p.add_argument("--stop-before", default="")
+    # A FILE THAT DECLARES `boot:` NEEDS THE DISK AND NOT A SOCKET, so these two are the mirror
+    # image of --qmp: one of them is required by whichever shape the file is.
+    p.add_argument("--boot-disk", default="",
+                   help="the disk a `boot:` step should start; required by such a file")
+    p.add_argument("--boot-share", default=None,
+                   help="host directory to serve on the bridge; omit for ~/shared")
+    p.add_argument("--boot-mem", type=int, default=0)
+    p.add_argument("--boot-cpus", type=int, default=4)
     p.add_argument("--list", action="store_true", help="print the steps and exit")
     p.add_argument("--check", action="store_true",
                    help="validate the file and print what it would do, without a guest")
@@ -2372,8 +2627,12 @@ def main(argv: list[str]) -> int:
         or s["until_any"] or s["disk_settle"] or s["when"] or s["unless"]
         or (s["python"] and s.get("python_screen") is not False)
         or s["run"] or s["key"] for s in steps.steps)
-    if needs_screen and not args.qmp:
+    boots = any(s["boot"] for s in steps.steps)
+    if needs_screen and not args.qmp and not boots:
         log("FAILED: this walkthrough has GUI steps; --qmp is required")
+        return 1
+    if boots and not args.boot_disk:
+        log("FAILED: this walkthrough boots a machine; --boot-disk is required")
         return 1
 
     if needs_screen:
@@ -2382,11 +2641,17 @@ def main(argv: list[str]) -> int:
                         disk_path=args.disk)
     else:
         driver = HeadlessDriver(work, disk_path=args.disk)
+    session = None
+    if boots:
+        first = next(s for s in steps.steps if s["boot"])
+        session = MachineSession(
+            str(first.get("family") or "macos"), args.boot_disk, work,
+            share=args.boot_share, mem_mb=args.boot_mem, cpus=args.boot_cpus)
     try:
         ok, ran = walk(driver, steps,
                        overrides={"args.user": args.user, "args.password": args.password},
                        start_at=args.start_at, stop_before=args.stop_before,
-                       ssh_port=args.ssh_port)
+                       ssh_port=args.ssh_port, session=session)
     except StepError as exc:
         # A STEP THAT FAILED IS A VERDICT, NOT A TRACEBACK.
         #

@@ -390,9 +390,21 @@ def main(argv: list[str]) -> int:
         # may want it. Nothing in this stage calls it now.
         return 0
     finally:
-        # ACPI FIRST, SO THE DISK IS CLOSED RATHER THAN KILLED. Logging in and turning Remote
-        # Login on both wrote to it, and the publish step compresses what this leaves behind.
-        guest.stop(acpi_first=ok)
+        # TWO MODES, AND WHICH ONE APPLIES IS DECIDED BY WHERE THE WRITES GO.
+        #
+        # WITH --overlay the guest writes to a throwaway child of a read-only parent, so it is
+        # KILLED: a power-off destroys nothing anybody keeps, and both polite paths have failure
+        # modes here (macOS ignores an ACPI power button; `shutdown -h now` can simply not finish
+        # inside any timeout). The overlay is then flattened into the artifact, which is the only
+        # thing that has to survive.
+        #
+        # WITHOUT it the guest owns the real disk, and every write has to reach it cleanly - so
+        # ACPI first, so the disk is CLOSED rather than killed. That is what the publish step
+        # compresses.
+        if run_overlay is not None:
+            guest.stop(acpi_first=False)
+        else:
+            guest.stop(acpi_first=ok)
         snap.terminate()
         try:
             snap.wait(timeout=5)
