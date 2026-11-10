@@ -117,6 +117,20 @@ steps:
     terminal_wait: 0
     settle: 5
 
+  # ENABLED AND RUNNING ARE TWO FACTS, AND ONLY ONE OF THEM SURVIVES A REBOOT.
+  #
+  # `is-active` above is answered by the process `restart` just started - it says nothing about
+  # whether the boot will start one. That distinction is what published a cachyos disk whose ssh
+  # stage had proved `id -un` over port 22 and which then booted with NOTHING on port 22.
+  #
+  # `is-enabled` READS THE SYMLINK systemd would follow at boot, which is the only fact here that
+  # outlives the process. `list-unit-files` prints the state beside the unit's own name, so a
+  # failed enable is visible in the recording rather than inferred from a refused port later.
+  - name: prove sshd will start at boot
+    run: systemctl is-enabled sshd; systemctl list-unit-files sshd.service | tail -2
+    terminal_wait: 0
+    settle: 8
+
   # THE SECOND HALF, FOR THE SYSTEMS WHERE THE FIRST COULD NOT RUN AS ROOT. `sudo -S` is what
   # a Debian/Fedora/Arch/suse desktop needs; FreeBSD has no sudo, and NixOS' rebuild must run
   # as root by design. This step is `optional` so on a disk where the first one worked its only
