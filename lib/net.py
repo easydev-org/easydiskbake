@@ -184,8 +184,32 @@ def up(*, ssh_port: int = 2222, rdp_port: int = 3389,
     # DHCP AND DNS, from one dnsmasq bound to the bridge. `--dhcp-range=A,A` is a single
     # address: this is not a shared LAN, it is one guest, and a range would hand the same
     # address to anything else that asked.
-    _sh("pkill -x dnsmasq")
-    time.sleep(1)
+    # ONLY WHEN IT IS NOT ALREADY OURS. `pkill -x dnsmasq` on every call is what made this
+    # function NOT idempotent in the one way that matters, and it cost two macOS clean runs.
+    #
+    # `up()` says "Idempotent: a second call reuses what is there", and for the link, the tap and
+    # the rules that is true. DHCP is not: killing dnsmasq drops every lease it handed out, and a
+    # guest that has already booted has no way to ask again until its next renew - by which time
+    # the wait for sshd has given up with
+    #
+    #     ssh: connect to host 172.30.0.1 port 2222: No route to host
+    #
+    # which is the HOST's routing refusing because the guest holds no address on the tap.
+    #
+    # Run 42890005370 shows it happening: `net.up()` ran at 20:03:55 (clean_step's own call) and
+    # again at 20:04:03 (vm_session.start's), eight seconds apart, and the guest never appeared.
+    # Its own screenshot is a fully booted login window - vmuser, the clock, the menu bar, a WiFi
+    # icon - on a machine whose network had just been taken away.
+    #
+    # SO: if a dnsmasq of ours is already running against this bridge, leave it alone. The config
+    # below is written every time either way, so a changed MTU or range still takes effect on the
+    # next real restart.
+    already = _sh("pgrep -x dnsmasq").returncode == 0
+    if already:
+        log("dnsmasq is already running; leaving the leases alone")
+    else:
+        _sh("pkill -x dnsmasq")
+        time.sleep(1)
     # NO MAC BINDING. The first version of this pinned the lease to GUEST_MAC, and every
     # stage afterwards handed the guest a DIFFERENT MAC - OpenCore generates the identity per
     # work directory, and `machine.shape()` passes it to the NIC - so dnsmasq logged

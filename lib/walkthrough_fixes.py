@@ -793,6 +793,26 @@ def main() -> int:
           "boot_options: dict | None = None):" in vm_src_sig
           and "boot_options=boot_options)" in vm_src_sig)
 
+    # AND `net.up()` DOES NOT KILL A DHCP SERVER THAT IS ALREADY SERVING.
+    #
+    # It said "idempotent" and was not, in the one way that costs a guest its address: every call
+    # ran `pkill -x dnsmasq` and started a new one, dropping every lease. A guest that had already
+    # booted cannot ask again until its next renew, so it sits at a login window with no network
+    # while the stage waits 900 seconds for sshd and reports
+    #
+    #     ssh: connect to host 172.30.0.1 port 2222: No route to host
+    #
+    # Run 42890005370 is the measurement: net.up() ran twice, eight seconds apart - clean_step's
+    # own call and vm_session.start's - and the guest never appeared. Its screenshot is a fully
+    # booted login window (vmuser, the clock, a WiFi icon) on a machine whose DHCP server had just
+    # been restarted underneath it.
+    net_src = read("lib/net.py")
+    body = net_src[net_src.index("def up("):]
+    body = body[:body.index("def down(")]
+    check("the bridge does not restart DHCP on every call", "lib/net.py",
+          'already = _sh("pgrep -x dnsmasq").returncode == 0' in body
+          and "if already:" in body)
+
     # AND THE SHARE STARTS AFTER THE BRIDGE IT BINDS TO. smbd's `interfaces` line names
     # net.BRIDGE_IP, and net.up() is what creates that address - so a share started first
     # listens on nothing and reports "smbd DID NOT BIND 172.30.0.1:445 IN 10s" while samba's own
