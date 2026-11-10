@@ -124,12 +124,18 @@ def _note_signals() -> None:
     import signal
 
     def explain(number, frame):
-        del frame
         try:
             name = signal.Signals(number).name
         except ValueError:
             name = str(number)
         print(f"=== SIGNALLED: {name} ({number}) ===", flush=True)
+        # AND WHERE. A signal is delivered between bytecodes, so the frame that was running is
+        # the code that was interrupted - which is the one fact that turns "something killed us"
+        # into "we were here when it happened".
+        import traceback
+        print("=== the stack when it arrived ===", flush=True)
+        traceback.print_stack(frame)
+        print("=== end of stack ===", flush=True)
         raise SystemExit(128 + number)
 
     for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
