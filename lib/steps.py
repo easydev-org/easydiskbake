@@ -1522,14 +1522,16 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
             # open for `hold` seconds precisely because of this - and the command arrived as
             # `export DEBIAN_FRONTEND+NONINTERACTIVE: APT_GET UPDATE`. 40 ms leaves room for
             # the chord AND the character, and a 130-character line is still five seconds.
-            # `type_gap` IS A MEASURED NUMBER PER FAMILY, NOT A PREFERENCE. 40 ms is the floor
-            # for a POSIX shell (lib/keys.type_text explains). A Windows guest's PSReadLine
-            # redraws the line it is editing on every keystroke and coalesces them below about
-            # 150 ms - measured on run 41997580476, where `winget install` arrived as
-            # `get install`: the w, the `in` and the tail were dropped, the prompt came back,
-            # and the machine correctly reported that OpenSSH was not installed.
+            # `type_gap` IS A MEASURED NUMBER PER FAMILY, NOT A PREFERENCE, AND THE DEFAULT IS
+            # THE ONE THAT WAS ALREADY HERE.
+            #
+            # It was 0.02 - the value every existing `run:` step has been timing against, in the
+            # macOS setup, desktop and ssh walkthroughs as well as the Linux ones - and this
+            # change found itself rewriting it to 0.04 on the way past, which silently doubles
+            # the typing time of steps that were not being changed. A Windows guest needs 0.15
+            # and says so with an explicit `type_gap`; nothing else asked for slower.
             unsupported = keys.type_text(
-                driver.q, line, per_char=float(step.get("type_gap", 0.04)))
+                driver.q, line, per_char=float(step.get("type_gap", 0.02)))
             if unsupported:
                 log(f"  COULD NOT TYPE {unsupported!r} on line {index + 1}")
             driver.qmpmod.key(driver.q, "ret")
