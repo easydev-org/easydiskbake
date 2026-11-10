@@ -465,10 +465,20 @@ def run_bake(bakery: Bakery, args) -> int:
         if ready:
             walk_path = os.path.join(REPO, "linux", bakery.name, "steps", "install.yaml")
             log(bakery.name, f"=== the walk: {os.path.basename(walk_path)} ===")
+            # THE FIRST WALK STOPS WHERE THE SECOND ONE BEGINS.
+            #
+            # `second_boot` names a step in THIS SAME FILE, and the two halves are one document
+            # whose second half runs on a different machine (see linux/fedora-workstation/steps/
+            # install.yaml's header). Without `stop_before` the first walk runs straight into
+            # `first boot` on the LIVE medium - where the wizard does not exist - fails there,
+            # and `ok` is False, so the second boot never happens. Measured on run e242215:
+            # `the walkthrough failed after 10 step(s)` and the `first boot` step polling a
+            # blank screen for 900 s.
             ok, ran = steps.run_file(
                 walk_path, guest.paths.drive, work=work,
                 user=args.user, password=args.password,
                 disk_path=disk,
+                stop_before=bakery.second_boot or "",
             )
             log(bakery.name,
                 f"{len(ran)} step(s) ran" if ok
