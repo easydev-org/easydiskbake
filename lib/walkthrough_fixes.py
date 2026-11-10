@@ -316,6 +316,19 @@ def main() -> int:
         # a writer; without a timeout the job is killed and the log simply stops.
         check("a disk read cannot hang forever", "lib/smoke.py",
               "timeout=120" in read("lib/smoke.py"))
+        # AND stop() MUST NEVER SIGNAL ITS OWN CALLER. Run 42766989537 printed
+        # `=== SIGNALLED: SIGTERM (15) ===` two milliseconds after `the guest powered off` - the
+        # exact moment stop() runs - and the only signal this module sends is the one in stop().
+        # A pidfile is supposed to make that impossible; this makes it survivable.
+        hostshare_src = read("lib/hostshare.py")
+        check("stop never signals itself, its parent, or init", "lib/hostshare.py",
+              "os.getpid(), os.getppid(), 1" in hostshare_src)
+        # AND THE PID IS PROVEN TO BE AN smbd BEFORE IT IS WRITTEN DOWN.
+        check("the recorded pid is checked against our own", "lib/hostshare.py",
+              "REFUSING TO RECORD OUR OWN PID" in hostshare_src)
+        # AND THE SIGNAL NAMES ITSELF, so the next occurrence is not a decode exercise.
+        check("a signal is reported by name", "macos/15/share.py",
+              "SIGNALLED:" in read("macos/15/share.py"))
         # AND EVERY STAGE THAT OWNS A GUEST GOES THROUGH THE ONE STOP, so a new stage cannot
         # inherit the sixty-second kill.
         for path in ("macos/15/share.py", "macos/15/dev.py", "lib/clean_step.py"):

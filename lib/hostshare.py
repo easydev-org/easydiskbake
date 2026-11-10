@@ -403,6 +403,19 @@ def _record_pid() -> None:
     except (OSError, ValueError):
         return
     if not pids:
+        log("  (no smbd pid recorded; stop() will have nothing to kill)")
+        return
+    # SAY WHOSE PID IT IS AND WHAT IT LOOKS LIKE, because stop() sends it a signal and a wrong
+    # pid is a process this module did not start. Run 42766989537 died with `SIGNALLED: SIGTERM`
+    # two milliseconds after `the guest powered off` - which is the moment stop() runs.
+    try:
+        with open(f"/proc/{pids[0]}/cmdline", "rb") as fh:
+            looks_like = fh.read().replace(b"\0", b" ").decode(errors="replace")[:120]
+    except OSError:
+        looks_like = "<gone>"
+    log(f"  smbd pid {pids[0]}: {looks_like}")
+    if pids[0] == os.getpid():
+        log("=== REFUSING TO RECORD OUR OWN PID AS smbd ===")
         return
     with open(PID_PATH, "w") as fh:
         fh.write(str(pids[0]))
@@ -425,6 +438,20 @@ def stop() -> None:
         with open(PID_PATH) as fh:
             pid = int(fh.read().strip())
     except (OSError, ValueError):
+        return
+    # NEVER SIGNAL OURSELVES OR OUR PARENT.
+    #
+    # Run 42766989537 reported `=== SIGNALLED: SIGTERM (15) ===` two milliseconds after
+    # `the guest powered off`. That is the moment stop() runs, and the only signal this module
+    # sends is the one below - so if the pid it read was wrong, the process it killed was its own
+    # caller. A pidfile is supposed to make that impossible; this makes it survivable whether or
+    # not the pidfile is right.
+    if pid in (os.getpid(), os.getppid(), 1):
+        log(f"  refusing to signal pid {pid}: it is this process, its parent, or init")
+        try:
+            os.unlink(PID_PATH)
+        except OSError:
+            pass
         return
     for signal_number in (15, 9):
         try:
