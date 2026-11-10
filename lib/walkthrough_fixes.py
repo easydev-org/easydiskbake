@@ -164,6 +164,28 @@ def main() -> int:
     check("the desktop stage boots through its file", "macos/15/desktop.py",
           "MachineSession(" in desktop_src and "args.shutdown" in desktop_src)
 
+    # AND THE SETUP STAGE, WHICH IS THE LAST OF THE FOUR. Its boot carries one extra thing the
+    # others do not: the recovery image ON A USB DEVICE, because macOS installs FROM removable
+    # media and the disk it installs TO is not the disk it boots FROM.
+    setup_walk = load_yaml("macos/15/steps/setup.yaml")
+    setup_names = [s.get("name") for s in (setup_walk.get("steps") or [])]
+    check("the setup stage boots its own machine", "macos/15/steps/setup.yaml",
+          setup_names and setup_names[0] == "boot the recovery image")
+    check("the setup stage stops its own machine", "macos/15/steps/setup.yaml",
+          setup_names and setup_names[-1] == "stop the machine")
+    bake_src = read("macos/15/bake.py")
+    check("the setup stage passes the recovery image to the boot", "macos/15/bake.py",
+          '"recovery": recovery' in bake_src)
+    check("the setup stage does not start qemu itself", "macos/15/bake.py",
+          "vm.Guest(" not in bake_src and "machine.make_guest" not in bake_src)
+    check("the setup stage does not wait for the wizard twice", "macos/15/bake.py",
+          "def wait_for_assistant" not in bake_src)
+    # AND THE RECOVERY IMAGE IS AN OPTION, NOT WHAT EVERY macOS GUEST GETS. An extra USB disk is
+    # one more row in Disk Utility, and the erase step chooses its target by CAPACITY.
+    vm_sess2 = read("lib/vm_session.py")
+    check("the recovery image is a boot option", "lib/vm_session.py",
+          'recovery = (boot_options or {}).get("recovery") or ""' in vm_sess2)
+
     gates = seq.get("waits_for") or []
     check("waits_for lists the panes, so a resumed disk is not stuck",
           "macos/15/steps/sequoia.yaml", len(gates) >= 10)

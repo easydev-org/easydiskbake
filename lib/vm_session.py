@@ -371,6 +371,20 @@ def _start_machine(family: str, disk: str, work: str, ssh_port: int, cpus: int,
             macos_recovery.fetch_published("15", work)
             log("=== OpenCore, firmware, APFS driver ===")
             assets = opencore.build("15", work)
+
+        # THE RECOVERY IMAGE AS A USB DEVICE, WHICH IS ONLY THE SETUP STAGE.
+        #
+        # macOS installs FROM removable media - the disk it installs TO is not the disk it boots
+        # FROM - so the setup stage hands the guest the recovery image on a usb-storage device.
+        # Every later stage boots a system that is already installed and has no recovery volume
+        # at all, which is why this is a boot option and not part of what a macOS guest always
+        # is: an extra USB disk is one more thing the guest can pick in Disk Utility, and
+        # `choose the target disk by capacity` reads the sidebar.
+        recovery = (boot_options or {}).get("recovery") or ""
+        if recovery and not os.path.isfile(recovery):
+            log(f"=== NO RECOVERY IMAGE AT {recovery} ===")
+            return None
+
         shape = machine.shape(assets, cpus=cpus, mem_mb=mem_mb or 8192)
         shape.ssh_port = ssh_port
         shape.qga_socket = qga_socket
@@ -398,7 +412,13 @@ def _start_machine(family: str, disk: str, work: str, ssh_port: int, cpus: int,
                            else machine.TARGET_DRIVE_PLAIN).format(disk=disk),
                 "-device", "virtio-blk-pci,drive=target,bootindex=1",
                 "-device", f"isa-applesmc,osk={machine.OSK_PLAIN}",
-            ],
+            ] + ([
+                # THE INSTALLER, ON A USB DEVICE, WHEN THE CALLER ASKED FOR ONE. No bootindex:
+                # usb-storage has none, and the firmware must never boot it - OpenCore hands
+                # over to it only after the boot image has run.
+                "-drive", f"file={recovery},media=disk,if=none,id=rec,readonly=on",
+                "-device", "usb-storage,bus=xhci.0,drive=rec",
+            ] if recovery else []),
             shape=shape,
             stdout=os.path.join(work, "console.log"),
         ).start()

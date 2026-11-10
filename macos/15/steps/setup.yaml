@@ -56,8 +56,33 @@ vars:
     default: main
   expected_gb:
     default: "68"
+  # THE SHUTDOWN METHOD, AS IN THE OTHER macOS FILES. This stage owns the real disk it is
+  # writing to - there is no published artifact to flatten an overlay into - so the default is
+  # the careful one: `ssh` is not available (nothing in recovery answers ssh), so the agent or
+  # the power button are the only graceful routes, and the stage passes `acpi`.
+  #
+  # THE REASON IT IS A VAR AND NOT A LITERAL is the same as everywhere else: how the run was
+  # started is not a fact about the screen.
+  shutdown:
+    from: args.shutdown
+    default: acpi
 
 steps:
+  # =======================================================================================
+  # 0. THE MACHINE: OPENCORE, THE TARGET, AND THE INSTALLER AS A USB DEVICE
+  # =======================================================================================
+  #
+  # THIS STAGE STARTED QEMU ITSELF until now, with macos/15/machine.py's make_guest() - the
+  # eleven parameters that took eight runs to get right. Those are lib/vm_session.py's now,
+  # which is the same module every other macOS stage boots through, and the ONE thing this
+  # stage adds is passed as an option: the recovery image on a USB device.
+  #
+  # NO `requires:` - a recovery image is not a capability of a running guest, it is an input
+  # this stage was given, and `boot:` is the step that reads it.
+  - name: boot the recovery image
+    boot: true
+    family: macos
+    timeout: 900
   # =======================================================================================
   # 1. THE RECOVERY MENU, WHICH IS DRAWN - NOT LOADED
   # =======================================================================================
@@ -322,3 +347,19 @@ steps:
       - [sign, in, with, your, apple, id]
     timeout: 7200
     poll: 20
+
+  # =======================================================================================
+  # 5. THE MACHINE IS STOPPED BY THE FILE THAT STARTED IT
+  # =======================================================================================
+  #
+  # ACPI, BECAUSE THERE IS NO OTHER GRACEFUL ROUTE HERE. macOS answers the power button with
+  # the Restart/Sleep/Cancel/Shut Down dialog and waits for a click - which is why no later
+  # stage uses this method - but this stage's guest is a recovery environment with no sshd and
+  # no agent, and the disk it has just finished writing is one the very next stage boots. The
+  # alternative is a kill in the middle of the installer's own final writes, which is what
+  # produces a disk that has to repair itself on first boot.
+  #
+  # THE STAGE PASSES `acpi`; the default here is the same. See `vars:` above.
+  - name: stop the machine
+    shutdown: "{{ shutdown }}"
+    timeout: 300

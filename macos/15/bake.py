@@ -52,9 +52,11 @@ sys.path.insert(0, os.path.join(REPO, "lib"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import compress  # noqa: E402
-import assistant  # noqa: E402
+# `import assistant` AND `import machine` WENT WITH THE TWO FUNCTIONS THEY SERVED.
+# assistant's phrase list is the file's `until_any` now (macos/15/steps/setup.yaml), and the
+# machine is lib/vm_session.py's. Both modules are still in the tree and still used - by the
+# desktop stage's `waits_for` and by every macOS guest this repository starts.
 import live as livelib  # noqa: E402
-import machine  # noqa: E402
 import images  # noqa: E402
 import macos_recovery  # noqa: E402
 import opencore  # noqa: E402
@@ -118,9 +120,9 @@ def parse(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--user", default=os.environ.get("MACOS_USER", "docker"))
     p.add_argument("--password", default=os.environ.get("MACOS_PASSWORD", "admin"))
     p.add_argument("--steps", default="",
-                   help="drive the installer from this YAML walkthrough instead of "
-                        "install.py's own sequence. The machine, the recording and the "
-                        "publish are unchanged - only the walk is data. See lib/steps.py.")
+                   help="the installation walkthrough; macos/15/steps/setup.yaml. Required: "
+                        "the file is the driver, and install.py is kept only as the table of "
+                        "measurements it was written from.")
     p.add_argument("--keep-work", action="store_true")
     return p.parse_args(argv)
 
@@ -179,17 +181,23 @@ class Baker:
         compress.run("create", "-f", "qcow2", self.disk, self.args.disk_size)
         log(f"disk created: {self.args.disk_size}")
 
-        # THE MACHINE AND ITS DISKS COME FROM macos/15/machine.py.
+        # THE MACHINE IS STARTED BY THE FILE'S `boot:` STEP, NOT HERE.
         #
-        # Eleven parameters that took eight runs to get right, and macos/15/probe.py has
-        # to build the same machine or it measures a different one. The reasoning for
-        # each field is in that module, next to the field.
-        guest = machine.make_guest(
-            self.work, assets, self.disk, recovery,
-            cpus=self.args.cpus, mem_mb=self.args.mem,
-        ).start()
-        # KEPT SO A YAML WALK CAN BE HANDED THE SAME SOCKET. See guest_paths().
-        self._guest = guest
+        # macos/15/steps/setup.yaml's first step boots it, through lib/vm_session.py - the same
+        # module the other three macOS stages use - and the ONE thing this stage adds travels as
+        # an option: the recovery image on a USB device (`recovery`), because this is the only
+        # stage that installs rather than boots an installed system.
+        #
+        # THE RECORDING STILL STARTS FIRST, and it has to: the frames are what every failure in
+        # this stage is diagnosed from, and a recorder that connects after the machine is up
+        # misses the recovery menu. So the sampler is a process this stage owns, pointed at the
+        # socket the machine will create - lib/snapshots.py waits for it to appear.
+        self.boot_options = {
+            "assets": assets,
+            "recovery": recovery,
+            "cpus": self.args.cpus,
+            "mem_mb": self.args.mem,
+        }
 
         shots = os.path.join(self.frames, "shots")
         os.makedirs(shots, exist_ok=True)
@@ -197,7 +205,7 @@ class Baker:
         if not os.path.exists(snapscript):
             raise SystemExit(f"snapshots.py is not at {snapscript}; the layout changed")
         snap = subprocess.Popen(
-            [sys.executable, snapscript, guest.paths.record, shots,
+            [sys.executable, snapscript, vm.Paths(self.work).record, shots,
              os.environ.get("SNAPSHOT_INTERVAL", "1")],
             stdout=open(os.path.join(shots, "snapshots.log"), "wb"),
             stderr=subprocess.STDOUT,
@@ -233,41 +241,23 @@ class Baker:
         # unchanged for 180s" - and the disk it left boots to the Setup Assistant on its
         # own. That is exactly what a setup stage should hand over.
         installed = False
-        # DECLARED BEFORE THE TRY so an exception cannot turn a boot problem into a
-        # NameError in the finally block, and so the compression step below can tell
-        # "reached the wizard" from "did not".
-        arrived = False
         try:
-            installed = self.run_installer(guest)
+            # THE FILE'S LAST STEP IS THE ARRIVAL WAIT (`until_any` on the Setup Assistant's
+            # five first pages), so `installed` here already means "the walkthrough said the
+            # wizard is on screen". Two facts that used to be separate calls are one now, and
+            # the second cannot disagree with the first because there is no second.
+            installed = self.run_installer(None)
             if installed:
                 log("=== the installation is complete ===")
-                # AND THE WIZARD IS ON SCREEN, WHICH IS THE PROOF THE DISK BOOTS.
-                #
-                # "install.py exited 0" says the clicks landed and the copy finished. It
-                # does not say the machine can start what it wrote - and a disk that
-                # installs without booting is not a system image. Run 41606493103's
-                # recording ends on the wizard's first page:
-                #
-                #     Select Your Country or Region
-                #     Afghanistan / Aland Islands / Albania / ...
-                #
-                # so the stage now waits for that page and calls it arrival. lib/assistant
-                # reads the title with tesseract - the same tool and the same --psm 3 the
-                # Windows stage uses - because the phrase is wizard-only and a pixel test
-                # cannot tell this light page from any other light page.
-                log("waiting for the Setup Assistant to appear")
-                arrived = self.wait_for_assistant(guest, shots)
-                if not arrived:
-                    log("=== THE WIZARD NEVER APPEARED ===")
-                    log("  the installation reported success but the machine did not boot")
-                    log("  into it; no disk is published")
+                log("  the disk boots into the Setup Assistant; that is what makes it a system")
         finally:
-            # ACPI ONLY WHEN THERE IS A SYSTEM TO FLUSH. With the wizard on screen the
-            # machine is booted into the installed system, so it is asked to shut down
-            # and what it wrote reaches the disk. A run that never got there is stopped
-            # abruptly: a machine mid-reboot does not answer the power request and the
-            # sixty-second timeout is longer than the disk is worth.
-            guest.stop(acpi_first=arrived)
+            # THE WALKTHROUGH STOPPED THE MACHINE, AND THAT IS THE ONLY STOP HERE.
+            #
+            # `shutdown: "{{ shutdown }}"` is setup.yaml's last step and the stage passes `acpi`
+            # for it: this guest is a recovery environment with no sshd and no agent, so the
+            # power button is the only graceful route it has, and a kill in the middle of the
+            # installer's own final writes is what produces a disk that repairs itself on first
+            # boot. run_file stops the guest itself if the file fails before reaching it.
             snap.terminate()
             try:
                 snap.wait(timeout=5)
@@ -284,41 +274,20 @@ class Baker:
         else:
             log("recording: nothing was encoded")
 
+        # THE ONE GATE: THE WALKTHROUGH GOT TO THE WIZARD.
+        #
+        # `installed` used to be "install.py exited 0" and `arrived` was a separate wait whose
+        # answer could disagree with it. The file's last step waits for the wizard's own first
+        # page, so "the walk finished" and "the machine booted into what it wrote" are the same
+        # statement now - and a disk that installs without booting cannot pass it.
         if not installed:
             log("=== THE INSTALLER SEQUENCE DID NOT COMPLETE ===")
+            log("  the wizard never appeared, so nothing was written to the disk's own boot")
+            log("  path or the firmware could not pick it; no artifact is produced from a disk")
+            log("  that only installs")
             self.tail(os.path.join(self.work, "console.log"))
             return False
 
-        # BOTH HALVES ARE REQUIRED: the install finished AND the machine booted into it.
-        #
-        # `installed` alone was the earlier claim, and it is a weaker one - it says the
-        # clicks landed and the copy completed, not that what was written can start. The
-        # wizard on screen is that proof, and it is what makes this a system image rather
-        # than a disk with a macOS on it.
-        if not arrived:
-            log("=== THE INSTALL COMPLETED BUT THE DISK DID NOT BOOT ===")
-            log("  nothing was written to the disk's own boot path, or the firmware")
-            log("  could not pick it; no artifact is produced from a disk that only")
-            log("  installs")
-            return False
-
-        # A STATIC CHECK CANNOT OUTVOTE A MACHINE THAT HAS ALREADY BOOTED THE DISK.
-        #
-        # run 41660619717 installed macOS to completion and the guest REBOOTED INTO IT -
-        # the Setup Assistant's country list was on screen and lib/assistant read it - and
-        # then this check said:
-        #
-        #     [disk] GPT protective MBR found
-        #     [disk] no APFS partition in the GPT - macOS did not install
-        #     === THE DISK WILL NOT BOOT ===
-        #
-        # and the artifact was thrown away. Those two statements cannot both be true: a
-        # disk with no APFS container does not reach the Setup Assistant. The wizard is
-        # not a hint about the disk, it is the disk running.
-        #
-        # So the check runs and its answer is recorded, but `arrived` - which required the
-        # guest to boot into the system - is what decides. The one thing this still
-        # refuses is a disk that did NOT arrive; that gate is above, unchanged.
         log("checking the disk holds an APFS system")
         if not smoke.check_disk(self.disk, root_fs="apfs"):
             log("  the static check disagrees with a guest that booted into the wizard")
@@ -334,223 +303,74 @@ class Baker:
         return True
 
     def _run_steps(self) -> bool:
-        """The same stage, with the walk read from YAML instead of from install.py.
+        """The installation walk, from the file.
 
-        EVERYTHING OUTSIDE THE WALK IS UNCHANGED: the machine, the recovery image as a USB
-        device, the frames, the recording, the publish. `lib/steps.py` drives the same screen
-        with the same measured coordinates; the difference is where the sequence is written.
+        THE MACHINE IS THE FILE'S NOW. `boot:` starts it (macos/15/steps/setup.yaml, with the
+        recovery image passed through MachineSession's boot_options), so this function no longer
+        needs a guest handle - it needs a SESSION, which is the object that carries the guest
+        from the boot step to the shutdown step.
 
-        THE CONNECTION IS NOT RE-OPENED. qemu's -qmp unix:...,server=on,wait=off accepts one
-        client, and the bake's own QMP client (in `guest`) may already hold it - see
-        macos/15/install.py's Recovery(q=...) note. steps.run_file opens its own, so the guest
-        handle here is only used for the path.
+        THE WALK ASKS FOR THE WIZARD'S ARRIVAL ITSELF (`until_any` on the Setup Assistant's five
+        first pages), so `wait_for_assistant` is not run twice: the file's last step IS that
+        wait.
         """
         import steps
 
         log(f"=== installation: steps {os.path.basename(self.args.steps)} ===")
+        session = steps.MachineSession(
+            self.args.release, self.disk, self.work,
+            # NO SHARE: nothing in a recovery environment mounts one.
+            share="",
+            cpus=self.args.cpus, mem_mb=self.args.mem,
+            # THE DISK IS THIS STAGE'S TO WRITE. There is no base to protect - the disk was
+            # created a few steps above - so an overlay would be a diff that nobody flattens.
+            boot_options=dict(self.boot_options, copy=False))
         ok, ran = steps.run_file(
-            self.args.steps, self.guest_paths().drive,
-            work=self.work, user=self.args.user, password=self.args.password,
+            self.args.steps, "", work=self.work,
+            user=self.args.user, password=self.args.password,
             disk_path=self.disk, release=self.args.release,
             # THE FRAME DIRECTORY THIS STAGE'S OWN SNAPSHOTTER WRITES, so a `python:` step that
             # asks install.py "has the wizard appeared" is asking about these frames and not a
             # directory it guessed. bake.py sets shots = frames/shots below, and
             # installer_panes() reads exactly that.
-            frames=self.frames,
+            frames=self.frames, session=session,
+            extra_vars={"args.shutdown": "acpi"},
         )
         log(f"{len(ran)} step(s) answered" if ok
             else f"the walkthrough failed after {len(ran)} step(s)")
         return ok
 
-    def guest_paths(self):
-        """The running guest's socket paths.
+    def run_installer(self, guest=None) -> bool:
+        """The installation, from macos/15/steps/setup.yaml. THERE IS NO OTHER DRIVER.
 
-        SET BY run(), NOT BY __init__, because the guest does not exist until the machine is
-        built - and a `--steps` walk needs its QMP socket while install.py's sequence is given
-        the same path as an argument. Keeping the handle means the two paths cannot drift.
+        macos/15/install.py IS STILL IN THE TREE AND IS NO LONGER A DRIVER THIS STAGE RUNS. It
+        is where every coordinate in setup.yaml was measured - 1732 lines of what the recovery
+        menu, Disk Utility and the installer look like - and it is the reference the YAML was
+        written from. Two drivers for one outcome is what made run 42280638394 impossible to
+        diagnose in the desktop stage, and the same argument applies here one stage earlier.
+
+        THE `guest` ARGUMENT IS GONE FROM THE CALL AND KEPT IN THE SIGNATURE for the callers that
+        still pass None; the machine belongs to the walkthrough now, so there is no handle to
+        hand in.
         """
-        if not getattr(self, "_guest", None):
-            raise SystemExit("no guest: run() has not started one")
-        return self._guest.paths
+        if not self.args.steps:
+            raise SystemExit(
+                "--steps is required: the installation is macos/15/steps/setup.yaml. "
+                "macos/15/install.py is kept as the table of measurements it was written from "
+                "and is not a driver this stage runs.")
+        return self._run_steps()
 
-    def run_installer(self, guest: vm.Guest) -> bool:
-        """Recovery -> the reboot into the installed system, via macos/15/install.py.
-
-        THE EXIT CODE IS THE RESULT. install.py returns non-zero when it gave up - a
-        black screen that outlasted its patience, or an installer that never rebooted -
-        and the first version ignored that: it treated "the script exited" as "the
-        installation finished" and handed a black screen to the Setup Assistant driver.
-        """
-        if self.args.steps:
-            return self._run_steps()
-
-        script = os.path.join(HERE, "install.py")
-        log(f"=== installation: {os.path.basename(script)} ===")
-        # A thread because the guest must keep running while the sequence plays out,
-        # and because a crash in the driver has to surface rather than hang a 90-minute
-        # job. The timeout is the bake's own; install.py has its own patience inside it.
-        result: dict[str, object] = {}
-
-        def drive() -> None:
-            # THE DRIVER'S OUTPUT IS FORWARDED AS IT ARRIVES, NOT COLLECTED.
-            #
-            # capture_output=True waits for the process to exit before handing anything
-            # back, so a forty-minute sequence produced a log containing one line:
-            #
-            #     === installation: install.py ===
-            #
-            # and nothing else until it finished. Run 41564236483 sat like that for ten
-            # minutes and looked hung; whether it was, nobody could tell.
-            #
-            # Popen with a reader thread keeps the diagnosis and loses the silence. Every
-            # line is prefixed [install], so it is distinguishable from the baker's own.
-            # NOT a new local: the outer result is what the caller reads.
-            result["stdout"] = []
-            result["stderr"] = []
-            try:
-                proc = subprocess.Popen(
-                    [sys.executable, "-u", script,
-                     "--qmp", guest.paths.drive, "--frames", self.frames,
-                     # The disk is what tells "copying" from "hung" while the screen is
-                     # black. Passed here because only the baker knows the path.
-                     "--disk", self.disk],
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    text=True, bufsize=1,
-                )
-            except OSError as exc:
-                result["ok"] = False
-                result["error"] = str(exc)
-                return
-
-            def pump(stream, key: str, prefix: str) -> None:
-                try:
-                    for line in stream:
-                        line = line.rstrip("\n")
-                        if not line:
-                            continue
-                        log(f"{prefix} [install] {line}")
-                        result[key].append(line)  # type: ignore[union-attr]
-                except (OSError, ValueError):
-                    pass
-
-            readers = [
-                threading.Thread(target=pump, args=(proc.stdout, "stdout", " "),
-                                 daemon=True),
-                threading.Thread(target=pump, args=(proc.stderr, "stderr", "!"),
-                                 daemon=True),
-            ]
-            for reader in readers:
-                reader.start()
-            code = proc.wait()
-            for reader in readers:
-                reader.join(timeout=10)
-
-            if code != 0:
-                result["ok"] = False
-                result["error"] = f"exit status {code}"
-            else:
-                result["ok"] = True
-
-        thread = threading.Thread(target=drive, daemon=True)
-        thread.start()
-
-        deadline = time.time() + self.args.timeout
-        while thread.is_alive() and time.time() < deadline:
-            if not guest.alive():
-                log("qemu exited during installation")
-                return False
-            time.sleep(15)
-
-        thread.join(timeout=30)
-        if thread.is_alive():
-            log(f"the installer driver did not finish within {self.args.timeout}s")
-            return False
-        if not result.get("ok"):
-            log(f"the installer driver failed: {result.get('error')}")
-            passthrough = str(result.get("stdout") or "")
-            for line in passthrough.splitlines()[-20:]:
-                log(f"  [install] {line}")
-            errors = str(result.get("stderr") or "")
-            for line in errors.splitlines()[-20:]:
-                log(f"  [install:stderr] {line}")
-            log("the Setup Assistant is NOT started: clicking a screen the installer "
-                "never reached is how the previous run spent an hour on black frames")
-            return False
-
-        log("installation sequence complete")
-        return True
-
-    def wait_for_assistant(self, guest: vm.Guest, shots: str) -> bool:
-        """Wait until the Setup Assistant's first page is on screen.
-
-        THE INSTALLER REBOOTS INTO THE SYSTEM IT WROTE, and that reboot is what this
-        waits through. It is long: the machine restarts, OpenCore picks the new volume,
-        the kernel boots, and the wizard paints - run 41606493103 took eleven minutes
-        from "installation complete" to the wizard, most of it the reboot and the first
-        boot's setup.
-
-        WHY OCR AND NOT A PIXEL TEST. The wizard is a light page; so is a Finder window;
-        and the point of this check is to be evidence rather than a guess. lib/assistant
-        reads the title.
-        """
-        # THE INSTALLER ALREADY WAITED FOR THIS, AND THE FIRST CHECK IS NOT A FORMALITY.
-        #
-        # install.py ends its disk wait when the wizard appears, and it settles for thirty
-        # seconds there before returning. This function is the fallback for the case where
-        # it ended some other way - the disk settling without a readable wizard, or a run
-        # whose OCR could not read the frame it stopped on.
-        #
-        # So the first pass asks once and returns immediately if the answer is yes. The
-        # twenty-second settle this used to apply on top of install.py's thirty would make
-        # the published disk wait fifty seconds on a page that had already been confirmed,
-        # and a guest on the first Setup Assistant page is not going to change anything
-        # that matters in that time.
-        if assistant.reached_assistant(shots):
-            log("the Setup Assistant is on screen (already confirmed before the disk settle)")
-            return True
-
-        deadline = time.time() + self.args.wizard_timeout
-        started = time.time()
-        last_report = started
-
-        while time.time() < deadline:
-            if not guest.alive():
-                log("qemu exited before the wizard appeared")
-                return False
-            if assistant.reached_assistant(shots):
-                log(f"the Setup Assistant is on screen ({(time.time() - started):.0f}s)")
-                # Reached through the fallback, so it has NOT been settled yet.
-                settle = int(os.environ.get("ASSISTANT_SETTLE_SECONDS", "20"))
-                log(f"letting the guest settle for {settle}s")
-                time.sleep(settle)
-                if not guest.alive():
-                    log("the guest exited while settling - not keeping the disk")
-                    return False
-                return True
-
-            if time.time() - last_report >= 60:
-                last_report = time.time()
-                frames = 0
-                try:
-                    frames = len([f for f in os.listdir(shots) if f.startswith("frame-")])
-                except OSError:
-                    pass
-                log(f"waiting {time.time() - started:.0f}s for the wizard: {frames} frames")
-
-            time.sleep(10)
-
-        log(f"timed out after {self.args.wizard_timeout}s waiting for the wizard")
-        return False
-
-    def tail(self, path: str, lines: int = 30) -> None:
-        try:
-            with open(path, "rb") as fh:
-                text = fh.read().decode("utf-8", "replace")
-        except OSError:
-            log(f"(no console log at {path})")
-            return
-        for line in text.splitlines()[-lines:]:
-            print(f"[console] {line}", flush=True)
+# `wait_for_assistant` WAS HERE AND IS THE FILE'S LAST STEP NOW.
+#
+# It was a second wait for the same fact: install.py ended its disk watch when the wizard
+# appeared, and this ran a second loop over `assistant.reached_assistant` for the case where
+# the first ended some other way. `until_any` in macos/15/steps/setup.yaml IS that loop, with
+# the five phrases lib/assistant.py knows, and `run_installer` returning True now means the
+# walk reached it. Two waits for one fact is how a stage reports "the installation completed
+# but the disk did not boot" about a screen that was already the wizard.
+#
+# lib/assistant.py is still used - by the desktop stage's own `waits_for`, and by anything
+# else that wants the phrase list in one place.
 
 
 def main(argv: list[str]) -> int:
