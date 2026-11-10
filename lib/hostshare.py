@@ -149,6 +149,17 @@ def config_text(directory: str) -> str:
    state directory = {PRIVATE_DIR}
    cache directory = {PRIVATE_DIR}
    pid directory = {PRIVATE_DIR}
+   # AND THE PIPE DIRECTORY, WHICH smbd CREATES AT STARTUP AND smbpasswd NEVER TOUCHES.
+   #
+   # This is the one that only appears when smbd actually runs:
+   #
+   #     directory_create_or_exist: mkdir failed on directory /run/samba/ncalrpc
+   #     Failed to create pipe directory /run/samba/ncalrpc - No such file or directory
+   #
+   # run 42735185661, after the account had been created successfully - so the password step and
+   # the start step fail on DIFFERENT missing directories, and fixing the first only moves the
+   # error to the second.
+   ncalrpc dir = {PRIVATE_DIR}/ncalrpc
    map to guest = Never
    guest account = root
    # NTLMv2 only: the client blocks NTLMv1, and this server has no reason to offer it.
