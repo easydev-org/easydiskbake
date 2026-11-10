@@ -143,19 +143,16 @@ def start(family: str, disk: str, work: str, *, ssh_port: int = 2222,
 
     import session
 
-    # ANDROID HAS NO sshd TO WAIT FOR, AND WAITING FOR ONE IS NOT A SHORT DELAY - it is the
-    # whole boot_timeout spent on a port nothing will ever open. Android's remote access is
-    # adb on 5555, and what proves this guest is a painted desktop, which the caller reads
-    # from the screen. Returning `True` here says "the machine started", not "it answered on
-    # ssh" - and for the one family with no ssh that is the only honest answer available.
-    if family == "android":
-        log("android-x86: not waiting for sshd (there is none); the screen is the verdict")
-        return guest, True, run_overlay
-
+    # ONE PLACE DECIDES WHETHER TO WAIT, AND IT IS THE CALLER.
+    #
+    # `wait_for_ssh=False` is not a shortcut - it is a different contract: the machine is up
+    # when qemu is running, and whether an sshd answers inside it is a property of the DISK.
+    # A stage that installs an OS looks at a disk that has none yet; a stage that photographs
+    # an Android desktop is looking at a guest whose remote access is adb, not ssh.
+    #
+    # `require_ssh:` is the step that asks, so the wait lives in the walkthrough where it can
+    # be read, with its own timeout, instead of being hidden inside boot.
     if not wait_for_ssh:
-        # NOT A SHORTCUT - A DIFFERENT CONTRACT. The machine is up when qemu is running; whether
-        # an sshd answers inside it is a property of the DISK, and a stage that installs an OS is
-        # looking at a disk that has none yet. `require_ssh:` is the step that asks.
         log("not waiting for sshd; the walkthrough asks when it needs it")
         return guest, True, run_overlay
 
@@ -451,16 +448,6 @@ def stop(guest, *, acpi_first: bool = True, family: str = "", password: str = "a
         if overlay is not None:
             log("the guest is on an overlay; killing it rather than waiting for a shutdown")
             guest.stop(acpi_first=False)
-        elif family == "android":
-            # ANDROID-X86 HAS NO sshd AND NO GUEST AGENT, so two of the three ways to ask it
-            # to shut down do not exist. ACPI is tried with a SHORT timeout and then it is
-            # killed: the guest writes to a plain ext4 it created, ext4 journals, and a
-            # twenty-minute ACPI wait on a guest that ignores the power button is the one
-            # outcome this stage cannot afford.
-            log("android-x86: no sshd and no agent; ACPI briefly, then killing it")
-            maybe = getattr(guest, "stop", None)
-            if maybe:
-                guest.stop(acpi_first=True, acpi_timeout=90)
         else:
             done = False
             # 1. THE AGENT, IF THE MACHINE WAS STARTED WITH ONE.
@@ -474,6 +461,12 @@ def stop(guest, *, acpi_first: bool = True, family: str = "", password: str = "a
                     done = guest.shutdown_command(command.format(password=password),
                                                   STOP_TIMEOUT, password=password)
             # 3. THE POWER BUTTON, WHICH IS THE LAST RESORT AND NOT A GUARANTEE.
+            #
+            # AND FOR A GUEST WITH NO AGENT AND NO sshd - Android-x86 - THE WAIT IS SHORT.
+            # Nothing the first two paths would have used exists there, so ACPI is not a
+            # fallback but the only attempt, and a twenty-minute wait on a guest that ignores
+            # the power button is the one outcome a stage cannot afford. The guest writes to a
+            # plain ext4 it created and ext4 journals; a kill costs a journal replay, not a disk.
             if not done:
                 guest.stop(acpi_first=acpi_first, acpi_timeout=STOP_TIMEOUT)
     except Exception as exc:                                # noqa: BLE001

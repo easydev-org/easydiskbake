@@ -812,14 +812,20 @@ class MachineSession:
         # overlay. Booting it with copy=False is also honest about what this stage does - it
         # starts the extracted set and photographs it, and the /data it writes lives in `work`
         # exactly like every other family's overlay does.
+        #
+        # AND THERE IS NO SHARE. This guest mounts no smb filesystem - Android has no cifs
+        # client in its own initrd - so serving one would start an smbd nothing connects to.
+        # `share=""` is the documented value for "do not serve one"; None means ~/shared.
         android = (family or self.family) == "android"
-        if android and self.share is not None:
-            log("android-x86: no host share (this guest mounts no smb filesystem)")
-            self.share = None
+        share = self.share
+        if android:
+            if share not in (None, ""):
+                log(f"android-x86: ignoring the host share {share!r} (this guest has no cifs)")
+            share = ""
 
         guest, reached, overlay = vm_session.start(
             family or self.family, self.disk, self.work,
-            ssh_port=ssh_port, wait_for_ssh=False, copy=not android, share=self.share,
+            ssh_port=ssh_port, wait_for_ssh=False, copy=not android, share=share,
             cpus=self.cpus, mem_mb=self.mem_mb, log=log)
         if guest is None:
             raise StepError("the machine could not be started")
@@ -1384,7 +1390,25 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
             raise StepError(f"{step.name}: `scp` is [local, remote]")
         local, remote = (str(v) for v in pair)
         if not os.path.isabs(local):
-            local = os.path.join(REPO, local)
+            # TWO PLACES A RELATIVE PATH CAN COME FROM, AND BOTH ARE LEGITIMATE.
+            #
+            #   REPO             a file checked in with the walkthrough - dev.yaml's msvc-check.ps1
+            #   driver.work      a file a `python:` step just generated - vm-configure's agent
+            #
+            # THIS WAS A REAL BUG. `python: vm_configure_asset:fetch_guest_agent` writes into
+            # `driver.work` (/…/out/devtools-work), the download reported 30900 KiB, and the very
+            # next `scp:` looked in REPO and answered
+            #
+            #     scp: stat local "…/guest-agent/virtio-win-guest-tools.exe": No such file
+            #
+            # with the file sitting 30 MiB away in the work directory. The work directory wins
+            # when it has the file, because that is the one this run just made.
+            work = getattr(driver, "work", "") or ""
+            candidate = os.path.join(work, local) if work else ""
+            if candidate and os.path.isfile(candidate):
+                local = candidate
+            else:
+                local = os.path.join(REPO, local)
         timeout = int(step.get("timeout", 300))
         status, output = session.scp(local, remote, port=ssh_port, timeout=timeout,
                                      user=login)

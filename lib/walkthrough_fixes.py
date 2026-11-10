@@ -405,6 +405,19 @@ def main() -> int:
     except Exception as exc:                          # noqa: BLE001
         check(f"qga imports ({exc})", "lib/qga.py", False)
 
+    # --- A RELATIVE `scp:` PATH CAN COME FROM TWO PLACES ---------------------------------
+    #
+    # A file checked in with the walkthrough lives under REPO; a file a `python:` step generated
+    # lives under the driver's work directory. Resolving every relative path against REPO meant
+    # the download reported 30900 KiB and the copy looked 30 MiB away:
+    #
+    #     scp: stat local "…/guest-agent/virtio-win-guest-tools.exe": No such file or directory
+    #
+    # run 42796278936. The work directory wins when it has the file, because that is the one this
+    # run just made.
+    check("a relative scp path can be a file a python step just wrote", "lib/steps.py",
+          'candidate = os.path.join(work, local)' in read("lib/steps.py"))
+
     # --- A YAML FILE CAN OWN ITS MACHINE -------------------------------------------------
     #
     # `boot:`, `reboot:` and `shutdown:` are steps, so the whole qemu lifecycle can be declared
