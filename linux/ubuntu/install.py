@@ -26,8 +26,16 @@ import livebake     # noqa: E402
 
 BAKE = livebake.Bakery(
     name="ubuntu",
-    kernel=('casper/vmlinuz','casper/initrd'),
-    cmdline='console=ttyS0,115200n8 --- console=ttyS0,115200n8',
+    # THE MEDIUM BOOTS ITSELF - no -kernel, no -initrd, no -append.
+    #
+    # Read out of the ISO: `boot/grub/grub.cfg` has `set timeout=30` and its entry is
+    # `linux /casper/vmlinuz --- quiet splash`, so it takes the first entry by itself and
+    # loads the same casper kernel+initrd this file used to extract.
+    #
+    # THE `console=ttyS0` THIS FILE CARRIED IS GONE, AND IT WAS NEVER LOAD-BEARING.
+    # ubuntu/steps/ssh.yaml has always said so in its own words: "These disks have no getty on
+    # ttyS0 - measured on run 42551299241 - so `run:` is the only way in." A console line that
+    # no step ever read was diagnosis-only, and it is the ISO's own menu that decides now.
     # AND - ubuntu's driver waits for `welcome` AND `ubuntu`, the installer's first pane.
     desktop=livebake.DesktopWhen(all_of=('welcome', 'ubuntu')),
     mem_mb=8192,
