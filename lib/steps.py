@@ -1219,6 +1219,14 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
         for line in (output or "").splitlines()[:10]:
             log(f"    {line[:150]}")
         if status != 0 and not step["optional"]:
+            # THE SERVER'S OWN ACCOUNT OF THE REFUSAL, WHICH IS WHERE THE ANSWER IS.
+            #
+            # The client says only "Authentication error". At `log level = 3` smbd records the
+            # session setup - the dialect, the auth type offered, the nt status returned - and
+            # that is the difference between "the password is wrong", "the account is not in the
+            # passdb" and "the client never sent credentials". Without this line three runs were
+            # spent guessing which.
+            hostshare.log_tail()
             raise StepError(f"{step.name}: the guest could not mount the share")
         return
 

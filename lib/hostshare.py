@@ -332,6 +332,28 @@ def _ensure_account() -> bool:
     return True
 
 
+def log_tail(lines: int = 40) -> None:
+    """Print the end of smbd's log, so an authentication failure can be read rather than guessed.
+
+    CALLED WHEN A MOUNT IS REFUSED. The client's message is one sentence - "server rejected the
+    connection: Authentication error" - and the server's log at level 3 says which half refused:
+    a wrong password, an account missing from the passdb, a dialect the client would not take, or
+    a session setup the client never sent.
+    """
+    if not os.path.isfile(LOG_PATH):
+        log(f"  (no smbd log at {LOG_PATH})")
+        return
+    try:
+        with open(LOG_PATH, errors="replace") as fh:
+            tail = fh.readlines()[-lines:]
+    except OSError as exc:
+        log(f"  could not read {LOG_PATH}: {exc}")
+        return
+    log(f"  smbd log, last {len(tail)} line(s):")
+    for line in tail:
+        log(f"    {line.rstrip()[:190]}")
+
+
 def stop() -> None:
     """Stop the smbd this module started, and only that one."""
     result = subprocess.run(["pkill", "-f", f"smbd.*-s {CONF_PATH}"], capture_output=True)
@@ -360,8 +382,33 @@ def mount_commands(host: str = "", user: str = "docker") -> dict[str, str]:
     """
     host = host or net.BRIDGE_IP
     return {
-        "macos": (f"mkdir -p ~/shared && "
-                  f"mount_smbfs //{SMB_USER}:{SMB_PASSWORD}@{host}/{SHARE_NAME} ~/shared"),
+        # macOS: THE PASSWORD GOES IN nsmb.conf, NOT IN THE URL.
+        #
+        # `mount_smbfs //user:pass@host/share` is documented and it fails against a working
+        # server with
+        #
+        #     mount_smbfs: server rejected the connection: Authentication error
+        #
+        # run 42744852729's share stage, and the same report appears in every Apple support
+        # thread about it: the CLI path authenticates differently from the Finder path.
+        #
+        # nsmb.conf IS THE SUPPORTED ROUTE, AND THE PATH AND SECTION NAME ARE BOTH SPECIFIC:
+        #
+        #     ~/Library/Preferences/nsmb.conf      not ~/.nsmb.conf
+        #     [SERVER:USER:SHARE]                  `password` is only a keyword in sections C
+        #                                          and D - a `[SERVER]` section cannot carry one
+        #
+        # A) [default]  B) [SERVER]  C) [SERVER:USER]  D) [SERVER:USER:SHARE]
+        #
+        # `-N` tells mount_smbfs not to prompt and to read the password from that file, which is
+        # the only non-interactive path Apple documents.
+        "macos": (
+            f"mkdir -p ~/shared ~/Library/Preferences && umask 077 && "
+            f"printf '[{host}:{SMB_USER}:{SHARE_NAME}]\\nuser = {SMB_USER}\\n"
+            f"password = {SMB_PASSWORD}\\n' > ~/Library/Preferences/nsmb.conf && "
+            f"chmod 600 ~/Library/Preferences/nsmb.conf && "
+            f"mount_smbfs -N //{SMB_USER}@{host}/{SHARE_NAME} ~/shared"
+        ),
         # `net use` WITH A DRIVE LETTER DOES NOT SURVIVE THE SSH SESSION IT WAS MADE IN.
         #
         # A mapped drive belongs to the logon session that created it. Every `ssh host command`
