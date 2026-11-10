@@ -947,14 +947,31 @@ def main() -> int:
     # out/clean-macos.txt on every completed step and writes CLEANED at the end; the workflow
     # passes a non-zero exit only when that line is absent. A clean that genuinely did not finish
     # still fails, which is the part that must not be lost in the convenience.
+    # AND THE VERDICT IS TAKEN OUTSIDE THE PROCESS THAT GETS KILLED.
+    #
+    # The first version of this judged inside the clean step's own `bash -c`, and run 42919582582
+    # showed why that cannot work: the SIGTERM that ended the clean ALSO ended that shell -
+    #
+    #     [clean-step] === SIGNALLED: SIGTERM (15) === ppid=418 pid=419 pgid=418
+    #
+    # with 418 being the `bash -c` and the group both - so the `if grep ... exit 0` lines never
+    # ran and the job reported the signal's 241.
+    #
+    # A SEPARATE STEP cannot be that process. `continue-on-failure` on the streamer keeps the job
+    # alive long enough for it to run, and it passes only when the stage's own record says the work
+    # was done.
     mac_clean_step = read(".github/workflows/macos15.yml")
     seg = mac_clean_step[mac_clean_step.index("name: clean the disk"):]
     seg = seg[:seg.index("keep the last frame")]
+    check("the clean step does not fail on its own exit code",
+          ".github/workflows/macos15.yml", 'continue-on-failure: "true"' in seg)
+    check("a separate step judges the clean", ".github/workflows/macos15.yml",
+          "name: did the clean actually finish" in seg)
     check("a finished clean survives a killed re-compress",
           ".github/workflows/macos15.yml",
           'grep -q "^CLEANED " out/clean-macos.txt' in seg and "exit 0" in seg)
     check("a clean that did not finish still fails",
-          ".github/workflows/macos15.yml", 'exit "$STATUS"' in seg)
+          ".github/workflows/macos15.yml", "THE CLEAN DID NOT FINISH" in seg)
     # AND THE SIGNAL IS NAMED IN THE ARTIFACTS, so the exit code is explainable after the fact.
     check("a signalled clean leaves a note naming the signal", "lib/clean_step.py",
           "clean-signal.txt" in read("lib/clean_step.py"))

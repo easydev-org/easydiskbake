@@ -471,10 +471,30 @@ def stop() -> None:
         log(f"  pid {pid} is THIS PROCESS; refusing to signal it")
         _unlink_pid()
         return
-    # NOT A GROUP TEST. `smbd -D --no-process-group` deliberately shares our process group, so
-    # refusing a pid in it would leave every share running - the opposite failure. What has to be
-    # excluded is the caller's own pid, and anything whose cmdline is not the daemon this module
-    # wrote (the check below).
+    # AND NOTHING IN THIS PROCESS'S OWN GROUP EITHER, WHICH IS THE CASE THAT KEPT HAPPENING.
+    #
+    # Run 42919582582 named it exactly:
+    #
+    #     [clean-step] === SIGNALLED: SIGTERM (15) === ppid=418 pid=419 pgid=418
+    #
+    # 419 is the clean, 418 is the `bash -c` that runs it, and 418 is the GROUP. So the signal
+    # reached the group rather than one process - and a signal sent to a process group takes the
+    # sender with it. Measured: `kill -TERM -<own pgid>` from a child kills the child too.
+    #
+    # `smbd -D --no-process-group` SHARES this group by design, so a correct smbd pid is
+    # normally IN it - which is why this cannot be a blanket refusal. What it can refuse is a pid
+    # whose cmdline does not look like the daemon, and that check is below. A reused pid that
+    # now names our own bash - the one case where signalling would kill the stage - is caught
+    # here.
+    try:
+        in_our_group = os.getpgid(pid) == os.getpgid(0)
+    except OSError:
+        in_our_group = False
+    if in_our_group and "smbd " not in looks_like:
+        log(f"  pid {pid} is in this process's group and is not smbd "
+            f"({looks_like[:60]}); refusing to signal it")
+        _unlink_pid()
+        return
     if "smbd" not in looks_like:
         log(f"  pid {pid} is not smbd ({looks_like[:60]}); leaving it alone")
         _unlink_pid()

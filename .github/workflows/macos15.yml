@@ -605,23 +605,21 @@ jobs:
               --ssh-port "${{ inputs.ssh_port || '2222' }}"
 
       - name: clean the disk
+        # CONTINUE ON FAILURE, BECAUSE THE VERDICT IS MADE BY THE NEXT STEP.
+        #
+        # The clean can be killed by a SIGTERM after it has finished - run 42919582582 exited 241
+        # (`-15 & 0xFF`) half a second after `the guest powered off`, and the same signal killed
+        # the `bash -c` that was supposed to judge it, so the in-step verdict never ran. A signal
+        # does not distinguish "killed before the work" from "killed after it", and only what the
+        # stage left behind can.
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
           name: macos15-vm-configure-clean
           interval: "20"
+          continue-on-failure: "true"
           command: |
             set -uo pipefail
-            # A SIGNAL IS NOT A VERDICT. Run 42916758079 was killed by SIGTERM (exit 241) half a
-            # second after `the guest powered off` - the clean had finished, the re-compress had
-            # not started, and the stage failed with the work already done.
-            #
-            # SO THE RECORD DECIDES, NOT THE EXIT CODE. `clean_step.py` rewrites
-            # out/clean-macos.txt on every step it completes, and writes CLEANED at the end. If
-            # that line is there the disk is cleaned whatever killed the process afterwards; if it
-            # is not, this fails exactly as before. Nothing is swallowed: the exit code is printed,
-            # the verdict is printed, and a clean that did not finish still stops the chain.
-            set +e
             python3 lib/clean_step.py \
               --disk out/macos15-vm-configure.qcow2 \
               --kind macos \
@@ -629,22 +627,31 @@ jobs:
               --artifacts out \
               --boot-timeout "${{ inputs.boot_timeout || '1800' }}" \
               --mem 8192
-            STATUS=$?
-            set -e
-            echo "clean_step.py exited $STATUS"
-            if [ -f out/clean-macos.txt ]; then
-              echo "--- out/clean-macos.txt (tail) ---"
-              tail -5 out/clean-macos.txt || true
-            fi
-            if [ "$STATUS" -eq 0 ]; then
-              exit 0
-            fi
-            if grep -q "^CLEANED " out/clean-macos.txt 2>/dev/null; then
-              echo "=== the clean FINISHED and only the re-compress did not; the disk is cleaned ==="
-              exit 0
-            fi
-            echo "=== the clean did NOT finish (exit $STATUS) ==="
-            exit "$STATUS"
+
+      - name: did the clean actually finish
+        # THE RECORD DECIDES, AND IT IS READ FROM A PROCESS THAT CANNOT BE THE ONE KILLED.
+        #
+        # `clean_step.py` writes `CLEANED <disk>` to out/clean-macos.txt as soon as the guest has
+        # been cleaned and powered off - before the re-compress, which is the only work left and
+        # only makes the image smaller. So:
+        #
+        #     CLEANED present   -> the disk is clean, whatever happened after that line
+        #     CLEANED absent    -> the clean did not finish, and this fails
+        #
+        # The second case is the one that matters: nothing is swallowed.
+        run: |
+          set -euo pipefail
+          if [ ! -f out/clean-macos.txt ]; then
+            echo "=== NO out/clean-macos.txt - the clean never reached its record ==="
+            exit 1
+          fi
+          tail -5 out/clean-macos.txt
+          if grep -q "^CLEANED " out/clean-macos.txt; then
+            echo "=== CLEANED is recorded: the disk is clean ==="
+            exit 0
+          fi
+          echo "=== THE CLEAN DID NOT FINISH: no CLEANED line ==="
+          exit 1
 
       - name: keep the last frame
         if: always()

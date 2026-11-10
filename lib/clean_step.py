@@ -413,6 +413,15 @@ def main(argv: list[str]) -> int:
     #
     # So the disk is compressed here, in place. The compress is the same call the bakes use,
     # which is what makes the published size the size of what is actually in the disk.
+    # THE MARKER GOES DOWN BEFORE THE RE-COMPRESS, NOT AFTER IT.
+    #
+    # `CLEANED` is what tells the workflow the disk is fit to publish, and the re-compress is
+    # minutes of qemu-img that only makes it smaller. Writing the marker afterwards made the two
+    # indistinguishable: run 42919582582 was killed (241) between `the guest powered off` and this
+    # line, so a finished clean left no record and the workflow reported failure. The marker is
+    # now true at the moment it is written - the guest has been cleaned and powered off above -
+    # and the compress cannot take it back.
+    note(f"CLEANED {args.disk} (marker written before the re-compress)")
     note("compressing the cleaned disk")
     import compress
 
