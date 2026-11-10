@@ -156,10 +156,37 @@ steps:
   # `is-enabled` READS THE SYMLINK systemd would follow at boot, which is the only fact here that
   # outlives the process. `list-unit-files` prints the state beside the unit's own name, so a
   # failed enable is visible in the recording rather than inferred from a refused port later.
+  # THE ENABLE IS DONE AGAIN HERE, OVER SSH, BECAUSE `run:` CANNOT PROVE ANYTHING.
+  #
+  # Everything above this file's `run:` steps types into the guest's own terminal and reads the
+  # screen; a command that fails there still looks like four lines of text, and the step's own
+  # exit status is the terminal's. That is fine for "start it now" and useless for "will it start
+  # at boot", which is a fact nothing on the screen confirms.
+  #
+  # `ssh:` IS A DIFFERENT CHANNEL, and it is available by the time this step runs: the steps
+  # above proved the port answers. It returns an EXIT STATUS, so `systemctl enable --now` here
+  # can fail the stage by failing, and the `test` after it reads the symlink systemd would follow.
+  #
+  # WHY IT IS NOT `enable --now` ONLY. A disk that already has the symlink costs one idempotent
+  # command, and a disk that does not is repaired rather than published - which is the difference
+  # between this and the version of this file that shipped a disk with nothing on port 22.
+  - name: enable sshd again, over ssh, where the exit status is readable
+    ssh: |
+      printf '%s\n' '{{ password }}' | sudo -S -p '' systemctl enable --now sshd 2>&1 | tail -3
+      test "$(systemctl is-enabled sshd)" = "enabled"
+      mount | grep -c ' / ' >/dev/null
+      systemctl is-enabled sshd
+    timeout: 180
+
   - name: prove sshd will start at boot
-    run: systemctl is-enabled sshd; systemctl list-unit-files sshd.service | tail -2
-    terminal_wait: 0
-    settle: 8
+    ssh: |
+      set -e
+      echo "is-enabled: $(systemctl is-enabled sshd)"
+      echo "is-active:  $(systemctl is-active sshd)"
+      echo "wants:      $(ls /etc/systemd/system/multi-user.target.wants/sshd.service 2>&1)"
+      test "$(systemctl is-enabled sshd)" = "enabled"
+      test -L /etc/systemd/system/multi-user.target.wants/sshd.service
+    timeout: 120
 
   - name: open the firewall for ssh
     run: echo {{ password }} | sudo -S sh -c "firewall-cmd --add-service=ssh --permanent; firewall-cmd --reload; firewall-cmd --list-services" 2>&1 | tail -5
