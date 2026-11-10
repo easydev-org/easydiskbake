@@ -817,6 +817,50 @@ def test_ssh_matchers_on_their_frames() -> None:
                               f"expected {'PASS' if expected else 'miss'}")
 
 
+def test_capabilities_and_new_primitives() -> None:
+    """shutdown by a named method, `requires:`, screenshot and record.
+
+    THREE THINGS A WALKTHROUGH COULD NOT SAY BEFORE, and the first is the one that was lying.
+    """
+    print("\n=== shutdown takes a method, and a missing capability stops the run")
+    import capabilities
+
+    # A MISSING CAPABILITY NAMES ITSELF, and it is checked before the step waits for anything.
+    ok, why = capabilities.check("qga", guest=None)
+    check(not ok and "qga" in why and "no qga device" in why,
+          f"a machine with no qga device reports it, got {why!r}")
+
+    ok2, why2 = capabilities.check("teleport", guest=None)
+    check(not ok2 and "unknown capability" in why2,
+          f"an unknown capability is refused by name, got {why2!r}")
+
+    # AND `require` REPORTS ALL OF THEM AT ONCE. A stage that needs two things and has neither
+    # should say so once, not once per attempt.
+    raised = ""
+    try:
+        capabilities.require(["qga", "teleport"], guest=None)
+    except capabilities.Broken as exc:
+        raised = str(exc)
+    check("qga" in raised and "teleport" in raised,
+          f"both missing capabilities are reported, got {raised[:100]!r}")
+
+    # THE VOCABULARY HAS THE THREE NEW KEYS.
+    check("requires" in steps.STEP_KEYS, "a step can declare what it needs")
+    check("screenshot" in steps.STEP_KEYS and "screenshot" in steps.ACTION_KEYS,
+          "a step can take a screenshot")
+    check("record" in steps.STEP_KEYS and "record" in steps.ACTION_KEYS,
+          "a step can record")
+
+    # AND `shutdown:` TAKES A METHOD RATHER THAN A BOOLEAN. `true` still parses - it means the
+    # careful path for a caller that has not been updated - but a named method is what the step
+    # acts on, so the two cannot be confused for each other.
+    doc = steps.Walk({
+        "name": "methods",
+        "steps": [{"name": "halt", "shutdown": "guest_agent"}],
+    }, path="inline")
+    check(doc.steps[0]["shutdown"] == "guest_agent", "shutdown accepts a named method")
+
+
 def main() -> int:
     test_expect_failure()
     test_optional_expect()
@@ -841,6 +885,7 @@ def main() -> int:
     test_type_gap_reaches_the_keys()
     test_scp_and_script_steps()
     test_share_mount_step()
+    test_capabilities_and_new_primitives()
 
     print()
     if FAILED:

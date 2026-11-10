@@ -141,7 +141,10 @@ STEP_KEYS = {    "name",        # required: what the log calls this step
     # started: it owns the machine, and the stage above it becomes "run this file".
     "boot",        # start the machine: needs family + disk; the file owns the guest
     "reboot",      # reset it through QMP and reconnect, so the steps after it still see a screen
-    "shutdown",    # stop it the way the caller declared (graceful or kill)
+    "shutdown",    # stop it: guest_agent | ssh | acpi | kill. One method, no fallback.
+    "requires",    # capabilities this step needs; a missing one stops the run before it starts
+    "screenshot",  # save a PNG of the screen into the work directory
+    "record",      # start/stop a video of the screen; see the `record` step below
     "family",      # for boot/shutdown: macos, windows, linux, android
                    #            `android` is Android-x86: -kernel/-initrd and two files,
                    #            so `disk` names a DIRECTORY of kernel, initrd.img and
@@ -165,7 +168,7 @@ WAIT_STEPS = {"until", "until_any", "wait", "wait_for_change", "until_dark", "di
 # Everything above that actually drives the guest. A step with none of these is a check, and
 # a check that does nothing is reported rather than run.
 ACTION_KEYS = {"at", "double", "type", "key", "run", "ssh", "scp", "script", "share_serve",
-               "share_mount",
+               "share_mount", "screenshot", "record",
                "require_ssh", "sweep",
                "at_window", "at_bottom",
                # THE MACHINE'S OWN LIFECYCLE. A file may own its guest - see LIFECYCLE below.
@@ -842,12 +845,50 @@ class MachineSession:
             raise StepError(
                 f"the machine did not come back on ssh port {ssh_port} within {seconds}s")
 
-    def shutdown(self, *, graceful: bool = True, log=print) -> None:
+    def shutdown(self, *, method: str = "kill", log=print) -> None:
+        """Stop the guest by ONE named method. No fallback - see the `shutdown:` step.
+
+        THE METHOD IS A CAPABILITY, AND A MISSING ONE STOPS THE RUN. `guest_agent` on a disk with
+        no agent is not "slow" or "retried over ssh"; it is a file that asked for something the
+        machine does not have, and the run says so before it waits for a timeout to say it badly.
+        """
         if self.guest is None or self.stopped:
             return
+        import capabilities
         import vm_session
-        vm_session.stop(self.guest, acpi_first=graceful, family=self.family,
-                        overlay=self.overlay, share=False, log=log)
+
+        if method in ("guest_agent", "agent", "qga"):
+            capabilities.require("qga", guest=self.guest)
+            vm_session.stop(self.guest, family=self.family, overlay=self.overlay,
+                            share=False, method="guest_agent", log=log)
+        elif method == "ssh":
+            capabilities.require("ssh", port=self.guest.shape.ssh_port,
+                                 user=self.guest.shape.ssh_user or "docker")
+            vm_session.stop(self.guest, family=self.family, overlay=self.overlay,
+                            share=False, method="ssh", log=log)
+        elif method == "acpi":
+            # THE POWER BUTTON IS NOT UNIVERSAL, AND THE FILE HAS TO SAY IT KNOWS.
+            #
+            # macOS receives system_powerdown and puts up a dialog; a stage that waits for it is
+            # waiting for a person. Refusing here turns that into one line at the start rather
+            # than five minutes of nothing and a kill that claims to be a shutdown.
+            if self.family == "macos":
+                raise capabilities.Broken(
+                    "`shutdown: acpi` cannot work on macOS: it receives the power button as the "
+                    "Restart/Sleep/Cancel/Shut Down dialog and waits for a click. Use "
+                    "`shutdown: guest_agent` (with qga installed) or `shutdown: ssh`.")
+            vm_session.stop(self.guest, family=self.family, overlay=self.overlay,
+                            share=False, method="acpi", log=log)
+        elif method in ("kill", "graceful"):
+            # `graceful` IS THE OLD SPELLING and it still means "the careful path" for a caller
+            # that has not been updated. It is resolved the same way vm_session.stop did before:
+            # agent, ssh, acpi. New files should name a method.
+            vm_session.stop(self.guest, family=self.family, overlay=self.overlay,
+                            share=False, method=("graceful" if method == "graceful" else "kill"),
+                            log=log)
+        else:
+            raise StepError(
+                f"`shutdown: {method}` is not a method; use guest_agent, ssh, acpi or kill")
         self.stopped = True
 
     def stop_if_running(self, *, log=print) -> None:
@@ -1118,6 +1159,30 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
     """
     settle = float(step.get("settle", 2.0))
 
+    # --- `requires:` IS CHECKED BEFORE THE STEP DOES ANYTHING ------------------------------
+    #
+    # A STEP THAT NEEDS SOMETHING THE GUEST DOES NOT HAVE MUST SAY SO, NOT TIMEOUT. `ssh:` on a
+    # guest whose sshd never came up waits out its timeout and reports a connection error; that
+    # is not a fact about ssh, it is a fact about the guest, and it was knowable before the step
+    # started. Same for `shutdown: guest_agent` on a disk with no agent: the old code fell back
+    # to ssh and then to a power button macOS ignores, and reported a clean shutdown it had not
+    # got.
+    #
+    #     - name: shut down through the agent
+    #       shutdown: guest_agent
+    #       requires: [qga]
+    #
+    # A missing capability raises and the run stops. See lib/capabilities.py.
+    if step["requires"]:
+        import capabilities
+        try:
+            capabilities.require(
+                step["requires"],
+                guest=getattr(session, "guest", None) if session is not None else None,
+                port=ssh_port, user=login or "docker", password=password or "admin")
+        except capabilities.Broken as exc:
+            raise StepError(f"{step.name}: {exc}") from exc
+
     # --- THE MACHINE'S OWN LIFECYCLE -------------------------------------------------------
     #
     # A YAML FILE MAY OWN ITS GUEST. `boot:` starts it, `reboot:` resets it, `shutdown:` stops
@@ -1161,9 +1226,28 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
         return
 
     if step["shutdown"]:
+        # `shutdown:` TAKES THE METHOD, AND THERE IS NO FALLBACK.
+        #
+        # It used to be a boolean whose only meaning was "graceful or not", and the method was
+        # chosen by a chain inside vm_session.stop(): agent, then ssh, then the power button, then
+        # kill. That chain could not be read in the log and could not be right: macOS has no
+        # working ACPI power button, so step three waited 300 seconds for a dialog nobody would
+        # click, and the report was a clean shutdown.
+        #
+        #     shutdown: guest_agent    a request the agent executes. Needs qga.
+        #     shutdown: ssh            `shutdown -h now` over the stage's own connection.
+        #     shutdown: acpi           the virtual power button. Honoured by Windows and Linux;
+        #                              a dialog on macOS, which is why a file that needs macOS
+        #                              does not use it.
+        #     shutdown: kill           the process ends now. Always available, and the correct
+        #                              answer for a guest on an overlay.
+        #
+        # A file names one. If it wants "the agent, or ssh if there is none", that is two steps
+        # and an `unless:` - visible in the file rather than hidden in a function.
         if session is None:
             raise StepError(f"{step.name}: shutdown needs a session")
-        session.shutdown(graceful=bool(step.get("graceful", True)))
+        method = step["shutdown"] if isinstance(step["shutdown"], str) else "graceful"
+        session.shutdown(method=str(method), log=log)
         return
 
     # THE ACCOUNT ON THIS DISK, WHEN THE FILE SAYS IT IS NOT THE USUAL ONE.
@@ -1304,6 +1388,74 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
             log(f"    {line[:150]}")
         if status != 0 and not step["optional"]:
             raise StepError(f"{step.name}: the script exited {status}")
+        return
+
+    # --- screenshot: THE SCREEN, SAVED, BECAUSE EVIDENCE BELONGS IN THE WALKTHROUGH ----
+    #
+    # A failed step already takes a frame (see _fail_frame), and that is the one nobody asked
+    # for. This is the one the AUTHOR asks for: "photograph the desktop before touching it", or
+    # "prove the installer said what I think it said" - both of which used to need a `python:`
+    # extension to reach Screen.grab().
+    #
+    #     - name: capture the desktop
+    #       screenshot: desktop.png
+    #
+    # IT WRITES INTO <work>/shots/, which is the same directory the driver already uses for the
+    # frames a failing step leaves - so the upload step that collects `out/**/*.png` picks these
+    # up without a second path to keep in step.
+    if step["screenshot"]:
+        name = str(step["screenshot"])
+        if not hasattr(driver, "screen") or driver.screen is None:
+            raise StepError(
+                f"{step.name}: a screenshot needs a screen; this walkthrough was driven headless")
+        shots = os.path.join(getattr(driver, "work", "") or ".", "shots")
+        os.makedirs(shots, exist_ok=True)
+        stem = os.path.splitext(os.path.basename(name))[0]
+        ppm = driver.screen.grab(stem)
+        if not ppm:
+            raise StepError(f"{step.name}: the screen could not be read")
+        import lastframe
+        dest = os.path.join(shots, f"{stem}.png")
+        lastframe.convert(ppm, dest)
+        log(f"  screenshot: {dest}")
+        return
+
+    # --- record: A VIDEO OF WHAT HAPPENS NEXT, OR THE END OF ONE -----------------------
+    #
+    #     - name: start recording the install
+    #       record: install.mp4
+    #
+    #     - name: stop recording
+    #       record: false
+    #
+    # THE ENCODER IS lib/live.py's, the same one every stage already runs - a second one here
+    # would be a second set of ffmpeg flags to keep in step. It survives being asked to stop when
+    # nothing is recording, because a file that records "just in case" should not fail when the
+    # step before it already stopped.
+    if step["record"] is not None:
+        import live
+        if step["record"] is False or str(step["record"]).lower() in ("false", "stop"):
+            recorder = getattr(driver, "_recorder", None)
+            if recorder is not None:
+                try:
+                    recorder.stop(final=True)
+                except Exception as exc:                  # noqa: BLE001
+                    log(f"  recording could not be finalised: {exc}")
+                driver._recorder = None
+                log("  recording stopped")
+            return
+        work = getattr(driver, "work", "") or "."
+        video = str(step["record"])
+        if not os.path.isabs(video):
+            video = os.path.join(work, video)
+        shots = os.path.join(work, "shots")
+        os.makedirs(shots, exist_ok=True)
+        recorder = live.LiveArtifacts([shots], video=video,
+                                      last_frame=os.path.join(work, "last-frame.png"),
+                                      every=float(step.get("poll", 20.0)))
+        recorder.start()
+        driver._recorder = recorder
+        log(f"  recording: {video}")
         return
 
     # --- share_serve: THE HOST STARTS SERVING, AND NOTHING ELSE ----------------------

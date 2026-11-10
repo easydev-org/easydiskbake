@@ -439,7 +439,7 @@ def _shutdown_via_agent(socket_path: str, guest, log=print, timeout: int = 120) 
 
 
 def stop(guest, *, acpi_first: bool = True, family: str = "", password: str = "admin",
-         share: bool = True, overlay=None, log=print) -> None:
+         share: bool = True, overlay=None, method: str = "graceful", log=print) -> None:
     """Stop the guest, close its overlay, and stop the share.
 
     A GUEST ON AN OVERLAY IS KILLED, NOT ASKED NICELY, AND THAT IS THE POINT OF THE OVERLAY.
@@ -460,25 +460,40 @@ def stop(guest, *, acpi_first: bool = True, family: str = "", password: str = "a
         if overlay is not None:
             log("the guest is on an overlay; killing it rather than waiting for a shutdown")
             guest.stop(acpi_first=False)
+        elif method == "kill":
+            log("killing the guest")
+            guest.stop(acpi_first=False)
+        elif method == "guest_agent":
+            # ONE METHOD, AND IT IS THE ONLY ONE TRIED. A caller that asks for the agent gets the
+            # agent or an error - not a quiet slide to ssh, which is what made the old chain
+            # unreadable in a log.
+            socket_path = getattr(getattr(guest, "shape", None), "qga_socket", "")
+            if not _shutdown_via_agent(socket_path, guest, log):
+                raise RuntimeError(
+                    f"the guest agent did not power the machine down (socket {socket_path!r})")
+        elif method == "ssh":
+            command = SHUTDOWN_COMMAND.get(family)
+            if not command:
+                raise RuntimeError(f"no ssh shutdown command is known for {family!r}")
+            if not guest.shutdown_command(command.format(password=password), STOP_TIMEOUT,
+                                          password=password):
+                raise RuntimeError("`shutdown -h now` did not stop the guest in time")
+        elif method == "acpi":
+            guest.stop(acpi_first=True, acpi_timeout=STOP_TIMEOUT)
         else:
+            # THE OLD BEHAVIOUR, KEPT FOR A CALLER THAT HAS NOT BEEN UPDATED: try the careful
+            # paths in order. It exists because lib/clean_step.py and the stage scripts call this
+            # without naming a method, and turning their shutdown into a hard failure is a change
+            # they have not asked for. New walkthroughs name one.
             done = False
-            # 1. THE AGENT, IF THE MACHINE WAS STARTED WITH ONE.
             socket_path = getattr(getattr(guest, "shape", None), "qga_socket", "")
             if socket_path:
                 done = _shutdown_via_agent(socket_path, guest, log)
-            # 2. SSH, WHEN THE GUEST HAS NO AGENT OR IT DID NOT ANSWER.
             if not done:
                 command = SHUTDOWN_COMMAND.get(family)
                 if command:
                     done = guest.shutdown_command(command.format(password=password),
                                                   STOP_TIMEOUT, password=password)
-            # 3. THE POWER BUTTON, WHICH IS THE LAST RESORT AND NOT A GUARANTEE.
-            #
-            # AND FOR A GUEST WITH NO AGENT AND NO sshd - Android-x86 - THE WAIT IS SHORT.
-            # Nothing the first two paths would have used exists there, so ACPI is not a
-            # fallback but the only attempt, and a twenty-minute wait on a guest that ignores
-            # the power button is the one outcome a stage cannot afford. The guest writes to a
-            # plain ext4 it created and ext4 journals; a kill costs a journal replay, not a disk.
             if not done:
                 guest.stop(acpi_first=acpi_first, acpi_timeout=STOP_TIMEOUT)
     except Exception as exc:                                # noqa: BLE001

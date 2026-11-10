@@ -78,6 +78,16 @@ steps:
     timeout: 120
 
   # KILLED, NOT ASKED - this guest is on an overlay. See the note at the top.
+  #
+  # AND THE METHOD IS NAMED. `shutdown:` used to be a boolean that meant "careful or not", and
+  # the actual method was chosen by a chain inside vm_session.stop() - agent, then ssh, then the
+  # power button, then kill - with each step falling silently into the next. On macOS that chain
+  # was a lie: the power button opens a dialog, so the "graceful" shutdown was a 300-second wait
+  # and a kill that reported itself as clean.
+  #
+  #     guest_agent   a request the agent executes. Needs qga; stops the run if it is absent.
+  #     ssh           `shutdown -h now` over the walkthrough's own connection.
+  #     acpi          the power button. Windows and Linux honour it; macOS refuses it here.
+  #     kill          the process ends now. Right for an overlay, where nothing is kept.
   - name: shut it down
-    shutdown: true
-    graceful: false
+    shutdown: kill

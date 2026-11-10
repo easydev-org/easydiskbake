@@ -427,6 +427,64 @@ def main() -> int:
           "windows/11/steps/vm-configure.yaml",
           not any("ADDLOCAL" in ln for ln in installer_lines))
 
+    # --- A STEP DECLARES WHAT IT NEEDS, AND A MISSING CAPABILITY STOPS THE RUN -----------
+    #
+    # `vm_session.stop()` used to try the agent, then ssh, then the power button, then kill, each
+    # falling silently into the next. On macOS the third one could never work - the power button
+    # opens a dialog - so a "graceful" shutdown was a 300-second wait and a kill that reported
+    # itself as clean. A capability that is declared, and checked, and refused, is the fix.
+    try:
+        import capabilities
+        # A MISSING CAPABILITY NAMES ITSELF rather than becoming a timeout somewhere else.
+        ok, why = capabilities.check("qga", guest=None)
+        check("a missing capability says which one", "lib/capabilities.py",
+              not ok and "qga" in why)
+        ok2, why2 = capabilities.check("teleport", guest=None)
+        check("an unknown capability is refused by name", "lib/capabilities.py",
+              not ok2 and "unknown capability" in why2)
+        # AND ALL OF THEM ARE CHECKED BEFORE THE FIRST IS RAISED, so one run reports every
+        # missing capability rather than one per attempt.
+        raised = ""
+        try:
+            capabilities.require(["qga", "teleport"], guest=None)
+        except capabilities.Broken as exc:
+            raised = str(exc)
+        check("every missing capability is reported at once", "lib/capabilities.py",
+              "qga" in raised and "teleport" in raised)
+    except Exception as exc:                          # noqa: BLE001
+        check(f"capabilities imports ({exc})", "lib/capabilities.py", False)
+
+    # AND `shutdown:` TAKES A METHOD, NOT A BOOLEAN, WITH NO SILENT CHAIN BEHIND IT.
+    steps_src = read("lib/steps.py")
+    check("shutdown names a method", "lib/steps.py",
+          all(m in steps_src for m in ("guest_agent", '"ssh"', '"acpi"', '"kill"')))
+    check("a named shutdown does not fall back", "lib/vm_session.py",
+          "the guest agent did not power the machine down" in read("lib/vm_session.py"))
+    # MACOS REFUSES THE POWER BUTTON BEFORE WAITING FOR IT, which is the whole point.
+    check("acpi is refused on a guest that cannot honour it", "lib/steps.py",
+          "shutdown: acpi` cannot work on macOS" in steps_src)
+
+    # THE TWO EVIDENCE PRIMITIVES EXIST, AND THE EXAMPLE USES EVERY PRIMITIVE.
+    check("a walkthrough can take a screenshot", "lib/steps.py",
+          '"screenshot"' in steps_src)
+    check("a walkthrough can record", "lib/steps.py", '"record"' in steps_src)
+    try:
+        example = load_yaml("macos/15/steps/primitives.yaml")
+        names = [s.get("name") for s in (example.get("steps") or [])]
+        keys = set()
+        for one in (example.get("steps") or []):
+            keys |= set(one)
+        check("the primitives example boots", "macos/15/steps/primitives.yaml",
+              "boot the disk" in names)
+        check("the primitives example proves the whole vocabulary",
+              "macos/15/steps/primitives.yaml",
+              {"boot", "require_ssh", "ssh", "scp", "python", "share_serve", "share_mount",
+               "reboot", "shutdown", "screenshot", "record"} <= keys)
+        check("the primitives example declares a capability",
+              "macos/15/steps/primitives.yaml", "requires" in keys)
+    except Exception as exc:                          # noqa: BLE001
+        check(f"primitives.yaml loads ({exc})", "macos/15/steps/primitives.yaml", False)
+
     # --- A RELATIVE `scp:` PATH CAN COME FROM TWO PLACES ---------------------------------
     #
     # A file checked in with the walkthrough lives under REPO; a file a `python:` step generated
@@ -497,8 +555,10 @@ def main() -> int:
               "boot the disk" in names)
         check("the lifecycle example reboots", "macos/15/steps/lifecycle.yaml",
               "reboot into the same system" in names)
-        check("the lifecycle example shuts down without waiting", "macos/15/steps/lifecycle.yaml",
-              any(s.get("shutdown") and s.get("graceful") is False
+        # `shutdown: kill` NOW, NOT `graceful: false`: the method is named rather than inferred.
+        check("the lifecycle example names its shutdown method", "macos/15/steps/lifecycle.yaml",
+              any(isinstance(s.get("shutdown"), str) and s["shutdown"] in
+                  ("kill", "guest_agent", "ssh", "acpi")
                   for s in (example.get("steps") or [])))
     except Exception as exc:                          # noqa: BLE001
         check(f"lifecycle imports ({exc})", "lib/steps.py", False)
