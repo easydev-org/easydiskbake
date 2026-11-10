@@ -336,31 +336,38 @@ def _second_boot(bakery: Bakery, args, work: str, disk: str, walk_path: str) -> 
     disk_guest.start()
     log(bakery.name, f"disk guest qemu pid {disk_guest.pid}")
 
-    # THE QMP SOCKET FILE EXISTS BEFORE QEMU LISTENS ON IT.
+    # THE QMP SOCKET FILE EXISTS BEFORE QEMU LISTENS ON IT, AND THIS GUEST IS CONNECTED TO
+    # IMMEDIATELY - the first guest is not, because `_wait_for_desktop` runs a `look` loop for
+    # tens of seconds before any walk begins.
     #
-    # `steps.run_file` waits for the PATH and then connects; qemu creates the path during
-    # startup and starts accepting a moment later, so connecting on the first poll is a race
-    # that qemu usually wins and occasionally loses. Run 921cde2 lost it:
+    # Run 921cde2 lost that race inside `steps.run_file`:
     #
     #     11:05:26  disk guest qemu pid 12810
     #     11:05:26  === the walk (second boot, from 'first boot') ===
     #               ConnectionRefusedError: [Errno 111] Connection refused
     #
-    # THE FIRST GUEST DOES NOT NEED THIS because `_wait_for_desktop` runs a `look` loop for
-    # seconds before any walk begins. This one is connected to immediately, so it waits here:
-    # the same question `steps.Driver` asks, asked before it asks it.
+    # SO THE WAIT IS HERE, ON THE PATH, AND IT SAYS WHY WHEN IT GIVES UP. Run c4ff854 waited
+    # 60 s and then reported nothing useful - and its own frame shows the disk had reached the
+    # Fedora DESKTOP (`Nov 10 11:30 AM`, the stock wallpaper), so the guest was running and
+    # the socket was the thing that was late.
+    #
+    # THE DIAGNOSIS IS THE POINT: the process, the path, and whether qemu ever made one.
     import qmp as _qmp2
-    ready_by = time.time() + 60
+    ready_by = time.time() + 300
     while time.time() < ready_by:
-        try:
-            probe = _qmp2.QMP(disk_guest.paths.drive)
-            probe.close()
+        if os.path.exists(disk_guest.paths.drive):
             break
-        except Exception:                              # noqa: BLE001
-            time.sleep(2)
+        if disk_guest.proc.poll() is not None:
+            log(bakery.name,
+                f"=== QEMU EXITED ({disk_guest.proc.returncode}) BEFORE ITS QMP SOCKET ===")
+            return False
+        time.sleep(2)
     else:
-        log(bakery.name, "=== THE SECOND GUEST NEVER ANSWERED QMP ===")
+        log(bakery.name,
+            f"=== NO QMP SOCKET AT {disk_guest.paths.drive} AFTER 300s "
+            f"(qemu pid {disk_guest.proc.pid}, alive={disk_guest.proc.poll() is None}) ===")
         return False
+    log(bakery.name, "the second guest's QMP socket is up")
 
     frames = os.path.join(work, "frames-disk")
     os.makedirs(frames, exist_ok=True)
