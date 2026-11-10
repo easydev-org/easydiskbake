@@ -202,11 +202,24 @@ def wait_for_ssh(port: int, seconds: int, note=log, settle: int = 10,
     started = time.time()
     out = ""
     status = None
+    # A HEARTBEAT, BECAUSE 900 SILENT SECONDS ARE INDISTINGUISHABLE FROM A HANG.
+    #
+    # Run 42874167311's clean waited its whole budget and printed one line at the end. Whether
+    # the guest was booting slowly, had booted with no network, or had died at HANDOFF TO XNU
+    # was unknowable from the log - and those want opposite fixes. One line a minute costs
+    # nothing and says which.
+    beat = 60.0
+    next_beat = started + beat
     while time.time() < deadline:
         status, out = ssh(port, probe, timeout=20, user=user, password=password)
         if status == 0:
             note(f"ssh answers after {time.time() - started:.0f}s")
             return True
+        if time.time() >= next_beat:
+            next_beat = time.time() + beat
+            last = (out or "").strip().splitlines()
+            note(f"  still waiting after {time.time() - started:.0f}s of {seconds}s "
+                 f"(last status {status}: {last[-1][:120] if last else 'no output'})")
         time.sleep(settle)
     note(f"=== SSH DID NOT ANSWER IN {seconds}s ===")
     note(f"  the probe was: {probe}")

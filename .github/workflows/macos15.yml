@@ -629,6 +629,29 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      # THE SCREEN THE CLEAN STOPPED ON, WHICH IS THE ONLY THING THAT SAYS WHY.
+      #
+      # lib/clean_step.py writes out/clean-stopped.png when the guest never answers on ssh, and
+      # nothing uploaded it - so run 42874167311's failure had a picture on the runner and a job
+      # log that could not say what it showed. The console in that log ends at
+      #
+      #     #[EB|LOG:HANDOFF TO XNU] _
+      #     ======== End of efiboot serial output. ========
+      #
+      # which is NORMAL for every macOS boot (the kernel stops writing to the efiboot serial at
+      # that line), so the log genuinely cannot distinguish "the kernel died" from "the kernel
+      # booted and the network never came up".
+      - name: keep the screen the clean stopped on
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos15-vm-configure-clean-stopped
+          path: |
+            out/clean-stopped.png
+            out/macos15-vm-configure-clean-work/console.log
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: push the disk
         if: success()
         id: publish

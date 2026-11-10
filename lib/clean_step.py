@@ -230,8 +230,8 @@ def main(argv: list[str]) -> int:
         # with no panic and nothing in the console after it (run 42778795463). machine.py already
         # records the same trade for the installer, which is why TARGET_DRIVE_PLAIN exists.
         #
-        # The clean later re-compresses what it leaves behind, so nothing is lost: discard here
-        # was never going to shrink anything that is already compressed.
+        # AND RUN 42874167311 REPEATS THE SAME DEATH WITH THIS VALUE IN PLACE, which is why the
+        # cause is not this flag - see the note above this call for what it actually is.
         discard=False)
     if guest is None:
         return 2
