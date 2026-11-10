@@ -47,6 +47,12 @@ def log(message: str) -> None:
     print(f"[clean-step {time.strftime('%H:%M:%S')}] {message}", flush=True)
 
 
+# WHERE THE SIGNAL NOTE GOES. A dict rather than a module global so the handler, which runs with
+# no arguments and no local state, can still find the directory the stage was told to use; main()
+# fills it before any signal can arrive.
+_ARTIFACTS: dict[str, str] = {}
+
+
 def _install_signal_reporting() -> None:
     """Say so when a signal arrives, and from whom, instead of dying silently.
 
@@ -72,6 +78,15 @@ def _install_signal_reporting() -> None:
             sender = ""
         print(f"[clean-step] === SIGNALLED: {signal.Signals(signum).name} ({signum}) ==={sender}",
               flush=True)
+        # THE VERDICT FILE IS THE STAGE'S OWN RECORD, AND IT IS WHAT THE WORKFLOW READS WHEN THE
+        # EXIT CODE IS A SIGNAL. It is appended to on every note(), so the stages that already
+        # ran are in it; naming the signal is what turns "241" into a sentence.
+        try:
+            path = os.path.join(_ARTIFACTS.get("dir", "out"), "clean-signal.txt")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(f"{signal.Signals(signum).name} ({signum}){sender}\n")
+        except OSError:
+            pass
         signal.signal(signum, signal.SIG_DFL)
         os.kill(os.getpid(), signum)
 
@@ -134,6 +149,7 @@ def main(argv: list[str]) -> int:
     work = os.path.abspath(args.work or os.path.dirname(os.path.abspath(args.disk)))
     os.makedirs(work, exist_ok=True)
     os.makedirs(args.artifacts, exist_ok=True)
+    _ARTIFACTS["dir"] = args.artifacts
 
     verdict = os.path.join(args.artifacts, f"clean-{args.kind}.txt")
     lines: list[str] = []
@@ -404,7 +420,23 @@ def main(argv: list[str]) -> int:
     # the clean did anything: a disk that compresses to the same size it had before was cleaned
     # and not improved.
     before = os.path.getsize(args.disk)
-    compress.compress(args.disk, args.disk)
+    try:
+        compress.compress(args.disk, args.disk)
+    except Exception as exc:                              # noqa: BLE001
+        # THE CLEAN IS ALREADY DONE BY HERE, AND A FAILED RE-COMPRESS MUST NOT UNDO IT.
+        #
+        # This runs after the guest has been cleaned and shut down, so the disk is correct at this
+        # line - the compress only makes it smaller. Reporting failure would tell the workflow to
+        # throw away a cleaned disk because a size optimisation did not run, and `compress()`
+        # writes to a `.part` and renames, so a failure leaves the previous image intact.
+        #
+        # Run 42916758079 is why this is written down: the process was killed (241, `-15 & 0xFF`)
+        # half a second after `the guest powered off`, before this line printed anything, and the
+        # stage failed with the work already done.
+        note(f"=== THE RE-COMPRESS DID NOT RUN: {exc} ===")
+        note(f"  the disk is cleaned; it is simply {before >> 20} MiB instead of smaller")
+        note(f"CLEANED {args.disk} (uncompressed)")
+        return 0
     after = os.path.getsize(args.disk)
     note(f"  {before >> 20} MiB -> {after >> 20} MiB")
 

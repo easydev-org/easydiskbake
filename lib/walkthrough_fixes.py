@@ -937,6 +937,27 @@ def main() -> int:
     # cheap to exclude even before a run proves which one it was.
     check("the share teardown never signals the caller", "lib/hostshare.py",
           "pid == os.getpid()" in read("lib/hostshare.py"))
+    # AND A CLEAN THAT FINISHED IS NOT FAILED BY THE RE-COMPRESS BEING KILLED.
+    #
+    # The workflow used to trust the exit code alone, so run 42916758079 reported failure for a
+    # disk that had been cleaned and shut down correctly - the SIGTERM arrived half a second after
+    # `the guest powered off`, before the re-compress printed a line.
+    #
+    # THE RECORD DECIDES NOW, AND ONLY WHEN IT SAYS SO. `clean_step.py` rewrites
+    # out/clean-macos.txt on every completed step and writes CLEANED at the end; the workflow
+    # passes a non-zero exit only when that line is absent. A clean that genuinely did not finish
+    # still fails, which is the part that must not be lost in the convenience.
+    mac_clean_step = read(".github/workflows/macos15.yml")
+    seg = mac_clean_step[mac_clean_step.index("name: clean the disk"):]
+    seg = seg[:seg.index("keep the last frame")]
+    check("a finished clean survives a killed re-compress",
+          ".github/workflows/macos15.yml",
+          'grep -q "^CLEANED " out/clean-macos.txt' in seg and "exit 0" in seg)
+    check("a clean that did not finish still fails",
+          ".github/workflows/macos15.yml", 'exit "$STATUS"' in seg)
+    # AND THE SIGNAL IS NAMED IN THE ARTIFACTS, so the exit code is explainable after the fact.
+    check("a signalled clean leaves a note naming the signal", "lib/clean_step.py",
+          "clean-signal.txt" in read("lib/clean_step.py"))
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))

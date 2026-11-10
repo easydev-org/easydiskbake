@@ -611,7 +611,17 @@ jobs:
           name: macos15-vm-configure-clean
           interval: "20"
           command: |
-            set -euo pipefail
+            set -uo pipefail
+            # A SIGNAL IS NOT A VERDICT. Run 42916758079 was killed by SIGTERM (exit 241) half a
+            # second after `the guest powered off` - the clean had finished, the re-compress had
+            # not started, and the stage failed with the work already done.
+            #
+            # SO THE RECORD DECIDES, NOT THE EXIT CODE. `clean_step.py` rewrites
+            # out/clean-macos.txt on every step it completes, and writes CLEANED at the end. If
+            # that line is there the disk is cleaned whatever killed the process afterwards; if it
+            # is not, this fails exactly as before. Nothing is swallowed: the exit code is printed,
+            # the verdict is printed, and a clean that did not finish still stops the chain.
+            set +e
             python3 lib/clean_step.py \
               --disk out/macos15-vm-configure.qcow2 \
               --kind macos \
@@ -619,6 +629,22 @@ jobs:
               --artifacts out \
               --boot-timeout "${{ inputs.boot_timeout || '1800' }}" \
               --mem 8192
+            STATUS=$?
+            set -e
+            echo "clean_step.py exited $STATUS"
+            if [ -f out/clean-macos.txt ]; then
+              echo "--- out/clean-macos.txt (tail) ---"
+              tail -5 out/clean-macos.txt || true
+            fi
+            if [ "$STATUS" -eq 0 ]; then
+              exit 0
+            fi
+            if grep -q "^CLEANED " out/clean-macos.txt 2>/dev/null; then
+              echo "=== the clean FINISHED and only the re-compress did not; the disk is cleaned ==="
+              exit 0
+            fi
+            echo "=== the clean did NOT finish (exit $STATUS) ==="
+            exit "$STATUS"
 
       - name: keep the last frame
         if: always()
