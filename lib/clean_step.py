@@ -204,7 +204,16 @@ def main(argv: list[str]) -> int:
 
     import vm_session
 
-    guest, reached = vm_session.start(
+    # THREE VALUES, BECAUSE start() RETURNS AN OVERLAY TOO. It gained one when verification
+    # stages moved off `shutil.copyfile`; this caller was never updated and failed on the
+    # assignment - before it could boot anything, which is why the run showed a 900-second wait
+    # for a guest that had never been started:
+    #
+    #     ValueError: too many values to unpack (expected 2)
+    #
+    # `clean` is the one caller that passes `copy=False`, so the overlay it gets back is always
+    # None. It is named anyway: unpacking it is what keeps this call honest if that changes.
+    guest, reached, _overlay = vm_session.start(
         args.kind, args.disk, work,
         ssh_port=spec["ssh_port"], boot_timeout=args.boot_timeout,
         copy=False, share=hostshare.DEFAULT_DIR,

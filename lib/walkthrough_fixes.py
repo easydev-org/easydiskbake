@@ -439,6 +439,29 @@ def main() -> int:
     # run just made.
     check("a relative scp path can be a file a python step just wrote", "lib/steps.py",
           'candidate = os.path.join(work, local)' in read("lib/steps.py"))
+    # AND EVERY CALLER UNPACKS WHAT start() ACTUALLY RETURNS.
+    #
+    # It gained an overlay when verification stages moved off `shutil.copyfile`, and clean_step
+    # was not updated:
+    #
+    #     guest, reached = vm_session.start(...)
+    #     ValueError: too many values to unpack (expected 2)
+    #
+    # which failed on the ASSIGNMENT, before booting anything - and the run then looked like a
+    # 900-second wait for a guest that had never started (run 42797599214's clean). A grep is
+    # enough to keep the four callers in step, and it is the only place that can.
+    import re as _re
+    bad = []
+    for name in ("lib/steps.py", "lib/boot_machine.py", "lib/clean_step.py"):
+        for line in read(name).splitlines():
+            m = _re.match(r"\s*([\w,\s]+?)\s*=\s*vm_session\.start\(", line)
+            if m and len([p for p in m.group(1).split(",") if p.strip()]) != 3:
+                bad.append(f"{name}: {line.strip()[:60]}")
+    if bad:
+        check(f"every vm_session.start caller unpacks three values ({'; '.join(bad)})",
+              "lib/vm_session.py", False)
+    else:
+        check("every vm_session.start caller unpacks three values", "lib/vm_session.py", True)
 
     # --- A YAML FILE CAN OWN ITS MACHINE -------------------------------------------------
     #
