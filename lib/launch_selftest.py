@@ -18,7 +18,8 @@ THE CHAIN IT PROVES, IN ORDER
 
     the disk boots and answers ssh        (the stage before this one is still good)
     the share mounts                      (lib/hostshare.py, same code the disk was built with)
-    ~/shared/bootstrap.py is put there    (the file the launcher waits for)
+    ~/shared/bootstrap.sh is put there    (the file the launcher waits for)
+    ~/shared/bootstrap.ps1  on Windows     (the same, in the shell Windows has)
     the launcher runs it at login         (launchd / Task Scheduler)
     ~/hello.txt exists and says so        (read back over ssh)
 
@@ -214,7 +215,7 @@ def main(argv: list[str]) -> int:
             log(f"=== IT RAN BUT DID NOT PROVE: {', '.join(missing)} ===")
             return 1
         ok = True
-        log("=== THE CHAIN WORKS: launcher -> share -> python -> ~/hello.txt ===")
+        log("=== THE CHAIN WORKS: launcher -> share -> bootstrap -> ~/hello.txt ===")
         return 0
     finally:
         if not args.keep:

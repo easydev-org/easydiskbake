@@ -8,8 +8,8 @@
 # PowerShell 5.1, which ships with Windows 11 - so this runs on a disk straight out of `bake.py`,
 # and a failure here is about the share rather than about a 17.14.44 Visual Studio download.
 #
-# WHAT THE LOGON HOOK RUNS IS `~/shared/bootstrap.ps1`, WHICH THE PERSON PUTS THERE. Nothing on
-# this disk is required to make it work.
+# WHAT THE LOGON HOOK RUNS IS `\\<host>\shared\bootstrap.ps1`, WHICH THE PERSON PUTS THERE.
+# Nothing on this disk is required to make it work.
 #
 # THIS FILE INSTALLS NOTHING ELSE.
 
@@ -23,6 +23,15 @@ vars:
   password:
     from: args.password
     default: admin
+  # THE SERVER, SO THE PROOF BELOW DOES NOT HARD-CODE AN ADDRESS.
+  #
+  # The default below is this container's end of the bridge: true of every run here and not
+  # true of anything else. A literal typed into an ssh command would bake the CI network into
+  # a published disk, which is the mistake this variable exists to prevent - so the address is
+  # written ONCE, here, and read everywhere.
+  host:
+    from: args.host
+    default: 172.30.0.1
 
 ssh_user: docker
 ssh_port: 2222
@@ -33,19 +42,30 @@ steps:
     ssh_probe: echo ok
     timeout: 900
 
-  # THE SHARE. The mount stores a credential for the server and no drive letter - a mapped drive
-  # belongs to the logon session that made it, and every `ssh host command` starts a new one. The
-  # proof below addresses the share by UNC path for that reason.
+  # THE SHARE. `cmdkey` puts the credential in the account's vault and the `net use` that follows
+  # only checks it works - because a CONNECTION, with or without a drive letter, belongs to the
+  # logon session that made it, and every `ssh host command` starts a new one. Runs
+  # 42737785611 and 42744898001 failed on exactly that, one on the drive letter and one on the
+  # deviceless form. The credential is the thing that survives.
   - name: mount the host share
     share_mount: true
     share_family: windows
     timeout: 180
 
-  # A MAPPING THAT REPORTS SUCCESS AND A DIRECTORY THAT IS EMPTY ARE DIFFERENT FACTS - and a
-  # drive letter that vanished with its session is a third.
+  # A MOUNT THAT REPORTED SUCCESS AND A SHARE THIS SESSION CAN ACTUALLY USE ARE DIFFERENT FACTS.
+  #
+  # This runs as a SEPARATE ssh command from the mount above on purpose: if it passed only
+  # because the mount's own session was still open, it would prove nothing about the logon hook,
+  # which runs in a session of its own.
   - name: prove the share is readable and writable
-    ssh: cmd /c "dir \\172.30.0.1\shared & echo written-by-windows > \\172.30.0.1\shared\from-guest.txt & type \\172.30.0.1\shared\from-guest.txt"
+    ssh: cmd /c "dir \\{{ host }}\shared & echo written-by-this-session > \\{{ host }}\shared\from-guest.txt & type \\{{ host }}\shared\from-guest.txt"
     timeout: 120
+
+  # AND THE CREDENTIAL ITSELF, because that is what the next logon depends on. `cmdkey /list`
+  # names the target it will answer for; a mapping would have vanished by then.
+  - name: prove the credential is in the vault
+    ssh: cmd /c "cmdkey /list | findstr /i {{ host }} & echo --- & cmdkey /list | findstr /i guest"
+    timeout: 60
 
   # THE LOGON HOOK: a Task Scheduler task at ONLOGON, running the launcher through
   # `powershell.exe -WindowStyle Hidden` so no console flashes on the desktop.
@@ -53,3 +73,10 @@ steps:
     bootstrap_install: true
     share_family: windows
     timeout: 300
+
+  # THE TASK HAS TO EXIST AND HAS TO POINT AT THE LAUNCHER. A registration that failed prints an
+  # error, but a registration that succeeded and named the wrong path prints nothing until the
+  # next logon - which is a whole publish cycle away.
+  - name: prove the logon task is registered
+    ssh: cmd /c "schtasks /Query /TN easydiskbake-bootstrap /FO LIST"
+    timeout: 60

@@ -409,6 +409,57 @@ def main() -> int:
         body = read(path)
         check(f"{path} installs no toolchain", path,
               "brew install" not in body and "winget install" not in body)
+        # AND HARD-CODES NO ADDRESS IN A COMMAND. The server is a fact about the run, not about
+        # the disk, so a literal typed into an ssh line would bake the CI bridge network into a
+        # published image. The literal is allowed ONCE, as the var's documented default - that is
+        # the single place a reader looks to change it.
+        check(f"{path} names the server once, as a var default", path,
+              body.count("172.30.0.1") == 1)
+
+    # THE AUTHENTICATION IS CLIENT-SPECIFIC, AND BOTH CLIENTS FAILED THE OBVIOUS WAY.
+    #
+    # macOS: `mount_smbfs` as a normal account against Samba is refused while root succeeds, so
+    # the mount belongs to a LaunchDaemon and the bootstrap to a LaunchAgent. One credential,
+    # two triggers, and the file the agent waits for is the handover.
+    #
+    # Windows: a CONNECTION - with or without a drive letter - belongs to the logon session that
+    # made it, and every `ssh host command` starts a new one. Only the CREDENTIAL survives, so
+    # `cmdkey` writes the vault and the launcher addresses the share by UNC path.
+    try:
+        import hostshare
+        mac = hostshare.mount_commands()["macos"]
+        win = hostshare.mount_commands()["windows"]
+        # NOT `nsmb.conf`, WHICH HAS NO `password` KEYWORD. Run 42746003442 had the server
+        # answer NT_STATUS_WRONG_PASSWORD for an empty password that -N supplied from a file
+        # that cannot carry one.
+        check("macos does not pretend nsmb.conf can hold a password", "lib/hostshare.py",
+              "nsmb.conf" not in mac)
+        check("the macos mount goes through root", "lib/hostshare.py",
+              "sudo -S" in mac and "mount_smbfs" in mac)
+        check("the windows mount stores a credential, not a connection", "lib/hostshare.py",
+              "cmdkey" in win and "net use" in win)
+        # AND A DRIVE LETTER WOULD BE THE SAME MISTAKE AGAIN: it belongs to the session that
+        # made it. `net use Z:` failing to be visible one step later is run 42737785611.
+        check("the windows mount claims no drive letter", "lib/hostshare.py",
+              "net use Z:" not in win)
+
+        check("the macos mount is a LaunchDaemon, because a user cannot mount a samba share",
+              "lib/bootstrap.py",
+              "MACOS_MOUNT_LABEL" in read("lib/bootstrap.py")
+              and "LaunchDaemons" in read("lib/steps.py"))
+        # THE AGENT NO LONGER MOUNTS. Two things that both mount are two things that can
+        # disagree about whether the share is up. The word survives in the comment that explains
+        # why it is the daemon's job, so the check is for a command.
+        agent = bootstrap.launcher_body("macos", "172.30.0.1", "guest", "shared")
+        agent_cmds = [line for line in agent.splitlines()
+                      if not line.lstrip().startswith("#")]
+        check("the macos agent waits for the daemon instead of mounting", "lib/bootstrap.py",
+              not any("mount_smbfs" in line for line in agent_cmds))
+        check("the macos daemon carries the mount", "lib/bootstrap.py",
+              "mount_smbfs" in bootstrap.macos_mount_script(
+                  "172.30.0.1", "guest", "shared", "admin"))
+    except Exception as exc:                          # noqa: BLE001
+        check(f"hostshare imports ({exc})", "lib/hostshare.py", False)
 
     # AND THE dev STAGES NO LONGER CARRY THE SHARE.
     for path in ("macos/15/steps/dev.yaml", "windows/11/steps/dev.yaml"):

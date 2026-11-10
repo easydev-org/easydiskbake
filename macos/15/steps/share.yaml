@@ -25,6 +25,14 @@ vars:
   password:
     from: args.password
     default: admin
+  # THE SERVER, SO THE PROOF BELOW DOES NOT HARD-CODE AN ADDRESS.
+  #
+  # The default below is this container's end of the bridge. A literal typed into an ssh
+  # command would bake the CI network into a published disk, which is the mistake this
+  # variable exists to prevent - so the address is written ONCE, here, and read everywhere.
+  host:
+    from: args.host
+    default: 172.30.0.1
 
 ssh_user: docker
 ssh_port: 2222
@@ -50,15 +58,27 @@ steps:
       ls -la ~/shared | head -20 && printf 'written-by-%s\n' "$(hostname)" > ~/shared/from-guest.txt && cat ~/shared/from-guest.txt
     timeout: 120
 
-  # THE MOUNT IS THE STEP ABOVE; THIS IS THE THING THAT WOULD SURVIVE A REBOOT.
+  # THE MOUNT IS A LAUNCHDAEMON, BECAUSE A USER CANNOT MOUNT A SAMBA SHARE.
   #
-  # nsmb.conf holds the credential mount_smbfs used, and it is what makes a second mount work
-  # without a prompt - so a mount that succeeded from a file this run wrote and a mount that
-  # succeeds from the file the disk carries are the same fact only if the file is there.
-  - name: prove the smb credential is on the disk
+  # `mount_smbfs` as a normal account against Samba answers "server rejected the connection:
+  # Authentication error" while the same credential from root succeeds - see the note in
+  # lib/hostshare.py's mount_commands, where two runs and the server's own log established it.
+  # The login hook runs as the user, so it is not the thing that mounts; a daemon owns the
+  # mount and an agent owns the bootstrap, and the file the agent waits for is the handover.
+  - name: prove the mount daemon is installed
     ssh: |
-      ls -l ~/Library/Preferences/nsmb.conf && sed 's/^password.*/password = <redacted>/' ~/Library/Preferences/nsmb.conf
-    timeout: 60
+      ls -l /Library/LaunchDaemons/org.easydiskbake.smbmount.plist /usr/local/bin/easydiskbake-smbmount.sh &&
+      plutil -lint /Library/LaunchDaemons/org.easydiskbake.smbmount.plist &&
+      printf '%s\n' '{{ password }}' | sudo -S -p '' launchctl print system/org.easydiskbake.smbmount | head -12
+    timeout: 120
+
+  # THE PROOF THAT MATTERS MOST: the mount the daemon made is on the system's mount table and
+  # the share is readable through it. A plist that is valid and loaded can still mount nothing,
+  # and that would otherwise be discovered at the next boot on a published disk.
+  - name: prove the daemon mounted the share
+    ssh: |
+      mount | grep ' on /Users/' && ls -la ~/shared | head -10
+    timeout: 120
 
   # THE LOGIN HOOK. A LaunchAgent in ~/Library/LaunchAgents is loaded by launchd at the next
   # graphical login - which is exactly when this is meant to run, and there is no gui domain to
@@ -67,3 +87,12 @@ steps:
     bootstrap_install: true
     share_family: macos
     timeout: 300
+
+  # THE PLIST HAS TO BE VALID AND HAS TO NAME THE LAUNCHER. `plutil -lint` in the install step
+  # catches malformed XML; this catches a plist that is well formed and points at nothing.
+  - name: prove the login hook is installed
+    ssh: |
+      ls -l ~/Library/LaunchAgents/org.easydiskbake.bootstrap.plist ~/bootstrap-launcher.sh &&
+      plutil -lint ~/Library/LaunchAgents/org.easydiskbake.bootstrap.plist &&
+      grep -c bootstrap-launcher.sh ~/Library/LaunchAgents/org.easydiskbake.bootstrap.plist
+    timeout: 60

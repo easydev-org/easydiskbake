@@ -181,7 +181,7 @@ def mount(family: str, guest, user: str, password: str, *, log=print) -> bool:
     if not hostshare.listening():
         log("=== THE HOST IS NOT SERVING THE SHARE ===")
         return False
-    command = hostshare.mount_commands(user=user)[family]
+    command = hostshare.mount_commands(user=user, login_password=password)[family]
     status, output = session.ssh(port, command, timeout=180, user=user, password=password)
     log(f"mount -> {status}")
     for line in (output or "").splitlines()[:8]:

@@ -43,6 +43,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import sys
 import time
 
@@ -283,6 +284,11 @@ class Walk:
         point of the second form is that the walkthrough never hard-codes the account: the
         same YAML bakes a `docker` disk and an `admin` disk, and a driver that typed a literal
         would be a driver that lies about which account is on the disk it produced.
+
+        ONE SOURCE IS COMPUTED RATHER THAN PASSED. `args.host` is the share's server, which is
+        this container's end of the bridge - a fact about the run and not about the disk, so
+        writing it into the file would bake the CI network into a published image. No stage
+        passes it, so it is filled in here from lib/net.py.
         """
         resolved = {}
         for key, spec in self.vars.items():
@@ -290,6 +296,9 @@ class Walk:
                 source = spec.get("from") or ""
                 if overrides and source in overrides:
                     resolved[key] = overrides[source]
+                elif source == "args.host":
+                    import net
+                    resolved[key] = net.BRIDGE_IP
                 else:
                     resolved[key] = spec.get("default", "")
             else:
@@ -1049,23 +1058,29 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
             raise StepError(f"{step.name}: the script exited {status}")
         return
 
-    # --- bootstrap_install: THE LOGIN HOOK THAT RUNS ~/shared/bootstrap.py ------------
+    # --- bootstrap_install: THE LOGIN HOOK THAT RUNS THE SHARE'S bootstrap -----------
     #
     # THE HALF THE SHARE ALONE DOES NOT DO. A directory the guest can read is a directory
     # somebody has to open; the point of putting a bootstrap on the host is that the machine
     # runs it without being asked. So this installs the launcher and the trigger, and leaves
-    # the script itself to the person - the launcher does nothing until ~/shared/bootstrap.py
-    # exists, which is what makes it safe to bake into a published disk.
+    # the script itself to the person - the launcher does nothing until the share carries a
+    # bootstrap.sh (or .ps1), which is what makes it safe to bake into a published disk.
     #
-    # PYTHON ON BOTH DISKS, WHICH IS WHY windows/11/steps/dev.yaml NOW INSTALLS IT. One
-    # bootstrap.py has to run on both, and a shell script does not run on Windows while a .ps1
-    # does not run on macOS. See lib/bootstrap.py.
+    # NO PYTHON ON EITHER DISK. This stage runs before the toolchain exists, so the launcher is
+    # `/bin/sh` on macOS and PowerShell 5.1 on Windows - see lib/bootstrap.py for why that is a
+    # requirement rather than a preference.
     if step["bootstrap_install"]:
         import bootstrap
+        import hostshare
+        import net
         import session
 
         family = str(step.get("share_family") or "macos")
-        local = bootstrap.write_launcher(driver.work or ".", family)
+        # THE SERVER IS WRITTEN INTO THE LAUNCHER, because nothing else the launcher could look
+        # at survives a reboot: the mount does not, and an empty ~/shared directory is a
+        # perfectly convincing stand-in for a mounted one.
+        local = bootstrap.write_launcher(driver.work or ".", family, host=net.BRIDGE_IP,
+                                         user=hostshare.SMB_USER, share=hostshare.SHARE_NAME)
         # THE LAUNCHER IS A SHELL SCRIPT ON macOS AND A .ps1 ON WINDOWS, because each disk runs
         # the language it already has - the share is installed before any toolchain.
         name = bootstrap.launcher_name(family)
@@ -1114,6 +1129,37 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
             #
             # `eval echo ~<user>` is the portable spelling; `$HOME` under sudo or a login shell
             # can be another account's.
+            # AND THE DAEMON THAT MOUNTS, BEFORE THE AGENT THAT RUNS.
+            #
+            # A non-root mount_smbfs against Samba is refused; the agent runs as the user. So the
+            # mount is a LaunchDaemon (root, at boot) and the bootstrap is a LaunchAgent (user, at
+            # login), and the file the agent waits for is the handover between them.
+            # ONE SUDO PREFIX FOR THE WHOLE SCRIPT, built from the account's password. `-S`
+            # reads it from stdin and `-p ''` stops the prompt text landing in the output.
+            sudo = f"printf '%s\\n' {shlex.quote(password or 'admin')} | sudo -S -p '' "
+            mount_script = bootstrap.macos_mount_script(
+                net.BRIDGE_IP, hostshare.SMB_USER, hostshare.SHARE_NAME,
+                hostshare.SMB_PASSWORD, home=f"/Users/{login or 'docker'}")
+            mount_local = os.path.join(driver.work or ".", "smbmount.sh")
+            with open(mount_local, "w") as fh:
+                fh.write(mount_script)
+            status, output = session.scp(mount_local, "/tmp/smbmount.sh", port=ssh_port,
+                                         timeout=300, user=login, password=password)
+            if status != 0:
+                if not step["optional"]:
+                    raise StepError(f"{step.name}: the mount script copy exited {status}")
+                return
+
+            daemon_local = os.path.join(driver.work or ".", "smbmount.plist")
+            with open(daemon_local, "w") as fh:
+                fh.write(bootstrap.macos_mount_plist("__SCRIPT__"))
+            status, output = session.scp(daemon_local, "/tmp/smbmount.plist", port=ssh_port,
+                                         timeout=300, user=login, password=password)
+            if status != 0:
+                if not step["optional"]:
+                    raise StepError(f"{step.name}: the daemon copy exited {status}")
+                return
+
             target_expr = f"$launchd_home/Library/LaunchAgents/{bootstrap.MACOS_LABEL}.plist"
             script = (
                 "set -e\n"
@@ -1153,6 +1199,52 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
                 "# plutil CATCHES A MALFORMED PLIST NOW RATHER THAN AT THE NEXT LOGIN, where\n"
                 "# nobody would connect the failure to this stage.\n"
                 f"plutil -lint \"{target_expr}\"\n"
+                # --- THE MOUNT DAEMON -------------------------------------------------
+                #
+                # /Library/LaunchDaemons NEEDS ROOT, and this channel has it through `sudo -S`
+                # the same way macos/15/steps/ssh.yaml sets the host name.
+                #
+                # THE PREFIX IS BUILT HERE, NOT AS `{{ password }}`, because this string is run
+                # through the same {{ }} substitution as every other step - and a literal
+                # placeholder would be looked up as a variable and fail at run time.
+                f"{sudo}sh -c '"
+                "mkdir -p /Library/LaunchDaemons && "
+                "cp /tmp/smbmount.sh /usr/local/bin/easydiskbake-smbmount.sh && "
+                # 0700, BECAUSE THE SCRIPT CARRIES THE SHARE PASSWORD. root runs it; nobody else
+                # has any business reading it, and no keychain exists to hold it instead.
+                "chmod 700 /usr/local/bin/easydiskbake-smbmount.sh && "
+                "chown root:wheel /usr/local/bin/easydiskbake-smbmount.sh && "
+                "sed \"s|__SCRIPT__|/usr/local/bin/easydiskbake-smbmount.sh|\" "
+                f"/tmp/smbmount.plist > /Library/LaunchDaemons/{bootstrap.MACOS_MOUNT_LABEL}.plist && "
+                f"chmod 644 /Library/LaunchDaemons/{bootstrap.MACOS_MOUNT_LABEL}.plist && "
+                "chown root:wheel "
+                f"/Library/LaunchDaemons/{bootstrap.MACOS_MOUNT_LABEL}.plist'\n"
+                # UNMOUNT FIRST, SO THE DAEMON IS WHAT MOUNTS.
+                #
+                # The step above mounted ~/shared to prove the credential works. If that mount
+                # is still there, the daemon finds it and exits 0 having done nothing - and the
+                # thing this stage is meant to leave behind, a disk that mounts itself at boot,
+                # would be untested. `umount` is the only way to tell the two apart.
+                f"{sudo}umount ~/shared 2>&1 || true\n"
+                f"{sudo}launchctl bootout system/{bootstrap.MACOS_MOUNT_LABEL} 2>/dev/null || true\n"
+                # A SYSTEM DOMAIN EXISTS FROM BOOT, so unlike the agent this CAN be loaded over
+                # ssh - and loading it now is what proves the mount works before the disk is
+                # published, rather than one launch later.
+                f"{sudo}launchctl bootstrap system "
+                f"/Library/LaunchDaemons/{bootstrap.MACOS_MOUNT_LABEL}.plist\n"
+                # THE DAEMON RETRIES, so the mount appears a few seconds after the bootstrap
+                # rather than instantly; this waits for it instead of racing it.
+                "i=0\n"
+                "while ! mount | grep -q ' on /Users/'; do\n"
+                "  i=$((i + 1)); [ \"$i\" -gt 30 ] && break; sleep 2\n"
+                "done\n"
+                "mount | grep ' on /Users/' || {\n"
+                "  echo '=== THE DAEMON DID NOT MOUNT THE SHARE ==='\n"
+                f"  {sudo}launchctl print system/{bootstrap.MACOS_MOUNT_LABEL} | head -20\n"
+                f"  {sudo}tail -5 /var/log/{bootstrap.MACOS_MOUNT_LABEL}.err 2>&1\n"
+                "  exit 1\n"
+                "}\n"
+                "ls -la ~/shared | head -5\n"
                 "echo INSTALLED_FOR_NEXT_LOGIN\n"
             )
         else:
@@ -1211,7 +1303,8 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
             log(f"  {step.name}: the share did not start, and the step is optional")
             return
 
-        command = hostshare.mount_commands(user=login or "docker")[family]
+        command = hostshare.mount_commands(user=login or "docker",
+                                          login_password=password or "admin")[family]
         timeout = int(step.get("timeout", 180))
         status, output = session.ssh(ssh_port, command, timeout=timeout, user=login,
                                     password=password)

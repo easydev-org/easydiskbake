@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -360,7 +361,8 @@ def stop() -> None:
     del result
 
 
-def mount_commands(host: str = "", user: str = "docker") -> dict[str, str]:
+def mount_commands(host: str = "", user: str = "docker",
+                   login_password: str = "admin") -> dict[str, str]:
     """What a guest types to mount this share, per family.
 
     THE PATH IS THE SAME ON BOTH GUESTS (`~/shared`), and so is the credential: the share's own
@@ -382,47 +384,63 @@ def mount_commands(host: str = "", user: str = "docker") -> dict[str, str]:
     """
     host = host or net.BRIDGE_IP
     return {
-        # macOS: THE PASSWORD GOES IN nsmb.conf, NOT IN THE URL.
+        # macOS: THE PASSWORD GOES IN THE URL, AND THE MOUNT GOES THROUGH ROOT.
         #
-        # `mount_smbfs //user:pass@host/share` is documented and it fails against a working
-        # server with
+        # TWO WRONG ANSWERS FIRST, BOTH OF THEM PLAUSIBLE, AND THE SERVER LOG KILLED BOTH:
         #
-        #     mount_smbfs: server rejected the connection: Authentication error
+        #     mount_smbfs //user:pass@host/share      77 "Authentication error"   (42744852729)
+        #     nsmb.conf + mount_smbfs -N              NT_STATUS_WRONG_PASSWORD    (42746003442)
         #
-        # run 42744852729's share stage, and the same report appears in every Apple support
-        # thread about it: the CLI path authenticates differently from the Finder path.
+        # The second one is the interesting failure. `nsmb.conf` HAS NO `password` KEYWORD - the
+        # man page lists addr, nbtimeout, minauth, port445, streams, soft, notify_off, kloglevel,
+        # smb_neg and signing_required, and nothing else - so `-N` found no password and sent an
+        # EMPTY one. The server said so plainly:
         #
-        # nsmb.conf IS THE SUPPORTED ROUTE, AND THE PATH AND SECTION NAME ARE BOTH SPECIFIC:
+        #     Auth: [SMB2,(null)] user []\[GUEST] ... with [NTLMv2] status [NT_STATUS_WRONG_PASSWORD]
+        #     ntlm_password_check: NTLMv2 password check failed
         #
-        #     ~/Library/Preferences/nsmb.conf      not ~/.nsmb.conf
-        #     [SERVER:USER:SHARE]                  `password` is only a keyword in sections C
-        #                                          and D - a `[SERVER]` section cannot carry one
+        # which also rules out the account: `smbclient -U guest%admin //127.0.0.1/shared` answers
+        # rc=0 against this very config, and the wrong password answers NT_STATUS_LOGON_FAILURE.
         #
-        # A) [default]  B) [SERVER]  C) [SERVER:USER]  D) [SERVER:USER:SHARE]
+        # SO THE REMAINING DIFFERENCE IS WHO IS ASKING. A non-root `mount_smbfs` against Samba
+        # fails where root succeeds and where a real Windows server succeeds for either - the
+        # long-standing report is
         #
-        # `-N` tells mount_smbfs not to prompt and to read the password from that file, which is
-        # the only non-interactive path Apple documents.
-        "macos": (
-            f"mkdir -p ~/shared ~/Library/Preferences && umask 077 && "
-            f"printf '[{host}:{SMB_USER}:{SHARE_NAME}]\\nuser = {SMB_USER}\\n"
-            f"password = {SMB_PASSWORD}\\n' > ~/Library/Preferences/nsmb.conf && "
-            f"chmod 600 ~/Library/Preferences/nsmb.conf && "
-            f"mount_smbfs -N //{SMB_USER}@{host}/{SHARE_NAME} ~/shared"
-        ),
-        # `net use` WITH A DRIVE LETTER DOES NOT SURVIVE THE SSH SESSION IT WAS MADE IN.
+        #     "if I want to mount a Samba share from the command line, I have to either be logged
+        #      in as root ... or I have to use Finder. And all of this works fine when mounting a
+        #      share being served by Windows."
         #
-        # A mapped drive belongs to the logon session that created it. Every `ssh host command`
-        # starts a new one, so `net use Z: \\host\share` returned 0 and the very next step
-        # - `dir Z:\` - answered
+        # This server is Samba. So the mount is a root mount, and `-f 0666 -d 0777` keeps it
+        # writable for the account that is not root.
+        "macos": (f"mkdir -p ~/shared && "
+                  f"printf '%s\\n' {shlex.quote(login_password)} | sudo -S -p '' "
+                  f"mount_smbfs -f 0666 -d 0777 "
+                  f"//{SMB_USER}:{SMB_PASSWORD}@{host}/{SHARE_NAME} ~/shared"),
+        # WINDOWS: THE CREDENTIAL GOES IN THE VAULT, NOT IN A CONNECTION.
         #
-        #     The system cannot find the path specified.
+        # Two runs failed here for two different reasons, and both are the same mistake in
+        # different clothes - treating a CONNECTION as if it were a CREDENTIAL.
         #
-        # run 42737785611. What survives is the CREDENTIAL: `net use \\host\share` with no
-        # drive letter stores it for the server, and then every later session can address the
-        # share by its UNC path. So the local directory IS a UNC path here, and the steps that
-        # read and write use \\host\share\... rather than Z:.
-        "windows": (f'net use \\\\{host}\\{SHARE_NAME} {SMB_PASSWORD}'
-                    f' /user:{SMB_USER} /persistent:no'),
+        #     net use Z: \\host\share          returned 0, next step: "The system cannot
+        #                                        find the path specified"          (42737785611)
+        #     net use \\host\share             returned 0, next step: "The user name or
+        #                                        password is incorrect"            (42744898001)
+        #
+        # A drive mapping AND a deviceless `net use` are both CONNECTIONS. A connection belongs to
+        # the logon session that made it, and every `ssh host command` starts a new one, so the
+        # next step arrives with no connection and no credential - it falls back to the current
+        # account, is refused, and reports the refusal as a bad password.
+        #
+        # `cmdkey` writes to the user's credential vault instead: the redirector consults it for
+        # every UNC path it is asked for, in any session, without anything mounted. That is why
+        # this is cmdkey FIRST and `net use` second - the `net use` is only the check that the
+        # credential in the vault actually works, and the steps after it address the share by
+        # UNC path because there is nothing mounted for them to address.
+        # NO /persistent:yes, because there is no drive letter for it to persist: that switch
+        # records a DRIVE, and this connection has none. The persistence wanted here is the
+        # credential, and `cmdkey` is what provides it.
+        "windows": (f'cmdkey /add:{host} /user:{SMB_USER} /pass:{SMB_PASSWORD} && '
+                    f'net use \\\\{host}\\{SHARE_NAME}'),
     }
 
 
