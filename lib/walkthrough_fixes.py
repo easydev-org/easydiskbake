@@ -517,6 +517,20 @@ def main() -> int:
     except Exception as exc:                          # noqa: BLE001
         check(f"capabilities imports ({exc})", "lib/capabilities.py", False)
 
+    # AND THE FUNCTION THE CALLER'S BOOT OPTIONS GO TO HAS TO ACCEPT THEM.
+    #
+    # `start()` passed `boot_options=` and `_start_machine()` did not declare it, so every macOS
+    # boot through the walkthrough died with
+    #
+    #     TypeError: _start_machine() got an unexpected keyword argument 'boot_options'
+    #
+    # (run 42815176349, the first run after the stage stopped starting qemu itself). A keyword
+    # argument that nothing calls is invisible; this is the check that says the two ends agree.
+    vm_src_sig = read("lib/vm_session.py")
+    check("the machine takes the options the starter passes", "lib/vm_session.py",
+          "boot_options: dict | None = None):" in vm_src_sig
+          and "boot_options=boot_options)" in vm_src_sig)
+
     # AND THE SHARE STARTS AFTER THE BRIDGE IT BINDS TO. smbd's `interfaces` line names
     # net.BRIDGE_IP, and net.up() is what creates that address - so a share started first
     # listens on nothing and reports "smbd DID NOT BIND 172.30.0.1:445 IN 10s" while samba's own

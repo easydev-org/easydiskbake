@@ -330,7 +330,8 @@ def start_on(disk: str, work: str, *, family: str, assets: dict, ssh_port: int =
 
 
 def _start_machine(family: str, disk: str, work: str, ssh_port: int, cpus: int,
-                   mem_mb: int, log, discard: bool = True, qga: bool = True):
+                   mem_mb: int, log, discard: bool = True, qga: bool = True,
+                   boot_options: dict | None = None):
     """The machine each family boots on - reused from the stage that built the disk.
 
     `qga` GIVES THE GUEST A CHANNEL ITS AGENT CAN ANSWER ON, and that is what makes a graceful

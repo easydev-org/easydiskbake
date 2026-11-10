@@ -180,6 +180,7 @@ ACTION_KEYS = {"at", "double", "type", "key", "run", "ssh", "scp", "script", "sh
 LIFECYCLE = {"boot", "reboot", "shutdown"}
 
 
+
 class Step:
     """One step, validated. Constructed from a dict so the YAML is the only source."""
 
@@ -290,9 +291,51 @@ class Walk:
         # TWO SHAPES, AND A FILE IS ONE OF THEM. A file that mixes them is a file whose author
         # has not decided what the installer does, and the two shapes disagree about what
         # "next" means - so it is refused rather than run one way and silently ignore the other.
-        self.panes = [s for s in self.steps if s.is_pane]
-        if self.panes and len(self.panes) != len(self.steps):
-            mixed = [s.name for s in self.steps if not s.is_pane][:3]
+        #
+        # THE MACHINE'S LIFECYCLE IS NOT ONE OF THE TWO SHAPES. `boot:` and `shutdown:` act on
+        # the guest as a PROCESS, before and after any screen is looked at, so they cannot be a
+        # pane (a pane is matched against a screen that does not exist yet) and they are not a
+        # sequence of clicks. They are the PREAMBLE and the EPILOGUE of a pane file:
+        #
+        #     boot:                       <- runs once, before the first look
+        #     when: [...] (panes...)      <- the loop
+        #     shutdown: "{{ shutdown }}"  <- runs once, after the loop ends
+        #
+        # MEASURED NEED: macos/15/steps/sequoia.yaml is the Setup Assistant, which is a pane file
+        # by every argument above - panes appear and disappear depending on answers given two
+        # panes earlier - and its stage is the one that has to start the machine and stop it.
+        # Without this the only options were "leave the lifecycle in Python", which is what the
+        # four stage scripts were being changed to avoid.
+        #
+        # POSITION DECIDES, NOT THE NAME. A lifecycle step is preamble if it comes before the
+        # first pane and epilogue if it comes after the last; one in the middle is refused,
+        # because "boot, then click three panes, then boot again" would replace a running guest
+        # without stopping it - the same mistake MachineSession.boot refuses in a sequence.
+        pane_positions = [i for i, s in enumerate(self.steps) if s.is_pane]
+        lifecycle = [s for s in self.steps if any(s[k] for k in LIFECYCLE)]
+        if pane_positions and lifecycle:
+            first, last = min(pane_positions), max(pane_positions)
+            for s in lifecycle:
+                if first < s.index < last:
+                    raise StepError(
+                        f"{path or 'the walkthrough'}: `{s.name}` is a lifecycle step between "
+                        f"panes. A pane file may start its machine before the first pane and "
+                        f"stop it after the last, and nowhere else - `boot:` in the middle would "
+                        f"replace a running guest without stopping it.")
+        self.preamble = [s for s in lifecycle if s.index < (min(pane_positions) if pane_positions
+                                                            else len(self.steps))]
+        self.epilogue = [s for s in lifecycle if s not in self.preamble]
+        # A REBOOT IS NEITHER. It belongs between panes only if the file wants a reset there,
+        # and no pane file does.
+        for s in self.preamble + self.epilogue:
+            if s["reboot"]:
+                raise StepError(
+                    f"{path or 'the walkthrough'}: `reboot:` in a pane file has no defined "
+                    f"position; put it in a sequence file")
+        middle = [s for s in self.steps if s not in self.preamble and s not in self.epilogue]
+        self.panes = [s for s in middle if s.is_pane]
+        if middle and self.panes and len(self.panes) != len(middle):
+            mixed = [s.name for s in middle if not s.is_pane][:3]
             raise StepError(
                 f"{path or 'the walkthrough'} mixes panes and a sequence: "
                 f"{', '.join(mixed)} have no `when`. A walkthrough is either a list of steps "
@@ -2065,6 +2108,43 @@ def walk_panes(driver: Driver, steps: Walk, values: dict[str, str], *,
     answered: list[str] = []
     stuck_after = float(steps.document.get("stuck_after", 20))
 
+    # THE PREAMBLE: START THE MACHINE BEFORE LOOKING AT IT.
+    #
+    # A pane cannot start a machine - a pane is matched against a screen, and this is the step
+    # that makes one - so `boot:` runs once, here, in the order it appears at the top of the file.
+    # The driver is deferred when the file declares a boot (see run_file), so this is also what
+    # attaches it.
+    for step in steps.preamble:
+        spec = steps.substitute(step.spec, values)
+        here = Step(dict(spec), step.index)
+        log(f"=== {here.name}")
+        _do_action(driver, here, ssh_port=ssh_port, password=password, session=session)
+        answered.append(here.name)
+
+    # AND THE EPILOGUE ON THE WAY OUT, WHICHEVER WAY THE LOOP ENDS. A pane file that failed on an
+    # unanswered pane must still stop its machine: run_file's stop_if_running is a backstop, not
+    # the shutdown the file asked for, and the difference matters on a real disk where `ssh` is
+    # the only method that closes the filesystem properly.
+    try:
+        return _walk_panes_loop(driver, steps, values, answered=answered,
+                                stuck_after=stuck_after, ssh_port=ssh_port,
+                                password=password, session=session)
+    finally:
+        for step in steps.epilogue:
+            spec = steps.substitute(step.spec, values)
+            here = Step(dict(spec), step.index)
+            log(f"=== {here.name}")
+            try:
+                _do_action(driver, here, ssh_port=ssh_port, password=password, session=session)
+            except StepError as exc:
+                log(f"  {here.name} failed on the way out: {exc}")
+
+
+def _walk_panes_loop(driver: Driver, steps: Walk, values: dict[str, str], *,
+                     answered: list[str], stuck_after: float,
+                     ssh_port: int = 2222, password: str | None = None,
+                     session=None) -> tuple[bool, list[str]]:
+    """The loop itself: look, answer the one pane that matches, look again."""
     # A PANE FILE MUST SAY HOW IT KNOWS THE FIRST PANE HAS ARRIVED.
     #
     # Without this the loop looks at a machine that is still booting, matches nothing, and
