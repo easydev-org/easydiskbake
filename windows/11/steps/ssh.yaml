@@ -101,6 +101,30 @@ steps:
   # 120 seconds, because the measured installs are 51 and 54 seconds and winget's first-run
   # metadata refresh has been seen to add most of a minute. Whether it worked is asked of the
   # machine below, not of the screen.
+  # THE SCREEN HAS TO STAY ON FOR THE STAGE THAT HAS NO SHELL YET, AND THIS IS THE ONLY PLACE
+  # THAT CAN DO IT.
+  #
+  # `do not blank the screen` is an ssh step below, because every other guest setting is - but
+  # that means it only runs once sshd answers, and the whole point of the next four steps is to
+  # find out whether sshd answers. Run 42920273280 is the deadlock that produces: sshd never
+  # listened, so the setting never applied, so the monitor blanked during the 600-second wait,
+  # so the post-mortem frame
+  #
+  #     out/ssh-work/steps/failed-wait-for-sshd.png
+  #
+  # was a completely black screen. The STEP1/STEP2/STEP3 marks added for exactly this diagnosis
+  # were typed onto a display that had switched off.
+  #
+  # PowerShell is already open here - `open powershell` is two steps above - so this costs one
+  # typed line and needs no ssh at all.
+  - name: keep the screen on before ssh exists
+    type: powercfg /change monitor-timeout-ac 0; powercfg /change monitor-timeout-dc 0; powercfg /change standby-timeout-ac 0; powercfg /change standby-timeout-dc 0; 'SCREEN=kept-on'
+    type_gap: 0.15
+    settle: 2
+  - name: run the screen setting
+    key: ret
+    settle: 3
+
   - name: install openssh
     type: winget install --id Microsoft.OpenSSH.Preview --exact --source winget --accept-source-agreements --accept-package-agreements --disable-interactivity
     type_gap: 0.15

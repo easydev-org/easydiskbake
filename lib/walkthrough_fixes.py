@@ -975,6 +975,22 @@ def main() -> int:
     # AND THE SIGNAL IS NAMED IN THE ARTIFACTS, so the exit code is explainable after the fact.
     check("a signalled clean leaves a note naming the signal", "lib/clean_step.py",
           "clean-signal.txt" in read("lib/clean_step.py"))
+    # AND THE SCREEN IS KEPT ON BEFORE THE STAGE THAT HAS NO SHELL YET.
+    #
+    # Run 42920273280 is the deadlock: sshd never listened, so the ssh-based `do not blank the
+    # screen` step never ran, so the monitor blanked during the 600-second wait, so
+    # out/ssh-work/steps/failed-wait-for-sshd.png was a completely black frame - and the
+    # STEP1/STEP2/STEP3 marks added to diagnose that failure were typed onto a dark display.
+    #
+    # Any step that turns the display off only once ssh works cannot help the stage whose job is
+    # to find out whether ssh works.
+    win_ssh_yaml = read("windows/11/steps/ssh.yaml")
+    check("the screen is kept on before ssh exists", "windows/11/steps/ssh.yaml",
+          "keep the screen on before ssh exists" in win_ssh_yaml)
+    # AND IT COMES BEFORE THE INSTALL, so a failed install still leaves a lit screen to read.
+    check("the screen step precedes the ssh install", "windows/11/steps/ssh.yaml",
+          win_ssh_yaml.index("keep the screen on before ssh exists")
+          < win_ssh_yaml.index("name: install openssh"))
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))
