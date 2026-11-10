@@ -40,53 +40,7 @@ REPO = os.path.dirname(HERE)
 sys.path.insert(0, REPO)
 sys.path.insert(0, HERE)
 
-import vm  # noqa: E402
-
-
-def _macos_guest(args, work: str, spec: dict, note):
-    """The machine macos/15/machine.py describes, or None if its inputs are not here.
-
-    WHY THIS IS A FUNCTION AND NOT A SECOND DESCRIPTION OF THE MACHINE. `machine.drives()`
-    is the one place that says which three devices a macOS guest has and in what order, and
-    the one place that carries discard=unmap for the target disk. Restating it here is how
-    the four macOS stages ended up with four copies of one `-drive` line.
-
-    THE RECOVERY IMAGE IS AN INPUT EVEN THOUGH THIS STAGE DOES NOT BOOT FROM IT: opencore
-    extracts Apple's APFS driver out of it, and boot.img is built from that. macos_recovery
-    .fetch_published pulls it if this job does not have it - the same call every other macOS
-    stage makes, so a clean job that inherits nothing still works.
-    """
-    import importlib.util
-
-    macos15 = os.path.join(REPO, "macos", "15")
-    if macos15 not in sys.path:
-        sys.path.insert(0, macos15)
-
-    note("=== the macOS machine (OpenCore, firmware, APFS driver) ===")
-    try:
-        import macos_recovery
-        import machine
-        import opencore
-    except ImportError as exc:
-        note(f"=== CANNOT LOAD THE macOS MACHINE: {exc} ===")
-        return None
-
-    try:
-        recovery = macos_recovery.fetch_published("15", work)
-    except SystemExit as exc:
-        note(f"=== NO RECOVERY IMAGE: {exc} ===")
-        return None
-    note(f"  recovery {recovery} ({os.path.getsize(recovery) >> 20} MiB)")
-
-    try:
-        assets = opencore.build("15", work)
-    except opencore.OpenCoreError as exc:
-        note(f"=== COULD NOT BUILD THE BOOT ASSETS: {exc} ===")
-        return None
-    note(f"  identity {assets['identity']['serial']} / {assets['identity']['mac']}")
-
-    return machine.make_guest(work, assets, args.disk, recovery,
-                              cpus=args.cpus, mem_mb=args.mem)
+import hostshare  # noqa: E402
 
 
 def log(message: str) -> None:
@@ -200,68 +154,35 @@ def main(argv: list[str]) -> int:
             note("=== THE BOOTSTATE COULD NOT BE RESTORED ===")
             return 2
 
-    # WINDOWS WILL NOT START ON SEABIOS, SO THE FIRMWARE IS NOT OPTIONAL.
+    # THE MACHINE IS lib/vm_session.py's BUSINESS, AND SO IS THE SHARE.
     #
-    # The Shape below used to leave firmware_code and firmware_vars empty, which means qemu's
-    # default firmware - SeaBIOS. A Windows 11 disk under SeaBIOS does not boot, and the symptom
-    # was a 900-second wait ending in "Connection timed out during banner exchange": qemu's
-    # user-mode network accepts the TCP connection to a forwarded port even when nothing is
-    # listening, so the failure looked like sshd rather than like firmware.
+    # THIS FILE USED TO START THE GUEST ITSELF, and that is what broke it. Once the share stage
+    # began installing a launchd job that mounts 172.30.0.1 at boot, a clean that served nothing on
+    # that address booted a machine whose root daemon retried a mount that could never work - and
+    # the clean timed out after 900 seconds with "No route to host" (run 42756290022) on a disk
+    # whose sshd had answered in thirty seconds during the stage before.
     #
-    # ubuntu::bake and launch_windows.py both set these; this is the same code they use.
+    # That is not a missing line here. It is three places starting a guest and one of them knowing
+    # what the guest expects, so the machine and the environment around it are now one call.
     #
-    # THE VARS ARE A FRESH COPY OF THE TEMPLATE, NOT THE DISK'S OWN BOOTSTATE - that is what
-    # this stage is now testing on Windows: whether the fallback loader at \EFI\BOOT\BOOTX64.EFI
-    # is enough on a machine with no boot entries at all.
-    firmware_code = ""
-    firmware_vars = ""
-    if args.kind == "windows":
-        import shutil
+    # `copy=False`, BECAUSE CLEANING IS THE POINT. boot_machine copies so a self-test cannot touch
+    # the artifact; this stage modifies the disk in place on purpose - it is the last step before
+    # compress and publish, and cleaning a copy would mean moving it back.
+    import vm_session
 
-        firmware_code = os.environ.get("OVMF_CODE", "/usr/share/OVMF/OVMF_CODE_4M.fd")
-        template = os.environ.get("OVMF_VARS_TEMPLATE", "/usr/share/OVMF/OVMF_VARS_4M.fd")
-        for path in (firmware_code, template):
-            if not os.path.isfile(path):
-                note(f"=== UEFI FIRMWARE NOT FOUND: {path} ===")
-                note("  Windows does not boot on SeaBIOS; this is fatal, not a warning")
-                return 2
-        firmware_vars = os.path.join(work, "OVMF_VARS.fd")
-        # ALWAYS A FRESH COPY, never a leftover: the point is a machine with no boot entries.
-        shutil.copyfile(template, firmware_vars)
-
-    # A SYSTEM THAT BRINGS ITS OWN MACHINE DESCRIPTION GETS IT, AND NOTHING BELOW RUNS.
-    #
-    # macOS is the case this exists for: macos/15/machine.py assembles OpenCore, the SMC
-    # device, the CPU model, the firmware vars and the recovery image, and a second copy here
-    # would be a worse copy that drifts. The builder returns (guest, teardown) - teardown is
-    # None for macOS, whose guest owns nothing this file did not already have.
-    if spec.get("builder") == "macos15":
-        guest = _macos_guest(args, work, spec, note)
-        if guest is None:
-            return 2
-    else:
-        shape = vm.Shape(cpus=args.cpus, mem_mb=args.mem, machine="q35", vga="std",
-                         firmware_code=firmware_code, firmware_vars=firmware_vars,
-                         resolution=(1920, 1080), ssh_port=spec["ssh_port"])
-        # discard=unmap so a guest's fstrim reaches the qcow2 and drops the clusters, rather
-        # than qemu storing zeros that convert has to read again.
-        guest = vm.Guest(work, extra=[
-            "-drive", f"file={args.disk},if=virtio,format=qcow2,discard=unmap",
-        ], shape=shape, stdout=os.devnull)
+    guest, reached = vm_session.start(
+        args.kind, args.disk, work,
+        ssh_port=spec["ssh_port"], boot_timeout=args.boot_timeout,
+        copy=False, share=hostshare.DEFAULT_DIR,
+        cpus=args.cpus, mem_mb=args.mem, log=note)
+    if guest is None:
+        return 2
 
     ok = False
     try:
-        note("starting the disk")
-        guest.start()
-
-        import session
-
-        note("waiting for ssh")
-        # WINDOWS RUNS cmd.exe, SO THE PROBE IS NOT `true`. See session.wait_for_ssh: the
-        # default is the POSIX builtin and this guest reports
-        # "'true' is not recognized as an internal or external command".
-        if not session.wait_for_ssh(spec["ssh_port"], args.boot_timeout, note,
-                                    probe="echo ok"):
+        # vm_session.start WAITED FOR SSHD ALREADY. `reached` false means the machine came up and
+        # never answered - which is the case that needs a picture, not a retry.
+        if not reached:
             note("=== THE DISK DID NOT ANSWER ON SSH ===")
             note("  it cannot be cleaned if it cannot be reached; the disk is unchanged")
 
@@ -310,6 +231,9 @@ def main(argv: list[str]) -> int:
         # seconds ago; a disk killed mid-write repairs itself on every later boot. 60s was
         # not enough and produced "the guest did not power off within 60s; killing it".
         guest.stop(acpi_first=ok, acpi_timeout=300)
+        # AND THE SHARE, because a leftover smbd holds 172.30.0.1:445 and the next stage in this
+        # container would find it serving a directory that is no longer the one it wants.
+        hostshare.stop()
 
     if not ok:
         return 1

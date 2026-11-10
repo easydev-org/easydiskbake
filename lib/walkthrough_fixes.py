@@ -261,6 +261,39 @@ def main() -> int:
           "windows/11/steps/ssh.yaml",
           bool(typers) and all(float(s.get("type_gap", 0)) >= 0.15 for s in typers))
 
+    # --- ONE WAY TO START A GUEST ---------------------------------------------------------
+    #
+    # THIS IS THE FIX FOR THE CLEAN THAT TIMED OUT. Three places started a guest and only one of
+    # them knew the disk now expects a share on the bridge, so a clean booted a machine whose
+    # launchd job retried a mount that could never work and never let sshd answer (run 42756290022).
+    # The lesson is structural: one implementation, and the environment around the machine decided
+    # with the machine.
+    try:
+        import vm_session
+        check("one module starts a guest", "lib/vm_session.py",
+              callable(getattr(vm_session, "start", None)))
+        # AND EVERY CALLER USES IT, so a new stage cannot quietly build its own machine.
+        for path in ("lib/clean_step.py", "lib/boot_machine.py"):
+            body = read(path)
+            check(f"{path} starts guests through vm_session", path,
+                  "vm_session.start(" in body and "vm.Guest(" not in body)
+        # THE SHARE COMES UP BEFORE THE MACHINE. A disk carrying the mount daemon tries to mount
+        # within seconds of launchd starting, so a server that arrives second is a retry.
+        src = read("lib/vm_session.py")
+        check("the share is served before the guest boots", "lib/vm_session.py",
+              src.index("hostshare.start(") < src.index("_start_machine("))
+        # AND IT IS TORN DOWN WITH THE GUEST, because a leftover smbd holds 172.30.0.1:445 and the
+        # next stage in this container would find it serving the wrong directory.
+        check("the share is stopped with the guest", "lib/vm_session.py",
+              "hostshare.stop()" in src)
+        # CLEANING MUST NOT COPY, and the self-test must. One call, two policies, both stated.
+        check("clean modifies the disk in place", "lib/clean_step.py",
+              "copy=False" in read("lib/clean_step.py"))
+        check("the self-test still works on a copy", "lib/boot_machine.py",
+              "copy=True" in read("lib/boot_machine.py"))
+    except Exception as exc:                          # noqa: BLE001
+        check(f"vm_session imports ({exc})", "lib/vm_session.py", False)
+
     # --- macos dev: the toolchain, and the one asset Apple will not serve ---------------
     #
     # XCODE IS THE ONLY THING HERE THAT CANNOT BE FETCHED FROM ITS VENDOR. Apple's endpoint
@@ -743,9 +776,15 @@ def main() -> int:
               f".github/workflows/{wf}.yml",
               "lib/launch_selftest.py" in text and f"--family {family}" in text)
     selftest = read("lib/launch_selftest.py")
+    # THE COPY MOVED TO lib/vm_session.py, and it is a PARAMETER there because cleaning must not
+    # copy: clean modifies the disk in place on purpose. So the check is that both callers ask for
+    # what they need rather than that one file contains a copyfile.
     check("the self-test copies the disk instead of opening the artifact",
-          "lib/launch_selftest.py", "shutil.copyfile" in read("lib/boot_machine.py"))
-    check("the self-test reads ~/hello.txt back over ssh",
+          "lib/vm_session.py", "shutil.copyfile" in read("lib/vm_session.py")
+          and "copy=True" in read("lib/boot_machine.py"))
+    check("the clean does NOT copy the disk it is about to publish",
+          "lib/clean_step.py", "copy=False" in read("lib/clean_step.py"))
+    check("the self-test reads hello.txt from the share",
           "lib/launch_selftest.py", "hello.txt" in selftest)
     # AND IT NEVER PUBLISHES. A launch job that pushed a tag would put the probe's output on a
     # disk somebody boots.
