@@ -145,7 +145,7 @@ def available() -> tuple[bool, str]:
 
 
 def up(*, ssh_port: int = 2222, rdp_port: int = 3389,
-       forwards: dict[int, int] | None = None) -> None:
+       forwards: dict[int, int] | None = None, mac: str = "") -> None:
     """Create the link and the rules. Idempotent: a second call reuses what is there.
 
     `forwards` maps a HOST port to a GUEST port, and defaults to the two every system here
@@ -210,8 +210,56 @@ def up(*, ssh_port: int = 2222, rdp_port: int = 3389,
     # unit, and a running instance makes the whole unit a no-op. Everything after it - the
     # MASQUERADE rules, the DNAT, the MSS clamping - still runs on every call, which is what
     # makes a second `up()` safe for the network and only a no-op for DHCP.
-    if _sh("pgrep -x dnsmasq").returncode == 0:
+    # A RUNNING SERVER IS KEPT ONLY IF IT CAN STILL SERVE THIS GUEST.
+    #
+    # The lease has to survive a second `up()` (that was the macOS-clean bug), but the range is
+    # ONE ADDRESS - `--dhcp-range=A,A` - so it can only be leased to one client at a time. A
+    # guest whose MAC changed cannot get it until the old lease goes, and dnsmasq says so in its
+    # own log:
+    #
+    #     DHCPDISCOVER(qemubr0) 00:16:cb:90:d9:fe no address available
+    #
+    # THAT IS NOT HYPOTHETICAL. OpenCore writes identity.json per WORK DIRECTORY, so every stage
+    # of a macOS chain generates a different MAC for the same disk. Run 42899662670:
+    #
+    #     20:58:37  [net] ... tap qemutap0 ...            <- vm-configure, identity A
+    #     21:01:10  [net] dnsmasq is already running ...  <- clean, and its lease is for A
+    #     21:01:32  [opencore] identity: ... / 00:16:CB:90:D9:FE (written to ...clean-work/...)
+    #     21:01:32  [net] dnsmasq is already running ...  <- B asks, the address is taken
+    #
+    # and the clean then waited 900 seconds for a guest that was sitting at its login window.
+    #
+    # SO THE MAC IS PART OF THE DECISION. The caller that knows it passes it (`vm.Guest.start`
+    # does, from `shape.tap_mac`); a call that does not know it is the first one of a boot and
+    # leaves a healthy server alone. When the MAC differs, the lease is for somebody else and the
+    # server is restarted - which is what the old unconditional `pkill` achieved by accident, at
+    # the cost of also dropping the lease in the case that must not drop it.
+    stamp = os.path.join("/var/run", "dnsmasq.vm.mac")
+    running = _sh("pgrep -x dnsmasq").returncode == 0
+    served = ""
+    if running and os.path.isfile(stamp):
+        try:
+            with open(stamp, encoding="utf-8") as fh:
+                served = fh.read().strip().lower()
+        except OSError:
+            served = ""
+    if running and mac and served and served != mac.strip().lower():
+        log(f"dnsmasq is running for {served}, but this guest is {mac}; "
+            f"restarting it so the one address can be leased")
+        running = False
+
+    if running:
         log("dnsmasq is already running; leaving its leases and its socket alone")
+        # A SERVER WITH NO STAMP IS FRESHLY STARTED BY A CALLER THAT DID NOT KNOW THE MAC -
+        # `vm_session.start` runs before the identity exists. A fresh dnsmasq holds no leases, so
+        # recording this guest as its client is true, and it is what lets the NEXT stage notice a
+        # different MAC instead of inheriting an unanswerable state.
+        if mac and not served:
+            try:
+                with open(stamp, "w", encoding="utf-8") as fh:
+                    fh.write(mac.strip().lower() + "\n")
+            except OSError as exc:
+                log(f"  could not record the guest's MAC ({exc})")
     else:
         _sh("pkill -x dnsmasq")
         time.sleep(1)
@@ -240,6 +288,15 @@ def up(*, ssh_port: int = 2222, rdp_port: int = 3389,
         if started.returncode != 0:
             raise SystemExit(
                 f"=== dnsmasq DID NOT START ===\n  {started.stderr.strip()[:300]}")
+        # WHICH GUEST THIS SERVER'S ONE ADDRESS WAS STARTED FOR. Written only after a successful
+        # start, because a file that outlives a failed one would claim a lease that does not
+        # exist. The next `up()` compares against it - see the note above.
+        if mac:
+            try:
+                with open(stamp, "w", encoding="utf-8") as fh:
+                    fh.write(mac.strip().lower() + "\n")
+            except OSError as exc:
+                log(f"  could not record the guest's MAC ({exc}); the next call will restart")
 
     # NO GEOIP HANDLING. The guest resolves and reaches whatever the network gives it.
     #

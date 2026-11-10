@@ -833,7 +833,7 @@ def main() -> int:
     body = net_src[net_src.index("def up("):]
     body = body[:body.index("def down(")]
     check("the bridge does not restart DHCP on every call", "lib/net.py",
-          'if _sh("pgrep -x dnsmasq").returncode == 0:' in body)
+          'running = _sh("pgrep -x dnsmasq").returncode == 0' in body)
     # AND THE SKIP HAS TO COVER THE `dnsmasq` LINE, NOT ONLY THE KILL.
     #
     # The first version of this fix skipped `pkill` and then started a second dnsmasq anyway,
@@ -844,12 +844,37 @@ def main() -> int:
     #
     # and took a whole stage down (run 42895632528). The check is an indentation test, because
     # that is the only thing that distinguishes "guarded" from "guarded the wrong half".
-    tail = body[body.index('if _sh("pgrep -x dnsmasq").returncode == 0:'):]
+    tail = body[body.index('running = _sh("pgrep -x dnsmasq").returncode == 0'):]
     tail = tail[:tail.index("# NO GEOIP")]
     guarded = [line for line in tail.splitlines()
                if "pkill -x dnsmasq" in line or line.strip().startswith("started = _sh(")]
     check("skipping a running dnsmasq also skips starting one", "lib/net.py",
           len(guarded) == 2 and all(line.startswith("        ") for line in guarded))
+    # AND A RUNNING SERVER IS ONLY KEPT FOR THE GUEST IT IS SERVING.
+    #
+    # The range is ONE ADDRESS, and OpenCore writes identity.json per WORK DIRECTORY - so every
+    # stage of a macOS chain has a different MAC for the same disk. Keeping the lease across
+    # stages therefore left the next guest unable to lease the only address, and it sat at its
+    # own login window for 900 seconds. Run 42899662670:
+    #
+    #     21:01:10  [net] dnsmasq is already running ...   <- lease belongs to the previous MAC
+    #     21:01:32  [opencore] identity: ... / 00:16:CB:90:D9:FE (written to ...clean-work/...)
+    #     21:01:32  [net] dnsmasq is already running ...   <- and cannot be leased again
+    #
+    # Both halves are checked, because either one alone leaves the bug: the caller has to pass
+    # the MAC, and `up()` has to act on it.
+    check("net.up can be told which guest it serves", "lib/net.py",
+          'mac: str = ""' in body or 'mac: str = ""' in net_src)
+    check("a different guest gets the one address", "lib/net.py",
+          "dnsmasq.vm.mac" in net_src and "served != mac.strip().lower()" in net_src)
+    vm_src = read("lib/vm.py")
+    check("the guest start passes its MAC to the bridge", "lib/vm.py",
+          "mac=self.shape.tap_mac" in vm_src)
+    # AND THE DEFAULTS HAVE TO BE FILLED FIRST, or the MAC arrives empty and the check above is
+    # decorative.
+    start_at = vm_src.index("mac=self.shape.tap_mac")
+    check("the MAC default is filled before the bridge is set up", "lib/vm.py",
+          vm_src.index("self.shape.tap_mac = self.shape.tap_mac or net.GUEST_MAC") < start_at)
 
     # AND THE SHARE STARTS AFTER THE BRIDGE IT BINDS TO. smbd's `interfaces` line names
     # net.BRIDGE_IP, and net.up() is what creates that address - so a share started first

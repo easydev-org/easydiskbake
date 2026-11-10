@@ -596,9 +596,17 @@ class Guest:
         # net.up() is idempotent: the second and later calls find what is already there.
         net = _net()
 
-        net.up(ssh_port=self.shape.ssh_port, rdp_port=self.shape.rdp_port)
+        # THE DEFAULTS ARE FILLED BEFORE `up()`, BECAUSE `up()` NOW NEEDS THE MAC.
+        #
+        # It has to decide whether a running dnsmasq can still serve THIS guest, and the range is
+        # one address - so the answer depends on which MAC the lease belongs to. Reading the
+        # field first is the difference between a clean that boots and one that waits 900
+        # seconds for a guest sitting at its login window (run 42899662670).
         self.shape.tap_ifname = self.shape.tap_ifname or net.TAP
         self.shape.tap_mac = self.shape.tap_mac or net.GUEST_MAC
+
+        net.up(ssh_port=self.shape.ssh_port, rdp_port=self.shape.rdp_port,
+               mac=self.shape.tap_mac)
         # THE GUEST'S MTU IS THE TAP'S, ALWAYS, UNLESS A CALLER ASKED OTHERWISE.
         #
         # Filling it here rather than in each of the twenty-odd callers is the same

@@ -264,6 +264,33 @@ def main(argv: list[str]) -> int:
             else:
                 note(f"  no console.log at {console}")
 
+            # AND WHAT THE DHCP SERVER SAW, BECAUSE "No route to host" HAS TWO CAUSES.
+            #
+            # The guest either never asked for an address, or it asked and was refused. The
+            # console cannot tell them apart - every healthy macOS boot looks the same - and
+            # neither can the ssh message. dnsmasq's own log can, and the two want opposite
+            # fixes: a guest that never asked is a guest whose NIC never came up; a guest that
+            # was refused is a lease or a range problem on this side.
+            #
+            # `lib/net.py` starts dnsmasq with `log-facility=/var/log/dnsmasq.vm.log` and
+            # `--dhcp-range=A,A` for one address, so a refusal reads `no address available` and
+            # silence reads nothing at all.
+            for dhcp_log in ("/var/log/dnsmasq.vm.log",):
+                if not os.path.isfile(dhcp_log):
+                    note(f"  no dnsmasq log at {dhcp_log}")
+                    continue
+                try:
+                    with open(dhcp_log, errors="replace") as fh:
+                        lines = [line.rstrip()[:180] for line in fh.readlines()[-40:]]
+                except OSError as exc:
+                    note(f"  the dnsmasq log could not be read: {exc}")
+                    continue
+                note(f"  dnsmasq, last {len(lines)} lines of {dhcp_log}:")
+                for line in lines:
+                    note(f"    {line}")
+                if not lines:
+                    note("    (empty - NOTHING ASKED FOR AN ADDRESS)")
+
             # A PICTURE OF WHERE IT STOPPED, BECAUSE THE SSH MESSAGE CANNOT SAY.
             #
             # "Connection timed out during banner exchange" is what qemu's user-mode network
