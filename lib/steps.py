@@ -1094,14 +1094,32 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
                 if not step["optional"]:
                     raise StepError(f"{step.name}: the plist copy exited {status}")
                 return
-            target = f"~/Library/LaunchAgents/{bootstrap.MACOS_LABEL}.plist"
+            # THE TARGET IS BY ABSOLUTE PATH, BUILT IN THE GUEST.
+            #
+            # `~/Library/...` IS NOT EXPANDED INSIDE A REDIRECTION by every shell that could run
+            # this, and `$HOME` written into a Python string here is expanded by the CONTAINER's
+            # shell - giving /github/home, a path that exists on the host and not in the guest.
+            # Both mistakes end in `test -f` reporting "the plist was not written", which says
+            # nothing about which of them it was.
+            #
+            # So the script asks the guest for its own HOME and writes into that:
+            #
+            #     launchd_home=$(eval echo "~$(id -un)")
+            #
+            # `eval echo ~<user>` is the portable spelling; `$HOME` under sudo or a login shell
+            # can be another account's.
+            target_expr = f"$launchd_home/Library/LaunchAgents/{bootstrap.MACOS_LABEL}.plist"
             script = (
                 "set -e\n"
-                "mkdir -p ~/Library/LaunchAgents\n"
-                "cp /tmp/bootstrap-launcher.py ~/bootstrap-launcher.py\n"
-                "chmod +x ~/bootstrap-launcher.py\n"
-                f"sed \"s|__LAUNCHER__|$HOME/bootstrap-launcher.py|\" "
-                f"/tmp/bootstrap.plist > {target}\n"
+                "launchd_home=$(eval echo \"~$(id -un)\")\n"
+                "echo \"home: $launchd_home\"\n"
+                "mkdir -p \"$launchd_home/Library/LaunchAgents\"\n"
+                "cp /tmp/bootstrap-launcher.py \"$launchd_home/bootstrap-launcher.py\"\n"
+                "chmod +x \"$launchd_home/bootstrap-launcher.py\"\n"
+                # SINGLE-QUOTED PATTERN AND A GUEST-SIDE VARIABLE, so neither the container's
+                # HOME nor the container's shell can reach into the substitution.
+                f"sed 's|__LAUNCHER__|'\"$launchd_home\"'/bootstrap-launcher.py|' "
+                f"/tmp/bootstrap.plist > \"{target_expr}\"\n"
                 # THE PLIST IS INSTALLED, NOT LOADED, AND THAT IS THE WHOLE POINT.
                 #
                 # `launchctl bootstrap gui/$uid` answers
@@ -1121,13 +1139,14 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
                 #
                 "# THE FILE IS THE INSTALL. Its presence in ~/Library/LaunchAgents is what\n"
                 "# makes launchd run it at the next login.\n"
-                "test -f ~/Library/LaunchAgents/' + bootstrap.MACOS_LABEL + '.plist || "
-                "{ echo '=== THE PLIST WAS NOT WRITTEN ==='; exit 1; }\n"
-                "test -x ~/bootstrap-launcher.py || "
+                f"test -f \"{target_expr}\" || "
+                "{ echo '=== THE PLIST WAS NOT WRITTEN ==='; "
+                "ls -la \"$launchd_home/Library/LaunchAgents\" 2>&1 | head -5; exit 1; }\n"
+                "test -x \"$launchd_home/bootstrap-launcher.py\" || "
                 "{ echo '=== THE LAUNCHER IS NOT EXECUTABLE ==='; exit 1; }\n"
                 "# plutil CATCHES A MALFORMED PLIST NOW RATHER THAN AT THE NEXT LOGIN, where\n"
                 "# nobody would connect the failure to this stage.\n"
-                "plutil -lint ~/Library/LaunchAgents/' + bootstrap.MACOS_LABEL + '.plist\n"
+                f"plutil -lint \"{target_expr}\"\n"
                 "echo INSTALLED_FOR_NEXT_LOGIN\n"
             )
         else:
