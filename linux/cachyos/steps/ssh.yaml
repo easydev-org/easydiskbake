@@ -197,6 +197,25 @@ steps:
     terminal_wait: 0
     settle: 5
 
+  # ENABLED AND RUNNING ARE TWO FACTS, AND ONLY ONE OF THEM SURVIVES A REBOOT.
+  #
+  # `is-active` above is answered by the process `restart` just started - it says nothing about
+  # whether the boot will start one. That distinction is what run f5b0fff published a disk
+  # without: `linux-cachyos-ssh` booted to SDDM with `vmuser` on it and NOTHING on port 22, while
+  # the ssh stage that made it had proved `id -un` over that same port minutes earlier.
+  #
+  # The disk was booted again in a local pod to be sure, and the console showed the login screen
+  # and `Connection refused` for five minutes - so the daemon had been started by `restart` and
+  # never enabled.
+  #
+  # `is-enabled` READS THE SYMLINK systemd would follow at boot, which is the only fact here that
+  # outlives the process. `list-unit-files` prints the state beside the unit's own name, so a
+  # failed enable is visible in the recording rather than inferred from a refused port.
+  - name: prove sshd will start at boot
+    run: systemctl is-enabled sshd; systemctl list-unit-files sshd.service | tail -2
+    terminal_wait: 0
+    settle: 8
+
   - name: open the firewall for ssh
     run: echo {{ password }} | sudo -S sh -c "ufw allow 22/tcp; ufw status | head -6" 2>&1 | tail -8
     terminal_wait: 0
