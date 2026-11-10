@@ -145,7 +145,14 @@ class Bakery:
     mem_mb: int = 4096
     cpus: int = 4
     disk_size: str = "64G"
+    # THE INSTALL'S TOTAL BUDGET - the `--timeout` the workflows pass.
     timeout: int = 5400
+    # HOW LONG THE LIVE DESKTOP GETS, AND IT IS NOT THE INSTALL'S BUDGET.
+    #
+    # These were the same number and that was wrong: `--timeout` is what the workflow sets
+    # (5400) and it OVERRODE the per-distribution desktop budget, so popos waited 35 minutes
+    # for a desktop its own driver caps at 300 s (run d579610). 0 means "use `timeout`".
+    desktop_timeout: int = 0
     user_var: str = ""
     password_var: str = ""
     # How the walk is expected to leave the disk. 64 MiB is the "nothing was written" floor
@@ -458,7 +465,8 @@ def run_bake(bakery: Bakery, args) -> int:
         # client per socket, so `steps.run_file` cannot connect while this one holds it.
         drv = steps.Driver(guest.paths.drive, work)
         try:
-            ready = _wait_for_desktop(drv, bakery, args.timeout)
+            ready = _wait_for_desktop(
+                drv, bakery, bakery.desktop_timeout or args.timeout)
         finally:
             drv.close()
 

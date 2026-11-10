@@ -101,7 +101,7 @@ BAKE = livebake.Bakery(
     # 400 s, UP FROM 210. The budget now covers GRUB's 60-second timeout, the keypress at 75,
     # and the live session after it - the old 210 was measured against the B boot, which had
     # neither menu to wait through.
-    timeout=400,
+    desktop_timeout=400,
 )
 
 

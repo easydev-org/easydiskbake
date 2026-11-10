@@ -41,7 +41,7 @@ BAKE = livebake.Bakery(
     desktop=livebake.DesktopWhen(
         any_of=('select a language', 'install pop', 'pop!_os')),
     mem_mb=4096,
-    timeout=300,
+    desktop_timeout=300,
 )
 
 
