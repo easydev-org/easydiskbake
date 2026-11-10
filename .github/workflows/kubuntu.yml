@@ -338,10 +338,10 @@ jobs:
           name: kubuntu-ssh
           path: |
             out/kubuntu-ssh/ssh.txt
-            out/kubuntu-ssh/install.mp4
-            out/kubuntu-ssh/last-frame.png
-            out/kubuntu-ssh/console.log
-            out/kubuntu-ssh/steps/*.png
+            out/kubuntu-ssh/work/install.mp4
+            out/kubuntu-ssh/work/last-frame.png
+            out/kubuntu-ssh/work/console.log
+            out/kubuntu-ssh/work/steps/*.png
           if-no-files-found: warn
           retention-days: 14
 
@@ -432,7 +432,7 @@ jobs:
               --out out/kubuntu-vm-configure.qcow2 \
               --walk linux/kubuntu/steps/vm-configure.yaml \
               --ssh-port "${{ inputs.ssh_port || '2222' }}" \
-              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --boot-timeout "${{ inputs.boot_timeout || '1800' }}" \
               --hostname "${{ inputs.hostname }}" \
               | tee out/hostname.txt
 

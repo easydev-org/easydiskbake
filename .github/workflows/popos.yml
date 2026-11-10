@@ -321,10 +321,10 @@ jobs:
           name: popos-ssh
           path: |
             out/popos-ssh/ssh.txt
-            out/popos-ssh/install.mp4
-            out/popos-ssh/last-frame.png
-            out/popos-ssh/console.log
-            out/popos-ssh/steps/*.png
+            out/popos-ssh/work/install.mp4
+            out/popos-ssh/work/last-frame.png
+            out/popos-ssh/work/console.log
+            out/popos-ssh/work/steps/*.png
           if-no-files-found: warn
           retention-days: 14
 
@@ -415,7 +415,7 @@ jobs:
               --out out/popos-vm-configure.qcow2 \
               --walk linux/popos/steps/vm-configure.yaml \
               --ssh-port "${{ inputs.ssh_port || '2222' }}" \
-              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --boot-timeout "${{ inputs.boot_timeout || '1800' }}" \
               --hostname "${{ inputs.hostname }}" \
               | tee out/hostname.txt
 

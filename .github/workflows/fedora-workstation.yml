@@ -326,10 +326,10 @@ jobs:
           name: fedora-ssh
           path: |
             out/fedora-ssh/ssh.txt
-            out/fedora-ssh/install.mp4
-            out/fedora-ssh/last-frame.png
-            out/fedora-ssh/console.log
-            out/fedora-ssh/steps/*.png
+            out/fedora-ssh/work/install.mp4
+            out/fedora-ssh/work/last-frame.png
+            out/fedora-ssh/work/console.log
+            out/fedora-ssh/work/steps/*.png
           if-no-files-found: warn
           retention-days: 14
 
@@ -420,7 +420,7 @@ jobs:
               --out out/fedora-vm-configure.qcow2 \
               --walk linux/fedora-workstation/steps/vm-configure.yaml \
               --ssh-port "${{ inputs.ssh_port || '2222' }}" \
-              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --boot-timeout "${{ inputs.boot_timeout || '1800' }}" \
               --hostname "${{ inputs.hostname }}" \
               | tee out/hostname.txt
 

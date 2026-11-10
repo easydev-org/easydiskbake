@@ -1,86 +1,97 @@
 name: blissos16
 
-# BlissOS 16.9.7 - Android 13 on x86_64, booted by a stock qemu, to its desktop.
+# BlissOS 16.9.7 - Android 13 on x86_64, booted by a stock qemu, to its own launcher.
 #
 # WHY THERE IS AN android/blissos16 AT ALL, WITH android/15 ALREADY HERE
 #
-# android/15 boots Google's AOSP image through the SDK's `emulator` binary, and that binary
-# is the whole problem: it means goldfish/ranchu, and goldfish makes four things true that
-# nothing downstream can fix from the guest side.
+# android/15 boots Google's AOSP image through the SDK's `emulator` binary, and that binary is
+# the whole problem: it means goldfish/ranchu, and goldfish makes four things true that nothing
+# downstream can fix from the guest side.
 #
 #     kernel-ranchu is not a bzImage    measured: 497 bytes of 0xff, HdrS at 514, no 0xAA55.
 #                                       Stock qemu's -kernel drops it into SeaBIOS.
-#     -system publishes no GPT uevents measured: first-stage init waits in /sys forever, so
-#                                       the disks must be split into three and kept paired.
+#     -system publishes no GPT uevents measured: first-stage init waits in /sys forever, so the
+#                                       disks must be split into three and kept paired.
 #     /data is encrypted, on nosuid      measured: dm-42 ext4 (rw,seclabel,nosuid,...), so a
 #                                       setuid binary there cannot elevate anything.
-#     su accepts root and shell only     measured: app uid 10148 gets "not allowed".
+#     su accepts root and shell only     measured: an app uid gets "not allowed".
 #
-# mkdisks.py, persist.py and the whole three-disk handover exist to work around those. This
-# path has none of them: BlissOS is Android-x86, so the kernel is a real bzImage, the initrd
-# assembles the root itself, and /data is a plain ext4 file. The measured result:
+# mkdisks.py, persist.py and the whole three-disk handover exist to work around those four
+# facts. This path has none of them, because BlissOS is Android-x86:
 #
-#     kernel      bzImage, HdrS at 0x1F1, boot flag 55aa, protocol 2.15
+#     kernel      a real bzImage (HdrS at 0x1F1, boot flag 55aa, protocol 2.15)
 #     system.efs  EROFS, attached read-only as /dev/vda
-#     /data       /dev/block/vdb on /data type ext4 (rw,seclabel,noatime), 16 GiB
+#     /data       /dev/block/vdb on /data type ext4 (rw,seclabel,noatime), 16 GiB, plain ext4
 #     adb root    uid=0(root) context=u:r:su:s0
 #
-# WHY 16.9.7 IS ANDROID 13, AND WHY THAT IS STILL THE LATEST
+# WHY 16.9.7 IS ANDROID 13, AND WHY THAT IS STILL THE NEWEST
 #
-# It is the newest publicly published BlissOS image. The project's own pages say "Public
-# images are paused" with no ETA; the BlissOS17 (Android 14) and Voyager/18 (Android 15)
-# directories on SourceForge exist and are empty; BlissOS/stable_releases v17.8.3 pins
-# android-14.0.0_r53; and Android 15 exists only as source in platform_manifest's
-# voyager-qpr2-x86 tree, which has to be BUILT - 350 GB and hours, not a download. A
-# workflow that claimed Android 15 here would be claiming a version nobody published.
+# It is the newest publicly published BlissOS image. The project's own pages say "Public images
+# are paused" with no ETA; the BlissOS17 (Android 14) and Voyager/18 (Android 15) directories on
+# SourceForge exist and contain no ISO; BlissOS/stable_releases v17.8.3 pins android-14.0.0_r53;
+# and Android 15 exists only as source in platform_manifest's voyager-qpr2-x86 tree, which has
+# to be BUILT - 350 GB and hours, not a download. A workflow that claimed Android 15 here would
+# be claiming a version nobody published.
 #
-# TWO STAGES, WHICH IS ONE FEWER THAN THE LINUX IMAGES NEED
+# THE SAME THREE LAYERS AS macos15 AND windows-11
 #
-#     install   fetch the ISO, unpack kernel + initrd + system.efs, boot to the desktop
-#     launch    pull those three from ghcr and boot them again, with no ISO anywhere
+#     workflow  names a stage and its inputs
+#     a script   android/blissos16/launch.py - owns the artefacts and the verdict
+#     a YAML     android/blissos16/steps/desktop.yaml - owns the machine and what it is asked
 #
-# There is no third "put sshd on the disk" stage: this image is verified as an Android that
-# boots and reaches its own launcher, and it ships no sshd. Android's own remote-access story
-# is adb, which is what the launch stage reads.
+# The YAML's first step is `boot: family: android`, so the walkthrough starts the guest and
+# lib/steps.py stops it on the way out. The script starts nothing.
 #
-# MANUAL ONLY, like every other image here: this is a multi-gigabyte download and a
-# several-minute boot, not something to run on every push.
+# TWO STAGES, AND THE SECOND IS THE ONE THAT MATTERS
+#
+#     install   fetch the pinned ISO, unpack three files, boot to the launcher, publish them
+#     launch    pull those three back from ghcr, boot them, photograph the launcher again
+#
+# The install stage proves the image boots. The launch stage proves the ARTEFACT does - a tar,
+# a zstd stream, a ghcr push and a pull each get a chance to break a three-file set, and only
+# a boot from the published bytes covers all of them.
+#
+# THERE IS NO ssh STAGE. This guest ships no sshd; Android's remote access is adb on 5555. The
+# claim here is a desktop, and the picture is the verdict.
+#
+# MANUAL ONLY, like every other image: a multi-gigabyte download and several minutes of boot.
 
 on:
   workflow_dispatch:
     inputs:
+      # --- what to run ------------------------------------------------------------------
       install_run:
-        description: "install: fetch the ISO, unpack it, boot to the desktop (~10 min)"
+        description: "install: fetch the ISO, unpack it, boot to the launcher"
         type: boolean
         default: true
       launch_run:
-        description: "launch: pull the published files and boot them to the desktop again"
+        description: "launch: boot the published three-file set and photograph the launcher"
         type: boolean
         default: true
 
-      # --- where each stage starts ---------------------------------------------------
+      # --- where each stage starts ------------------------------------------------------
       install_from:
-        description: "install: a published tag to boot instead of fetching the ISO"
+        description: "install: a published tag to unpack instead of fetching the ISO"
         default: ""
       launch_from:
         description: "launch: a published tag to boot instead of the install stage's output"
         default: ""
 
-      # --- the guest ------------------------------------------------------------------
-      seconds:
-        description: "how long the guest gets to reach a painted desktop"
-        default: "600"
+      # --- the guest --------------------------------------------------------------------
       data_gb:
         description: "the /data ext4's size"
         default: "16"
-      resolution:
-        description: "the panel size the guest is told about"
-        default: "1280x800"
+      mem_mb:
+        description: "guest memory"
+        default: "4096"
+      cpus:
+        description: "guest cpus"
+        default: "4"
 
-      # --- publish --------------------------------------------------------------------
+      # --- publish ----------------------------------------------------------------------
       publish_tag:
-        description: "tag suffix; empty for android-13-blissos"
-        default: ""
+        description: "tag to publish under; empty for android-13-blissos"
+        default: "android-13-blissos"
 
 concurrency:
   group: blissos16-${{ github.ref }}
@@ -95,9 +106,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     container:
-      # THE SAME IMAGE THE WINDOWS AND macOS BAKES USE, and it is the right one precisely
-      # because it has no Android SDK: this path never touches `emulator`, `avdmanager` or
-      # `kernel-ranchu`. It carries qemu 11.1, 7z and python3, which is everything here.
+      # THE SAME IMAGE THE WINDOWS AND macOS STAGES USE, and it is the right one precisely
+      # because it carries no Android SDK: this path never touches `emulator`, `avdmanager`
+      # or `kernel-ranchu`. It has qemu 11.1, 7z, mkfs.ext4 and python3, which is everything.
       image: ghcr.io/${{ github.repository }}:latest
       credentials:
         username: ${{ github.actor }}
@@ -115,7 +126,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: prepare
+      - name: prepare the runner
         uses: easydev-org/easyactions/runner-check@main
         with:
           kvm: true
@@ -123,8 +134,8 @@ jobs:
           token: ${{ github.token }}
 
       # THE PIN, PRINTED BEFORE ANYTHING IS DOWNLOADED. A stage that fails should say which
-      # upstream file it was looking at, and the size and hash are the answer to "did
-      # SourceForge hand us a different build".
+      # upstream file it was looking at, and the size and hash answer "did SourceForge hand us
+      # a different build".
       - name: show the pin
         uses: easydev-org/easyactions/log-stream@main
         with:
@@ -153,15 +164,33 @@ jobs:
           interval: "15"
           command: |
             set -euo pipefail
+            # --drop-iso: the ISO is 2.2 GiB and the three files are what a tag holds. It is
+            # verified before extraction, so the members that come out are the pinned members.
             python3 android/blissos16/fetch_iso.py --out out/bliss --drop-iso
 
-      # ---- INSTALL: THE BOOT IS THE INSTALL -------------------------------------
-      #
-      # There is no installer to drive. Android-x86's "installation" is a copy of system.efs
-      # plus a data.img, and this stage does exactly what a user would do after installing:
-      # start it and look at the screen.
-      - name: boot to the desktop
-        if: inputs.install_from == ''
+      # A PUBLISHED SET INSTEAD OF THE ISO. Same unpack, same three names - which is what makes
+      # `install_from` a real test of the artifact rather than of the download.
+      - name: pull the boot set
+        if: inputs.install_from != ''
+        uses: easydev-org/easyactions/oci-pull@main
+        with:
+          tag: ${{ inputs.install_from }}
+          dest: out
+          token: ${{ github.token }}
+
+      - name: unpack the boot set
+        if: inputs.install_from != ''
+        run: |
+          set -euo pipefail
+          mkdir -p out/bliss
+          tar -xf out/blissos16.tar.zst -C out/bliss
+          ls -la out/bliss
+
+      # ---- THE WALKTHROUGH ------------------------------------------------------
+      # There is no installer to drive: Android-x86's "install" is a copy of system.efs plus a
+      # /data. So the stage is what a user would do after installing - start it and look at the
+      # screen - and android/blissos16/steps/desktop.yaml is what says so.
+      - name: boot to the launcher
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
@@ -169,12 +198,15 @@ jobs:
           interval: "15"
           command: |
             set -euo pipefail
+            export GITHUB_TOKEN="${{ github.token }}"
+            export SNAPSHOT_INTERVAL=2
             python3 android/blissos16/launch.py \
               --dir out/bliss \
+              --work out/install-work \
               --artifacts out/install \
               --data-gb "${{ inputs.data_gb || '16' }}" \
-              --resolution "${{ inputs.resolution || '1280x800' }}" \
-              --seconds "${{ inputs.seconds || '600' }}"
+              --mem "${{ inputs.mem_mb || '4096' }}" \
+              --cpus "${{ inputs.cpus || '4' }}"
 
       - name: keep the screen and the console
         if: always()
@@ -183,17 +215,17 @@ jobs:
           name: blissos-install
           path: |
             out/install/launch.txt
-            out/install/console.log
             out/install/screen.png
+            out/install-work/console.log
+            out/install-work/shots
           if-no-files-found: warn
           retention-days: 14
 
       # WHAT A TAG HOLDS: THE THREE FILES, AND THEY ARE A SET.
       #
-      # kernel, initrd.img and system.efs are extracted from one verified ISO, and a kernel
-      # paired with a different system.efs is a guest that boots and then cannot find its
-      # system. 2.2 GiB uncompressed, and it compresses hard because EROFS is already an
-      # archive of files that do not overlap.
+      # kernel, initrd.img and system.efs come out of one verified ISO, and a kernel paired
+      # with a different system.efs is a guest that boots and then cannot find its system.
+      # 2.2 GiB uncompressed; EROFS is already an archive, so this compresses hard.
       - name: pack the boot set
         if: success() && inputs.install_from == ''
         uses: easydev-org/easyactions/log-stream@main
@@ -224,14 +256,10 @@ jobs:
   # LAUNCH - pull the published set and boot it again, with no ISO in sight.
   # ===========================================================================
   #
-  # THIS IS THE STAGE THAT PROVES THE ARTEFACT RATHER THAN THE INSTALL. Every failure in
-  # this repository has had the same shape: a step reported success and something downstream
-  # could not use the result. A tar, a zstd stream, a ghcr push and a pull each get a chance
-  # to break a three-file set, and the only check that covers all of them is to start from
-  # the published bytes.
-  #
-  # IT DOES NOT FETCH THE ISO. If the pack lost initrd.img, this job fails - which is the
-  # point, and which a launch that unpacked the ISO again would never notice.
+  # THE STAGE THAT PROVES THE ARTEFACT RATHER THAN THE INSTALL. Every failure in this
+  # repository has had the same shape: a step reported success and something downstream could
+  # not use the result. If the pack lost initrd.img, this job fails - which is the point, and
+  # which a launch that unpacked the ISO again would never notice.
   launch:
     needs: install
     if: |
@@ -252,7 +280,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: prepare
+      - name: prepare the runner
         uses: easydev-org/easyactions/runner-check@main
         with:
           kvm: true
@@ -260,7 +288,6 @@ jobs:
           token: ${{ github.token }}
 
       - name: pull the boot set
-        if: inputs.launch_from != ''
         uses: easydev-org/easyactions/oci-pull@main
         with:
           tag: ${{ inputs.launch_from || needs.install.outputs.tag }}
@@ -268,7 +295,6 @@ jobs:
           token: ${{ github.token }}
 
       - name: unpack the boot set
-        if: inputs.launch_from != ''
         run: |
           set -euo pipefail
           mkdir -p out/bliss
@@ -283,17 +309,18 @@ jobs:
           interval: "15"
           command: |
             set -euo pipefail
-            # A FRESH /data, BECAUSE THIS STAGE CHECKS THE BOOT SET AND NOT A GUEST'S HISTORY.
-            # A launch that reused whatever /data was left behind would be checking a machine
-            # whose state came from somewhere else - and the published tar does not contain
-            # /data, so there is nothing to reuse.
+            export GITHUB_TOKEN="${{ github.token }}"
+            export SNAPSHOT_INTERVAL=2
+            # --fresh-data: the /data did not ship in the tar, so anything already there came
+            # from somewhere else. This stage checks the boot set and not a guest's history.
             python3 android/blissos16/launch.py \
               --dir out/bliss \
+              --work out/launch-work \
               --artifacts out/launch \
               --fresh-data \
               --data-gb "${{ inputs.data_gb || '16' }}" \
-              --resolution "${{ inputs.resolution || '1280x800' }}" \
-              --seconds "${{ inputs.seconds || '600' }}"
+              --mem "${{ inputs.mem_mb || '4096' }}" \
+              --cpus "${{ inputs.cpus || '4' }}"
 
       - name: keep the verdict
         if: always()
@@ -302,7 +329,8 @@ jobs:
           name: blissos-launch
           path: |
             out/launch/launch.txt
-            out/launch/console.log
             out/launch/screen.png
+            out/launch-work/console.log
+            out/launch-work/shots
           if-no-files-found: warn
           retention-days: 14

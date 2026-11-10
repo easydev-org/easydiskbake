@@ -327,10 +327,10 @@ jobs:
           name: manjaro-ssh
           path: |
             out/manjaro-ssh/ssh.txt
-            out/manjaro-ssh/install.mp4
-            out/manjaro-ssh/last-frame.png
-            out/manjaro-ssh/console.log
-            out/manjaro-ssh/steps/*.png
+            out/manjaro-ssh/work/install.mp4
+            out/manjaro-ssh/work/last-frame.png
+            out/manjaro-ssh/work/console.log
+            out/manjaro-ssh/work/steps/*.png
           if-no-files-found: warn
           retention-days: 14
 
@@ -421,7 +421,7 @@ jobs:
               --out out/manjaro-vm-configure.qcow2 \
               --walk linux/manjaro/steps/vm-configure.yaml \
               --ssh-port "${{ inputs.ssh_port || '2222' }}" \
-              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --boot-timeout "${{ inputs.boot_timeout || '1800' }}" \
               --hostname "${{ inputs.hostname }}" \
               | tee out/hostname.txt
 

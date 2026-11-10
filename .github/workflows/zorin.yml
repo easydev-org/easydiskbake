@@ -331,10 +331,10 @@ jobs:
           name: zorin-ssh
           path: |
             out/zorin-ssh/ssh.txt
-            out/zorin-ssh/install.mp4
-            out/zorin-ssh/last-frame.png
-            out/zorin-ssh/console.log
-            out/zorin-ssh/steps/*.png
+            out/zorin-ssh/work/install.mp4
+            out/zorin-ssh/work/last-frame.png
+            out/zorin-ssh/work/console.log
+            out/zorin-ssh/work/steps/*.png
           if-no-files-found: warn
           retention-days: 14
 
@@ -425,7 +425,7 @@ jobs:
               --out out/zorin-vm-configure.qcow2 \
               --walk linux/zorin/steps/vm-configure.yaml \
               --ssh-port "${{ inputs.ssh_port || '2222' }}" \
-              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --boot-timeout "${{ inputs.boot_timeout || '1800' }}" \
               --hostname "${{ inputs.hostname }}" \
               | tee out/hostname.txt
 

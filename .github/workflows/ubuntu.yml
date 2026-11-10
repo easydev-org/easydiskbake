@@ -345,10 +345,10 @@ jobs:
           name: ubuntu-ssh
           path: |
             out/ubuntu-ssh/ssh.txt
-            out/ubuntu-ssh/install.mp4
-            out/ubuntu-ssh/last-frame.png
-            out/ubuntu-ssh/console.log
-            out/ubuntu-ssh/steps/*.png
+            out/ubuntu-ssh/work/install.mp4
+            out/ubuntu-ssh/work/last-frame.png
+            out/ubuntu-ssh/work/console.log
+            out/ubuntu-ssh/work/steps/*.png
           if-no-files-found: warn
           retention-days: 14
 
@@ -439,7 +439,7 @@ jobs:
               --out out/ubuntu-vm-configure.qcow2 \
               --walk linux/ubuntu/steps/vm-configure.yaml \
               --ssh-port "${{ inputs.ssh_port || '2222' }}" \
-              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --boot-timeout "${{ inputs.boot_timeout || '1800' }}" \
               --hostname "${{ inputs.hostname }}" \
               | tee out/hostname.txt
 

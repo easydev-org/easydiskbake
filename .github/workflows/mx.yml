@@ -326,10 +326,10 @@ jobs:
           name: mx-ssh
           path: |
             out/mx-ssh/ssh.txt
-            out/mx-ssh/install.mp4
-            out/mx-ssh/last-frame.png
-            out/mx-ssh/console.log
-            out/mx-ssh/steps/*.png
+            out/mx-ssh/work/install.mp4
+            out/mx-ssh/work/last-frame.png
+            out/mx-ssh/work/console.log
+            out/mx-ssh/work/steps/*.png
           if-no-files-found: warn
           retention-days: 14
 
@@ -420,7 +420,7 @@ jobs:
               --out out/mx-vm-configure.qcow2 \
               --walk linux/mx/steps/vm-configure.yaml \
               --ssh-port "${{ inputs.ssh_port || '2222' }}" \
-              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --boot-timeout "${{ inputs.boot_timeout || '1800' }}" \
               --hostname "${{ inputs.hostname }}" \
               | tee out/hostname.txt
 

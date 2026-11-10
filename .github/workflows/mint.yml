@@ -323,10 +323,10 @@ jobs:
           name: mint-ssh
           path: |
             out/mint-ssh/ssh.txt
-            out/mint-ssh/install.mp4
-            out/mint-ssh/last-frame.png
-            out/mint-ssh/console.log
-            out/mint-ssh/steps/*.png
+            out/mint-ssh/work/install.mp4
+            out/mint-ssh/work/last-frame.png
+            out/mint-ssh/work/console.log
+            out/mint-ssh/work/steps/*.png
           if-no-files-found: warn
           retention-days: 14
 
@@ -417,7 +417,7 @@ jobs:
               --out out/mint-vm-configure.qcow2 \
               --walk linux/mint/steps/vm-configure.yaml \
               --ssh-port "${{ inputs.ssh_port || '2222' }}" \
-              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --boot-timeout "${{ inputs.boot_timeout || '1800' }}" \
               --hostname "${{ inputs.hostname }}" \
               | tee out/hostname.txt
 

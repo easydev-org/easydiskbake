@@ -330,10 +330,10 @@ jobs:
           name: endeavour-ssh
           path: |
             out/endeavour-ssh/ssh.txt
-            out/endeavour-ssh/install.mp4
-            out/endeavour-ssh/last-frame.png
-            out/endeavour-ssh/console.log
-            out/endeavour-ssh/steps/*.png
+            out/endeavour-ssh/work/install.mp4
+            out/endeavour-ssh/work/last-frame.png
+            out/endeavour-ssh/work/console.log
+            out/endeavour-ssh/work/steps/*.png
           if-no-files-found: warn
           retention-days: 14
 
@@ -424,7 +424,7 @@ jobs:
               --out out/endeavour-vm-configure.qcow2 \
               --walk linux/endeavour/steps/vm-configure.yaml \
               --ssh-port "${{ inputs.ssh_port || '2222' }}" \
-              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --boot-timeout "${{ inputs.boot_timeout || '1800' }}" \
               --hostname "${{ inputs.hostname }}" \
               | tee out/hostname.txt
 

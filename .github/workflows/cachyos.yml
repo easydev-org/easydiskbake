@@ -337,10 +337,10 @@ jobs:
           name: cachyos-ssh
           path: |
             out/cachyos-ssh/ssh.txt
-            out/cachyos-ssh/install.mp4
-            out/cachyos-ssh/last-frame.png
-            out/cachyos-ssh/console.log
-            out/cachyos-ssh/steps/*.png
+            out/cachyos-ssh/work/install.mp4
+            out/cachyos-ssh/work/last-frame.png
+            out/cachyos-ssh/work/console.log
+            out/cachyos-ssh/work/steps/*.png
           if-no-files-found: warn
           retention-days: 14
 
@@ -431,7 +431,7 @@ jobs:
               --out out/cachyos-vm-configure.qcow2 \
               --walk linux/cachyos/steps/vm-configure.yaml \
               --ssh-port "${{ inputs.ssh_port || '2222' }}" \
-              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --boot-timeout "${{ inputs.boot_timeout || '1800' }}" \
               --hostname "${{ inputs.hostname }}" \
               | tee out/hostname.txt
 

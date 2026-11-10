@@ -335,10 +335,10 @@ jobs:
           name: nixos-ssh
           path: |
             out/nixos-ssh/ssh.txt
-            out/nixos-ssh/install.mp4
-            out/nixos-ssh/last-frame.png
-            out/nixos-ssh/console.log
-            out/nixos-ssh/steps/*.png
+            out/nixos-ssh/work/install.mp4
+            out/nixos-ssh/work/last-frame.png
+            out/nixos-ssh/work/console.log
+            out/nixos-ssh/work/steps/*.png
           if-no-files-found: warn
           retention-days: 14
 
@@ -429,7 +429,7 @@ jobs:
               --out out/nixos-vm-configure.qcow2 \
               --walk linux/nixos/steps/vm-configure.yaml \
               --ssh-port "${{ inputs.ssh_port || '2222' }}" \
-              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --boot-timeout "${{ inputs.boot_timeout || '1800' }}" \
               --hostname "${{ inputs.hostname }}" \
               | tee out/hostname.txt
 
