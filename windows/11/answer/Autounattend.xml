@@ -280,69 +280,6 @@
           <Path>bcdedit.exe /timeout 0</Path>
           <Description>Do not wait at the boot menu</Description>
         </RunSynchronousCommand>
-        <!-- THE GUEST AGENT'S DRIVER, ADDED TO THE INSTALLED SYSTEM - NOT TO windowsPE.
-
-             vioserial was in $WinPEDriver$ for one run and cost that run entirely: Setup stages
-             a System-class INF into the image it is installing, and the boot after the file copy
-             could not continue. Run 42839116205 rebooted "Windows Boot Manager" eight times and
-             ended on
-
-                 The computer restarted unexpectedly or encountered an unexpected error.
-
-             at 54%, while the bake before this driver existed reached a desktop in 1192 seconds.
-             See lib/winiso.py's WINPE_DRIVERS for the whole comparison.
-
-             `pnputil /add-driver ... /install` is the documented way to add a driver to a
-             RUNNING system, which is what specialize is. The device itself is already there -
-             lib/vm.py puts a virtio-serial controller in the machine's argv from the first boot
-             - so this is the missing half, done where it cannot break the install.
-
-             ORDER 6, BEFORE THE AGENT AT 7: the service starts as soon as it is registered, and
-             a qemu-ga with no port to talk on is the failure this file's next step exists to
-             catch. -->
-        <RunSynchronousCommand wcm:action="add">
-          <Order>6</Order>
-          <Path>powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$drv = Get-PSDrive -PSProvider FileSystem | ForEach-Object { Join-Path $_.Root 'agent\vioserial' } | Where-Object { Test-Path $_ } | Select-Object -First 1; if (-not $drv) { 'NO_DRIVER_ON_ANY_DRIVE' | Out-File -Encoding ascii C:\Windows\Temp\vioserial-status.txt; exit 0 }; $p = Start-Process pnputil.exe -ArgumentList @('/add-driver', (Join-Path $drv 'vioser.inf'), '/install') -PassThru; if ($p.WaitForExit(300000)) { ('EXIT=' + $p.ExitCode) | Out-File -Encoding ascii C:\Windows\Temp\vioserial-status.txt } else { $p.Kill(); 'TIMEOUT_300s' | Out-File -Encoding ascii C:\Windows\Temp\vioserial-status.txt }"</Path>
-          <Description>Install the virtio-serial driver the guest agent talks on</Description>
-        </RunSynchronousCommand>
-
-        <!-- THE QEMU GUEST AGENT, INSTALLED BY SETUP RATHER THAN BY A LATER STAGE.
-
-             WHY HERE AND NOT OVER SSH LATER. The agent is what lets this machine be shut down
-             without a dialog and without a working sshd - so installing it over ssh on a disk
-             that already has ssh is the long way round, and it left the disk's FIRST boot with
-             no agent at all. The MSI travels on the answer CD (lib/winiso.py copies it out of
-             the virtio-win ISO), and this is the pass that runs while that CD is still attached.
-
-             A SYNCHRONOUS `msiexec` IN THIS PASS CAN COST THE WHOLE BAKE, AND DID.
-
-             Run 42822577507 is the measurement. It installed Windows, rebooted into it -
-
-                 BdsDxe: starting Boot0001 "UEFI QEMU DVD-ROM"        <- the install DVD
-                 BdsDxe: starting Boot000A "Windows Boot Manager"     <- the disk it wrote
-
-             - and then never reached a desktop for the remaining eighty-five minutes. A run of
-             the same stage before this pass existed reached its desktop in 1192 seconds and the
-             whole job took 34 minutes, so this is not slowness: specialize never finished.
-
-             So the install is BOUNDED. Ten minutes is several times what copying 12 MB and
-             registering a service takes; past that the process is killed and the pass continues,
-             because a setup that cannot be interrupted must not be able to hold the machine.
-             The outcome is written to C:\Windows\Temp\qemu-ga-status.txt, which survives on the
-             disk and can be read from the next stage - a failure that says why instead of a
-             timeout that says nothing.
-
-             THE DRIVES ARE ENUMERATED, NOT GUESSED. `Get-PSDrive -PSProvider FileSystem` lists
-             what is actually mounted; a hard-coded D: works until the firmware enumerates the
-             three CD-ROMs differently, and the failure is a silent disk with no agent.
-
-             NO `start /wait`. It was the previous spelling and it blocks forever if msiexec
-             does; Start-Process -PassThru gives a handle that can be given a deadline. -->
-        <RunSynchronousCommand wcm:action="add">
-          <Order>7</Order>
-          <Path>powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$msi = Get-PSDrive -PSProvider FileSystem | ForEach-Object { Join-Path $_.Root 'agent\qemu-ga-x86_64.msi' } | Where-Object { Test-Path $_ } | Select-Object -First 1; if (-not $msi) { 'NO_MSI_ON_ANY_DRIVE' | Out-File -Encoding ascii C:\Windows\Temp\qemu-ga-status.txt; exit 0 }; $p = Start-Process msiexec.exe -ArgumentList @('/i', $msi, '/qn', '/norestart', '/l*v', 'C:\Windows\Temp\qemu-ga-install.log') -PassThru; if ($p.WaitForExit(600000)) { ('EXIT=' + $p.ExitCode) | Out-File -Encoding ascii C:\Windows\Temp\qemu-ga-status.txt } else { $p.Kill(); 'TIMEOUT_600s' | Out-File -Encoding ascii C:\Windows\Temp\qemu-ga-status.txt }"</Path>
-          <Description>Install the QEMU guest agent, bounded at ten minutes</Description>
-        </RunSynchronousCommand>
       </RunSynchronous>
     </component>
   </settings>

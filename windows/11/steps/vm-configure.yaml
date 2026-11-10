@@ -86,6 +86,67 @@ steps:
   #
   # THE AGENT IS STILL *PROVEN* BELOW, because "Setup ran msiexec" and "a machine can be shut
   # down through its agent" are different statements and only the second one is worth anything.
+  # =========================================================================
+  # THE GUEST AGENT, INSTALLED NOW INSTEAD OF DURING SETUP
+  # =========================================================================
+  #
+  # IT USED TO BE INSTALLED BY THE ANSWER FILE'S specialize PASS, and that is what this file's
+  # earlier note argued for. The argument was wrong, and the evidence is in macos/15/bake.py? no -
+  # in windows/11/bake.py, above the Shape:
+  #
+  #     42839116205   vioserial in $WinPEDriver$   died ~1450s
+  #     42858732386   vioserial in agent/          died ~1400s
+  #     42209791462   no qga device at all          desktop at 1192s, job 34 minutes
+  #
+  # A virtio-serial controller in the machine's argv is a PCI device Windows Setup enumerates on
+  # the boot after the file copy, and with no in-box driver for it the install cannot finish. The
+  # device is only needed by a FINISHED system, so the bake no longer has one and this stage
+  # installs both halves: `pnputil` for the driver, msiexec for the service.
+  #
+  # THE FILES COME OUT OF THE ANSWER CD, which vm-configure is handed as a second CD... except it
+  # is not. This stage boots a disk with no installer media attached, so the files are extracted
+  # on the HOST from the same virtio-win ISO the bake pulled, and copied in over ssh.
+  - name: fetch the agent and its driver on the host
+    python: vm_configure_asset:fetch_guest_agent
+    family: windows
+    python_screen: false
+    timeout: 1200
+
+  - name: copy the driver in
+    scp: ["guest-agent/vioserial/vioser.inf", "C:/Users/{{ user }}/vioser.inf"]
+    requires: [ssh]
+    timeout: 300
+
+  - name: copy the driver's payload in
+    scp: ["guest-agent/vioserial/vioser.sys", "C:/Users/{{ user }}/vioser.sys"]
+    requires: [ssh]
+    timeout: 300
+
+  - name: copy the driver's catalogue in
+    scp: ["guest-agent/vioserial/vioser.cat", "C:/Users/{{ user }}/vioser.cat"]
+    requires: [ssh]
+    timeout: 300
+
+  - name: copy the agent installer in
+    scp: ["guest-agent/qemu-ga-x86_64.msi", "C:/Users/{{ user }}/qemu-ga-x86_64.msi"]
+    requires: [ssh]
+    timeout: 600
+
+  # THE DRIVER FIRST, BECAUSE THE SERVICE STARTS WHEN IT IS REGISTERED.
+  #
+  # `pnputil /add-driver ... /install` needs the INF, the SYS and the CAT in one directory, and
+  # it reads the INF by name - so the three files are copied to the account's home and pointed at
+  # together. Bounded: a pnputil that does not return must say so rather than hold the stage.
+  - name: install the driver the agent talks on
+    ssh: |
+      powershell -NoProfile -ExecutionPolicy Bypass -Command "Push-Location $env:USERPROFILE; $p = Start-Process pnputil.exe -ArgumentList @('/add-driver','vioser.inf','/install') -PassThru -Wait -NoNewWindow; Write-Output ('PNPUTIL_EXIT=' + $p.ExitCode); Pop-Location"
+    timeout: 600
+
+  - name: install the guest agent
+    ssh: |
+      cmd /c "msiexec /i C:\Users\{{ user }}\qemu-ga-x86_64.msi /qn /norestart /l*v C:\Users\{{ user }}\qemu-ga-install.log & echo MSIEXEC_EXIT=%ERRORLEVEL%"
+    timeout: 600
+
   - name: prove the guest agent answers
     ssh: |
       powershell -NoProfile -ExecutionPolicy Bypass -Command "$s = Get-Service QEMU-GA -ErrorAction SilentlyContinue; if ($s) { Write-Output ('service: ' + $s.Status + ' / ' + $s.StartType) } else { Write-Output 'service: ABSENT' }; $d = Get-PnpDevice -Class Ports -ErrorAction SilentlyContinue | Where-Object { $_.FriendlyName -match 'Guest Agent|virtio' }; if ($d) { $d | ForEach-Object { Write-Output ('device: ' + $_.FriendlyName + ' / ' + $_.Status) } } else { Write-Output 'device: NO virtio-serial port' }"

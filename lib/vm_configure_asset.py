@@ -27,6 +27,7 @@ rather than by two literals that have to be kept in step.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 
@@ -47,6 +48,14 @@ ASSETS = {
         "url": "https://github.com/mav2287/mac-guest-agent/releases/latest/download/mac-guest-agent",
         "name": "mac-guest-agent",
         "executable": True,
+    },
+    # THE MSI OUT OF THE virtio-win ISO. `member` says which path inside the archive, so the
+    # same fetch() can either download a file or extract one.
+    "qemu-ga-msi": {
+        "from_iso": True,
+        "member": "guest-agent/qemu-ga-x86_64.msi",
+        "name": "qemu-ga-x86_64.msi",
+        "executable": False,
     },
 }
 
@@ -94,6 +103,66 @@ def fetch(key: str, work: str = "") -> str:
     return target
 
 
+def fetch_from_iso(key: str, iso_path: str, work: str = "") -> str:
+    """Extract ASSETS[key]["member"] out of `iso_path` into the work directory.
+
+    THE SAME ISO THE BAKE ALREADY HAS. `iso-virtio-win` is pulled for the drivers during install;
+    the guest agent is inside the same archive, under guest-agent/. 7z reads an ISO as an archive
+    with no privileges, which is what lib/winiso.py's extract_drivers already relies on.
+    """
+    spec = ASSETS[key]
+    if not os.path.isfile(iso_path):
+        raise SystemExit(f"no virtio-win ISO at {iso_path}")
+    target_dir = os.path.join(work or ".", "guest-agent")
+    os.makedirs(target_dir, exist_ok=True)
+    target = os.path.join(target_dir, spec["name"])
+    if os.path.isfile(target) and os.path.getsize(target) > 1024:
+        log(f"{spec['name']} is already extracted ({os.path.getsize(target) >> 10} KiB)")
+        return target
+    log(f"extracting {spec['member']} from {os.path.basename(iso_path)}")
+    result = subprocess.run(
+        ["7z", "e", "-y", f"-o{target_dir}", iso_path, spec["member"]],
+        capture_output=True, text=True)
+    if result.returncode != 0 or not os.path.isfile(target):
+        raise SystemExit(
+            f"could not extract {spec['member']} from {iso_path}: "
+            f"{(result.stderr or result.stdout).strip()[:300]}")
+    log(f"  {target} ({os.path.getsize(target) >> 10} KiB)")
+    return target
+
+
+def fetch_driver(work: str, driver: str = "vioserial") -> str:
+    """Extract one driver's files from the virtio-win ISO into guest-agent/<driver>/.
+
+    A DIRECTORY, NOT A FLAT NAME: `pnputil /add-driver vioser.inf /install` reads the INF and
+    finds its .sys and .cat beside it, so the three files have to arrive together.
+    """
+    target_dir = os.path.join(work or ".", "guest-agent", driver)
+    if os.path.isdir(target_dir) and any(f.endswith(".inf") for f in os.listdir(target_dir)):
+        return target_dir
+    import images
+    import iso as isomod
+
+    iso_path = os.path.join(work, "virtio-win.iso")
+    if not os.path.isfile(iso_path):
+        iso_path = isomod.fetch_iso("virtio-win", iso_path)
+    os.makedirs(target_dir, exist_ok=True)
+    for version_dir in ("w11", "w10", "2k19"):
+        member = f"{driver}/{version_dir}/amd64"
+        result = subprocess.run(
+            ["7z", "x", "-y", f"-o{target_dir}", iso_path, f"{member}/*"],
+            capture_output=True, text=True)
+        source = os.path.join(target_dir, *member.split("/"))
+        if result.returncode != 0 or not os.path.isdir(source) or not os.listdir(source):
+            continue
+        for entry in os.listdir(source):
+            shutil.move(os.path.join(source, entry), os.path.join(target_dir, entry))
+        shutil.rmtree(os.path.join(target_dir, driver), ignore_errors=True)
+        log(f"driver: {driver} -> {target_dir}")
+        return target_dir
+    raise SystemExit(f"no {driver} driver in {iso_path}")
+
+
 def fetch_guest_agent(driver, step, **_kwargs) -> bool:
     """The walkthrough step. The file says which platform with `family:`.
 
@@ -108,12 +177,25 @@ def fetch_guest_agent(driver, step, **_kwargs) -> bool:
     disk whose first boot had already had no agent - see windows/11/steps/vm-configure.yaml.
     """
     family = str(step.get("family") or "")
+    work = getattr(driver, "work", "") or "."
+    if family == "windows":
+        # THE MSI AND ITS DRIVER, BOTH OUT OF THE ISO. The bake no longer installs either: a
+        # virtio-serial device during Setup is what broke three runs, so this stage does.
+        import images
+        import iso as isomod
+
+        iso_path = os.path.join(work, "virtio-win.iso")
+        if not os.path.isfile(iso_path):
+            iso_path = isomod.fetch_iso("virtio-win", iso_path)
+        path = fetch_from_iso("qemu-ga-msi", iso_path, work)
+        drv = fetch_driver(work)
+        log(f"  ready for the copy: {path}")
+        log(f"  ready for the copy: {drv}/vioser.inf")
+        return True
     if family != "macos":
         raise SystemExit(
             f"{getattr(step, 'name', 'this step')}: `python: vm_configure_asset:fetch_guest_agent` "
-            f"is for `family: macos`; Windows gets its agent during Setup "
-            f"(windows/11/answer/Autounattend.xml), and got {family!r}")
-    work = getattr(driver, "work", "") or "."
+            f"needs `family: macos` or `family: windows`, got {family!r}")
     path = fetch("mac-guest-agent", work)
     # THE STEP AFTER THIS ONE IS AN `scp:` THAT NAMES THE PATH, so it is returned in the log
     # where a failing copy can be compared against it.

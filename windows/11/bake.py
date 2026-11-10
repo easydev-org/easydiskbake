@@ -278,8 +278,13 @@ class Baker:
 
         # The drivers ride on the answer CD, in $WinPEDriver$, because windowsPE will
         # not see a virtio disk without them - see lib/winiso.py.
+        #
+        # `with_agent=False`: THE ANSWER CD CARRIES NO GUEST AGENT ANY MORE. Nothing in the
+        # answer file installs one, because a virtio-serial device during Setup is what broke
+        # three runs - see the Shape in this file. vm-configure extracts the MSI and the driver
+        # from the same ISO on the host and copies them in over ssh.
         return winiso.answer_iso(
-            staging, os.path.join(self.work, "answer.iso"), drivers=virtio,
+            staging, os.path.join(self.work, "answer.iso"), drivers=virtio, with_agent=False,
         )
 
     # -- the machine ----------------------------------------------------------
@@ -408,18 +413,32 @@ class Baker:
             tpm_socket=tpm_sock,
             vga="std",
             rdp_port=self.args.rdp_port,
-            # THE AGENT'S CHANNEL, DURING THE INSTALL THAT INSTALLS THE AGENT.
+            # NO AGENT CHANNEL HERE, AND THAT IS THE FIX FOR A FAILURE THAT COST THREE RUNS.
             #
-            # qemu-ga attaches to a virtio-serial port named org.qemu.guest_agent.0 and exits if
-            # there is no such device. The answer file installs it in the specialize pass, which
-            # runs INSIDE THIS BOOT - so without the port here the service would be installed and
-            # then fail to start on the very boot that created it, and the first run of the next
-            # stage would be the first time it ever worked.
+            # `qga_socket` puts a virtio-serial controller (1AF4:1003) in the machine's argv.
+            # Windows Setup enumerates every PCI device on the boot after the file copy, finds a
+            # serial controller with no in-box driver, and cannot finish: the machine reboots,
+            # shows "Windows Boot Manager", and lands on
             #
-            # The socket is a host path in qemu's argv, not something written into the disk, so
-            # it costs the published artifact nothing.
-            qga_socket=os.path.join(self.work, "qga.sock"),
-            qga_transport="virtio",
+            #     The computer restarted unexpectedly or encountered an unexpected error.
+            #
+            # Measured, twice, with the driver moved OUT of $WinPEDriver$ and then back IN:
+            #
+            #     42839116205   vioserial in $WinPEDriver$   died ~1450s
+            #     42858732386   vioserial in agent/          died ~1400s
+            #     42209791462   no qga device at all          desktop at 1192s, job 34 minutes
+            #
+            # The third one is the machine this stage had before the agent existed. The first two
+            # are the same failure with the driver in two different places - which is what proves
+            # the DEVICE is the problem and not where its driver is staged.
+            #
+            # The console says the same thing in one number: 985 bytes of UEFI text repeated for
+            # 59 heartbeats on the failing runs, and 3 on the one that reached a desktop.
+            #
+            # SO THE AGENT IS INSTALLED WHERE ITS DEVICE IS NOT PART OF AN INSTALL: vm-configure.
+            # That stage boots a finished Windows, mounts a share over the network driver, and has
+            # `pnputil` - the driver and the MSI are both already on the answer CD. The bake's job
+            # is to produce a Windows disk, and a Windows disk does not have an agent yet.
         )
 
         # Three CDs at most, and the order matters only for the boot device: the

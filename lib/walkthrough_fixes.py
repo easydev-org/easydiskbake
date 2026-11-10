@@ -510,8 +510,8 @@ def main() -> int:
     # something if the step that produces it is still there.
     win_conf = read("windows/11/steps/vm-configure.yaml")
     win_answer = read("windows/11/answer/Autounattend.xml")
-    check("the windows agent is installed by Setup", "windows/11/answer/Autounattend.xml",
-          "msiexec" in win_answer and "qemu-ga-x86_64.msi" in win_answer)
+    # IT IS NOT INSTALLED BY SETUP ANY MORE - see "the answer file installs no guest agent"
+    # below for the three runs that decided it.
     check("the windows agent install asks for no bundle", "windows/11/answer/Autounattend.xml",
           "guest-tools.exe" not in win_answer)
     # THE DRIVE LETTER IS ENUMERATED, NOT GUESSED. Three CD-ROMs are attached and their letters
@@ -524,15 +524,12 @@ def main() -> int:
     # rebooted into it (Boot000A "Windows Boot Manager" on the console), and no desktop appeared
     # for the remaining 85 minutes. A previous run of the same stage without this pass reached
     # its desktop in 1192s.
-    check("the windows install finds the answer cd, not a guessed letter",
-          "windows/11/answer/Autounattend.xml",
-          "Get-PSDrive -PSProvider FileSystem" in win_answer
-          and "agent\\qemu-ga-x86_64.msi" in win_answer)
+    # AND WITH NO STEP LEFT IN THE ANSWER FILE, THERE IS NO DRIVE LETTER TO FIND. The
+    # enumeration that used to be here is now vm-configure's `fetch_from_iso`, which reads the
+    # ISO on the host where there are no drive letters at all.
     # AND IT CANNOT HOLD THE MACHINE. A synchronous installer is a pass that can never end.
-    check("the windows agent install has a deadline", "windows/11/answer/Autounattend.xml",
-          "WaitForExit(600000)" in win_answer and "$p.Kill()" in win_answer)
-    check("the windows agent install says what happened", "windows/11/answer/Autounattend.xml",
-          "qemu-ga-status.txt" in win_answer)
+    # THE DEADLINE AND THE STATUS FILE MOVED WITH THE STEP, to vm-configure's pnputil and
+    # msiexec. They are asserted there, below.
     # AND vioserial IS NOT IN $WinPEDriver$, BECAUSE THAT IS WHAT BROKE A BAKE.
     #
     # The list of drivers Setup stages into the image it installs has to be the drivers the
@@ -547,17 +544,19 @@ def main() -> int:
           "vioserial" not in winpe)
     check("the agent's driver still travels on the answer cd", "lib/winiso.py",
           "extract_driver_for_agent" in winiso2 and 'AGENT_DRIVER = "vioserial"' in winiso2)
-    check("the driver is added to the running system", "windows/11/answer/Autounattend.xml",
-          "pnputil.exe" in win_answer and "vioser.inf" in win_answer)
-    # AND THE DRIVER GOES IN BEFORE THE AGENT: a service that starts with no port to talk on is
-    # the failure the following step exists to catch.
-    import re as _reorder
-
-    orders = _reorder.findall(r"<Order>(\d+)</Order>\s*<Path>(.*?)</Path>", win_answer, _reorder.S)
-    drv = [int(o) for o, p2 in orders if "pnputil" in p2]
-    agt = [int(o) for o, p2 in orders if "msiexec" in p2]
-    check("the driver is installed before the agent", "windows/11/answer/Autounattend.xml",
-          drv and agt and min(drv) < min(agt))
+    # AND THE ANSWER FILE INSTALLS NEITHER THE AGENT NOR ITS DRIVER, BECAUSE THE DEVICE IS THE
+    # PROBLEM. Three runs say so, and the last two differ only in where the driver was staged:
+    #
+    #     42839116205   vioserial in $WinPEDriver$   "restarted unexpectedly" at ~1450s
+    #     42858732386   vioserial in agent/          "restarted unexpectedly" at ~1400s
+    #     42209791462   no virtio-serial device      desktop at 1192s, job 34 minutes
+    #
+    # The console says it in one number: 985 bytes of UEFI text repeated for 59 heartbeats on
+    # the failing runs, and 3 on the one that reached a desktop.
+    check("the answer file installs no guest agent", "windows/11/answer/Autounattend.xml",
+          "msiexec" not in win_answer and "pnputil" not in win_answer)
+    check("the windows bake has no agent channel", "windows/11/bake.py",
+          "qga_socket=" not in read("windows/11/bake.py"))
 
     # AND NO RunSynchronousCommand ANYWHERE MAY WAIT FOREVER.
     #
@@ -574,9 +573,11 @@ def main() -> int:
 
     # AND THE STAGE SAYS SO RATHER THAN QUIETLY REINSTALLING IT: one path, and a re-run of this
     # stage must not become a second one.
-    check("the windows stage no longer installs the agent itself",
-          "windows/11/steps/vm-configure.yaml",
-          "install the guest agent" not in win_conf)
+    check("vm-configure installs the agent", "windows/11/steps/vm-configure.yaml",
+          "install the guest agent" in win_conf)
+    check("vm-configure installs the driver first", "windows/11/steps/vm-configure.yaml",
+          win_conf.index("install the driver the agent talks on")
+          < win_conf.index("install the guest agent"))
     check("the windows stage still proves the agent", "windows/11/steps/vm-configure.yaml",
           "prove the guest agent answers" in win_conf)
     # AND THE MSI COMES OUT OF THE virtio-win ISO, not from a second URL that has to be kept in
@@ -594,8 +595,10 @@ def main() -> int:
     # AND THE HTTP HALF OF THAT FETCH IS GONE, so a Windows stage cannot reinstall what Setup
     # already installed. One path, and the module says so.
     asset_src = read("lib/vm_configure_asset.py")
-    check("the windows agent is not fetched over http any more", "lib/vm_configure_asset.py",
-          "fetch_from_iso" not in asset_src and '"qemu-ga-msi"' not in asset_src)
+    check("the windows agent comes out of the ISO, not a second URL",
+          "lib/vm_configure_asset.py",
+          "fetch_from_iso" in asset_src and '"qemu-ga-msi"' in asset_src
+          and "fetch_driver" in asset_src)
     # AND AN ISO WITHOUT THE AGENT IS REFUSED, not silently accepted. The answer file installs
     # the file by path, so a drivers-only repack produces a Windows disk that boots, answers
     # nothing on its agent port, and only says so two stages later. Run 42804093226 is that
@@ -606,9 +609,10 @@ def main() -> int:
     # AND THE BAKE GIVES THE GUEST THE PORT THE AGENT TALKS ON. The answer file installs it in
     # the same boot, so a machine without the device installs a service it cannot start.
     bake_src = read("windows/11/bake.py")
-    check("the windows bake carries the agent channel", "windows/11/bake.py",
-          'qga_socket=os.path.join(self.work, "qga.sock")' in bake_src
-          and 'qga_transport="virtio"' in bake_src)
+    # AND THE BAKE HAS NONE: see the note beside the Shape for the three runs that prove a
+    # virtio-serial device during Setup is what stopped the install.
+    check("the windows bake carries no agent channel", "windows/11/bake.py",
+          "qga_socket=" not in bake_src)
 
     # --- A STEP DECLARES WHAT IT NEEDS, AND A MISSING CAPABILITY STOPS THE RUN -----------
     #
