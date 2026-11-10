@@ -242,9 +242,19 @@ RUN set -eux; \
 # version checks, and android/15/run_qemu.py's own qemu-img. See ANDROID_SDK_ROOT below.
 ENV ANDROID_BIN="$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/emulator"
 
+# BY ABSOLUTE PATH, BECAUSE THE SDK IS NOT ON PATH. This RUN used the bare names and broke the
+# moment they left PATH:
+#
+#     + emulator -version
+#     /bin/sh: 1: emulator: not found
+#
+# which the image build reported as a warning and then published anyway - `verify` afterwards
+# confirmed the fix it was built for (`qemu-img --version: 11.1.0`, no longer the emulator's 2018
+# build), so the push was right and this line was the only casualty. It is still a broken check in
+# the file that documents the mistake, and it should not survive a second build.
 RUN set -eux; \
-    adb version | head -1; \
-    emulator -version 2>&1 | head -1
+    "$ANDROID_SDK_ROOT/platform-tools/adb" version | head -1; \
+    "$ANDROID_SDK_ROOT/emulator/emulator" -version 2>&1 | head -1
 
 # GitHub Actions runs a container job as `docker run <image> <entrypoint>`; this base's
 # entrypoint starts a VM, which is not what a job wants.
