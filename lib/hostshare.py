@@ -362,8 +362,19 @@ def mount_commands(host: str = "", user: str = "docker") -> dict[str, str]:
     return {
         "macos": (f"mkdir -p ~/shared && "
                   f"mount_smbfs //{SMB_USER}:{SMB_PASSWORD}@{host}/{SHARE_NAME} ~/shared"),
-        "windows": (f'if not exist "C:\\Users\\{user}\\shared" mkdir "C:\\Users\\{user}\\shared"'
-                    f' & net use Z: \\\\{host}\\{SHARE_NAME} {SMB_PASSWORD}'
+        # `net use` WITH A DRIVE LETTER DOES NOT SURVIVE THE SSH SESSION IT WAS MADE IN.
+        #
+        # A mapped drive belongs to the logon session that created it. Every `ssh host command`
+        # starts a new one, so `net use Z: \\host\share` returned 0 and the very next step
+        # - `dir Z:\` - answered
+        #
+        #     The system cannot find the path specified.
+        #
+        # run 42737785611. What survives is the CREDENTIAL: `net use \\host\share` with no
+        # drive letter stores it for the server, and then every later session can address the
+        # share by its UNC path. So the local directory IS a UNC path here, and the steps that
+        # read and write use \\host\share\... rather than Z:.
+        "windows": (f'net use \\\\{host}\\{SHARE_NAME} {SMB_PASSWORD}'
                     f' /user:{SMB_USER} /persistent:no'),
     }
 

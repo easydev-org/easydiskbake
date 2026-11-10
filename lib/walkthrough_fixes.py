@@ -363,46 +363,162 @@ def main() -> int:
           "macos/15/steps/dev.yaml",
           "command -v" in body and "/usr/local/*" in body)
 
-    # --- the bootstrap launcher: one script, two disks --------------------------------
+    # --- the bootstrap launcher: the shell each disk already has ----------------------
     #
-    # THE SHARE ONLY MAKES A FILE VISIBLE. Running it needs a login hook, and the hook is what
-    # these check.
+    # NO PYTHON, AND THAT IS THE REQUIREMENT RATHER THAN A SIMPLIFICATION. The share and its
+    # launcher are installed by their own stage, BEFORE the toolchain - so a launcher that needed
+    # python3 would do nothing on a disk that has not had the second stage yet, which is the one
+    # thing a login hook must not do.
     try:
         import bootstrap
-        # ONE NAME FOR THE LAUNCHER ON BOTH DISKS, because a person looking for "the bootstrap
-        # launcher" should find one thing. The bodies differ - launchd runs a program, Windows
-        # suppresses a console - and that is the only difference.
-        check("both launchers are called bootstrap-launcher.py", "lib/bootstrap.py",
-              bootstrap.LAUNCHER == "bootstrap-launcher.py"
-              and bootstrap.SCRIPT == "bootstrap.py")
+        check("the bootstrap script is a shell script on macOS and .ps1 on Windows",
+              "lib/bootstrap.py",
+              bootstrap.SCRIPT["macos"] == "bootstrap.sh"
+              and bootstrap.SCRIPT["windows"] == "bootstrap.ps1")
+        check("the macos launcher is .sh", "lib/bootstrap.py",
+              bootstrap.launcher_name("macos") == "bootstrap-launcher.sh")
+        check("the windows launcher is .ps1", "lib/bootstrap.py",
+              bootstrap.launcher_name("windows") == "bootstrap-launcher.ps1")
         mac_body = bootstrap.launcher_body("macos")
         win_body = bootstrap.launcher_body("windows")
         # THE MARKER IS WRITTEN ONLY ON SUCCESS, in both. A failing bootstrap that marked
-        # itself done would never run again - which is the opposite of what a person debugging
-        # one wants.
+        # itself done would never run again.
         check("the macos launcher marks success only", "lib/bootstrap.py",
-              "FAILED" in mac_body and "date > \"$MARKER\"" in mac_body)
+              "FAILED" in mac_body and 'date > "$MARKER"' in mac_body)
         check("the windows launcher marks success only", "lib/bootstrap.py",
-              "FAILED" in win_body and 'open(MARKER, "w")' in win_body)
-        # AND IT IS PYTHON, WHICH IS WHY WINDOWS NOW INSTALLS AN INTERPRETER.
-        check("the windows launcher is python, not a shell script", "lib/bootstrap.py",
-              win_body.lstrip().startswith("#") and "import subprocess" in win_body)
+              "FAILED" in win_body and "Set-Content -Path $Marker" in win_body)
+        # AND NEITHER INVOKES AN INTERPRETER THE DISK MAY NOT HAVE. The word appears twice in
+        # these bodies - in the comments that say it is not used - so the check is for a call
+        # rather than for the word: no `python` at the start of a command, and the macOS one is
+        # run by /bin/sh (see macos_plist).
+        invokes = [line for line in (mac_body + "\n" + win_body).splitlines()
+                   if not line.lstrip().startswith("#") and "python" in line.lower()]
+        check("neither launcher invokes python", "lib/bootstrap.py", not invokes)
+        check("the macos launcher runs under /bin/sh", "lib/bootstrap.py",
+              "/bin/sh" in bootstrap.macos_plist("__X__"))
     except Exception as exc:                          # noqa: BLE001
         check(f"bootstrap imports ({exc})", "lib/bootstrap.py", False)
 
-    # WINDOWS MUST HAVE AN INTERPRETER FOR THAT LAUNCHER TO WORK, and these three are what the
-    # macOS disk already had. A Windows disk with a compiler and no python cannot run
-    # ~/shared/bootstrap.py at all.
-    win_dev_walk = load_yaml("windows/11/steps/dev.yaml")
-    win_dev_names = [s.get("name") for s in (win_dev_walk.get("steps") or [])]
-    for tool in ("install python", "install node", "install git"):
-        check(f"windows dev installs {tool.split()[-1]}", "windows/11/steps/dev.yaml",
-              tool in win_dev_names)
-    # AND BOTH STAGES INSTALL THE LAUNCHER, or the share is a directory nobody opens.
-    check("macos dev installs the bootstrap launcher", "macos/15/steps/dev.yaml",
-          any(s.get("bootstrap_install") for s in (mac_dev_walk.get("steps") or [])))
-    check("windows dev installs the bootstrap launcher", "windows/11/steps/dev.yaml",
-          any(s.get("bootstrap_install") for s in (win_dev_walk.get("steps") or [])))
+    # THE SHARE IS ITS OWN STAGE NOW, so the launcher belongs to share.yaml rather than to dev.
+    for path in ("macos/15/steps/share.yaml", "windows/11/steps/share.yaml"):
+        walk = load_yaml(path)
+        names = [s.get("name") for s in (walk.get("steps") or [])]
+        check(f"{path} installs the launcher", path, "install the bootstrap launcher" in names)
+        check(f"{path} mounts the share", path, "mount the host share" in names)
+        # AND INSTALLS NO TOOLCHAIN, which is what lets it run on a disk straight out of bake.
+        body = read(path)
+        check(f"{path} installs no toolchain", path,
+              "brew install" not in body and "winget install" not in body)
+
+    # AND THE dev STAGES NO LONGER CARRY THE SHARE.
+    for path in ("macos/15/steps/dev.yaml", "windows/11/steps/dev.yaml"):
+        walk = load_yaml(path)
+        names = [s.get("name") for s in (walk.get("steps") or [])]
+        check(f"{path} no longer installs the share", path,
+              "mount the host share" not in names
+              and "install the bootstrap launcher" not in names)
+
+    # --- macos dev: the toolchain, and the one asset Apple will not serve ---------------
+    #
+    # XCODE IS THE ONLY THING HERE THAT CANNOT BE FETCHED FROM ITS VENDOR. Apple's endpoint
+    # answers an unauthenticated request with a redirect:
+    #
+    #     HTTP/2 302   location: https://developer.apple.com/unauthorized/
+    #
+    # measured 2026-11-09, and the `ADCDownloadAuth` cookie trick now answers 403 as well. So
+    # the file comes from archive.org, and the sha1 is Apple's own number for that build -
+    # which is the only thing that makes an archive an identity check rather than a hope.
+    mac_dev = read("macos/15/dev.py")
+    check("macos dev is driven by dev.yaml", "macos/15/dev.py",
+          "steps/dev.yaml" in mac_dev and "stepslib.run_file(" in mac_dev)
+    # THE CHECK IS FOR THE COMMAND, NOT THE PHRASE. The file still *explains* why Homebrew is
+    # the prerequisite and what a `brew install` would do, and a grep for the words would fail
+    # on the prose that documents their absence. A `run(...)`/`subprocess` call with it is the
+    # thing that would mean the sequence had crept back.
+    check("macos dev does not run brew itself any more", "macos/15/dev.py",
+          "subprocess.run" not in mac_dev and "brew install " not in
+          "".join(line for line in mac_dev.splitlines()
+                  if not line.lstrip().startswith("#")))
+    try:
+        import xcode_asset
+        pin = xcode_asset.PINNED.get("15") or {}
+        check("xcode for macOS 15 is pinned with a sha1", "lib/xcode_asset.py",
+              len(pin.get("sha1") or "") == 40 and "26.3" in str(pin.get("version")))
+        # 26.3 is the LAST release whose `requires` is macOS 15.x; 26.4 needs 26.2. A later
+        # pin would download 2.7 GiB and then refuse to install.
+        check("the xcode pin is the top of the range macOS 15 can run",
+              "lib/xcode_asset.py", str(pin.get("version")) == "26.3")
+    except Exception as exc:                          # noqa: BLE001
+        check(f"xcode_asset imports ({exc})", "lib/xcode_asset.py", False)
+    # THE INSTALLER IS A FILE, NOT A QUOTED LINE: it expands, moves, selects, accepts the
+    # license and installs the platforms, and a failure between those leaves a selected Xcode
+    # with no SDK - which answers --version and cannot build.
+    import os as osmod
+    check("the xcode installer is a script in the repository",
+          "macos/15/xcode-install.sh",
+          osmod.path.isfile(osmod.path.join(REPO, "macos/15/xcode-install.sh")))
+    # AND THE PROOF COMPILES: an SDK that lists a version but cannot build is not a toolchain.
+    mac_dev_walk = load_yaml("macos/15/steps/dev.yaml")
+    names = [s.get("name") for s in (mac_dev_walk.get("steps") or [])]
+    check("the dev stage compiles something with swift", "macos/15/steps/dev.yaml",
+          "prove swift compiles" in names)
+
+    # XCODE IS FIRST BECAUSE EVERYTHING ELSE IS BUILT ON WHAT IT INSTALLS.
+    #
+    # The command line tools - git, clang, swift, make - are the ones the .pkg installers below
+    # expect to find, and `xcodebuild -runFirstLaunch` is what installs them.
+    #
+    # AND HOMEBREW IS GONE ENTIRELY, WHICH IS THE LARGER POINT: this disk is x86_64 and
+    # Homebrew's installer refuses that -
+    #
+    #     Homebrew on macOS is only supported on Apple Silicon processors!
+    #
+    # (install.sh lines 170-173). Run 42644304192 reached it after Xcode had expanded. So the
+    # stage installs from the publishers' own Intel packages, and an assertion checks that no
+    # `brew install` survives in it.
+    order = [n for n in names if n in ("expand and select xcode", "install node",
+                                       "install python")]
+    check("xcode is installed before the packages that need its tools",
+          "macos/15/steps/dev.yaml",
+          order[:1] == ["expand and select xcode"])
+    check("the macos dev stage does not use homebrew", "macos/15/steps/dev.yaml",
+          "brew install" not in "".join(
+              line for line in read("macos/15/steps/dev.yaml").splitlines()
+              if not line.lstrip().startswith("#")))
+
+    # SUDO OVER SSH HAS NO TTY, SO EVERY PRIVILEGED CALL HAS TO BE HANDED THE PASSWORD.
+    #
+    #     sudo: no tty present and no askpass program specified
+    #     sudo: a password is required
+    #
+    # lib/macclean.py carries this lesson already (run 42390179102); the Xcode installer is
+    # where it would bite next, and it needs it six times.
+    xcode_sh = read("macos/15/xcode-install.sh")
+    check("the xcode installer upgrades sudo for a tty-less channel",
+          "macos/15/xcode-install.sh",
+          "sudo -S -p ''" in xcode_sh
+          and all(("sudo_" + rest) in xcode_sh or ("sudo_" + rest) == "sudo_"
+                  for rest in (" rm -rf", " mv ", " xcode-select", " xcodebuild",
+                               " DevToolsSecurity")))
+    check("no bare sudo survives in the xcode installer", "macos/15/xcode-install.sh",
+          not any(line.strip().startswith("sudo ")
+                  for line in xcode_sh.splitlines()))
+
+    # THE PROOF ASKS WHERE A TOOL IS, NOT WHAT VERSION IT ANSWERS.
+    #
+    # /usr/bin/python3 exists on every macOS and prints a version - it is the one the command
+    # line tools install, and its pip refuses to write. A check that only read a version number
+    # would pass on a disk whose python cannot install anything.
+    toolchain = next((s for s in (mac_dev_walk.get("steps") or [])
+                      if s.get("name") == "prove the toolchain"), {})
+    body = str(toolchain.get("script") or "")
+    # THE EXPECTED PREFIX IS /usr/local NOW, because that is where nodejs.org's and
+    # python.org's .pkg installers put things. /usr/bin/python3 still exists on the disk and
+    # still answers --version - it is Xcode's, and its pip refuses to write - so the check has
+    # to name the prefix rather than accept any answer.
+    check("the toolchain proof checks the path, not the version",
+          "macos/15/steps/dev.yaml",
+          "command -v" in body and "/usr/local/*" in body)
 
     # --- windows scope and elevation ----------------------------------------------------
     #

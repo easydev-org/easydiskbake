@@ -1066,8 +1066,14 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
 
         family = str(step.get("share_family") or "macos")
         local = bootstrap.write_launcher(driver.work or ".", family)
-        remote = "/tmp/bootstrap-launcher.py" if family == "windows" \
-            else "/tmp/bootstrap-launcher.py"
+        # THE LAUNCHER IS A SHELL SCRIPT ON macOS AND A .ps1 ON WINDOWS, because each disk runs
+        # the language it already has - the share is installed before any toolchain.
+        name = bootstrap.launcher_name(family)
+        # THE REMOTE PATH IS THE GUEST'S OWN. `/tmp` is a macOS path; on Windows the profile is
+        # where the launcher lives, because there is no /tmp and `C:\Windows\Temp` needs the
+        # privileges this channel does not have.
+        home = f"C:/Users/{login or 'docker'}"
+        remote = f"{home}/{name}" if family == "windows" else f"/tmp/{name}"
         status, output = session.scp(local, remote, port=ssh_port, timeout=300,
                                      user=login, password=password)
         log(f"  launcher -> {remote} -> {status}")
@@ -1114,11 +1120,11 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
                 "launchd_home=$(eval echo \"~$(id -un)\")\n"
                 "echo \"home: $launchd_home\"\n"
                 "mkdir -p \"$launchd_home/Library/LaunchAgents\"\n"
-                "cp /tmp/bootstrap-launcher.py \"$launchd_home/bootstrap-launcher.py\"\n"
-                "chmod +x \"$launchd_home/bootstrap-launcher.py\"\n"
+                f"cp /tmp/{name} \"$launchd_home/{name}\"\n"
+                f"chmod +x \"$launchd_home/{name}\"\n"
                 # SINGLE-QUOTED PATTERN AND A GUEST-SIDE VARIABLE, so neither the container's
                 # HOME nor the container's shell can reach into the substitution.
-                f"sed 's|__LAUNCHER__|'\"$launchd_home\"'/bootstrap-launcher.py|' "
+                f"sed 's|__LAUNCHER__|'\"$launchd_home\"'/{name}|' "
                 f"/tmp/bootstrap.plist > \"{target_expr}\"\n"
                 # THE PLIST IS INSTALLED, NOT LOADED, AND THAT IS THE WHOLE POINT.
                 #
@@ -1142,7 +1148,7 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
                 f"test -f \"{target_expr}\" || "
                 "{ echo '=== THE PLIST WAS NOT WRITTEN ==='; "
                 "ls -la \"$launchd_home/Library/LaunchAgents\" 2>&1 | head -5; exit 1; }\n"
-                "test -x \"$launchd_home/bootstrap-launcher.py\" || "
+                f"test -x \"$launchd_home/{name}\" || "
                 "{ echo '=== THE LAUNCHER IS NOT EXECUTABLE ==='; exit 1; }\n"
                 "# plutil CATCHES A MALFORMED PLIST NOW RATHER THAN AT THE NEXT LOGIN, where\n"
                 "# nobody would connect the failure to this stage.\n"
@@ -1150,22 +1156,25 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
                 "echo INSTALLED_FOR_NEXT_LOGIN\n"
             )
         else:
-            ps1 = bootstrap.windows_ps1("C:\\Users\\%s\\bootstrap-launcher.py"
-                                        % (login or "docker"))
+            # THE LAUNCHER IS ALREADY IN THE PROFILE - scp'd there two blocks up - so this only
+            # writes and runs the task registration.
+            #
+            # A `copy /Y X X` stood here, copying the launcher onto itself: it had been scp'd to
+            # the profile AND to /tmp, so the copy was a no-op that read as "put it in place".
+            ps1 = bootstrap.windows_ps1(f"{home}/{name}")
             local_ps1 = os.path.join(driver.work or ".", "bootstrap-install.ps1")
             with open(local_ps1, "w") as fh:
                 fh.write(ps1)
-            remote_ps1 = f"C:/Users/{login or 'docker'}/bootstrap-install.ps1"
+            remote_ps1 = f"{home}/bootstrap-install.ps1"
             status, output = session.scp(local_ps1, remote_ps1, port=ssh_port, timeout=300,
                                          user=login, password=password)
             if status != 0:
                 if not step["optional"]:
                     raise StepError(f"{step.name}: the installer copy exited {status}")
                 return
-            script = (f"copy /Y C:\\Users\\{login or 'docker'}\\bootstrap-launcher.py "
-                      f"C:\\Users\\{login or 'docker'}\\bootstrap-launcher.py >nul & "
-                      f"powershell -NoProfile -ExecutionPolicy Bypass -File "
-                      f"{remote_ps1}")
+            # THE LAUNCHER IS ALREADY HERE - it was scp'd into the profile above - so this only
+            # registers the task that runs it.
+            script = (f"powershell -NoProfile -ExecutionPolicy Bypass -File {remote_ps1}")
 
         status, output = session.ssh(ssh_port, script, timeout=int(step.get("timeout", 300)),
                                      user=login, password=password)

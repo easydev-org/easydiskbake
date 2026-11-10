@@ -1,0 +1,55 @@
+# A host directory the guest can reach, and a logon hook that runs a script from it.
+#
+#     python3 lib/steps.py windows/11/steps/share.yaml --ssh-port 2222
+#
+# WHY THIS IS ITS OWN STAGE, BEFORE THE TOOLCHAIN
+#
+# Because the share needs nothing installed. SMB is native to Windows and the launcher is
+# PowerShell 5.1, which ships with Windows 11 - so this runs on a disk straight out of `bake.py`,
+# and a failure here is about the share rather than about a 17.14.44 Visual Studio download.
+#
+# WHAT THE LOGON HOOK RUNS IS `~/shared/bootstrap.ps1`, WHICH THE PERSON PUTS THERE. Nothing on
+# this disk is required to make it work.
+#
+# THIS FILE INSTALLS NOTHING ELSE.
+
+name: windows 11 - host share and logon hook
+resolution: [1920, 1080]
+
+vars:
+  user:
+    from: args.user
+    default: docker
+  password:
+    from: args.password
+    default: admin
+
+ssh_user: docker
+ssh_port: 2222
+
+steps:
+  - name: wait for sshd
+    require_ssh: true
+    ssh_probe: echo ok
+    timeout: 900
+
+  # THE SHARE. The mount stores a credential for the server and no drive letter - a mapped drive
+  # belongs to the logon session that made it, and every `ssh host command` starts a new one. The
+  # proof below addresses the share by UNC path for that reason.
+  - name: mount the host share
+    share_mount: true
+    share_family: windows
+    timeout: 180
+
+  # A MAPPING THAT REPORTS SUCCESS AND A DIRECTORY THAT IS EMPTY ARE DIFFERENT FACTS - and a
+  # drive letter that vanished with its session is a third.
+  - name: prove the share is readable and writable
+    ssh: cmd /c "dir \\172.30.0.1\shared & echo written-by-windows > \\172.30.0.1\shared\from-guest.txt & type \\172.30.0.1\shared\from-guest.txt"
+    timeout: 120
+
+  # THE LOGON HOOK: a Task Scheduler task at ONLOGON, running the launcher through
+  # `powershell.exe -WindowStyle Hidden` so no console flashes on the desktop.
+  - name: install the bootstrap launcher
+    bootstrap_install: true
+    share_family: windows
+    timeout: 300

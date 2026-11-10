@@ -52,6 +52,10 @@ on:
         description: "Bake Windows from an ISO - ~90 minutes"
         type: boolean
         default: false
+      share_run:
+        description: "Share a host directory and install the logon hook (no toolchain)"
+        type: boolean
+        default: true
       ssh_run:
         description: "Install OpenSSH on top of the base disk"
         type: boolean
@@ -80,8 +84,11 @@ on:
       ssh_from:
         description: "ssh: pull this tag instead of the base job's output"
         default: ""
+      share_from:
+        description: "share: pull this tag instead of the ssh job's output"
+        default: ""
       dev_from:
-        description: "dev: pull this tag instead of the ssh job's output"
+        description: "dev: pull this tag instead of the share job's output"
         default: ""
       launch_ssh_from:
         description: "launch_ssh: the tag to launch; empty for the ssh job's output"
@@ -104,6 +111,9 @@ on:
       # --- ssh / dev ----------------------------------------------------------------
       ssh_publish_tag:
         description: "ssh: tag to publish under; empty for windows-ssh-<stamp>"
+        default: ""
+      share_publish_tag:
+        description: "share: tag to publish under; empty for windows-share-<stamp>"
         default: ""
       dev_publish_tag:
         description: "dev: tag to publish under; empty for windows-dev-<stamp>"
@@ -318,11 +328,105 @@ jobs:
           kind: windows-ssh
           tag: ${{ inputs.ssh_publish_tag }}
           token: ${{ github.token }}
-  dev:
+  # ===========================================================================
+  # SHARE - the host directory and the logon hook, BEFORE any toolchain.
+  # ===========================================================================
+  #
+  # It needs nothing installed: SMB is native to Windows and the launcher is PowerShell 5.1.
+  # Splitting it out means a failure here is about the share rather than about a Visual Studio
+  # download, and each half can be re-run on its own.
+  share:
     needs: ssh
     if: |
+      always() && inputs.share_run
+      && (inputs.share_from != '' || needs.ssh.outputs.tag != '')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+    outputs:
+      tag: ${{ inputs.share_from || steps.publish.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare the runner
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '80'
+          token: ${{ github.token }}
+
+      - name: prepare
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: share-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py tags --prefix windows
+
+      - name: pull the ssh disk
+        uses: easydev-org/easyactions/oci-pull@main
+        with:
+          tag: ${{ inputs.share_from || needs.ssh.outputs.tag }}
+          dest: out
+          token: ${{ github.token }}
+
+      - name: the share and the logon hook
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: share-install
+          interval: "20"
+          command: |
+            set -euo pipefail
+            DISK=$(ls out/*.qcow2 | head -1)
+            python3 windows/11/share.py \
+              --ssh "$DISK" \
+              --out out/windows11-share.qcow2 \
+              --no-clean \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}"
+
+      - name: clean the disk
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: share-clean
+          interval: "20"
+          command: |
+            set -euo pipefail
+            python3 lib/clean_step.py \
+              --disk out/windows11-share.qcow2 \
+              --kind windows \
+              --work out/share-work \
+              --artifacts out \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --mem 6144
+
+      - name: publish
+        if: success()
+        id: publish
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/windows11-share.qcow2
+          kind: windows-share
+          tag: ${{ inputs.share_publish_tag }}
+          token: ${{ github.token }}
+
+  dev:
+    needs: share
+    if: |
       always() && inputs.dev_run
-      && (inputs.dev_from != '' || needs.ssh.outputs.tag != '')
+      && (inputs.dev_from != '' || needs.share.outputs.tag != '')
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     container:

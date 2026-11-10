@@ -46,11 +46,21 @@ for path in (REPO, os.path.join(REPO, "lib")):
 
 import hostshare  # noqa: E402
 
-PROBE = os.path.join(REPO, "lib", "bootstrap_probe.py")
+# THE PROBE IS THE LANGUAGE THE DISK SPEAKS, AND ITS NAME IS WHAT THE LAUNCHER WAITS FOR.
+#
+#   macOS     ~/shared/bootstrap.sh      run by /bin/sh
+#   Windows   ~/shared/bootstrap.ps1     run by powershell.exe
+#
+# Both write the same keys, so this reads one shape.
+PROBE = {
+    "macos": os.path.join(REPO, "lib", "bootstrap_probe.sh"),
+    "windows": os.path.join(REPO, "lib", "bootstrap_probe.ps1"),
+}
+SCRIPT = {"macos": "bootstrap.sh", "windows": "bootstrap.ps1"}
 
-# THE LINES bootstrap_probe.py WRITES, and what each one proves. Kept beside the reader so the
-# two cannot drift: a key added there and not here is a fact nobody checks.
-REQUIRED = ("hello from the bootstrap", "python=", "share=readable")
+# THE LINES THE PROBES WRITE, and what each one proves. Kept beside the reader so the two cannot
+# drift: a key added there and not here is a fact nobody checks.
+REQUIRED = ("hello.", "shell=", "share=readable")
 
 
 def log(message: str) -> None:
@@ -118,12 +128,12 @@ def main(argv: list[str]) -> int:
     if not hostshare.start(share_dir):
         log("=== THE HOST COULD NOT SERVE ~/shared ===")
         return 1
-    target = os.path.join(share_dir, "bootstrap.py")
-    with open(PROBE, "rb") as fh:
+    target = os.path.join(share_dir, SCRIPT[args.family])
+    with open(PROBE[args.family], "rb") as fh:
         probe_bytes = fh.read()
     with open(target, "wb") as fh:
         fh.write(probe_bytes)
-    log(f"bootstrap.py ({len(probe_bytes)} bytes) is in {share_dir}")
+    log(f"{SCRIPT[args.family]} ({len(probe_bytes)} bytes) is in {share_dir}")
     # A MARKER FROM A PREVIOUS LAUNCH WOULD MAKE THE LAUNCHER SKIP, and the test would then
     # pass on the previous run's hello.txt.
     for stale in ("bootstrap.done", "bootstrap.log", "hello.txt"):
@@ -151,7 +161,8 @@ def main(argv: list[str]) -> int:
         # behind.
         log("mounting the share in the guest, before the session that will look for it")
         if not boot_machine.mount(args.family, guest, args.user, args.password, log=log):
-            log("=== THE SHARE DID NOT MOUNT; THE LAUNCHER WILL FIND NO bootstrap.py ===")
+            log(f"=== THE SHARE DID NOT MOUNT; THE LAUNCHER WILL FIND NO "
+                f"{SCRIPT[args.family]} ===")
             return 1
 
         # THE LOGIN, BECAUSE A LAUNCHAGENT NEEDS A SESSION. The ssh stage's own unlock is
