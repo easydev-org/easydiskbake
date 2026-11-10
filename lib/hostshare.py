@@ -414,8 +414,8 @@ def _record_pid() -> None:
     except OSError:
         looks_like = "<gone>"
     log(f"  smbd pid {pids[0]}: {looks_like}")
-    if pids[0] == os.getpid():
-        log("=== REFUSING TO RECORD OUR OWN PID AS smbd ===")
+    if pids[0] == os.getpid() or "smbd" not in looks_like:
+        log("=== REFUSING TO RECORD A PID THAT IS NOT smbd ===")
         return
     with open(PID_PATH, "w") as fh:
         fh.write(str(pids[0]))
@@ -424,47 +424,45 @@ def _record_pid() -> None:
 def stop() -> None:
     """Stop the smbd this module started, and only that one.
 
-    BY PID, NOT BY PATTERN. `pkill -f "smbd.*-s <conf>"` matches any command line containing those
-    strings, and this runs inside a Python process whose own argv is decided by its caller - which
-    is not a guarantee anybody can read off the code. A pidfile is the process this module started
-    and nothing else.
+    BY PID, IN A CHILD PROCESS. `kill` as a subprocess rather than `os.kill` in this one, because
+    a wrong pid then kills the wrong process instead of the process doing the killing - and run
+    42766989537 showed what that looks like from the inside: the stage printed
+    `=== SIGNALLED: SIGTERM (15) ===` two milliseconds after `the guest powered off`, which is the
+    moment this function runs.
 
-    (The pattern version had been in place for a while; it was replaced while chasing a stage that
-    died with SIGTERM seconds after the guest powered off, and the honest reason to change it is
-    that the pidfile is strictly better, not that the pattern was proven guilty.)
+    A PIDFILE IS STILL THE RIGHT HANDLE. It names the daemon this module started; `pkill -f` names
+    "whatever matches the pattern", which is not something a reader can check. But a pidfile can
+    be stale, a pid can be reused, and neither of those should be able to take the caller with it.
     """
-    pid = None
     try:
         with open(PID_PATH) as fh:
             pid = int(fh.read().strip())
     except (OSError, ValueError):
         return
-    # NEVER SIGNAL OURSELVES OR OUR PARENT.
-    #
-    # Run 42766989537 reported `=== SIGNALLED: SIGTERM (15) ===` two milliseconds after
-    # `the guest powered off`. That is the moment stop() runs, and the only signal this module
-    # sends is the one below - so if the pid it read was wrong, the process it killed was its own
-    # caller. A pidfile is supposed to make that impossible; this makes it survivable whether or
-    # not the pidfile is right.
-    if pid in (os.getpid(), os.getppid(), 1):
-        log(f"  refusing to signal pid {pid}: it is this process, its parent, or init")
-        try:
-            os.unlink(PID_PATH)
-        except OSError:
-            pass
+    if pid <= 1:
         return
-    for signal_number in (15, 9):
-        try:
-            os.kill(pid, signal_number)
-        except ProcessLookupError:
-            break
-        except PermissionError:
+    # A stale pidfile is the case that matters: whatever now owns that number is not our smbd.
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as fh:
+            looks_like = fh.read().replace(b"\0", b" ").decode(errors="replace")
+    except OSError:
+        _unlink_pid()
+        return
+    if "smbd" not in looks_like:
+        log(f"  pid {pid} is not smbd ({looks_like[:60]}); leaving it alone")
+        _unlink_pid()
+        return
+    for signal_number in ("TERM", "KILL"):
+        done = subprocess.run(["kill", f"-{signal_number}", str(pid)], capture_output=True)
+        if done.returncode != 0:
             break
         time.sleep(0.5)
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+        if not os.path.exists(f"/proc/{pid}"):
             break
+    _unlink_pid()
+
+
+def _unlink_pid() -> None:
     try:
         os.unlink(PID_PATH)
     except OSError:
