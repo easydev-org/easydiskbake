@@ -64,11 +64,28 @@ steps:
   # =======================================================================================
   # 2. TERMS -> INSTALLATION TYPE -> CONFIRMATION
   # =======================================================================================
+  # THE REGION WAS THE LEFT HELP PANEL, SO THE CONDITION WAS ALWAYS TRUE.
+  #
+  # MEASURED ON RUN e242215. Both `until` steps below read (332,248)-(700,285), which is inside
+  # the installer's permanent HELP pane - its first heading is `General Instructions` and it
+  # never changes. The log proves it:
+  #
+  #     10:19:58  wait for the terms page  -> 2 words :: General | Instructions
+  #     10:20:00  terms of use             -> clicked (1482,889) TWO SECONDS after the
+  #                                            installer opened, before the page had drawn
+  #     10:20:14  wait for the installation type page -> 2 words :: General | Instructions
+  #     ... twenty more identical reads ...
+  #
+  # A condition that matches before the pane exists is worse than none: it pressed a button on
+  # a blank window and then waited three minutes on a page that had never advanced.
+  #
+  # THE RIGHT-HAND CONTENT AREA IS THE PAGE. It says `Terms of Use` here and
+  # `Installation Options` next; the help panel says neither.
   - name: wait for the terms page
-    until: [general, instructions]
-    region: [332, 248, 700, 285]
+    until: [terms, of, use]
+    region: [690, 225, 1560, 265]
     region_at: [1920, 1080]
-    scale: 1
+    scale: 2
     timeout: 180
     poll: 6
 
@@ -78,9 +95,9 @@ steps:
 
   - name: wait for the installation type page
     until: [installation, options]
-    region: [332, 248, 700, 285]
+    region: [690, 225, 1560, 265]
     region_at: [1920, 1080]
-    scale: 1
+    scale: 2
     timeout: 180
     poll: 6
 
