@@ -543,6 +543,13 @@ def check_disk(disk: str, root_fs: str = "ext4") -> bool:
 
     problems = 0
     print("=== the disk ===", flush=True)
+    # SAY WHICH STEP, BECAUSE A VERDICT THAT NEVER PRINTS IS NOT A DIAGNOSIS.
+    #
+    # Twice now this function has printed the size and then stopped - run 42763433967 with no
+    # verdict at all, and again with the process gone in under a second. "The log ends here" is
+    # the same sentence whether qemu-io hung, was killed, or the interpreter died, so each step
+    # names itself before running.
+    print(f"[disk] checking {root_fs}", flush=True)
     if os.path.exists(disk):
         print(f"  {disk}: {os.path.getsize(disk)} bytes", flush=True)
     else:
@@ -564,6 +571,7 @@ def check_disk(disk: str, root_fs: str = "ext4") -> bool:
     # So the MBR is required only where something actually boots from it: ext4 (a BIOS
     # bootloader) and gpt (a disk claimed to be bootable by its own table).
     mbr_required = root_fs in ("ext4", "gpt")
+    print("[disk] reading the MBR", flush=True)
     if not check_mbr(disk):
         if mbr_required:
             problems += 1
@@ -574,10 +582,13 @@ def check_disk(disk: str, root_fs: str = "ext4") -> bool:
         if not check_ext_root(disk):
             log("(not fatal here - a non-ext root is possible)")
     elif root_fs in ("gpt", "apfs", "windows"):
+        print("[disk] reading the GPT", flush=True)
         if not check_gpt(disk):
             problems += 1
         # An APFS disk is GPT *and* has a container. The second is the one that says
         # macOS is on it; the first only says the disk was partitioned.
+        if root_fs == "apfs":
+            print("[disk] looking for an APFS container", flush=True)
         if root_fs == "apfs" and not check_apfs(disk):
             problems += 1
         # A GPT with no boot loader on it is a partition table, not a system.
