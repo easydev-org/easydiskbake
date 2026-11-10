@@ -533,6 +533,32 @@ def main() -> int:
           "WaitForExit(600000)" in win_answer and "$p.Kill()" in win_answer)
     check("the windows agent install says what happened", "windows/11/answer/Autounattend.xml",
           "qemu-ga-status.txt" in win_answer)
+    # AND vioserial IS NOT IN $WinPEDriver$, BECAUSE THAT IS WHAT BROKE A BAKE.
+    #
+    # The list of drivers Setup stages into the image it installs has to be the drivers the
+    # INSTALL needs. vioserial is the guest agent's device - it is needed by the finished system,
+    # and `pnputil` in specialize is where a running system gets it. Run 42839116205 is the
+    # measurement: with vioserial in that list, Setup rebooted "Windows Boot Manager" eight times
+    # and died at 54% with "The computer restarted unexpectedly"; the run before the driver
+    # existed booted it zero times and reached a desktop in 1192s.
+    winiso2 = read("lib/winiso.py")
+    winpe = winiso2.split("WINPE_DRIVERS = ", 1)[1].split("\n", 1)[0]
+    check("vioserial is not a windowsPE driver", "lib/winiso.py",
+          "vioserial" not in winpe)
+    check("the agent's driver still travels on the answer cd", "lib/winiso.py",
+          "extract_driver_for_agent" in winiso2 and 'AGENT_DRIVER = "vioserial"' in winiso2)
+    check("the driver is added to the running system", "windows/11/answer/Autounattend.xml",
+          "pnputil.exe" in win_answer and "vioser.inf" in win_answer)
+    # AND THE DRIVER GOES IN BEFORE THE AGENT: a service that starts with no port to talk on is
+    # the failure the following step exists to catch.
+    import re as _reorder
+
+    orders = _reorder.findall(r"<Order>(\d+)</Order>\s*<Path>(.*?)</Path>", win_answer, _reorder.S)
+    drv = [int(o) for o, p2 in orders if "pnputil" in p2]
+    agt = [int(o) for o, p2 in orders if "msiexec" in p2]
+    check("the driver is installed before the agent", "windows/11/answer/Autounattend.xml",
+          drv and agt and min(drv) < min(agt))
+
     # AND NO RunSynchronousCommand ANYWHERE MAY WAIT FOREVER.
     #
     # specialize runs BEFORE the desktop and before any of this repository's deadlines exist:

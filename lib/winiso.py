@@ -73,14 +73,39 @@ AGENT_DIR = "agent"
 #     NetKVM     the network. Server 2025 has no in-box driver for virtio-net.
 #     Balloon    memory ballooning. Nothing depends on it; it is here so the driver CD is the
 #                one place a driver can be added.
-#     vioserial  THE QEMU GUEST AGENT'S PORT. qemu-ga talks over a virtio-serial device named
-#                org.qemu.guest_agent.0, and without this driver that device is an unknown PCI
-#                serial controller - the agent installs, starts, and cannot reach the host.
 #
-# vioserial IS NOT A windowsPE DRIVER and is here anyway: windowsPE ignores an .inf it has no
-# device for, and the installed system picks it up from the same directory. The alternative is a
-# second driver injection in vm-configure, which would need the ISO there too.
-WINPE_DRIVERS = ["viostor", "vioscsi", "NetKVM", "Balloon", "vioserial"]
+# vioserial IS DELIBERATELY NOT HERE, AND THE COMMENT THAT USED TO JUSTIFY IT WAS WRONG.
+#
+# It said "windowsPE ignores an .inf it has no device for, and the installed system picks it up
+# from the same directory". The first half is false. vioserial's INF is `Class=System`, and a
+# System-class INF on the answer CD is not ignored by windowsPE - it is a driver for a device
+# class the image enumerates, so Setup stages it into the offline image and the installed system
+# loads it on the boot after the file copy.
+#
+# Run 42839116205 is what that costs, and it took reading the recording to see it:
+#
+#     1240s  Installing 42%
+#     1360s  Installing 54%
+#     1400s  TianoCore              <- reboots
+#     1420s  "The computer restarted unexpectedly or encountered an unexpected error"
+#     ...    fifty-two minutes of that dialog, and the bake timed out at 5400s
+#
+# The machine booted "Windows Boot Manager" EIGHT times in that run. The bake that last
+# succeeded (42209791462, 2026-11-06) booted it zero times and reached a desktop in 1192s - and
+# the one machine difference between the two is this list: vioserial was added on 2026-11-10.
+#
+# SO THE AGENT'S DRIVER MOVES TO THE STAGE THAT INSTALLS THE AGENT. windows/11/steps/
+# vm-configure.yaml already asks the guest to mount a share over its network driver; the same
+# place can install a driver for a device the disk already has.
+WINPE_DRIVERS = ["viostor", "vioscsi", "NetKVM", "Balloon"]
+
+# THE DEVICE THE AGENT NEEDS, INSTALLED AFTER THE SYSTEM IS UP.
+#
+# `virtio-serial` is in the machine's argv (lib/vm.py's qga branch), so the PCI device is there
+# from the first boot; what it lacks is a driver. That is a `pnputil` away, and doing it over ssh
+# in vm-configure keeps it out of the install, where it has already cost a bake.
+AGENT_DRIVER = "vioserial"
+AGENT_DRIVER_DIR = "vioserial"
 
 # THE GUEST AGENT, INSTALLED DURING SETUP RATHER THAN AFTER IT.
 #
@@ -199,6 +224,43 @@ def extract_agent_msi(virtio_iso: str, stage: str) -> str | None:
     return target
 
 
+def extract_driver_for_agent(virtio_iso: str, stage: str) -> str | None:
+    """Copy the virtio-serial driver into `stage/vioserial/`, for `pnputil /add-driver`.
+
+    THE LAYOUT IS THE ONE pnputil WANTS: a directory holding vioser.inf, vioser.sys and
+    vioser.cat, which `/add-driver <dir>/*.inf /install` reads without the caller having to know
+    which file is the INF.
+
+    RETURNS None WHEN THE ISO DOES NOT CARRY IT, like extract_agent_msi: a drivers-only repack
+    has no guest-agent and does not need one if the agent is not being installed anyway.
+    """
+    if not os.path.isfile(virtio_iso) or not shutil.which("7z"):
+        return None
+    target = os.path.join(stage, AGENT_DRIVER_DIR)
+    os.makedirs(target, exist_ok=True)
+    for version_dir in ("w11", "w10", "2k19"):
+        member = f"{AGENT_DRIVER}/{version_dir}/amd64"
+        result = subprocess.run(
+            ["7z", "x", "-y", f"-o{target}", virtio_iso, f"{member}/*"],
+            capture_output=True, text=True)
+        source = os.path.join(target, *member.split("/"))
+        if result.returncode != 0 or not os.path.isdir(source) or not os.listdir(source):
+            continue
+        for entry in os.listdir(source):
+            shutil.move(os.path.join(source, entry), os.path.join(target, entry))
+        # THE VERSION DIRECTORIES 7z CREATED ARE NOT WANTED IN THE IMAGE, and here that is not
+        # tidiness: pnputil is pointed at `<dir>/*.inf`, and a nested copy of the same INF under
+        # `agent/vioserial/vioserial/w11/amd64/` would install the driver twice.
+        shutil.rmtree(os.path.join(target, AGENT_DRIVER), ignore_errors=True)
+        leftover = [e for e in os.listdir(target) if e != "vioser.inf"
+                    and os.path.isdir(os.path.join(target, e))]
+        for spare in leftover:
+            shutil.rmtree(os.path.join(target, spare), ignore_errors=True)
+        log(f"agent driver: {AGENT_DIR}/{AGENT_DRIVER_DIR}/vioser.inf")
+        return target
+    return None
+
+
 def answer_iso(answer_dir: str, out: str, *, label: str = "ANSWER",
                drivers: str | None = None, with_agent: bool = True) -> str:
     """Build a small ISO holding Autounattend.xml and, optionally, the drivers.
@@ -230,6 +292,12 @@ def answer_iso(answer_dir: str, out: str, *, label: str = "ANSWER",
             if with_agent:
                 agent_dir = os.path.join(stage, AGENT_DIR)
                 os.makedirs(agent_dir, exist_ok=True)
+                # AND THE AGENT'S DRIVER, IN THE SAME `agent/` DIRECTORY - NOT IN
+                # `$WinPEDriver$`. That difference is the whole point: a driver here is a file a
+                # command can point pnputil at, while a driver under $WinPEDriver$ is one Setup
+                # stages into the image it is installing. vioserial must not be the second kind;
+                # see WINPE_DRIVERS above for the run that proved it.
+                extract_driver_for_agent(drivers, agent_dir)
                 got = extract_agent_msi(drivers, agent_dir)
                 if got:
                     log(f"guest agent: {AGENT_DIR}/{AGENT_MSI_NAME} "
