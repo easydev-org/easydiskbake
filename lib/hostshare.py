@@ -162,8 +162,20 @@ def config_text(directory: str) -> str:
    ncalrpc dir = {PRIVATE_DIR}/ncalrpc
    map to guest = Never
    guest account = root
-   # NTLMv2 only: the client blocks NTLMv1, and this server has no reason to offer it.
-   ntlm auth = ntlmv2-only
+   # `ntlm auth` LEFT AT ITS DEFAULT, WHICH IS `ntlmv2-only`.
+   #
+   # That is the secure setting and the one Windows 11 requires - but macOS's mount_smbfs answered
+   #
+   #     mount_smbfs: server rejected the connection: Authentication error
+   #
+   # with it in place (run 42737751721), and the share had already been shown to serve:
+   # `the share account 'guest' exists`, `smbd is listening on 172.30.0.1:445`.
+   #
+   # `yes` ACCEPTS NTLMv1 AS WELL, and this is one of the few places where the weaker setting is
+   # the correct one: the client is a throwaway VM on a private bridge, the password is `admin`,
+   # and the alternative is a macOS client that cannot mount the share at all. It is written out
+   # rather than left to a default so the next reader sees the trade rather than inheriting it.
+   ntlm auth = yes
    server min protocol = SMB2_10
    # SIGNING IS LEFT AT ITS DEFAULT, NOT TURNED OFF.
    # Windows 11 24H2 requires signing by default and refuses a server that cannot; turning the
