@@ -149,9 +149,43 @@ def main() -> int:
     check("the walkthrough ends on the login window", "macos/15/steps/sequoia.yaml",
           "the login window's password field" in ends)
 
+    # AND THE STAGE LEAVES BOTH OF THOSE TO THE FILE. The desktop stage used to start qemu, type
+    # the password at the login window and run a wallpaper loop of its own - three things that
+    # are now `boot:`, the epilogue's three login steps and `python: ssh_panes:wait_for_desktop`.
+    # The failure this pins is the one that keeps happening: a copy of a measurement that nobody
+    # updated when the original moved.
+    desktop_src = read("macos/15/desktop.py")
+    check("the desktop stage does not start qemu itself", "macos/15/desktop.py",
+          "vm.Guest(" not in desktop_src and "machine.TARGET_DRIVE" not in desktop_src)
+    check("the desktop stage does not log in by itself", "macos/15/desktop.py",
+          "def _type_login_password" not in desktop_src)
+    check("the desktop stage does not wait for a desktop itself", "macos/15/desktop.py",
+          "def wait_for_desktop" not in desktop_src)
+    check("the desktop stage boots through its file", "macos/15/desktop.py",
+          "MachineSession(" in desktop_src and "args.shutdown" in desktop_src)
+
     gates = seq.get("waits_for") or []
     check("waits_for lists the panes, so a resumed disk is not stuck",
           "macos/15/steps/sequoia.yaml", len(gates) >= 10)
+
+    # AND THE PANE FILE HAS A PREAMBLE AND AN EPILOGUE, which is what makes it a stage rather
+    # than half of one: the wizard is panes, and the machine it runs on has to be started before
+    # the first look and stopped after the last. See lib/steps.py's Walk.__init__.
+    import steps as stepsmod
+
+    seq_walk = stepsmod.Walk(seq, path="macos/15/steps/sequoia.yaml")
+    check("the desktop pane file boots its own machine", "macos/15/steps/sequoia.yaml",
+          [s.name for s in seq_walk.preamble] == ["boot the disk"])
+    check("the desktop pane file stops its own machine", "macos/15/steps/sequoia.yaml",
+          seq_walk.epilogue and seq_walk.epilogue[-1]["shutdown"] is not None)
+    # THE VERDICT STEPS ARE THE ONES THAT MAY BE SKIPPED ON A FAILED WALK, and the shutdown is
+    # not one of them: stopping the machine has to happen on every exit.
+    verdict = [s.name for s in seq_walk.epilogue if s["skip_when_unfinished"]]
+    check("the desktop's login and verdict are skipped on a failed walk",
+          "macos/15/steps/sequoia.yaml",
+          "click the password field" in verdict and "wait for the desktop" in verdict)
+    check("the shutdown is never skipped", "macos/15/steps/sequoia.yaml",
+          all(not s["skip_when_unfinished"] for s in seq_walk.epilogue if s["shutdown"]))
 
     # --- YAML BOOLEANS THAT SHOULD HAVE BEEN WORDS ---------------------------------------
     #

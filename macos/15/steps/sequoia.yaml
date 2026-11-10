@@ -102,8 +102,33 @@ vars:
   password:
     from: args.password
     default: admin
+  # THE SHUTDOWN METHOD, AS IN THE OTHER TWO macOS FILES: a fact about how the stage was
+  # started, not about the screen. `kill` on a throwaway overlay, `ssh` on the real disk.
+  shutdown:
+    from: args.shutdown
+    default: ssh
 
 steps:
+  # =========================================================================
+  # THE MACHINE, BEFORE THE FIRST PANE - AND THE THREE STEPS AFTER THE LAST
+  # =========================================================================
+  #
+  # A PANE FILE HAS A PREAMBLE AND AN EPILOGUE, and this is the file that needed them: the Setup
+  # Assistant is panes by construction (they appear and disappear depending on answers given two
+  # panes earlier), and the stage that answers it is also the stage that starts and stops the
+  # machine. See lib/steps.py's Walk.__init__ for the rule and for what it refuses.
+  #
+  # BEFORE THE LOOP: only lifecycle steps, because a click with no screen has nothing to click.
+  # AFTER IT: the login, the desktop, and the stop - `skip_when_unfinished` on the first two,
+  # because a wizard that stopped on an unanswered pane has not left a desktop to log into, and
+  # saying so is more useful than a five-minute wait for a screen the wizard never reached.
+  #
+  # THE SHUTDOWN NEVER CARRIES THAT FLAG. Stopping the machine is exactly what has to happen on
+  # the way out of a failed walk.
+  - name: boot the disk
+    boot: true
+    family: macos
+    timeout: 900
   # --- the panes that only need the footer ------------------------------------------------
   #
   # THE FOOTER'S FORWARD BUTTON IS NOT IN THE SAME PLACE ON 26: (1306, 810) against
@@ -359,3 +384,52 @@ steps:
     at: [1306, 810]
     settle: 15
     optional: true
+
+  # =========================================================================
+  # THE EPILOGUE: WHAT THE WIZARD LEFT BEHIND
+  # =========================================================================
+  #
+  # The Setup Assistant on macOS 15 finishes at the LOGIN WINDOW - `ends_at` above is the
+  # password field's placeholder, because that window has no readable text and a whole-frame
+  # read returns nothing. So "the wizard finished" and "the disk is usable" are two different
+  # facts, and this is where the second one is established.
+  #
+  # THE LOGIN FIRST. The field is clicked before anything is typed: it is focused on some boots
+  # and not on others, and a password typed into an unfocused window goes nowhere and reads
+  # afterwards as "the password was wrong" (runs 42079736995 against 42083224228). (965, 981)
+  # is the centre of the "Enter Password" pill, which spans x=880..1210 at y=960..1000.
+  - name: click the password field
+    at: [965, 981]
+    settle: 1
+    skip_when_unfinished: true
+
+  - name: type the password
+    type: "{{ password }}"
+    settle: 1
+    skip_when_unfinished: true
+
+  - name: press return
+    key: ret
+    settle: 20
+    skip_when_unfinished: true
+
+  # THE KEYBOARD SETUP ASSISTANT COMES UP WITH THE FIRST DESKTOP SESSION and eats the next
+  # keystroke - which is how sshd was never enabled on six runs (42034256322). It is dismissed
+  # here because this is where the first session begins.
+  - name: dismiss the keyboard assistant
+    python: ssh_panes:dismiss_keyboard_assistant
+    timeout: 180
+    optional: true
+    skip_when_unfinished: true
+
+  # AND NOW THE DESKTOP IS THE VERDICT ON THE WHOLE STAGE. `wait_for_desktop` is the wallpaper
+  # test, which is the only thing that can confirm the password was accepted; five minutes,
+  # because this is a first session on a disk that has never had one.
+  - name: wait for the desktop
+    python: ssh_panes:wait_for_desktop
+    timeout: 300
+    skip_when_unfinished: true
+
+  - name: stop the machine
+    shutdown: "{{ shutdown }}"
+    timeout: 300

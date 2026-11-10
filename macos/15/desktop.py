@@ -65,7 +65,9 @@ sys.path.insert(0, REPO)
 # by path below, under a name that cannot collide.
 from lib import compress, live as livelib, smoke, vm  # noqa: E402
 
-import machine  # noqa: E402  - macos/15/machine.py, beside this file
+# `import machine` USED TO BE HERE AND IS NOT, because the guest's argv is
+# lib/vm_session.py's now. It is still the module that knows TARGET_DRIVE from TARGET_DRIVE_PLAIN
+# and where the OpenCore boot image goes; this file simply no longer spells that out itself.
 
 
 def _wallpaper_test():
@@ -104,8 +106,13 @@ def main(argv: list[str]) -> int:
                    help="which release the setup disk is; drive.py has a coordinate table "
                         "per release and a guessed one types into the wrong field")
     p.add_argument("--steps", default="",
-                   help="drive the Setup Assistant from this YAML walkthrough instead of "
-                        "drive_read.py. Everything else in the stage is unchanged.")
+                   help="the Setup Assistant walkthrough; macos/15/steps/sequoia.yaml. Required: "
+                        "the pane file is the driver, and drive_read.py is kept only as the "
+                        "table of measurements it was measured from.")
+    p.add_argument("--ssh-port", type=int, default=2222,
+                   help="the forwarded port this guest's 22 lands on; the machine has no sshd "
+                        "yet at this stage, but the walkthrough's shutdown method and the"
+                        "session both carry it")
     p.add_argument("--assistant-timeout", type=int, default=45 * 60)
     p.add_argument("--desktop-timeout", type=int, default=30 * 60)
     p.add_argument("--inspect-after", type=int, default=None,
@@ -204,59 +211,27 @@ def main(argv: list[str]) -> int:
     assets = opencore.build(args.release, work)
     log(f"identity {assets['identity']['serial']} / {assets['identity']['mac']}")
 
-    # NO RECOVERY DISK. machine.drives() wants one, so this does not call it: a desktop
-    # stage that booted the installer again would be asking a different question.
-    guest = vm.Guest(
-        work,
-        extra=[
-            "-drive", f"file={assets['boot']},format=raw,if=none,id=oc",
-            "-device", "virtio-blk-pci,drive=oc,bootindex=0",
-            "-drive", machine.TARGET_DRIVE.format(disk=disk),
-            "-device", "virtio-blk-pci,drive=target,bootindex=1",
-            "-device", f"isa-applesmc,osk={machine.OSK_PLAIN}",
-        ],
-        shape=machine.shape(assets, cpus=args.cpus, mem_mb=args.mem),
-        stdout=os.path.join(work, "console.log"),
-    ).start()
-
-    # WHOEVER STARTED QEMU HAS TO STOP IT. This process did, so this process does.
+    # THE MACHINE IS STARTED BY THE FILE'S `boot:` STEP, NOT HERE.
     #
-    # qemu is started with start_new_session=True (lib/vm.py), which puts it in a session of
-    # its own. log-stream's cancel handler walks the process table for ppid descendants and
-    # signals each group it finds - but that walk needs THIS process to still exist to connect
-    # it to qemu. If this process is killed outright, qemu is reparented to PID 1 and the
-    # walk can no longer reach it: the guest keeps booting, the runner keeps the KVM device
-    # checked out, and `gh run cancel` looks like it did nothing.
+    # What this stage keeps is what a step cannot be: the writable disk (or its overlay), the
+    # recovery image OpenCore needs, the OpenCore assets, and the recording. The wizard, the
+    # login, the desktop and the stop are in macos/15/steps/sequoia.yaml.
     #
-    # That is run 42280638394. It was cancelled three times - the request was accepted each
-    # time - and it stayed in_progress with no log-stream line to say why, because the signal
-    # never reached the streamer: the stage was waiting on opencore.build()'s 848 MiB recovery
-    # download, before log-stream had a check run to report into. The handle below is what
-    # makes a cancel at ANY point in this stage stop the guest.
-    #
-    # SIGTERM FIRST, NOT SIGKILL. A guest stopped mid-write produces a disk that repairs
-    # itself on the next boot, which is a worse artifact than a slower cancel - the same rule
-    # lib/vm.py's stop() and log_stream's _kill_tree_of() both state.
-    def _stop(signum: int, _frame) -> None:
-        log(f"signal {signum}: stopping the guest and exiting")
-        try:
-            guest.stop(acpi_first=False)
-        except Exception as exc:                       # noqa: BLE001 - shutting down
-            log(f"  the guest did not stop cleanly: {exc}")
-        finally:
-            # 143 IS SHELL CONVENTION FOR "TERMINATED BY SIGTERM", which is what a cancelled
-            # step is. Exiting through the normal path would report a cancel as a build
-            # failure and run the publish steps.
-            os._exit(143)
-
-    for _sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
-        signal.signal(_sig, _stop)
+    # THE SIGNAL HANDLER GOES WITH THE BOOT, and that is not a loss: qemu belongs to the
+    # walkthrough now, and run_file stops it on the way out of any exit - including a step that
+    # raised. What the handler below used to do was reach a guest this process owned; there is no
+    # such guest any more.
+    boot_options = {"assets": assets, "cpus": args.cpus, "mem_mb": args.mem}
 
     frames = os.path.join(work, "frames")
     os.makedirs(frames, exist_ok=True)
+
+    # THE RECORDING SOCKET IS COMPUTED, NOT ASKED FOR: this stage no longer starts qemu, so
+    # there is no guest to read `paths.record` from yet, and the sampler has to be running BEFORE
+    # the machine is. lib/snapshots.py waits for the socket to appear rather than requiring it.
     snap = subprocess.Popen(
         [sys.executable, os.path.join(REPO, "lib", "snapshots.py"),
-         guest.paths.record, frames,
+         vm.Paths(work).record, frames,
          os.environ.get("SNAPSHOT_INTERVAL", "1")],
         stdout=open(os.path.join(frames, "snapshots.log"), "wb"),
         stderr=subprocess.STDOUT,
@@ -273,94 +248,76 @@ def main(argv: list[str]) -> int:
 
     arrived = False
     try:
-        # ONE DRIVER. THE READING ONE.
+        # THE WALKTHROUGH OWNS THE MACHINE AND THE WIZARD.
         #
-        # drive.py used to run here and drive_read.py after it. That is two paths to the same
-        # outcome, and it made the stage impossible to reason about: run 42280638394's
-        # `drive the Setup Assistant` step sat for half an hour without one log-stream line,
-        # and there was no way to tell which of the two drivers was responsible or which pane
-        # it was on.
+        # macos/15/steps/sequoia.yaml is a pane file with a preamble and an epilogue: `boot:`
+        # before the first pane, the sixteen panes, then the login, the desktop wait and the
+        # stop. See lib/steps.py's Walk.__init__.
         #
-        # drive.py is still in the tree - it is the sequence that was measured the longest and
-        # its coordinate comments are where every number here came from - but it is not
-        # called. A pane that this driver cannot answer fails loudly at that pane, which is
-        # the whole reason for reading the screen instead of replaying a table.
-        if args.steps:
-            log(f"=== the Setup Assistant: steps {os.path.basename(args.steps)} ===")
-            import steps as stepslib
-            ok, ran = stepslib.run_file(
-                args.steps, guest.paths.drive, work=os.path.dirname(frames) or ".",
-                user=args.user, password=args.password, release=args.release,
-                # THE STAGE'S OWN FRAME DIRECTORY, for the same reason bake.py passes it: a
-                # python: step that asks this stage's snapshotter a question must ask about
-                # the frames this stage writes, not a directory it guessed.
-                frames=frames,
-            )
-            log(f"{len(ran)} step(s) answered" if ok
-                else f"the walkthrough failed after {len(ran)} step(s)")
-            # A WALKTHROUGH THAT DID NOT FINISH IS NOT A STAGE THAT CONTINUES.
-            #
-            # This read `ok, ran = ...` and then only logged it, so a walk that stopped on an
-            # unanswered pane still went on to wait_for_desktop(). That wait is a WALLPAPER
-            # test: it says "something that looks like a desktop is on screen", and a wizard
-            # left one pane from the end is a machine whose desktop is exactly what it will
-            # never show - or worse, a guest that happens to be drawing one anyway. Either way
-            # the stage could succeed and publish a disk that never finished setup.
-            #
-            # The walkthrough knows whether it finished; this is the line that has to believe it.
-            if not ok:
-                arrived = False
-                return 2
-        else:
-            log("=== the Setup Assistant: drive_read.py ===")
-            try:
-                proc = subprocess.run(
-                    [sys.executable, os.path.join(HERE, "drive_read.py"),
-                     "--qmp", guest.paths.drive, "--frames", frames,
-                     "--user", args.user, "--password", args.password,
-                     "--release", args.release,
-                     "--boot-timeout", str(args.desktop_timeout)],
-                    check=False, timeout=args.assistant_timeout,
-                )
-                if proc.returncode != 0:
-                    log(f"the reading driver exited {proc.returncode}; see its log for the pane "
-                        f"it could not answer")
-            except (subprocess.TimeoutExpired, OSError) as exc:
-                log(f"the reading driver failed: {exc}")
+        # ONE DRIVER, AND IT IS THE READING ONE. drive.py used to run here and drive_read.py
+        # after it - two paths to the same outcome, and run 42280638394's `drive the Setup
+        # Assistant` step sat for half an hour with no way to tell which of the two was
+        # responsible or which pane it was on. drive_read.py is kept as the table of
+        # measurements, but only `--steps` runs.
+        if not args.steps:
+            raise SystemExit(
+                "--steps is required now: the Setup Assistant is a pane file "
+                "(macos/15/steps/sequoia.yaml). drive_read.py is kept as the measurement table "
+                "and is not a driver this stage runs.")
 
-        log("waiting for a desktop")
+        log(f"=== the Setup Assistant: steps {os.path.basename(args.steps)} ===")
+        import steps as stepslib
+
+        shutdown_method = "kill" if run_overlay is not None else "ssh"
+        session = stepslib.MachineSession(
+            args.release, disk, work,
+            # NO SHARE: the disk at this stage has been installed but not configured, so nothing
+            # in the guest mounts anything. `""` is vm_session's documented "do not serve one".
+            share="",
+            overlay=run_overlay, ssh_port=args.ssh_port,
+            cpus=args.cpus, mem_mb=args.mem,
+            boot_options=dict(boot_options, copy=run_overlay is None))
+        ok, ran = stepslib.run_file(
+            args.steps, "", work=work,
+            user=args.user, password=args.password, release=args.release,
+            # THE STAGE'S OWN FRAME DIRECTORY, for the same reason bake.py passes it: a
+            # python: step that asks this stage's snapshotter a question must ask about the
+            # frames this stage writes, not a directory it guessed.
+            frames=frames, session=session,
+            extra_vars={"args.shutdown": shutdown_method},
+        )
+        log(f"{len(ran)} step(s) answered" if ok
+            else f"the walkthrough failed after {len(ran)} step(s)")
+
+        # A WALKTHROUGH THAT DID NOT FINISH IS NOT A STAGE THAT CONTINUES.
+        #
+        # This used to log `ok` and carry on to wait_for_desktop(), which is a WALLPAPER test:
+        # it says "something that looks like a desktop is on screen", and a wizard left one pane
+        # from the end is exactly a machine that will never show one - or worse, one that happens
+        # to be drawing one anyway. Either way the stage could succeed and publish a disk that
+        # never finished setup.
+        #
+        # THE DESKTOP VERDICT IS THE FILE'S NOW (`wait for the desktop`), because the login that
+        # has to happen first is two steps above it. What this stage does with a failure is
+        # refuse to publish and say what to look at.
+        if not ok:
+            log("=== THE WIZARD DID NOT REACH A DESKTOP ===")
+            log("  the disk is not published: a half-set-up macOS cannot be used")
+            log("  the recording is the evidence - the last frame is the pane it stopped on")
+            return 2
+        arrived = True
+
         if args.inspect_after is not None:
-            # LOOK AT THE RECORDING INSTEAD OF WAITING OUT THE TIMEOUT.
-            #
-            # The wizard has finished - drive.py returns after its last click - and whether a
-            # desktop appears is exactly the question the recording answers. Waiting 1800s to
-            # learn that the last pane did not dismiss is 1800s spent on an answer that is
-            # already on screen.
-            #
-            # The guest is stopped after this many seconds, the recording and last frame are
-            # uploaded, and the disk is NOT published: exit code 3, which no stage treats as
+            # LOOK AT THE RECORDING INSTEAD OF WAITING OUT THE TIMEOUT. The walkthrough got to
+            # the desktop; this keeps the machine up for a while so the recording shows what
+            # it looks like, then publishes nothing: exit code 3, which no stage treats as
             # success. That is the difference between "inspect this" and "this is a disk".
-            log(f"inspection stop: {args.inspect_after}s after the sequence, then stop")
+            log(f"inspection stop: {args.inspect_after}s, then stop")
             time.sleep(args.inspect_after)
-            import lastframe
-            shot = os.path.join(os.path.dirname(os.path.abspath(frames)), "inspect.ppm")
-            try:
-                client = __import__("qmp").QMP(guest.paths.drive)
-                try:
-                    client.execute("screendump", filename=shot)
-                finally:
-                    client.close()
-                lastframe.convert(shot, os.path.join(
-                    os.path.dirname(os.path.abspath(frames)), "last-frame.png"))
-            except (OSError, RuntimeError) as exc:
-                log(f"  the screenshot could not be taken: {exc}")
             log("=== STOPPED FOR INSPECTION; the disk is not published ===")
             log("  the recording is the evidence: look at the last frame it kept")
             return 3
-        arrived = wait_for_desktop(guest, frames, args.desktop_timeout,
-                                   user=args.user, password=args.password)
     finally:
-        guest.stop(acpi_first=arrived)
         snap.terminate()
         try:
             snap.wait(timeout=5)
@@ -380,6 +337,9 @@ def main(argv: list[str]) -> int:
     log("compressing")
     if run_overlay is not None:
         run_overlay.flatten(out)
+        # AND THEN RELEASED, WHICH IS ALSO THE CHECK: close() deletes the diff and compares the
+        # base's size and mtime against what it recorded before qemu started.
+        run_overlay.close()
     else:
         compress.compress(disk, out)
     log(f"BAKED macOS {args.release} desktop -> {out} ({os.path.getsize(out) >> 20} MiB)")
@@ -387,160 +347,22 @@ def main(argv: list[str]) -> int:
     return 0
 
 
-def _frame_age(directory: str) -> str:
-    """How old the newest frame is, as a phrase for the heartbeat.
-
-    WHY IT IS PART OF THE HEARTBEAT AND NOT A SEPARATE LINE. A desktop that has not arrived
-    has two very different causes, and the frame's age separates them:
-
-        frames arriving, test not matching     the wallpaper test is wrong
-        frames stopped days... minutes ago     the guest stopped drawing, which is a pane
-                                               waiting for an answer
-
-    The second is the one that used to cost a whole run. A wizard stopped on a modal sheet
-    does not change the screen, so every later frame is identical and the recorder keeps
-    writing them; the newest frame's mtime is what tells the two apart.
-    """
-    try:
-        newest = max(
-            (os.path.join(directory, f) for f in os.listdir(directory)),
-            key=os.path.getmtime,
-            default=None,
-        )
-        if newest is None:
-            return "none"
-        age = time.time() - os.path.getmtime(newest)
-        return f"{age:.0f}s old"
-    except OSError:
-        return "unreadable"
-
-
-def _lock_screen_test():
-    """The same module as _wallpaper_test - one loader, two decisions from it."""
-    return _wallpaper_test()
-
-
-def _type_login_password(guest: vm.Guest, user: str, password: str) -> None:
-    """Type into a login window and submit.
-
-    NO CLICK FIRST. A macOS login window puts the caret in the password field when it
-    appears, and clicking it is not only unnecessary but risky: the field is inside a
-    translucent pill whose exact position varies with the account tile's width, and a click
-    a few pixels high lands on the wallpaper and dismisses the field.
-
-    ENTER, NOT A BUTTON. The field submits on Return. There is no visible button until a
-    wrong password is typed.
-    """
-    import qmp as qmpmod
-    try:
-        q = qmpmod.QMP(guest.paths.drive)
-    except Exception as exc:                           # noqa: BLE001 - best effort
-        log(f"  could not open QMP to type the password: {exc}")
-        return
-    try:
-        time.sleep(2.0)
-        for ch in password:
-            qmpmod.key(q, "spc" if ch == " " else ch)
-            time.sleep(0.25)
-        time.sleep(1.0)
-        # TWO RETURNS. The first wakes the window if the display had dimmed; the second
-        # submits. A password already typed is not consumed by a wake.
-        qmpmod.key(q, "ret")
-        time.sleep(2.0)
-        qmpmod.key(q, "ret")
-    finally:
-        try:
-            q.close()
-        except Exception:                              # noqa: BLE001
-            pass
-
-
-def wait_for_desktop(guest: vm.Guest, frames: str, timeout: int, *,
-                     user: str = "docker", password: str = "admin") -> bool:
-    """Wait until the wallpaper test passes, then let the guest settle.
-
-    THE SAME TEST AS THE WINDOWS BAKE, deliberately. lib/desktop.py explains its three
-    thresholds and why a colour match alone does not work. Sequoia's default wallpaper is
-    a blue-to-purple gradient with the light end at the top, which is the shape they
-    describe.
-
-    WHAT THIS DEPENDS ON: that the wizard has FINISHED. While it is up the screen is a
-    white pane and fails all three tests - correctly, because it is not a desktop.
-    drive.py's last action is the one that dismisses the final pane.
-
-    THE SETTLE IS PART OF THE ARRIVAL. macOS writes hard for the first minute after the
-    first login - mds, the login item registry, the first Time Machine snapshot - and
-    stopping the guest in the middle of that is what produces a disk that needs to repair
-    itself on every later boot.
-    """
-    # THE RECORDING'S OWN FRAMES, NOT drive.py's SCREENSHOTS.
-    #
-    # lib/snapshots.py writes frame-NNNN.jpg into `frames` - that is the directory that gets
-    # one per second for the whole run, and the one the video is built from. `frames/shots`
-    # is where drive.py puts the handful of pictures it takes around its own clicks, and it
-    # holds a few dozen files from the wizard, none of them the desktop.
-    #
-    # `reached_desktop` looks at the newest five. Pointed at frames/shots it was looking at
-    # wizard panes forever, which is exactly what run 41893311699 did for its whole
-    # 1800-second budget while the desktop was on screen: the frame uploaded as that run's
-    # last-frame.png passes the identical test in one call.
-    shots = frames
-    deadline = time.time() + timeout
-    started = time.time()
-    # A HEARTBEAT, BECAUSE THIS LOOP CAN RUN FOR HALF AN HOUR IN SILENCE.
-    #
-    # The loop below checks the wallpaper every five seconds and says nothing until it
-    # succeeds or the budget runs out. At the default 1800s that is thirty minutes in which
-    # the Actions log and the check run show one line - "waiting for a desktop" - and the
-    # stage is indistinguishable from a hang. The UI cannot tell them apart either, which is
-    # why a cancelled run and a slow one looked the same.
-    #
-    # Every minute it now says how long it has been, whether the guest is alive, and how old
-    # the newest frame is. The frame age is the part that separates "the guest is drawing and
-    # the test has not matched yet" from "the screen has not changed since the pane that
-    # stopped us" - the second is a wizard that never finished, and reading it here is much
-    # cheaper than reading it out of a video afterwards.
-    beat = int(os.environ.get("DESKTOP_HEARTBEAT_SECONDS", "60"))
-    last_beat = 0.0
-    unlocked = False
-    while time.time() < deadline:
-        if not guest.alive():
-            log("qemu exited before a desktop appeared")
-            return False
-
-        # A LOGIN WINDOW IS A FINISHED SYSTEM, NOT A HANG.
-        #
-        # macOS 26's Setup Assistant ends by putting the machine at its login window, and the
-        # screen then never changes on its own. Waiting for a desktop in that state waits out
-        # the whole budget and reports "the wizard did not reach a desktop" about a disk that
-        # is complete - run 42280638394 sat like that for 1800 seconds after answering
-        # nineteen panes correctly.
-        #
-        # The password is typed once, when the window is first recognised. The field is
-        # already focused on a login window, so no click is needed; Enter submits it.
-        if not unlocked and _lock_screen_test().reached_lock_screen(shots):
-            log(f"a macOS login window is on screen ({(time.time() - started):.0f}s); "
-                f"typing the password")
-            _type_login_password(guest, user, password)
-            unlocked = True
-
-        if _wallpaper_test().reached_desktop(shots, kind="macos"):
-            log(f"a macOS desktop is on screen ({(time.time() - started):.0f}s)")
-            settle = int(os.environ.get("DESKTOP_SETTLE_SECONDS", "30"))
-            log(f"letting the guest settle for {settle}s before stopping it")
-            time.sleep(settle)
-            if not guest.alive():
-                log("the guest exited while settling - not keeping the disk")
-                return False
-            return True
-        elapsed = time.time() - started
-        if elapsed - last_beat >= beat:
-            last_beat = elapsed
-            log(f"  still waiting: {elapsed:.0f}s of {timeout}s, "
-                f"newest frame {_frame_age(shots)}, login window seen: {unlocked}")
-        time.sleep(5)
-    log(f"timed out after {timeout}s")
-    return False
+# `wait_for_desktop`, `_type_login_password` AND `_frame_age` WERE HERE, AND THEY ARE STEPS NOW.
+#
+# The loop they made up - look at the recording, recognise the login window, type into it, wait
+# for the wallpaper test, keep a heartbeat - is the epilogue of macos/15/steps/sequoia.yaml:
+#
+#     click the password field / type the password / press return
+#     dismiss the keyboard assistant
+#     wait for the desktop                       (python: ssh_panes:wait_for_desktop)
+#     stop the machine
+#
+# The reason it is worth moving rather than copying: `_type_login_password` and the ssh stage's
+# `unlock()` were two opinions about how to log in to the same window, and the ssh stage's is the
+# one with the click-first note (runs 42079736995 against 42083224228). One copy, in ssh_panes.py,
+# beside the file that names it.
+#
+# `_frame_age` went with the heartbeat, which is now inside wait_for_desktop's own loop.
 
 
 if __name__ == "__main__":

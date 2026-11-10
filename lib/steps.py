@@ -150,6 +150,16 @@ STEP_KEYS = {    "name",        # required: what the log calls this step
                    #            so `disk` names a DIRECTORY of kernel, initrd.img and
                    #            system.efs, not one qcow2. No sshd to wait for.
     "graceful",    # for shutdown: ask the guest to close its disks first (default true)
+    # --- THE EPILOGUE OF A PANE FILE ------------------------------------------------------
+    #
+    # A pane file's steps after the last pane run in file order, and some of them are only
+    # meaningful on a walk that finished: "log in and wait for the desktop" after a wizard that
+    # did not finish is a verdict about a screen the wizard never reached. `skip_when_unfinished`
+    # is how such a step says so, and it is ignored in a sequence (which has no such state).
+    #
+    # `shutdown:` DOES NOT CARRY IT, and must not: stopping the machine is exactly what has to
+    # happen on the way out of a failed walk.
+    "skip_when_unfinished",
 }
 
 # THE KEYS AN ACTION INSIDE `do` MAY CARRY. A pane's actions are the same vocabulary as a
@@ -307,24 +317,52 @@ class Walk:
         # Without this the only options were "leave the lifecycle in Python", which is what the
         # four stage scripts were being changed to avoid.
         #
-        # POSITION DECIDES, NOT THE NAME. A lifecycle step is preamble if it comes before the
-        # first pane and epilogue if it comes after the last; one in the middle is refused,
+        # POSITION DECIDES, NOT THE NAME. Everything before the first pane is the PREAMBLE and
+        # everything after the last is the EPILOGUE; a lifecycle step in the middle is refused,
         # because "boot, then click three panes, then boot again" would replace a running guest
         # without stopping it - the same mistake MachineSession.boot refuses in a sequence.
         pane_positions = [i for i, s in enumerate(self.steps) if s.is_pane]
-        lifecycle = [s for s in self.steps if any(s[k] for k in LIFECYCLE)]
-        if pane_positions and lifecycle:
+        if pane_positions:
             first, last = min(pane_positions), max(pane_positions)
-            for s in lifecycle:
-                if first < s.index < last:
+            for s in self.steps:
+                if first < s.index < last and any(s[k] for k in LIFECYCLE):
                     raise StepError(
                         f"{path or 'the walkthrough'}: `{s.name}` is a lifecycle step between "
                         f"panes. A pane file may start its machine before the first pane and "
                         f"stop it after the last, and nowhere else - `boot:` in the middle would "
                         f"replace a running guest without stopping it.")
-        self.preamble = [s for s in lifecycle if s.index < (min(pane_positions) if pane_positions
-                                                            else len(self.steps))]
-        self.epilogue = [s for s in lifecycle if s not in self.preamble]
+            self.preamble = [s for s in self.steps if s.index < first]
+            self.epilogue = [s for s in self.steps if s.index > last]
+            middle = [s for s in self.steps if first <= s.index <= last]
+        else:
+            self.preamble, self.epilogue = [], []
+            middle = list(self.steps)
+        # A PREAMBLE THAT IS NOT A LIFECYCLE STEP IS A SEQUENCE GLUED TO A PANE FILE, and the
+        # same is true of an epilogue - but only of the ones that would have to make a DECISION.
+        # The rules are different because the loop is:
+        #
+        #   preamble   must be lifecycle only. Nothing may run before the thing that makes the
+        #              screen it would look at.
+        #   epilogue   may be anything, and it runs in file order - BUT ONLY IF IT SAYS SO. A
+        #              step after the last pane is refused unless it is a lifecycle step or
+        #              carries `skip_when_unfinished`; without that rule a file that had simply
+        #              forgotten to give a step its `when` would be read as an epilogue and run
+        #              once against whatever screen the loop stopped on, which is the silent
+        #              mixing of the two shapes this check exists to refuse.
+        for s in self.epilogue:
+            if not any(s[k] for k in LIFECYCLE) and not s["skip_when_unfinished"]:
+                raise StepError(
+                    f"{path or 'the walkthrough'} mixes panes and a sequence: `{s.name}` comes "
+                    f"after the last pane and is neither a lifecycle step nor declared "
+                    f"`skip_when_unfinished`. A pane file's epilogue must say it belongs to the "
+                    f"exit path; a step that forgot its `when` is a step nobody meant to run "
+                    f"once.")
+        for s in self.preamble:
+            if not any(s[k] for k in LIFECYCLE):
+                raise StepError(
+                    f"{path or 'the walkthrough'}: `{s.name}` comes before the first pane and is "
+                    f"not a lifecycle step. A pane file may only boot before its loop; a step "
+                    f"that clicks or reads has no screen yet.")
         # A REBOOT IS NEITHER. It belongs between panes only if the file wants a reset there,
         # and no pane file does.
         for s in self.preamble + self.epilogue:
@@ -332,7 +370,6 @@ class Walk:
                 raise StepError(
                     f"{path or 'the walkthrough'}: `reboot:` in a pane file has no defined "
                     f"position; put it in a sequence file")
-        middle = [s for s in self.steps if s not in self.preamble and s not in self.epilogue]
         self.panes = [s for s in middle if s.is_pane]
         if middle and self.panes and len(self.panes) != len(middle):
             mixed = [s.name for s in middle if not s.is_pane][:3]
@@ -2125,17 +2162,34 @@ def walk_panes(driver: Driver, steps: Walk, values: dict[str, str], *,
     # unanswered pane must still stop its machine: run_file's stop_if_running is a backstop, not
     # the shutdown the file asked for, and the difference matters on a real disk where `ssh` is
     # the only method that closes the filesystem properly.
+    #
+    # THE EPILOGUE RUNS IN FILE ORDER, and it may contain ordinary steps - the desktop stage's
+    # "the wizard is over, so look at what it left" belongs there, because the loop has ended and
+    # a verdict about the screen is not a pane. Its `skip_when_unfinished` says which of those
+    # steps only make sense on a walk that finished; the shutdown is not one of them.
+    unfinished = False
     try:
-        return _walk_panes_loop(driver, steps, values, answered=answered,
-                                stuck_after=stuck_after, ssh_port=ssh_port,
-                                password=password, session=session)
+        ok, done = _walk_panes_loop(driver, steps, values, answered=answered,
+                                    stuck_after=stuck_after, ssh_port=ssh_port,
+                                    password=password, session=session)
+        unfinished = not ok
+        return ok, done
     finally:
         for step in steps.epilogue:
             spec = steps.substitute(step.spec, values)
             here = Step(dict(spec), step.index)
+            if unfinished and here["skip_when_unfinished"]:
+                log(f"  {here.name}: skipped, the walk did not finish")
+                continue
             log(f"=== {here.name}")
             try:
-                _do_action(driver, here, ssh_port=ssh_port, password=password, session=session)
+                if here["python"]:
+                    log(f"=== {here.name} (python {here['python']})")
+                    if not _run_python(driver, here, steps.path):
+                        log(f"=== {here.name} FAILED (a python step said so)")
+                else:
+                    _do_action(driver, here, ssh_port=ssh_port, password=password,
+                               session=session)
             except StepError as exc:
                 log(f"  {here.name} failed on the way out: {exc}")
 
