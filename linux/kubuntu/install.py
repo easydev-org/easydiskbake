@@ -26,10 +26,18 @@ import livebake     # noqa: E402
 
 BAKE = livebake.Bakery(
     name="kubuntu",
-    kernel=('casper/vmlinuz','casper/initrd'),
-    cmdline='console=ttyS0,115200n8 locale=en_US.UTF-8 keyboard-configuration/layoutcode=us --- console=ttyS0,115200n8',
     # THIS ONE IS OR-BY-NATURE: kubuntu's driver waits for the word anywhere in the frame,
     # because its live session draws `kubuntu` across the middle of the screen.
+    # THE MEDIUM BOOTS ITSELF - no -kernel, no -initrd, no -append.
+    #
+    # This ISO's own GRUB has `set timeout=30`, so it takes its first entry and starts without
+    # a keystroke; the entry also carries the cmdline this file used to hand-write
+    # (archisobasedir/archisolabel, root=live:CDLABEL, console=), which is where those values
+    # came from in the first place.
+    #
+    # MEASURED THE A WAY IN A LOCAL POD: the live desktop arrives with no keypress and no
+    # hand-written cmdline. See lib/livebake.py `_boot_args` for why the extracted-kernel path
+    # still exists.
     desktop=livebake.DesktopWhen(any_of=('kubuntu',)),
     mem_mb=4096,
 )

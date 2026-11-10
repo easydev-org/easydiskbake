@@ -26,8 +26,16 @@ import livebake     # noqa: E402
 
 BAKE = livebake.Bakery(
     name="fedora-workstation",
-    kernel=('boot/x86_64/loader/linux','boot/x86_64/loader/initrd'),
-    cmdline='root=live:CDLABEL=Fedora-WS-Live-43 rd.live.image locale=en_US.UTF-8 quiet rhgb',
+    # THE MEDIUM BOOTS ITSELF - no -kernel, no -initrd, no -append.
+    #
+    # This ISO's own GRUB has `set timeout=10`, so it takes its first entry and starts without
+    # a keystroke; the entry also carries the cmdline this file used to hand-write
+    # (archisobasedir/archisolabel, root=live:CDLABEL, console=), which is where those values
+    # came from in the first place.
+    #
+    # MEASURED THE A WAY IN A LOCAL POD: the live desktop arrives with no keypress and no
+    # hand-written cmdline. See lib/livebake.py `_boot_args` for why the extracted-kernel path
+    # still exists.
     desktop=livebake.DesktopWhen(any_of=('type to search', 'activities', 'install fedora',)),
     mem_mb=4096,
 )

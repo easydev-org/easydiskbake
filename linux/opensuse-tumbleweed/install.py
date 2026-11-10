@@ -26,8 +26,16 @@ import livebake     # noqa: E402
 
 BAKE = livebake.Bakery(
     name="opensuse-tumbleweed",
-    kernel=('boot/x86_64/loader/linux','boot/x86_64/loader/initrd'),
-    cmdline='root=live:CDLABEL=openSUSE_Tumbleweed_KDE_Live rd.live.image locale=en_US.UTF-8 quiet splash=silent systemd.show_status=yes',
+    # THE MEDIUM BOOTS ITSELF - no -kernel, no -initrd, no -append.
+    #
+    # This ISO's own GRUB has `set timeout=10`, so it takes its first entry and starts without
+    # a keystroke; the entry also carries the cmdline this file used to hand-write
+    # (archisobasedir/archisolabel, root=live:CDLABEL, console=), which is where those values
+    # came from in the first place.
+    #
+    # MEASURED THE A WAY IN A LOCAL POD: the live desktop arrives with no keypress and no
+    # hand-written cmdline. See lib/livebake.py `_boot_args` for why the extracted-kernel path
+    # still exists.
     after=livebake.After(seconds=240),
     mem_mb=4096,
 )
