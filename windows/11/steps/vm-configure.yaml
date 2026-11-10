@@ -80,6 +80,7 @@ steps:
 
   - name: copy the guest tools into the guest
     scp: ["guest-agent/virtio-win-guest-tools.exe", "C:/Users/{{ user }}/virtio-win-guest-tools.exe"]
+    requires: [ssh]
     timeout: 600
 
   # `/quiet`, NOT `/S`, BECAUSE THIS IS A WiX BURN BUNDLE.
@@ -144,6 +145,7 @@ steps:
   - name: mount the host share
     share_mount: true
     share_family: windows
+    requires: [share]
     timeout: 180
 
   # THE SHARE REALLY IS READABLE AND WRITABLE, WITH THE CREDENTIAL SUPPLIED IN THIS COMMAND.

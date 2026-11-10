@@ -249,8 +249,12 @@ def main(argv: list[str]) -> int:
         # guest on the real disk gets the careful path: ssh `shutdown -h now`, because macOS
         # ignores an ACPI power button and shows a dialog instead.
         import vm_session
-        vm_session.stop(guest, acpi_first=ok, family="macos", password=SSH_PASSWORD,
-                        overlay=run_overlay)
+        # THE METHOD IS NAMED. On an overlay the guest is killed (nothing it wrote is kept and
+        # the flatten is the artifact); on the real disk it is asked over ssh, because macOS
+        # answers an ACPI power button with a dialog and waits for a click.
+        vm_session.stop(guest, family="macos", password=SSH_PASSWORD, overlay=run_overlay,
+                        method=("kill" if run_overlay is not None else "ssh"),
+                        log=log)
         if ok:
             if not smoke.check_disk(disk, root_fs="apfs"):
                 log("=== THE DISK FAILED ITS CHECKS ===")

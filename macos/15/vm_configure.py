@@ -308,7 +308,7 @@ def main(argv: list[str]) -> int:
         # stops the previous one first. That is the case this cleanup was written for, and it is
         # not this one.
         vm_session.stop(guest, acpi_first=ok, family="macos", password=SSH_PASSWORD,
-                        share=False, overlay=run_overlay)
+                        share=False, overlay=run_overlay, method="ssh", log=log)
         if ok:
             # SAY SO BEFORE AND AFTER, BECAUSE THIS IS WHERE THE PROCESS KEPT DISAPPEARING.
             #

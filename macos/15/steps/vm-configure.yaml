@@ -84,6 +84,7 @@ steps:
 
   - name: copy the agent into the guest
     scp: ["guest-agent/mac-guest-agent", "/tmp/mac-guest-agent"]
+    requires: [ssh]
     timeout: 300
 
   # INSTALL IT THE WAY ITS OWN TOOL WANTS, THEN PROVE IT ANSWERED.
@@ -131,6 +132,7 @@ steps:
   - name: mount the host share
     share_mount: true
     share_family: macos
+    requires: [share]
     timeout: 180
 
   # A MOUNT THAT REPORTS SUCCESS AND A DIRECTORY THAT IS EMPTY ARE DIFFERENT FACTS.

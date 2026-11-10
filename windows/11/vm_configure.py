@@ -309,7 +309,12 @@ def main(argv: list[str]) -> int:
         ok = True
         return 0
     finally:
-        guest.stop(acpi_first=ok)
+        # WINDOWS HONOURS THE ACPI POWER BUTTON, so this is a real shutdown on this family -
+        # unlike macOS, where the same request opens a dialog. It is named rather than inferred:
+        # `acpi` means "the power button", and a guest that ignores it will say so by not exiting
+        # rather than by quietly becoming a kill.
+        import vm_session
+        vm_session.stop(guest, family="windows", method="acpi", share=True, log=log)
         if args.tpm:
             stop_swtpm(work)
         if ok:
