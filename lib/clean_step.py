@@ -168,6 +168,22 @@ def main(argv: list[str]) -> int:
     # `copy=False`, BECAUSE CLEANING IS THE POINT. boot_machine copies so a self-test cannot touch
     # the artifact; this stage modifies the disk in place on purpose - it is the last step before
     # compress and publish, and cleaning a copy would mean moving it back.
+    # THE DISK IS CHECKED BEFORE IT IS BOOTED, AND THAT IS NOT PARANOIA.
+    #
+    # This stage is handed the artifact the previous stage just wrote - on macOS, `qemu-img
+    # convert -c` finished 1.1 seconds before this runs (run 42772191424). An image that qemu
+    # cannot read fails at BOOT, and the symptom is `No route to host` after 900 seconds, which
+    # says nothing about the disk. `qemu-img check` either reads it or says why in one line.
+    import subprocess as _sp
+    try:
+        checked = _sp.run(["qemu-img", "check", args.disk],
+                          capture_output=True, text=True, timeout=600)
+        note(f"qemu-img check -> {checked.returncode}")
+        for line in ((checked.stdout or "") + (checked.stderr or "")).splitlines()[-6:]:
+            note(f"    {line[:160]}")
+    except (OSError, _sp.TimeoutExpired) as exc:
+        note(f"  qemu-img check could not run: {exc}")
+
     import vm_session
 
     guest, reached = vm_session.start(
@@ -185,6 +201,26 @@ def main(argv: list[str]) -> int:
         if not reached:
             note("=== THE DISK DID NOT ANSWER ON SSH ===")
             note("  it cannot be cleaned if it cannot be reached; the disk is unchanged")
+
+            # THE CONSOLE, BECAUSE IT IS THE ONLY THING THAT SAYS WHERE THE GUEST STOPPED.
+            #
+            # qemu writes the firmware and kernel output to console.log whatever happens, and a
+            # guest that never reached sshd has that output even if it never reached a shell. A
+            # screenshot is nicer for a person and useless over ssh; this text can be read in the
+            # job log, and it distinguishes "the firmware would not boot the disk" from "the
+            # kernel booted and the network never came up" - which are the two candidates for
+            # `No route to host` and want opposite fixes.
+            console = os.path.join(work, "console.log")
+            if os.path.isfile(console):
+                note(f"  the console, last 60 lines of {console}:")
+                try:
+                    with open(console, errors="replace") as fh:
+                        for line in fh.readlines()[-60:]:
+                            note(f"    {line.rstrip()[:180]}")
+                except OSError as exc:
+                    note(f"    and the console could not be read either: {exc}")
+            else:
+                note(f"  no console.log at {console}")
 
             # A PICTURE OF WHERE IT STOPPED, BECAUSE THE SSH MESSAGE CANNOT SAY.
             #
