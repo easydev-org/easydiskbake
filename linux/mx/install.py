@@ -35,10 +35,21 @@ BAKE = livebake.Bakery(
     # 60 s IS THE LONGEST MENU HERE, and it is inside the 210-second desktop budget, so the
     # wait covers it. If this image ever stops auto-booting the fix is `grub_key='ret'` with a
     # `grub_delay` past 60, the way mint's is set.
-    # AND, NOT OR. MX's boot prints `MX` on the console long before `MX Welcome` is drawn,
-    # so any_of would have matched a text console - and the walk's first step clicks the
-    # welcome window. Its own driver always said `"mx" in text and "install" in text`.
-    desktop=livebake.DesktopWhen(all_of=('mx', 'install')),
+    # AND, NOT OR, BUT AGAINST THE WORDS THE A BOOT ACTUALLY SHOWS.
+    #
+    # MX's own driver used `"mx" in text and "install" in text`, and that was right for the B
+    # boot: its transcript was `Installer | Connection | Established`, where `Installer` is the
+    # live session's own banner on a text console and `mx` never appears on that screen.
+    #
+    # THE A BOOT SKIPS THAT SCREEN. Measured on run a0c5896:
+    #
+    #     look boot: Welcome | to | MX-25.3_ | Xfce | (Infinity)! | Language | - | Keyboard
+    #
+    # - MX Welcome, the desktop window the walk's first step clicks, with `MX-25.3` in it and
+    # no `install` anywhere, so the old AND matched nothing and the bake waited out its budget
+    # on a desktop that was already up. `welcome` and `mx` are on that frame together and on no
+    # earlier one.
+    desktop=livebake.DesktopWhen(all_of=('welcome', 'mx')),
     mem_mb=4096,
     timeout=210,
 )
