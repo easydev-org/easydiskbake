@@ -150,6 +150,33 @@ steps:
     key: ctrl+alt+t
     settle: 10
 
+  # ZORIN'S SOFTWARE UPDATER PUTS A DIALOG OVER THE DESKTOP, AND IT TAKES THE KEYBOARD.
+  #
+  # Run 54aab47's recording shows it arriving while `sudo` was reading its password:
+  #
+  #     Updated software has been issued since Zorin OS 18 was released.
+  #     Do you want to install it now?
+  #     1057.8 MB will be downloaded.
+  #     [Settings]  [Remind Me Later]  [Install Now]
+  #
+  # - and then, when the typing continued, the polkit prompt that dialog raises:
+  #
+  #     Authentication Required
+  #     To install or remove software, you need to authenticate.
+  #
+  # The `systemctl stop packagekit` step below is not enough on its own: this dialog is already
+  # OPEN, and stopping the service behind it does not close it or give the keyboard back.
+  #
+  # `Remind Me Later` is the measured answer - `Install Now` would download a gigabyte, and
+  # `Settings` opens another window. The centre was read off the same frame with tesseract's own
+  # bounding boxes: the two words span x=915..1021, y=590..599.
+  #
+  # `optional` because a disk whose updater has already been quietened never shows it.
+  - name: dismiss the software updater, if it is up
+    at: [968, 594]
+    settle: 3
+    optional: true
+
   # `apt-get update` IS NOT OPTIONAL, AND RUN 42567710130 PROVED IT.
   #
   # The first version went straight to `apt-get install`, and the disk's own package index -
@@ -205,6 +232,17 @@ steps:
   # units stopped the lock should be free, but a lock is still a lock: `DPkg::Lock::Timeout=600`
   # waits instead of failing, which turns "the updater was mid-run" into a slow install rather
   # than a failed one.
+  # THE SECOND ATTEMPT, BECAUSE THE DIALOG IS ON ZORIN'S CLOCK AND NOT OURS.
+  #
+  # The one above runs the moment the terminal opens. Run 54aab47's frames show the dialog arriving
+  # a little later than that - the update check had not finished - and then staying over the
+  # terminal for the rest of the stage. One more press of the same button costs three seconds and
+  # covers the case where the first one landed before the dialog existed.
+  - name: dismiss the software updater again
+    at: [968, 594]
+    settle: 3
+    optional: true
+
   - name: install openssh-server
     run: echo {{ password }} | sudo -S sh -c "export DEBIAN_FRONTEND=noninteractive; apt-get update -o DPkg::Lock::Timeout=600 && apt-get install -y -o DPkg::Lock::Timeout=600 openssh-server" 2>&1 | tail -6
     terminal_wait: 0
