@@ -411,12 +411,25 @@ def main() -> int:
     # string. Burn does not recognise `/S`, so it showed its window and waited; `-Wait` waited
     # with it; and an `ssh:` step prints nothing until its command returns, so the stage sat for
     # ten minutes with no output at all (run 42797556702).
+    #
+    # AND THE BUNDLE ITSELF IS GONE. Its Burn bootstrapper carries a NetFxChainer, and under
+    # /quiet it never returned on this guest - two runs of ten and twelve minutes with no output,
+    # and the command never finished, so not even a deadline could report (42797556702,
+    # 42800603925). The MSI it would have installed comes out of the virtio-win ISO the bake
+    # already pulls, and msiexec finishes.
     win_conf = read("windows/11/steps/vm-configure.yaml")
-    check("the windows installer is run with burn's own flag", "windows/11/steps/vm-configure.yaml",
-          "'/quiet'" in win_conf and "'/S'" not in win_conf)
-    # AND IT HAS A DEADLINE, because a bootstrap that hangs must say so rather than hold the stage.
+    check("the windows agent is installed from the MSI", "windows/11/steps/vm-configure.yaml",
+          "msiexec" in win_conf and "qemu-ga-x86_64.msi" in win_conf)
+    check("the windows agent install asks for no bundle", "windows/11/steps/vm-configure.yaml",
+          "guest-tools.exe" not in win_conf)
+    # AND IT HAS A DEADLINE, because an installer that hangs must say so rather than hold the
+    # stage. msiexec finishes; the timeout is for the one that does not.
     check("the windows installer cannot hang the stage", "windows/11/steps/vm-configure.yaml",
-          "Wait-Process -Timeout" in win_conf)
+          "timeout: 600" in win_conf)
+    # AND THE MSI COMES FROM THE ISO, not from a second URL that has to be kept in step.
+    asset_src = read("lib/vm_configure_asset.py")
+    check("the windows MSI is extracted from the virtio-win ISO", "lib/vm_configure_asset.py",
+          "fetch_from_iso" in asset_src and "guest-agent/qemu-ga-x86_64.msi" in asset_src)
     # AND IT DOES NOT SELECT A DRIVER FEATURE INSTEAD OF THE AGENT. `ADDLOCAL=FE_vioserial_driver`
     # installs that one driver and skips qemu-ga - the opposite of what the step is for.
     # THE WORD SURVIVES IN THE COMMENT THAT EXPLAINS WHY IT IS ABSENT, so the check is for the

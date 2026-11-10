@@ -34,18 +34,30 @@ import sys
 #
 #   macOS    mav2287/mac-guest-agent - a native agent for macOS under QEMU. Apple's own does not
 #            load here; see the note in macos/15/steps/vm-configure.yaml.
-#   Windows  the virtio-win guest tools, which carry guest-agent\qemu-ga-x86_64.msi. The full ISO
-#            is 700 MiB and this bundle is the same installer without drivers the disk has.
+#   Windows  guest-agent/qemu-ga-x86_64.msi, EXTRACTED FROM THE virtio-win ISO.
+#
+# WHY NOT virtio-win-guest-tools.exe, WHICH IS WHAT THIS STARTED WITH
+#
+# It is a WiX Burn bundle with a `NetFxChainer` - it manages a .NET Framework prerequisite - and
+# under /quiet it did not return at all on this guest: two runs sat in `install the guest agent`
+# for ten and twelve minutes with no output, and the command itself never finished, so not even
+# the Wait-Process deadline could report (runs 42797556702, 42800603925).
+#
+# The MSI IS THE THING THE BUNDLE WOULD HAVE INSTALLED, and the ISO carrying it is 56 MiB - the
+# same order as the bundle's 31 MiB. The bake already pulls it (`iso-virtio-win` from ghcr) for
+# the drivers, so this is a file the pipeline already has.
 ASSETS = {
     "mac-guest-agent": {
         "url": "https://github.com/mav2287/mac-guest-agent/releases/latest/download/mac-guest-agent",
         "name": "mac-guest-agent",
         "executable": True,
     },
-    "virtio-win-guest-tools": {
-        "url": ("https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/"
-                "stable-virtio/virtio-win-guest-tools.exe"),
-        "name": "virtio-win-guest-tools.exe",
+    # THE MSI, OUT OF THE ISO - see the note above. `member` says which path inside the archive,
+    # so the same fetch() can either download a file or extract one.
+    "qemu-ga-msi": {
+        "from_iso": True,
+        "member": "guest-agent/qemu-ga-x86_64.msi",
+        "name": "qemu-ga-x86_64.msi",
         "executable": False,
     },
 }
@@ -94,6 +106,34 @@ def fetch(key: str, work: str = "") -> str:
     return target
 
 
+def fetch_from_iso(key: str, iso_path: str, work: str = "") -> str:
+    """Extract ASSETS[key]["member"] out of `iso_path` into the work directory.
+
+    THE SAME ISO THE BAKE ALREADY HAS. `iso-virtio-win` is pulled for the drivers during install;
+    the guest agent is inside the same archive, under guest-agent/. 7z reads an ISO as an archive
+    with no privileges, which is what lib/winiso.py's extract_drivers already relies on.
+    """
+    spec = ASSETS[key]
+    if not os.path.isfile(iso_path):
+        raise SystemExit(f"no virtio-win ISO at {iso_path}")
+    target_dir = os.path.join(work or ".", "guest-agent")
+    os.makedirs(target_dir, exist_ok=True)
+    target = os.path.join(target_dir, spec["name"])
+    if os.path.isfile(target) and os.path.getsize(target) > 1024:
+        log(f"{spec['name']} is already extracted ({os.path.getsize(target) >> 10} KiB)")
+        return target
+    log(f"extracting {spec['member']} from {os.path.basename(iso_path)}")
+    result = subprocess.run(
+        ["7z", "e", "-y", f"-o{target_dir}", iso_path, spec["member"]],
+        capture_output=True, text=True)
+    if result.returncode != 0 or not os.path.isfile(target):
+        raise SystemExit(
+            f"could not extract {spec['member']} from {iso_path}: "
+            f"{(result.stderr or result.stdout).strip()[:300]}")
+    log(f"  {target} ({os.path.getsize(target) >> 10} KiB)")
+    return target
+
+
 def fetch_guest_agent(driver, step, **_kwargs) -> bool:
     """The walkthrough step. The file says which platform with `family:`.
 
@@ -102,10 +142,24 @@ def fetch_guest_agent(driver, step, **_kwargs) -> bool:
     the guest with a message about a corrupt file rather than about a wrong walkthrough.
     """
     family = str(step.get("family") or "")
+    work = getattr(driver, "work", "") or "."
     if family == "macos":
         key = "mac-guest-agent"
+        path = fetch(key, work)
     elif family == "windows":
-        key = "virtio-win-guest-tools"
+        # THE MSI OUT OF THE ISO. Which ISO is the bake's own choice, so this asks lib/images
+        # for the artifact rather than hard-coding a URL a second time.
+        import images
+        import iso as isomod
+        iso_path = os.path.join(work, "virtio-win.iso")
+        if not os.path.isfile(iso_path):
+            # THE WORK DIRECTORY OF A VM-CONFIGURE JOB MAY NOT HAVE IT - the bake's did. Pulling
+            # it here is the same call the bake makes, so there is one description of where it
+            # comes from.
+            iso_path = isomod.fetch_iso("virtio-win", iso_path)
+        path = fetch_from_iso("qemu-ga-msi", iso_path, work)
+        log(f"  ready for the copy: {path}")
+        return True
     else:
         raise SystemExit(
             f"{getattr(step, 'name', 'this step')}: `python: vm_configure_asset:fetch_guest_agent` "

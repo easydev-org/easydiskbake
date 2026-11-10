@@ -66,11 +66,16 @@ steps:
   # virtio-serial port named org.qemu.guest_agent.0 and the vioserial driver underneath it. The
   # machine is started with exactly that (Shape.qga_transport="virtio", the default).
   #
-  # THE MSI, NOT THE EXE. qemu-ga.exe needs its DLLs beside it and a service registered by hand;
-  # the MSI does both and uninstalls cleanly. `/qn` is quiet, `/norestart` because a reboot here
-  # would interrupt a stage that is still working.
+  # THE MSI OUT OF THE virtio-win ISO, NOT THE guest-tools BUNDLE.
   #
-  # THE DOWNLOAD HAPPENS ON THE HOST, so this is a `python:` step and not `script:` - a script
+  # The bundle is a WiX Burn bootstrapper with a NetFxChainer, and under /quiet it did not return
+  # at all on this guest: two runs sat here for ten and twelve minutes with no output -
+  # 42797556702 and 42800603925 - and the command never finished, so not even the
+  # `Wait-Process -Timeout` deadline could report. The MSI is what the bundle would have
+  # installed, it comes out of the ISO the bake already pulls for the drivers, and an MSI is a
+  # thing msiexec finishes.
+  #
+  # THE EXTRACTION HAPPENS ON THE HOST, so this is a `python:` step and not `script:` - a script
   # body runs inside the guest.
   - name: fetch the guest agent on the host
     python: vm_configure_asset:fetch_guest_agent
@@ -78,12 +83,18 @@ steps:
     python_screen: false
     timeout: 1200
 
-  - name: copy the guest tools into the guest
-    scp: ["guest-agent/virtio-win-guest-tools.exe", "C:/Users/{{ user }}/virtio-win-guest-tools.exe"]
+  - name: copy the guest agent installer into the guest
+    scp: ["guest-agent/qemu-ga-x86_64.msi", "C:/Users/{{ user }}/qemu-ga-x86_64.msi"]
     requires: [ssh]
     timeout: 600
 
-  # `/quiet`, NOT `/S`, BECAUSE THIS IS A WiX BURN BUNDLE.
+  # `msiexec /i`, WHICH IS A PROGRAM THAT FINISHES.
+  #
+  # The bundle this replaced carried the same MSI plus a .NET chainer, and under /quiet it never
+  # returned - so there was nothing for a deadline to interrupt. An MSI is silent with `/qn`,
+  # skips the reboot with `/norestart`, and exits when it is done.
+  #
+  # THE OLD NOTE IS KEPT BELOW because it explains a different trap that is still worth knowing.
   #
   # The first version passed `/S /v "/qn /norestart"` - NSIS's silent flag followed by an MSI
   # property string - to a `WiX Toolset Bootstrapper`. Burn does not recognise `/S`, so it did
@@ -105,8 +116,8 @@ steps:
   # machine was left in.
   - name: install the guest agent
     ssh: |
-      powershell -NoProfile -ExecutionPolicy Bypass -Command "$exe='C:\Users\{{ user }}\virtio-win-guest-tools.exe'; $args=@('/quiet','/norestart'); Write-Output ('running: ' + $exe + ' ' + ($args -join ' ')); $p = Start-Process -FilePath $exe -ArgumentList $args -PassThru; try { $p | Wait-Process -Timeout 600 -ErrorAction Stop; Write-Output ('installer exit ' + $p.ExitCode) } catch { Write-Output 'INSTALLER DID NOT FINISH IN 600s'; $p | Stop-Process -Force -ErrorAction SilentlyContinue }; $s = Get-Service QEMU-GA -ErrorAction SilentlyContinue; if ($s) { Write-Output ('service: ' + $s.Status) } else { Write-Output 'service: ABSENT' }"
-    timeout: 900
+      cmd /c "msiexec /i C:\Users\{{ user }}\qemu-ga-x86_64.msi /qn /norestart /l*v C:\Users\{{ user }}\qemu-ga-install.log & echo MSIEXEC_EXIT=%ERRORLEVEL% & sc query QEMU-GA | findstr /i STATE"
+    timeout: 600
 
   # THE SERVICE AND THE DEVICE, BECAUSE THEY FAIL DIFFERENTLY.
   #
