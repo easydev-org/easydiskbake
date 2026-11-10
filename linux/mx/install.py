@@ -63,11 +63,37 @@ BAKE = livebake.Bakery(
     # no `install` anywhere, so the old AND matched nothing and the bake waited out its budget
     # on a desktop that was already up. `welcome` and `mx` are on that frame together and on no
     # earlier one.
-    # ESC, NOT RETURN. MX's own menu opens on a LANGUAGE SUBMENU with `Language` highlighted,
-    # and Return takes it - which opens a 60-row list of locales (run 82f5cf9's whole recording
-    # is that list, on `lang=en : English - English`). Escape goes back to the main menu, whose
-    # first entry is the boot this bake wants, and which then starts by itself.
-    grub_key='esc',
+    # THREE STEPS, MEASURED ON THIS MENU, AND EACH ONE WAS WRONG ON ITS OWN.
+    #
+    # MX stops on its OWN boot menu (not GRUB - GRUB's `set timeout=60` does take its entry).
+    # The menu opens on a LANGUAGE SUBMENU with `Language` highlighted:
+    #
+    #     ===> Language - Keyboard - Timezone
+    #          Language (lang=en_US)      <- highlighted
+    #          Keyboard (kbd=us)
+    #          Timezone (tz=America/New_York)
+    #     <=== Back to main menu
+    #
+    # and its footer says `Use | and |, Hit »ENTER« to select/deselect. Press »e« to edit,
+    # »ESC« to go back.` So:
+    #
+    #     ESC          back to the MAIN menu, which is what the footer promises
+    #     Up x4        the main menu opens with `Language - Keyboard - Timezone` STILL selected
+    #                  - four rows below the entry that boots. Measured by reading the
+    #                  highlight bar's pixels: it moved from y~430 to y 154..185, which is
+    #                  `MX 25.3 Xfce x64 (sysvinit)`.
+    #     Return       boot it
+    #
+    # RETURN ON ITS OWN IS THE MISTAKE THIS REPLACES: at the submenu it selects `Language`
+    # and opens a sixty-row locale list - run 82f5cf9's entire recording is that list, on
+    # `lang=en : English - English`.
+    #
+    # AND THE FIRST ENTRY IS THE `(sysvinit)` ONE, WHICH IS DELIBERATE. MX ships both; the
+    # ssh stage enables sshd with `update-rc.d` and `service`, because `systemctl --now`
+    # REFUSES when systemd is not PID 1 (its own words: "cannot be used when systemd is not
+    # running"). Booting the systemd entry would change the init system the rest of the disk
+    # was measured against.
+    grub_key=('esc', 'up', 'up', 'up', 'up', 'ret'),
     # 75 s: GRUB's own 60-second timeout, then this menu's first paint.
     grub_delay=75.0,
     desktop=livebake.DesktopWhen(all_of=('welcome', 'mx')),

@@ -155,7 +155,10 @@ class Bakery:
     # measured still waiting at t=390s); left None for one that auto-starts, because a stray
     # Enter into a running session clicks whatever is under the pointer. Both real values are
     # measured - see `_boot_args`.
-    grub_key: str | None = None
+    # A KEY, OR A SEQUENCE OF KEYS. Mint needs one Return; MX needs Escape (to leave the
+    # language submenu) then Up four times (to reach the sysvinit entry) then Return. A single
+    # key cannot express that, and pressing Return on `Language` opens a sixty-row locale list.
+    grub_key: str | tuple[str, ...] | None = None
     grub_delay: float = 25.0
     # A SECOND WALK ON A SECOND BOOT OF THE DISK. Fedora is the only distribution that needs
     # one, and it needs it for a structural reason: Anaconda does not create a user, so the
@@ -420,15 +423,22 @@ def run_bake(bakery: Bakery, args) -> int:
     # `_boot_args` because qemu has to be running for a key to reach it.
     if bakery.grub_key:
         import qmp as _qmp
+        keys = (bakery.grub_key if isinstance(bakery.grub_key, tuple)
+                else (bakery.grub_key,))
         time.sleep(bakery.grub_delay)
         try:
             q = _qmp.QMP(guest.paths.drive)
             try:
-                _qmp.key(q, bakery.grub_key)
+                for one in keys:
+                    _qmp.key(q, one)
+                    # EACH KEY GETS ITS OWN MOMENT. The menu repaints the highlight between
+                    # presses, and four Ups sent as one burst move one line - measured on the
+                    # MX menu, where the bar stayed on the same row for all four.
+                    time.sleep(0.8)
             finally:
                 q.close()
             log(bakery.name,
-                f"took the boot menu entry ({bakery.grub_key}) after {bakery.grub_delay:.0f}s")
+                f"took the boot menu entry ({' '.join(keys)}) after {bakery.grub_delay:.0f}s")
         except Exception as exc:                       # noqa: BLE001
             log(bakery.name, f"=== COULD NOT REACH THE BOOT MENU: {exc} ===")
 
