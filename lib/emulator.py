@@ -47,6 +47,26 @@ import time
 QEMU_SOCKET = "emulator-qmp.sock"
 
 
+# WHERE THE ANDROID TOOLS LIVE, NOW THAT THEY ARE NOT ON PATH.
+#
+# The image used to put /opt/android-sdk/{platform-tools,emulator} ahead of /usr/bin on PATH, and
+# that made a bare `qemu-img` in every OTHER platform's bake resolve to the emulator's 2018 copy -
+# which cannot read a zstd qcow2 and says so in a message about "compression type". See the note
+# in Containerfile. The directories are still there; only the PATH entry is gone.
+#
+# ANDROID_BIN is read first so a host outside the image can point somewhere else without this
+# module growing a second mechanism.
+def sdk_binary(name: str) -> str | None:
+    """The Android tool named `name`, from the SDK, or None if it is not there."""
+    root = os.environ.get("ANDROID_SDK_ROOT", "/opt/android-sdk")
+    for sub in ("emulator", "platform-tools", ""):
+        candidate = os.path.join(root, sub, name) if sub else os.path.join(root, name)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    # LAST RESORT: a host that has it on PATH after all.
+    return shutil.which(name)
+
+
 def log(msg: str) -> None:
     print(f"[emulator] {msg}", flush=True)
 
@@ -91,9 +111,10 @@ def build_args(avd: str, work: str, *, api: int = 35, abi: str = "x86_64",
     which is true of the input. It would say nothing about whether the bake's output
     carries state, which is what makes it an artifact rather than a copy.
     """
-    if not shutil.which("emulator"):
+    emulator_bin = sdk_binary("emulator")
+    if emulator_bin is None:
         raise EmulatorError(
-            "the emulator is not on PATH.\n"
+            "the emulator is not in the SDK.\n"
             "It is in the bake image at /opt/android-sdk/emulator; a host running\n"
             "this needs `sdkmanager emulator platform-tools`."
         )
@@ -101,7 +122,7 @@ def build_args(avd: str, work: str, *, api: int = 35, abi: str = "x86_64",
     qmp = os.path.join(work, QEMU_SOCKET)
 
     args = [
-        "emulator", "-avd", avd,
+        emulator_bin, "-avd", avd,
         "-no-window", "-no-audio", "-no-boot-anim", "-no-snapshot",
     ]
     if wipe_data:
@@ -242,7 +263,7 @@ class Emulator:
         expected rather than exceptional.
         """
         result = subprocess.run(
-            ["adb", "-s", "emulator-5554", *args],
+            [sdk_binary("adb") or "adb", "-s", "emulator-5554", *args],
             capture_output=True, text=True, timeout=timeout,
         )
         if result.returncode != 0:

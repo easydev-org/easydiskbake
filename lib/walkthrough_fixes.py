@@ -352,6 +352,41 @@ def main() -> int:
     except Exception as exc:                          # noqa: BLE001
         check(f"vm_session imports ({exc})", "lib/vm_session.py", False)
 
+    # --- ONE qemu-img, AND IT IS NOT THE ANDROID ONE ---------------------------------------
+    #
+    # THE ROOT CAUSE OF SIX RUNS OF FAILURES, and of a workaround in three modules. The
+    # Containerfile put the Android SDK ahead of /usr/bin on PATH for EVERY platform's container:
+    #
+    #     ENV PATH="$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/emulator:$PATH"
+    #
+    # and the emulator ships a 2018 qemu-img. So a bare `qemu-img` in a macOS or Windows bake
+    # meant that binary, and it answered
+    #
+    #     qemu-img: Could not open '...': Unsupported qcow2 feature(s): compression type
+    #
+    # about a disk this repository had compressed itself one step earlier (run 42775862720).
+    try:
+        containerfile = read("Containerfile")
+        android_env = [line for line in containerfile.splitlines()
+                       if line.startswith("ENV PATH=") and "android" in line.lower()]
+        check("the Android SDK is not on the shared PATH", "Containerfile", not android_env)
+        # AND WHAT NEEDS IT NAMES IT, so removing the PATH entry did not just move the breakage.
+        check("the emulator resolves its binaries from the SDK", "lib/emulator.py",
+              "sdk_binary(" in read("lib/emulator.py"))
+        check("android/15 resolves adb from the SDK", "android/15/run_qemu.py",
+              "_adb_binary(" in read("android/15/run_qemu.py"))
+        check("the image build checks the SDK by path", "lib/build_image.py",
+              "/opt/android-sdk/emulator/emulator" in read("lib/build_image.py"))
+        # AND THE COMPRESSION AND CLEAN STEPS STILL NAME THEIR BINARY, which is right on its own
+        # merits: four independent call sites re-derived this mistake and two of them failed with
+        # a message that named neither the binary nor the disk.
+        check("compression names the binary it uses", "lib/compress.py",
+              "QEMU_IMG_BINARY" in read("lib/compress.py"))
+        check("the disk check uses the same binary as compression", "lib/clean_step.py",
+              "compresslib.qemu_img()" in read("lib/clean_step.py"))
+    except Exception as exc:                          # noqa: BLE001
+        check(f"containerfile reads ({exc})", "Containerfile", False)
+
     # --- macos dev: the toolchain, and the one asset Apple will not serve ---------------
     #
     # XCODE IS THE ONLY THING HERE THAT CANNOT BE FETCHED FROM ITS VENDOR. Apple's endpoint

@@ -292,10 +292,24 @@ NET_SETUP = (
 )
 
 
+def _adb_binary() -> str:
+    """The adb in the SDK, by path.
+
+    THE SDK IS NOT ON PATH ANY MORE. It was, for every platform's container, and the emulator's
+    2018 qemu-img shadowed /usr/bin's - see the note in Containerfile. This is the one Android
+    call that still named a bare command; lib/emulator.py resolves the same way.
+    """
+    sdk = os.environ.get("ANDROID_SDK_ROOT", "/opt/android-sdk")
+    candidate = os.path.join(sdk, "platform-tools", "adb")
+    if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+        return candidate
+    return "adb"
+
+
 def adb(port: int, *args: str, timeout: int = 30) -> str:
     """One adb call against this emulator, with the device serial filled in."""
     result = subprocess.run(
-        ["adb", "-s", f"emulator-{port}", *args],
+        [_adb_binary(), "-s", f"emulator-{port}", *args],
         capture_output=True, text=True, timeout=timeout)
     return ((result.stdout or "") + (result.stderr or "")).strip()
 

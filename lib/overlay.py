@@ -53,6 +53,14 @@ def qemu_img() -> str:
 
     ASK lib/compress.py, DO NOT RESOLVE IT AGAIN HERE.
 
+    THE ROOT CAUSE OF THIS IS NOW FIXED IN THE CONTAINERFILE: it put the Android SDK on PATH
+    for every container, and the emulator ships a 2018 qemu-img. That line is deleted, so a bare
+    name would work. This still asks compress.py, because one resolution in one place is better
+    than a rule every caller has to remember - and because two of the four copies of this mistake
+    failed with a message that named neither the binary nor the disk.
+
+    The history it was written for:
+
     This module called a bare `qemu-img` in two places - `create` and `convert` - and the
     image puts /opt/android-sdk/emulator ahead of /usr/bin on PATH:
 

@@ -174,9 +174,22 @@ def main(argv: list[str]) -> int:
     # convert -c` finished 1.1 seconds before this runs (run 42772191424). An image that qemu
     # cannot read fails at BOOT, and the symptom is `No route to host` after 900 seconds, which
     # says nothing about the disk. `qemu-img check` either reads it or says why in one line.
+    # THE IMAGE IS CHECKED WITH THE SAME BINARY THAT WROTE IT.
+    #
+    # `compress.qemu_img()` resolves the one this repository compresses with. It used to matter
+    # for a reason that no longer applies: the image put the Android SDK ahead of /usr/bin on
+    # PATH, so a bare `qemu-img` was a 2018 build that answered
+    #
+    #     Unsupported qcow2 feature(s): compression type
+    #
+    # about a disk this repository had just compressed with zstd (run 42775862720). Containerfile
+    # no longer puts the SDK on PATH, so the bare name would work now too - but naming the binary
+    # is still the right thing here, because this check exists to prove the disk can be opened and
+    # it should use the same tool every other step does.
+    import compress as compresslib
     import subprocess as _sp
     try:
-        checked = _sp.run(["qemu-img", "check", args.disk],
+        checked = _sp.run([compresslib.qemu_img(), "check", args.disk],
                           capture_output=True, text=True, timeout=600)
         note(f"qemu-img check -> {checked.returncode}")
         for line in ((checked.stdout or "") + (checked.stderr or "")).splitlines()[-6:]:

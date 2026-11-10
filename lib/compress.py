@@ -56,7 +56,24 @@ def log(msg: str) -> None:
     print(f"[compress] {msg}", flush=True)
 
 
-# THE ABSOLUTE PATH IS THE FIX, NOT A STYLE CHOICE.
+# THE ABSOLUTE PATH IS THE FIX, NOT A STYLE CHOICE - AND IT IS STILL THE FIX EVEN THOUGH THE
+# REASON IT WAS NEEDED IS GONE.
+#
+# THE ROOT CAUSE WAS FIXED IN THE CONTAINERFILE. It put the Android SDK on PATH for every
+# platform's container:
+#
+#     ENV PATH="$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/emulator:$PATH"
+#
+# and the emulator ships a 2018 qemu-img, so a bare `qemu-img` in ANY bake - macOS, Windows,
+# BSD, Linux - resolved to it. That line is deleted (see Containerfile), which means the bare
+# name would work now.
+#
+# THIS RESOLUTION STAYS ANYWAY, because naming the binary a module needs is better than hoping
+# PATH agrees, and because the mistake has now been made four times independently: the Windows
+# ssh and dev stages, linux/nixos/derive.py, and lib/clean_step.py's disk check. Two of those
+# failed with a message that named neither the binary nor the disk.
+#
+# The historical note below still describes what it looked like:
 #
 # The bake image puts the Android SDK on PATH ahead of /usr/bin:
 #

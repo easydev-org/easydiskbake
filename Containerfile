@@ -218,7 +218,29 @@ RUN set -eux; \
         "platform-tools" "emulator" >/dev/null; \
     rm -rf "$ANDROID_SDK_ROOT/cmdline-tools" /root/.android/cache
 
-ENV PATH="$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/emulator:$PATH"
+# THE SDK DIRECTORIES ARE *NOT* ON PATH, AND THAT IS THE FIX FOR A WHOLE CLASS OF BUG.
+#
+# This line used to be
+#
+#     ENV PATH="$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/emulator:$PATH"
+#
+# and every container built from this image got it - macOS, Windows, BSD, Linux, all of them -
+# because they all run `ghcr.io/.../easydiskbake:latest`. The Android emulator ships its own
+# qemu-img (2.12, a 2018 build) and having it ahead of /usr/bin meant that a bare `qemu-img`
+# in ANY bake resolved to it:
+#
+#     qemu-img: Invalid parameter 'compression_type'          (2018 build, no zstd)
+#     qemu-img: Could not open '...': Unsupported qcow2 feature(s): compression type
+#
+# The second message is from run 42775862720: this repository compressed a disk with
+# /usr/bin/qemu-img (11.1, zstd), then failed to open its own output with the Android one.
+# lib/compress.py and lib/overlay.py already worked around it by naming /usr/bin/qemu-img
+# explicitly, and android/15/run_qemu.py already named the emulator's copy explicitly -
+# so the PATH entry was buying nothing and costing every other platform.
+#
+# WHAT USES THE ABSOLUTE PATHS INSTEAD: lib/emulator.py (emulator, adb), lib/build_image.py's
+# version checks, and android/15/run_qemu.py's own qemu-img. See ANDROID_SDK_ROOT below.
+ENV ANDROID_BIN="$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/emulator"
 
 RUN set -eux; \
     adb version | head -1; \

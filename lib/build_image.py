@@ -118,8 +118,11 @@ QEMU_CHECKS = [
     ["mkfs.ext4", "-V"],
     ["debugfs", "-V"],
     ["zstd", "--version"],
-    ["emulator", "-version"],
-    ["adb", "version"],
+    # BY ABSOLUTE PATH, BECAUSE THE SDK IS NO LONGER ON PATH. See the note in Containerfile:
+    # putting it there made a bare `qemu-img` resolve to the emulator's 2018 build in every
+    # platform's bake. This image (android-qemu) still has the binaries; it just names them.
+    ["/opt/android-sdk/emulator/emulator", "-version"],
+    ["/opt/android-sdk/platform-tools/adb", "version"],
     # THE NETWORK TOOLS, WHICH lib/net.py SHELLS OUT TO AND WHICH THE IMAGE WAS MISSING.
     #
     # They are installed in the same apt line as lz4, and a check that asked only
