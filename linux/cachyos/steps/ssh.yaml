@@ -211,6 +211,27 @@ steps:
   # `is-enabled` READS THE SYMLINK systemd would follow at boot, which is the only fact here that
   # outlives the process. `list-unit-files` prints the state beside the unit's own name, so a
   # failed enable is visible in the recording rather than inferred from a refused port.
+  # =======================================================================================
+  # 2. WAIT FOR THE DAEMON THAT STEP ENABLED
+  # =======================================================================================
+  #
+  # NO FIXED `wait:` - the number would be a guess about a package install and a
+  # `nixos-rebuild` that share nothing. `require_ssh` asks the only question that matters.
+  - name: wait for sshd
+    require_ssh: true
+    timeout: 600
+
+  # =======================================================================================
+  # 3. THE PROOF, AND IT IS THIS GUEST ANSWERING OVER THE FORWARDED PORT
+  # =======================================================================================
+  - name: prove the kernel over ssh
+    ssh: uname -a
+    timeout: 120
+
+  - name: prove the account over ssh
+    ssh: id -un; hostname
+    timeout: 120
+
   # THE ENABLE IS DONE AGAIN HERE, OVER SSH, BECAUSE `run:` CANNOT PROVE ANYTHING.
   #
   # Everything above this file's `run:` steps types into the guest's own terminal and reads the
@@ -228,9 +249,8 @@ steps:
   - name: enable sshd again, over ssh, where the exit status is readable
     ssh: |
       printf '%s\n' '{{ password }}' | sudo -S -p '' systemctl enable --now sshd 2>&1 | tail -3
-      test "$(systemctl is-enabled sshd)" = "enabled"
-      mount | grep -c ' / ' >/dev/null
       systemctl is-enabled sshd
+      test "$(systemctl is-enabled sshd)" = "enabled"
     timeout: 180
 
   - name: prove sshd will start at boot
@@ -252,24 +272,3 @@ steps:
   # a Debian/Fedora/Arch/suse desktop needs; FreeBSD has no sudo, and NixOS' rebuild must run
   # as root by design. This step is `optional` so on a disk where the first one worked its only
   # effect is one harmless line in the same terminal.
-
-  # =======================================================================================
-  # 2. WAIT FOR THE DAEMON THAT STEP ENABLED
-  # =======================================================================================
-  #
-  # NO FIXED `wait:` - the number would be a guess about a package install and a
-  # `nixos-rebuild` that share nothing. `require_ssh` asks the only question that matters.
-  - name: wait for sshd
-    require_ssh: true
-    timeout: 600
-
-  # =======================================================================================
-  # 3. THE PROOF, AND IT IS THIS GUEST ANSWERING OVER THE FORWARDED PORT
-  # =======================================================================================
-  - name: prove the kernel over ssh
-    ssh: uname -a
-    timeout: 120
-
-  - name: prove the account over ssh
-    ssh: id -un; hostname
-    timeout: 120
