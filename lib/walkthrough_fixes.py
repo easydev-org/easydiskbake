@@ -436,12 +436,35 @@ def main() -> int:
               "nsmb.conf" not in mac)
         check("the macos mount goes through root", "lib/hostshare.py",
               "sudo -S" in mac and "mount_smbfs" in mac)
-        check("the windows mount stores a credential, not a connection", "lib/hostshare.py",
-              "cmdkey" in win and "net use" in win)
-        # AND A DRIVE LETTER WOULD BE THE SAME MISTAKE AGAIN: it belongs to the session that
-        # made it. `net use Z:` failing to be visible one step later is run 42737785611.
+        # AND THE PASSWORD IS FED ON STDIN FROM A FILE. `printf pass | sudo -S mount_smbfs`
+        # cannot work: sudo reads that line first, mount_smbfs gets EOF, and an empty password
+        # is what the server answered NT_STATUS_WRONG_PASSWORD about for three runs.
+        check("the macos mount feeds the password from a file", "lib/hostshare.py",
+              "sudo -S" in mac and "< /tmp/.smbpw" in mac)
+        # NOT `cmdkey`, WHICH CANNOT WORK HERE AT ALL. CredWriteW answers
+        # ERROR_NO_SUCH_LOGON_SESSION for a network logon - "Network logon sessions do not have
+        # an associated credential set" - and Win32-OpenSSH hardcodes that logon type. Run
+        # 42748563969 measured it: "CMDKEY: Credentials cannot be saved from this logon session."
+        check("the windows mount does not pretend the vault is reachable", "lib/hostshare.py",
+              "cmdkey" not in win)
+        # AND A DRIVE LETTER WOULD BE A DIFFERENT MISTAKE: it belongs to the session that made
+        # it, which is run 42737785611 - 0 from `net use Z:`, "The system cannot find the path"
+        # from the very next command.
         check("the windows mount claims no drive letter", "lib/hostshare.py",
               "net use Z:" not in win)
+        # WHAT IS LEFT IS THE SESSION, with the credential supplied inline.
+        check("the windows mount supplies the credential to its own session", "lib/hostshare.py",
+              "net use" in win and "/user:" in win and "SMB_PASSWORD" in read("lib/hostshare.py"))
+        # AND THE LAUNCHER DOES THE SAME, because it runs in a session of its own at logon.
+        win_agent = bootstrap.launcher_body("windows", "172.30.0.1", "guest", "shared", "admin")
+        win_cmds = [line for line in win_agent.splitlines()
+                    if not line.lstrip().startswith("#")]
+        check("the windows launcher opens its own smb session", "lib/bootstrap.py",
+              any("net use" in line for line in win_cmds))
+        check("the windows launcher addresses the share by unc path", "lib/bootstrap.py",
+              "\\\\172.30.0.1\\shared" in win_agent)
+        check("the windows launcher has no drive letter", "lib/bootstrap.py",
+              not any("Z:" in line for line in win_cmds))
 
         check("the macos mount is a LaunchDaemon, because a user cannot mount a samba share",
               "lib/bootstrap.py",

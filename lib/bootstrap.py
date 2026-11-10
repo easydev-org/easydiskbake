@@ -164,10 +164,23 @@ if mount | grep -q " on $MOUNT "; then
     exit 0
 fi
 
+# THE PASSWORD ARRIVES ON STDIN, WHICH IS THE ONLY PLACE mount_smbfs LOOKS WITHOUT A TTY.
+#
+# Not `//user:pass@host/share` - with no terminal it ignores that and prompts, reads EOF, and
+# sends an empty password. The server answered exactly that for three runs:
+#
+#     Auth: [SMB2,(null)] user []\\[GUEST] with [NTLMv2] status [NT_STATUS_WRONG_PASSWORD]
+#
+# This daemon has no sudo in front of it to consume the line, so its own printf is enough.
+PW_FILE=/tmp/.easydiskbake-smbpw
+umask 077
+printf '%s\n' "$PASSWORD" > "$PW_FILE"
+trap 'rm -f "$PW_FILE"' EXIT
+
 i=0
 while [ "$i" -lt 30 ]; do
     i=$((i + 1))
-    if mount_smbfs -f 0666 -d 0777 "//$USER:$PASSWORD@$SERVER/$SHARE" "$MOUNT" 2>&1; then
+    if mount_smbfs -f 0666 -d 0777 "//$USER@$SERVER/$SHARE" "$MOUNT" < "$PW_FILE" 2>&1; then
         echo "mounted $SERVER/$SHARE on $MOUNT"
         exit 0
     fi
@@ -243,17 +256,32 @@ fi
 """
 
 
-def windows_launcher(host: str, user: str, share: str) -> str:
-    """The Windows launcher, reaching the share by UNC path.
+def windows_launcher(host: str, user: str, share: str, password: str = "") -> str:
+    """The Windows launcher, connecting with explicit credentials in its own session.
 
-    NO DRIVE LETTER AND NO MOUNT POINT, because Windows has neither that survives: a mapped drive
-    belongs to the logon session that made it. The credential from `cmdkey` does survive, and the
-    redirector consults it for a UNC path in any session - so the launcher addresses
-    \\\\host\\share\\bootstrap.ps1 directly.
+    WHY THE CREDENTIAL IS HERE AND NOT IN THE VAULT
 
-    THE LOG AND THE MARKER GO ON THE SHARE TOO, beside the script, so that a person looking at the
-    host sees the same three files on both families.
+    `cmdkey` cannot work from an ssh session, and the reason is Microsoft's own:
+
+        CredWriteW -> ERROR_NO_SUCH_LOGON_SESSION
+        "Network logon sessions do not have an associated credential set."
+
+    Win32-OpenSSH hardcodes LOGON32_LOGON_NETWORK_CLEARTEXT as its logon type and there is no
+    setting to change it - so a credential written from this stage could not exist, and a
+    launcher that relied on one would do nothing at the next logon.
+
+    WHAT DOES WORK IS THE SESSION. A network logon cannot REUSE a stored credential, but it can
+    OPEN an SMB session by supplying one - and the launcher runs in a session of its own, which
+    is exactly what it needs. `net use` here, then the UNC path, and both live inside this one
+    process.
+
+    THIS FILE CONTAINS THE SHARE PASSWORD. That is acceptable for the same reason the macOS
+    daemon's does: a throwaway VM on a private bridge, a share whose password is `admin`. The
+    Task Scheduler action points at this file under the user's own profile.
     """
+    win = SCRIPT["windows"]
+    # THE PATH IS BUILT HERE, WHERE A BACKSLASH IS JUST A BACKSLASH. See the note above.
+    unc = "\\\\" + host + "\\" + share
     return f"""\
 # Run the share's bootstrap.ps1 at logon, once, and leave a log beside it.
 #
@@ -262,28 +290,38 @@ def windows_launcher(host: str, user: str, share: str) -> str:
 #
 # NO PYTHON: the share is installed before the toolchain on this disk.
 #
-# NO DRIVE LETTER: a mapped drive belongs to the logon session that created it. The credential
-# this relies on is the one `cmdkey` put in the vault, which any session can use.
+# NO DRIVE LETTER AND NO VAULT. A drive letter belongs to the logon session that made it, and a
+# vault entry cannot be written from an ssh session at all - see the note in lib/bootstrap.py.
+# What this uses is the one thing a network logon can do: open an SMB session with an EXPLICIT
+# credential, inside this process, and address the share by UNC path while it lives.
 
-$Base   = '\\\\{host}\\{share}'
-$Script = "$Base\\{SCRIPT['windows']}"
-$Log    = "$Base\\{LOG}"
-$Marker = "$Base\\{MARKER}"
-$Local  = Join-Path $env:USERPROFILE '{LOG}'
+$SmbUser = '{user}'
+$SmbPass = '{password}'
+$Base    = '{unc}'
+$Script  = '{unc}\\{win}'
+$Log     = '{unc}\\{LOG}'
+$Marker  = '{unc}\\{MARKER}'
+$Local   = Join-Path $env:USERPROFILE '{LOG}'
 
 function Say($message) {{
     $line = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $message"
-    # THE SHARE'S LOG FIRST, THE LOCAL ONE SECOND: a logon hook that cannot reach the share has to
-    # be able to say so somewhere.
+    # THE SHARE'S LOG FIRST, THE LOCAL ONE SECOND: a hook that cannot reach the share has to be
+    # able to say so somewhere.
     Add-Content -Path $Log -Value $line -ErrorAction SilentlyContinue
     Add-Content -Path $Local -Value $line -ErrorAction SilentlyContinue
 }}
 
+# THE SESSION, EXPLICITLY. `/persistent:no` because nothing here survives the process, and
+# saying so keeps a stale mapping out of the user's registry for the next logon to trip over.
+net use '{unc}' $SmbPass /user:$SmbUser /persistent:no 2>&1 | Out-Null
+
 # THE SHARE MAY NOT BE REACHABLE YET. A logon trigger can fire before the network is up, so this
-# waits for the file rather than checking once.
+# waits for the file rather than checking once - and re-opens the session on the way, because the
+# first attempt can be the one that ran before there was an address.
 $found = $false
 for ($i = 0; $i -lt 60; $i++) {{
     if (Test-Path $Script) {{ $found = $true; break }}
+    if ($i % 10 -eq 9) {{ net use '{unc}' $SmbPass /user:$SmbUser /persistent:no 2>&1 | Out-Null }}
     Start-Sleep -Seconds 1
 }}
 
@@ -315,7 +353,8 @@ if ($code -eq 0) {{
 """
 
 
-def launcher_body(family: str, host: str = "", user: str = "", share: str = "") -> str:
+def launcher_body(family: str, host: str = "", user: str = "", share: str = "",
+                  password: str = "") -> str:
     """The launcher text for one family.
 
     THE SERVER IS AN ARGUMENT BECAUSE THE LAUNCHER HAS TO REACH IT ON ITS OWN. Nothing it relies
@@ -329,7 +368,7 @@ def launcher_body(family: str, host: str = "", user: str = "", share: str = "") 
     if family == "macos":
         return macos_launcher(host, user, share)
     if family == "windows":
-        return windows_launcher(host, user, share)
+        return windows_launcher(host, user, share, password)
     raise SystemExit(f"no bootstrap launcher for {family!r}; known: macos, windows")
 
 
@@ -339,12 +378,13 @@ def launcher_name(family: str) -> str:
 
 
 def write_launcher(where: str, family: str, host: str = "", user: str = "",
-                   share: str = "") -> str:
+                   share: str = "", password: str = "") -> str:
     """Write the launcher for `family` into `where`, and return its path."""
     os.makedirs(where, exist_ok=True)
     path = os.path.join(where, launcher_name(family))
     with open(path, "w") as fh:
-        fh.write(launcher_body(family, host=host, user=user, share=share))
+        fh.write(launcher_body(family, host=host, user=user, share=share,
+                               password=password))
     return path
 
 

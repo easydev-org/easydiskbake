@@ -23,7 +23,7 @@ vars:
   password:
     from: args.password
     default: admin
-  # THE SERVER, SO THE PROOF BELOW DOES NOT HARD-CODE AN ADDRESS.
+  # THE SERVER, SO THE COMMANDS BELOW DO NOT HARD-CODE AN ADDRESS.
   #
   # The default below is this container's end of the bridge: true of every run here and not
   # true of anything else. A literal typed into an ssh command would bake the CI network into
@@ -32,6 +32,13 @@ vars:
   host:
     from: args.host
     default: 172.30.0.1
+  # AND THE SHARE'S OWN ACCOUNT, for the same reason.
+  smb_user:
+    from: args.smb_user
+    default: guest
+  smb_pass:
+    from: args.smb_pass
+    default: admin
 
 ssh_user: docker
 ssh_port: 2222
@@ -42,30 +49,38 @@ steps:
     ssh_probe: echo ok
     timeout: 900
 
-  # THE SHARE. `cmdkey` puts the credential in the account's vault and the `net use` that follows
-  # only checks it works - because a CONNECTION, with or without a drive letter, belongs to the
-  # logon session that made it, and every `ssh host command` starts a new one. Runs
-  # 42737785611 and 42744898001 failed on exactly that, one on the drive letter and one on the
-  # deviceless form. The credential is the thing that survives.
+  # THE SHARE, ESTABLISHED FOR THIS SESSION ONLY.
+  #
+  # There is nothing to persist, and that took three runs to accept:
+  #
+  #     net use Z: \\host\share        0, then "The system cannot find the path"
+  #     net use   \\host\share         0, then "user name or password is incorrect"
+  #     cmdkey /add:host ...           "Credentials cannot be saved from this logon session"
+  #
+  # The last one is Microsoft's own limitation, not a setting: CredWriteW answers
+  # ERROR_NO_SUCH_LOGON_SESSION with "Network logon sessions do not have an associated credential
+  # set.", and Win32-OpenSSH hardcodes LOGON32_LOGON_NETWORK_CLEARTEXT with no way to change it.
+  #
+  # So the share is a SESSION, and the step below supplies the credential again in its own command
+  # rather than inheriting this one's - which is also exactly what the logon hook does.
   - name: mount the host share
     share_mount: true
     share_family: windows
     timeout: 180
 
-  # A MOUNT THAT REPORTED SUCCESS AND A SHARE THIS SESSION CAN ACTUALLY USE ARE DIFFERENT FACTS.
+  # THE SHARE REALLY IS READABLE AND WRITABLE, WITH THE CREDENTIAL SUPPLIED IN THIS COMMAND.
   #
-  # This runs as a SEPARATE ssh command from the mount above on purpose: if it passed only
-  # because the mount's own session was still open, it would prove nothing about the logon hook,
-  # which runs in a session of its own.
+  # Deliberately a SEPARATE ssh session from the mount above, and deliberately passing the
+  # credential again: a session established by one ssh command does not carry over, so if this
+  # passes it is because the credential works, not because a previous command left something
+  # behind. That is the same thing the logon hook has to do, so passing here is the real proof.
+  #
+  # `>nul 2>&1` on the net use because a second session reporting "already connected" is not a
+  # failure - what is being tested is the dir that follows it.
   - name: prove the share is readable and writable
-    ssh: cmd /c "dir \\{{ host }}\shared & echo written-by-this-session > \\{{ host }}\shared\from-guest.txt & type \\{{ host }}\shared\from-guest.txt"
+    ssh: |
+      cmd /c "net use \\{{ host }}\shared {{ smb_pass }} /user:{{ smb_user }} /persistent:no >nul 2>&1 & dir \\{{ host }}\shared & echo written-by-this-session > \\{{ host }}\shared\from-guest.txt & type \\{{ host }}\shared\from-guest.txt"
     timeout: 120
-
-  # AND THE CREDENTIAL ITSELF, because that is what the next logon depends on. `cmdkey /list`
-  # names the target it will answer for; a mapping would have vanished by then.
-  - name: prove the credential is in the vault
-    ssh: cmd /c "cmdkey /list | findstr /i {{ host }} & echo --- & cmdkey /list | findstr /i guest"
-    timeout: 60
 
   # THE LOGON HOOK: a Task Scheduler task at ONLOGON, running the launcher through
   # `powershell.exe -WindowStyle Hidden` so no console flashes on the desktop.
@@ -74,9 +89,10 @@ steps:
     share_family: windows
     timeout: 300
 
-  # THE TASK HAS TO EXIST AND HAS TO POINT AT THE LAUNCHER. A registration that failed prints an
+  # THE TASK HAS TO EXIST AND HAS TO NAME THE LAUNCHER. A registration that failed prints an
   # error, but a registration that succeeded and named the wrong path prints nothing until the
-  # next logon - which is a whole publish cycle away.
+  # next logon - which is a whole publish cycle away. `schtasks /Query /V` prints the action.
   - name: prove the logon task is registered
-    ssh: cmd /c "schtasks /Query /TN easydiskbake-bootstrap /FO LIST"
+    ssh: |
+      cmd /c "schtasks /Query /TN easydiskbake-bootstrap /V /FO LIST | findstr /i \"TaskName Task_To_Run Status\""
     timeout: 60

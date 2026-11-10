@@ -384,63 +384,99 @@ def mount_commands(host: str = "", user: str = "docker",
     """
     host = host or net.BRIDGE_IP
     return {
-        # macOS: THE PASSWORD GOES IN THE URL, AND THE MOUNT GOES THROUGH ROOT.
+        # macOS: THE PASSWORD GOES IN ON STDIN, BECAUSE THAT IS WHERE IT IS READ FROM.
         #
-        # TWO WRONG ANSWERS FIRST, BOTH OF THEM PLAUSIBLE, AND THE SERVER LOG KILLED BOTH:
+        # Three runs, three forms, and the space between the second and third is the answer:
         #
-        #     mount_smbfs //user:pass@host/share      77 "Authentication error"   (42744852729)
-        #     nsmb.conf + mount_smbfs -N              NT_STATUS_WRONG_PASSWORD    (42746003442)
+        #     mount_smbfs //user:pass@host/share   "Authentication error"        42744852729
+        #     nsmb.conf + mount_smbfs -N           NT_STATUS_WRONG_PASSWORD      42746003442
+        #     as root, password still in the URL   NT_STATUS_WRONG_PASSWORD      42748534325
         #
-        # The second one is the interesting failure. `nsmb.conf` HAS NO `password` KEYWORD - the
-        # man page lists addr, nbtimeout, minauth, port445, streams, soft, notify_off, kloglevel,
-        # smb_neg and signing_required, and nothing else - so `-N` found no password and sent an
-        # EMPTY one. The server said so plainly:
+        # Every one of them reached the server, and the server said the same thing each time:
         #
-        #     Auth: [SMB2,(null)] user []\[GUEST] ... with [NTLMv2] status [NT_STATUS_WRONG_PASSWORD]
+        #     Auth: [SMB2,(null)] user []\[GUEST] with [NTLMv2] status [NT_STATUS_WRONG_PASSWORD]
         #     ntlm_password_check: NTLMv2 password check failed
         #
-        # which also rules out the account: `smbclient -U guest%admin //127.0.0.1/shared` answers
-        # rc=0 against this very config, and the wrong password answers NT_STATUS_LOGON_FAILURE.
+        # An NTLMv2 response WAS sent - a real one, 214 bytes - computed from the wrong password.
+        # Not a wrong account: `smbclient -U guest%admin` against this config answers rc=0.
         #
-        # SO THE REMAINING DIFFERENCE IS WHO IS ASKING. A non-root `mount_smbfs` against Samba
-        # fails where root succeeds and where a real Windows server succeeds for either - the
-        # long-standing report is
+        # So the password never reached the client, and both earlier explanations were wrong in
+        # the same way. `nsmb.conf` cannot carry one (its man page lists no `password` keyword at
+        # all), and the URL form is documented but does not deliver it in a non-interactive
+        # session: with no tty, mount_smbfs falls back to asking on STDIN. First run: stdin was
+        # the ssh channel, so it read EOF. Second and third: `sudo -S` had ALREADY consumed the
+        # password line, so mount_smbfs again read EOF - which is why making it root changed
+        # nothing at all.
         #
-        #     "if I want to mount a Samba share from the command line, I have to either be logged
-        #      in as root ... or I have to use Finder. And all of this works fine when mounting a
-        #      share being served by Windows."
+        # WHICH MEANS THE FIX IS TO FEED IT, and to feed it INSIDE the sudo: the outer printf
+        # satisfies sudo, the inner one satisfies mount_smbfs. The URL keeps the account name,
+        # and the password is passed both ways because a client that honours the URL should not
+        # be broken by an extra line it never needs to read.
         #
-        # This server is Samba. So the mount is a root mount, and `-f 0666 -d 0777` keeps it
-        # writable for the account that is not root.
-        "macos": (f"mkdir -p ~/shared && "
-                  f"printf '%s\\n' {shlex.quote(login_password)} | sudo -S -p '' "
-                  f"mount_smbfs -f 0666 -d 0777 "
-                  f"//{SMB_USER}:{SMB_PASSWORD}@{host}/{SHARE_NAME} ~/shared"),
-        # WINDOWS: THE CREDENTIAL GOES IN THE VAULT, NOT IN A CONNECTION.
+        # ROOT IS KEPT even though it was not the cause: `/Library/LaunchDaemons` needs it for
+        # the mount daemon, so the two halves behave the same, and a mount made by one account is
+        # not a mount another has to reason about.
+        # THE PASSWORD IS FED FROM A FILE, NOT FROM THE SUDO PIPE.
         #
-        # Two runs failed here for two different reasons, and both are the same mistake in
-        # different clothes - treating a CONNECTION as if it were a CREDENTIAL.
+        # Three runs reached the server with the right account and an NTLMv2 response computed
+        # from nothing:
         #
-        #     net use Z: \\host\share          returned 0, next step: "The system cannot
-        #                                        find the path specified"          (42737785611)
-        #     net use \\host\share             returned 0, next step: "The user name or
-        #                                        password is incorrect"            (42744898001)
+        #     mount_smbfs //user:pass@host/share      77 Authentication error     42744852729
+        #     nsmb.conf + mount_smbfs -N              NT_STATUS_WRONG_PASSWORD   42746003442
+        #     as root, password in the URL            NT_STATUS_WRONG_PASSWORD   42748534325
         #
-        # A drive mapping AND a deviceless `net use` are both CONNECTIONS. A connection belongs to
-        # the logon session that made it, and every `ssh host command` starts a new one, so the
-        # next step arrives with no connection and no credential - it falls back to the current
-        # account, is refused, and reports the refusal as a bad password.
+        # The server's own log names the shape of it:
         #
-        # `cmdkey` writes to the user's credential vault instead: the redirector consults it for
-        # every UNC path it is asked for, in any session, without anything mounted. That is why
-        # this is cmdkey FIRST and `net use` second - the `net use` is only the check that the
-        # credential in the vault actually works, and the steps after it address the share by
-        # UNC path because there is nothing mounted for them to address.
-        # NO /persistent:yes, because there is no drive letter for it to persist: that switch
-        # records a DRIVE, and this connection has none. The persistence wanted here is the
-        # credential, and `cmdkey` is what provides it.
-        "windows": (f'cmdkey /add:{host} /user:{SMB_USER} /pass:{SMB_PASSWORD} && '
-                    f'net use \\\\{host}\\{SHARE_NAME}'),
+        #     Auth: [SMB2,(null)] user []\[GUEST] with [NTLMv2] status [NT_STATUS_WRONG_PASSWORD]
+        #     Got user=[GUEST] ... len1=24 len2=214
+        #
+        # A real NTLMv2 response WAS sent, computed from an empty password. The account is fine -
+        # `smbclient -U guest%admin //127.0.0.1/shared` answers rc=0 against this config, and the
+        # wrong password answers NT_STATUS_LOGON_FAILURE.
+        #
+        # With no tty there is nothing to prompt at, so the password has to arrive on STDIN - and
+        # `printf pass | sudo -S mount_smbfs` cannot deliver it, because sudo reads that line
+        # first. Feeding two lines through one pipe would depend on sudo not reading ahead, which
+        # is not something to build a stage on. A file 0600 with the password in it gives
+        # mount_smbfs a stdin that is exactly one line, whatever sudo did with its own.
+        #
+        # ROOT IS KEPT: it was not the cause of this, but /Library/LaunchDaemons needs it for the
+        # mount daemon and the two halves should behave the same.
+        "macos": (
+            f"mkdir -p ~/shared && "
+            f"umask 077 && printf '%s\\n' {shlex.quote(SMB_PASSWORD)} > /tmp/.smbpw && "
+            f"printf '%s\\n' {shlex.quote(login_password)} | sudo -S -p '' sh -c "
+            + shlex.quote(
+                f"mount_smbfs -f 0666 -d 0777 "
+                f"//{SMB_USER}@{host}/{SHARE_NAME} ~/shared < /tmp/.smbpw; "
+                "rc=$?; rm -f /tmp/.smbpw; exit $rc")
+        ),
+        # WINDOWS: THE CREDENTIAL IS SUPPLIED PER SESSION, WHICH IS THE ONLY THING THAT WORKS.
+        #
+        # Three runs, three forms, and the third one settles it:
+        #
+        #     net use Z: \\host\share           0, then "The system cannot find the path"
+        #     net use   \\host\share            0, then "user name or password is incorrect"
+        #     cmdkey /add:host /user:.. /pass:..   CMDKEY: Credentials cannot be saved from this
+        #                                         logon session.
+        #
+        # That last message is Microsoft's, and it is BY DESIGN rather than a setting:
+        #
+        #     CredWriteW -> ERROR_NO_SUCH_LOGON_SESSION
+        #     "Network logon sessions do not have an associated credential set."
+        #
+        # Win32-OpenSSH hardcodes the logon it creates to LOGON32_LOGON_NETWORK_CLEARTEXT, there
+        # is no sshd_config directive and no registry value to change it (a pull request that
+        # tried was closed unmerged, because Interactive + UAC token splitting widens an
+        # escalation surface), and the credential vault is simply not reachable from here.
+        #
+        # SO THERE IS NOTHING TO PERSIST, AND THAT IS FINE - what a network logon CAN do is open
+        # an SMB session with EXPLICIT credentials. That session dies with the ssh command, which
+        # is why the proof in windows/11/steps/share.yaml supplies the credential again in its own
+        # command rather than expecting this one's to still be there. The launcher does the same
+        # at logon, where it has a session of its own to spend.
+        "windows": (f'net use \\\\{host}\\{SHARE_NAME} {SMB_PASSWORD} /user:{SMB_USER}'
+                    f' /persistent:no'),
     }
 
 

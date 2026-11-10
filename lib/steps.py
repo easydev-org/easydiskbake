@@ -288,17 +288,25 @@ class Walk:
         ONE SOURCE IS COMPUTED RATHER THAN PASSED. `args.host` is the share's server, which is
         this container's end of the bridge - a fact about the run and not about the disk, so
         writing it into the file would bake the CI network into a published image. No stage
-        passes it, so it is filled in here from lib/net.py.
+        passes it, so it is filled in here from lib/net.py. `args.smb_user` and `args.smb_pass`
+        come from lib/hostshare.py for the same reason: the share's account is created by that
+        module, and a step that wrote its own would be a step that had to be kept in step.
         """
+        computed = {
+            "args.host": ("net", "BRIDGE_IP"),
+            "args.smb_user": ("hostshare", "SMB_USER"),
+            "args.smb_pass": ("hostshare", "SMB_PASSWORD"),
+        }
         resolved = {}
         for key, spec in self.vars.items():
             if isinstance(spec, dict):
                 source = spec.get("from") or ""
                 if overrides and source in overrides:
                     resolved[key] = overrides[source]
-                elif source == "args.host":
-                    import net
-                    resolved[key] = net.BRIDGE_IP
+                elif source in computed:
+                    import importlib
+                    module, name = computed[source]
+                    resolved[key] = str(getattr(importlib.import_module(module), name))
                 else:
                     resolved[key] = spec.get("default", "")
             else:
@@ -1080,7 +1088,8 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
         # at survives a reboot: the mount does not, and an empty ~/shared directory is a
         # perfectly convincing stand-in for a mounted one.
         local = bootstrap.write_launcher(driver.work or ".", family, host=net.BRIDGE_IP,
-                                         user=hostshare.SMB_USER, share=hostshare.SHARE_NAME)
+                                         user=hostshare.SMB_USER, share=hostshare.SHARE_NAME,
+                                         password=hostshare.SMB_PASSWORD)
         # THE LAUNCHER IS A SHELL SCRIPT ON macOS AND A .ps1 ON WINDOWS, because each disk runs
         # the language it already has - the share is installed before any toolchain.
         name = bootstrap.launcher_name(family)
