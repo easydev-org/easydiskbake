@@ -93,8 +93,17 @@ steps:
     at: [1482, 889]
     settle: 14
 
+  # THE PANE SAYS `Select Type of Installation`, NOT `Installation Options`.
+  #
+  # MEASURED ON RUN d18429b, which is the run that proved the region fix above: the terms pane
+  # was left, and the content area then read
+  #
+  #     look wait for the installation type page in (690, 225, 1560, 265): 4 words ::
+  #       select | type | of | insta
+  #
+  # every six seconds for its whole timeout. The pane was there and the marker was not.
   - name: wait for the installation type page
-    until: [installation, options]
+    until: [select, type, of, installation]
     region: [690, 225, 1560, 265]
     region_at: [1920, 1080]
     scale: 2
