@@ -618,6 +618,21 @@ class Guest:
         if acpi_first:
             self._acpi_shutdown(acpi_timeout)
 
+        # THE PROCESS HAS TO BE COLLECTED EVEN WHEN IT EXITED ON ITS OWN.
+        #
+        # `shutdown_command` and `_acpi_shutdown` both wait for `poll()`, so qemu may already be
+        # gone by here - and `killpg` on a dead process group raises ProcessLookupError, which the
+        # except below turns into an early `return`, SKIPPING the `wait()`. The result is a
+        # zombie, an unreaped exit status, and - what actually mattered - a caller that proceeds
+        # to read the disk while qemu's file descriptors are still being closed by the kernel.
+        #
+        # `qemu-img check` on that disk is what run 42763433967 died on: the share stage printed
+        # "=== the disk ===" and was killed before it could print a verdict.
+        if self.proc.poll() is not None:
+            self.proc.wait()
+            log("qemu stopped")
+            return
+
         try:
             os.killpg(os.getpgid(self.proc.pid), signal.SIGTERM)
         except ProcessLookupError:
@@ -669,6 +684,14 @@ class Guest:
         deadline = time.time() + timeout
         while time.time() < deadline:
             if self.proc.poll() is not None:
+                # REAP IT AND LET THE KERNEL FINISH CLOSING THE DISK.
+                #
+                # `poll()` returning means the process left the run queue, not that its file
+                # descriptors are closed - and the caller's next act is to open the qcow2 and
+                # read it (`smoke.check_disk`). Reading a disk whose writer has not been reaped
+                # is how run 42763433967 printed "=== the disk ===" and then died with no verdict
+                # at all: the read was still waiting on a qemu that had not finished letting go.
+                self.proc.wait()
                 log("the guest powered off")
                 return True
             time.sleep(2)

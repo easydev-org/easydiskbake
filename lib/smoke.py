@@ -120,11 +120,23 @@ def qemu_io_read(disk: str, offset: int, length: int) -> bytes:
     guest's logical bytes are not at the same file offset as the host's, and
     mounting needs privileges a container job may not have.
     """
-    result = subprocess.run(
-        ["qemu-io", "-f", "qcow2", "-c", f"read -v {offset} {length}", disk],
-        capture_output=True,
-        text=True,
-    )
+    # A TIMEOUT, BECAUSE qemu-io WAITS FOREVER ON A DISK THAT STILL HAS A WRITER.
+    #
+    # Without one, this call blocks until something outside the process kills the job: run
+    # 42763433967 printed "=== the disk ===" and then stopped, with no verdict and no error,
+    # because the first read after the guest powered off was waiting on a qemu that had not
+    # finished letting go of the image. An error that names the reason is worth more than a
+    # process that disappears.
+    try:
+        result = subprocess.run(
+            ["qemu-io", "-f", "qcow2", "-c", f"read -v {offset} {length}", disk],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        raise DiskReadError(
+            f"qemu-io did not finish reading {disk} within 120s - the image still has a writer")
     if result.returncode != 0:
         raise DiskReadError(f"qemu-io could not read {disk} at {offset}: {result.stderr.strip()}")
 

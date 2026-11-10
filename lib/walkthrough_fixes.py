@@ -307,6 +307,15 @@ def main() -> int:
               session_src.index("shutdown_command(") < session_src.index("guest.stop("))
         check("the power-button timeout is still generous", "lib/vm.py",
               "acpi_timeout: int = 300" in read("lib/vm.py"))
+        # AND THE PROCESS IS REAPED BEFORE THE DISK IS READ. `poll()` says the process left the
+        # run queue, not that its descriptors are closed - and the caller's next act is to open
+        # the qcow2. Run 42763433967 printed "=== the disk ===" and then died with no verdict.
+        check("the guest is reaped before the disk is read", "lib/vm.py",
+              "self.proc.wait()" in read("lib/vm.py"))
+        # AND A READ THAT CANNOT FINISH SAYS SO. qemu-io blocks forever on an image that still has
+        # a writer; without a timeout the job is killed and the log simply stops.
+        check("a disk read cannot hang forever", "lib/smoke.py",
+              "timeout=120" in read("lib/smoke.py"))
         # AND EVERY STAGE THAT OWNS A GUEST GOES THROUGH THE ONE STOP, so a new stage cannot
         # inherit the sixty-second kill.
         for path in ("macos/15/share.py", "macos/15/dev.py", "lib/clean_step.py"):
