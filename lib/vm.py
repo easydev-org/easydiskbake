@@ -598,7 +598,7 @@ class Guest:
     def alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
 
-    def stop(self, *, acpi_first: bool = False, acpi_timeout: int = 60) -> None:
+    def stop(self, *, acpi_first: bool = False, acpi_timeout: int = 300) -> None:
         """Stop qemu.
 
         `acpi_first` asks the guest to shut down through ACPI before the process is
@@ -608,6 +608,12 @@ class Guest:
 
         It is off by default because every other caller in this repository stops a
         machine that is going to be thrown away or a guest that has already hung.
+
+        FIVE MINUTES WHEN IT IS ON, AND THE NUMBER IS NOT ARBITRARY. Sixty was the default and
+        macOS never finished inside it: the wait expired, the process was killed, and the next
+        boot spent minutes replaying a journal - a stage whose guest had booted in thirty seconds
+        became a clean that could not reach sshd at all (run 42759838906's predecessor). A caller
+        that wants to give up sooner can say so; a caller that wants a clean disk cannot.
         """
         if self.proc is None:
             return

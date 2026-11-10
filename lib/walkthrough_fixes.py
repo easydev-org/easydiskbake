@@ -291,6 +291,18 @@ def main() -> int:
               "copy=False" in read("lib/clean_step.py"))
         check("the self-test still works on a copy", "lib/boot_machine.py",
               "copy=True" in read("lib/boot_machine.py"))
+        # AND A GUEST GETS LONG ENOUGH TO SHUT DOWN. Sixty seconds is not enough for macOS to
+        # write its logs, unmount the share and close APFS; the wait expires, the process is
+        # killed, and the NEXT boot replays a journal. That is why a clean sat at "waiting for
+        # sshd" for minutes on a disk whose stage had booted in thirty seconds.
+        check("a stop waits for the guest to close its disks", "lib/vm.py",
+              "acpi_timeout: int = 300" in read("lib/vm.py"))
+        # AND EVERY OTHER CALLER THAT ASKS FOR A GRACEFUL STOP ALLOWS THAT LONG. A caller that
+        # passes its own number can still be wrong; this is the list of them.
+        for path in ("macos/15/share.py", "lib/clean_step.py", "linux/dev.py"):
+            body = read(path)
+            check(f"{path} allows a slow shutdown", path,
+                  "acpi_timeout=300" in body or "acpi_timeout=180" in body)
     except Exception as exc:                          # noqa: BLE001
         check(f"vm_session imports ({exc})", "lib/vm_session.py", False)
 

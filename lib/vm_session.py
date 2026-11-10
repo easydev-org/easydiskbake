@@ -184,10 +184,25 @@ def _start_machine(family: str, disk: str, work: str, ssh_port: int, cpus: int,
     return guest
 
 
+# LONG ENOUGH FOR macOS TO ACTUALLY SHUT DOWN.
+#
+# The default is sixty seconds and macOS does not finish in sixty: it writes its logs, unmounts
+# the share and closes APFS. What happens when the wait expires is `kill`, and the disk then needs
+# to replay a journal on the next boot - which is why a clean from a killed disk sat at "waiting
+# for sshd" for minutes while the stage that produced it had booted in thirty seconds. Measured on
+# run 42759838906's predecessor:
+#
+#     [vm] asking the guest to shut down
+#     [vm] the guest did not power off within 60s; killing it
+#
+# lib/clean_step.py already passed 300 for exactly this reason; it was the only caller that did.
+STOP_TIMEOUT = 300
+
+
 def stop(guest, *, acpi_first: bool = True, log=print) -> None:
     """Stop the guest and the share it was using. Both, because a leftover smbd holds the port."""
     try:
-        guest.stop(acpi_first=acpi_first)
+        guest.stop(acpi_first=acpi_first, acpi_timeout=STOP_TIMEOUT)
     except Exception as exc:                                # noqa: BLE001
         log(f"stop: {exc}")
     finally:

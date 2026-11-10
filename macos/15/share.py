@@ -233,7 +233,11 @@ def main(argv: list[str]) -> int:
         ok = True
         return 0
     finally:
-        guest.stop(acpi_first=ok)
+        # 300 SECONDS, NOT THE 60 DEFAULT. macOS needs to write its logs, unmount the share and
+        # close APFS; at 60 the wait expires and the process is killed, and the disk then replays
+        # a journal on the next boot - which is why a clean of a killed disk sat at "waiting for
+        # sshd" for minutes. lib/vm_session.py's STOP_TIMEOUT carries the same number.
+        guest.stop(acpi_first=ok, acpi_timeout=300)
         if ok:
             if not smoke.check_disk(disk, root_fs="apfs"):
                 log("=== THE DISK FAILED ITS CHECKS ===")
