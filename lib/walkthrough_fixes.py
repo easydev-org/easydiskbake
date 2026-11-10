@@ -923,6 +923,20 @@ def main() -> int:
           "LEASE_FILE =" in net_src and "leasefile={LEASE_FILE}" in net_src)
     check("a restart clears the lease it is freeing", "lib/net.py",
           "os.unlink(LEASE_FILE)" in net_src)
+    # AND A CLEAN THAT IS KILLED SAYS SO, WITH THE NUMBERS THAT IDENTIFY THE SENDER.
+    #
+    # Run 42913402988's clean exited 241 - `-15 & 0xFF`, a Python process killed by SIGTERM - half
+    # a second after `the guest powered off`, and the re-compress that follows never printed. Two
+    # candidates and no way to tell them apart from a log that ends mid-sentence: the share
+    # teardown signalling a reused pid, or the runner. A handler cannot save the exit status, but
+    # it can name the signal and the ppid/pgid, which is what separates those cases.
+    clean_src = read("lib/clean_step.py")
+    check("a signalled clean reports the signal", "lib/clean_step.py",
+          "_install_signal_reporting" in clean_src and "SIGNALLED:" in clean_src)
+    # AND THE SHARE TEARDOWN REFUSES ITS OWN PID. That is the in-process candidate, and it is
+    # cheap to exclude even before a run proves which one it was.
+    check("the share teardown never signals the caller", "lib/hostshare.py",
+          "pid == os.getpid()" in read("lib/hostshare.py"))
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))

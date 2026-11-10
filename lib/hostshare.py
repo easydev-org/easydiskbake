@@ -452,6 +452,29 @@ def stop() -> None:
     except OSError:
         _unlink_pid()
         return
+    # A PID THAT NAMES *THIS* PROCESS GROUP IS NEVER KILLED.
+    #
+    # `smbd -D --no-process-group` daemonises, so a reused pid is a real possibility, and the
+    # cmdline test below accepts any string containing "smbd" - including
+    # `bash -c "... smbd ..."`, which is exactly what a wrapper script looks like. Signalling
+    # that takes the caller with it.
+    #
+    # Two things have already gone wrong this way. Run 42766989537 died with
+    # `=== SIGNALLED: SIGTERM (15) ===` two milliseconds after `the guest powered off`, and run
+    # 42913402988's clean exited 241 - which is `-15 & 0xFF`, a Python process killed by SIGTERM -
+    # half a second after the same line, with the stage's remaining work (the re-compress) never
+    # printed. Both moments are `stop()`'s.
+    #
+    # So the pid is compared against this process AND its group before anything is sent, and a
+    # match is a refusal rather than a kill.
+    if pid == os.getpid():
+        log(f"  pid {pid} is THIS PROCESS; refusing to signal it")
+        _unlink_pid()
+        return
+    # NOT A GROUP TEST. `smbd -D --no-process-group` deliberately shares our process group, so
+    # refusing a pid in it would leave every share running - the opposite failure. What has to be
+    # excluded is the caller's own pid, and anything whose cmdline is not the daemon this module
+    # wrote (the check below).
     if "smbd" not in looks_like:
         log(f"  pid {pid} is not smbd ({looks_like[:60]}); leaving it alone")
         _unlink_pid()

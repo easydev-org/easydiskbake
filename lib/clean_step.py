@@ -47,6 +47,41 @@ def log(message: str) -> None:
     print(f"[clean-step {time.strftime('%H:%M:%S')}] {message}", flush=True)
 
 
+def _install_signal_reporting() -> None:
+    """Say so when a signal arrives, and from whom, instead of dying silently.
+
+    RUN 42913402988'S CLEAN EXITED 241 WITH NO EXPLANATION. `241` is `-15 & 0xFF`: a Python
+    process killed by SIGTERM. The last line it printed was `the guest powered off`, half a second
+    before, and the work after it - the re-compress - never appeared. Two candidates (the share
+    teardown signalling a reused pid, and the runner) and no way to tell them apart from a log
+    that ends mid-sentence.
+
+    A handler cannot save the stage's exit status, but it can name the signal, and `si_pid` names
+    the sender - which is the difference between "something in this process did it" and "the
+    runner did". It re-raises with the default action so the exit status is unchanged.
+    """
+    import signal
+
+    def report(signum, frame):
+        # A HANDLER GETS THE SIGNAL NUMBER, NOT THE SENDER - so name what can be named: the
+        # parent (the runner's `bash -c`) and this process's group. If a later run prints a ppid
+        # that is not the wrapper, the signal came from inside.
+        try:
+            sender = f" ppid={os.getppid()} pid={os.getpid()} pgid={os.getpgid(0)}"
+        except OSError:
+            sender = ""
+        print(f"[clean-step] === SIGNALLED: {signal.Signals(signum).name} ({signum}) ==={sender}",
+              flush=True)
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        try:
+            signal.signal(sig, report)
+        except (OSError, ValueError):
+            pass
+
+
 # WHAT EACH SYSTEM NEEDS TO BE STARTED AND CLEANED. Only the differences, so a fourth system
 # is one entry. `clean` is passed straight to clean_disk.clean_running().
 SYSTEMS = {
@@ -76,6 +111,7 @@ SYSTEMS = {
 
 
 def main(argv: list[str]) -> int:
+    _install_signal_reporting()
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--disk", required=True, help="the qcow2 to boot, clean and keep")
     p.add_argument("--kind", required=True, choices=sorted(SYSTEMS))
