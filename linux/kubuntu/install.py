@@ -28,6 +28,8 @@ BAKE = livebake.Bakery(
     name="kubuntu",
     kernel=('casper/vmlinuz','casper/initrd'),
     cmdline='console=ttyS0,115200n8 locale=en_US.UTF-8 keyboard-configuration/layoutcode=us --- console=ttyS0,115200n8',
+    # THIS ONE IS OR-BY-NATURE: kubuntu's driver waits for the word anywhere in the frame,
+    # because its live session draws `kubuntu` across the middle of the screen.
     desktop=livebake.DesktopWhen(any_of=('kubuntu',)),
     mem_mb=4096,
 )

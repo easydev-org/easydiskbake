@@ -28,7 +28,18 @@ BAKE = livebake.Bakery(
     name="popos",
     kernel=(),
     cmdline='',
-    desktop=livebake.DesktopWhen(any_of=('install', 'pop',)),
+    # THE INSTALLER'S OWN TITLE, OR ITS FIRST PANE'S HEADING - NOT THE WORD "pop" ANYWHERE.
+    #
+    # This was simplified to ('install', 'pop') when the twelve drivers were folded into
+    # this file, and that is too loose: casper prints `Begin: Running /scripts/casper-bottom`
+    # and `Moving mount points...` while the desktop is still coming up, so the wait returned
+    # True against a TEXT CONSOLE and the walk's first step found no footer button (run
+    # 38bb031's popos-install: `=== NO FOOTER BUTTON ON THIS PANE ===` one second in).
+    #
+    # The three phrases below are the original's, measured on this image: the window title
+    # `Install Pop!_OS 24.04 LTS`, the first pane `Select a Language`, and the product name.
+    desktop=livebake.DesktopWhen(
+        any_of=('select a language', 'install pop', 'pop!_os')),
     mem_mb=4096,
 )
 

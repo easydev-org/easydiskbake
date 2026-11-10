@@ -99,15 +99,28 @@ class After:
 
 @dataclass(frozen=True)
 class DesktopWhen:
-    """Wait until the OCR of the frame contains any one of these phrases.
+    """Wait until the OCR of the frame matches. `any_of` is OR, `all_of` is AND.
 
     THE PHRASES ARE THE DESKTOP'S OWN, NOT THE INSTALLER'S. The installer's window does not
     exist until the bake opens it, so there is nothing inside it to wait for - what proves
-    the session is up is the panel, the menu button, the app grid. Each list below was
-    measured on that image's own frame.
+    the session is up is the panel, the menu button, the app grid. Each list was measured on
+    that image's own frame.
+
+    AND MATTERS FOR SOME IMAGES, WHICH IS WHY BOTH EXIST. Folding the twelve drivers into one
+    file, `mx` was written as `any_of=('mx', 'install')` - but its own driver always said
+    `if "mx" in text and "install" in text`, because MX's boot prints `MX` on the console long
+    before `MX Welcome` is drawn. OR would have matched the console. The same is true of
+    nixos, ubuntu, zorin and kubuntu, whose drivers all used `and`.
     """
 
-    any_of: tuple[str, ...]
+    any_of: tuple[str, ...] = ()
+    all_of: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if bool(self.any_of) == bool(self.all_of):  # both set, or neither
+            raise ValueError(
+                "DesktopWhen takes exactly one of `any_of` (OR) or `all_of` (AND)"
+            )
 
 
 @dataclass(frozen=True)
@@ -244,13 +257,17 @@ def _wait_for_desktop(drv, bakery: Bakery, seconds: int) -> bool:
         return True
 
     assert bakery.desktop is not None
-    wanted = [w.lower() for w in bakery.desktop.any_of]
+    spec = bakery.desktop
     log(bakery.name, "waiting for the live desktop")
     deadline = time.time() + seconds
     while time.time() < deadline:
         drv.look("boot")
         joined = drv.text()
-        if any(w in joined for w in wanted):
+        if spec.all_of:
+            hit = all(w.lower() in joined for w in spec.all_of)
+        else:
+            hit = any(w.lower() in joined for w in spec.any_of)
+        if hit:
             log(bakery.name, "the live session is up")
             return True
         time.sleep(10)

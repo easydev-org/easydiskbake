@@ -28,7 +28,8 @@ BAKE = livebake.Bakery(
     name="nixos",
     kernel=(),
     cmdline='',
-    desktop=livebake.DesktopWhen(any_of=('install', 'nixos',)),
+    # AND, for the same reason as mx: `nixos` appears on the console during boot.
+    desktop=livebake.DesktopWhen(all_of=('install', 'nixos')),
     mem_mb=8192,
 )
 

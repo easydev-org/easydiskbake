@@ -28,7 +28,8 @@ BAKE = livebake.Bakery(
     name="ubuntu",
     kernel=('casper/vmlinuz','casper/initrd'),
     cmdline='console=ttyS0,115200n8 --- console=ttyS0,115200n8',
-    desktop=livebake.DesktopWhen(any_of=('ubuntu', 'install',)),
+    # AND - ubuntu's driver waits for `welcome` AND `ubuntu`, the installer's first pane.
+    desktop=livebake.DesktopWhen(all_of=('welcome', 'ubuntu')),
     mem_mb=8192,
 )
 

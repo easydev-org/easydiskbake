@@ -28,7 +28,10 @@ BAKE = livebake.Bakery(
     name="mx",
     kernel=('antiX/vmlinuz','antiX/initrd.gz'),
     cmdline='quiet splash lang=en_US tz=UTC',
-    desktop=livebake.DesktopWhen(any_of=('mx', 'install',)),
+    # AND, NOT OR. MX's boot prints `MX` on the console long before `MX Welcome` is drawn,
+    # so any_of would have matched a text console - and the walk's first step clicks the
+    # welcome window. Its own driver always said `"mx" in text and "install" in text`.
+    desktop=livebake.DesktopWhen(all_of=('mx', 'install')),
     mem_mb=4096,
 )
 

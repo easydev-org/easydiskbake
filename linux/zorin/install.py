@@ -28,7 +28,9 @@ BAKE = livebake.Bakery(
     name="zorin",
     kernel=(),
     cmdline='',
-    desktop=livebake.DesktopWhen(any_of=('install', 'zorin',)),
+    # AND - Zorin's own driver waits for `try` AND `zorin`, which is its live session's
+    # `Try or Install Zorin OS` button. Neither word alone is the desktop.
+    desktop=livebake.DesktopWhen(all_of=('try', 'zorin')),
     mem_mb=4096,
 )
 
