@@ -63,7 +63,11 @@ BAKE = livebake.Bakery(
     # no `install` anywhere, so the old AND matched nothing and the bake waited out its budget
     # on a desktop that was already up. `welcome` and `mx` are on that frame together and on no
     # earlier one.
-    grub_key='ret',
+    # ESC, NOT RETURN. MX's own menu opens on a LANGUAGE SUBMENU with `Language` highlighted,
+    # and Return takes it - which opens a 60-row list of locales (run 82f5cf9's whole recording
+    # is that list, on `lang=en : English - English`). Escape goes back to the main menu, whose
+    # first entry is the boot this bake wants, and which then starts by itself.
+    grub_key='esc',
     # 75 s: GRUB's own 60-second timeout, then this menu's first paint.
     grub_delay=75.0,
     desktop=livebake.DesktopWhen(all_of=('welcome', 'mx')),
