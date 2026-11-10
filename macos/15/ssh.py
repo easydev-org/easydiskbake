@@ -242,7 +242,23 @@ def main(argv: list[str]) -> int:
             share="",
             overlay=run_overlay, ssh_port=args.ssh_port,
             cpus=args.cpus, mem_mb=args.mem,
-            boot_options={"assets": assets, "copy": run_overlay is None})
+            # `copy` IS "WRAP THIS DISK IN A PROTECTIVE OVERLAY", AND IT IS ALWAYS FALSE HERE.
+            #
+            # The distinction this got wrong: `run_overlay` is a diff the STAGE made and owns,
+            # and `copy` is a second one that vm_session would make on top. They are mutually
+            # exclusive by construction -
+            #
+            #     --overlay given   `disk` is already the overlay; the base is read-only and
+            #                       the stage flattens this diff into the artifact
+            #     not given         `disk` is a working copy the stage MOVED into work; it is
+            #                       the file the artifact is made from
+            #
+            # so wrapping it again sends every write into a session overlay that is deleted on
+            # the way out. Run 42831281414 did exactly that on the desktop stage: 2639 MiB
+            # written, "released the overlay (2639 MiB written this run)", and the published
+            # disk was the untouched base - which is why `macos15-desktop` had the same content
+            # digest as `macos15-setup`.
+            boot_options={"assets": assets, "copy": False})
         ok, ran = stepslib.run_file(
             WALK, "", work=work,
             user=GUEST_USER, password=os.environ.get("MACOS_PASSWORD", "admin"),

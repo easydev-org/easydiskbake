@@ -191,7 +191,9 @@ def main(argv: list[str]) -> int:
             cpus=args.cpus, mem_mb=args.mem,
             # `copy: False` WHEN THERE IS NO OVERLAY: the disk is then a working copy this stage
             # already moved into `work`, and it is the file the artifact is made from.
-            boot_options={"assets": assets, "copy": run_overlay is None})
+            # SEE macos/15/ssh.py: `copy` would wrap this disk in a SECOND overlay, and every
+            # write would then go into a diff that is deleted instead of published.
+            boot_options={"assets": assets, "copy": False})
         ok_walk, ran = stepslib.run_file(
             WALK, qmp_path="", work=work, ssh_port=args.ssh_port,
             user=SSH_USER, password=SSH_PASSWORD, release=RELEASE,

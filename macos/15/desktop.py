@@ -293,7 +293,9 @@ def main(argv: list[str]) -> int:
             share="",
             overlay=run_overlay, ssh_port=args.ssh_port,
             cpus=args.cpus, mem_mb=args.mem,
-            boot_options=dict(boot_options, copy=run_overlay is None))
+            # SEE macos/15/ssh.py: `copy` would wrap this disk in a SECOND overlay on top of
+            # the one the stage made, and the published artifact would be the untouched base.
+            boot_options=dict(boot_options, copy=False))
         ok, ran = stepslib.run_file(
             args.steps, "", work=work,
             user=args.user, password=args.password, release=args.release,

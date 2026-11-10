@@ -611,6 +611,37 @@ def main() -> int:
     except Exception as exc:                          # noqa: BLE001
         check(f"capabilities imports ({exc})", "lib/capabilities.py", False)
 
+    # AND `copy` IS NEVER DERIVED FROM `run_overlay`, BECAUSE THEY ARE THE SAME THING TWICE.
+    #
+    # `copy=True` asks vm_session for a PROTECTIVE overlay over the disk it was handed. A stage
+    # that already made one - `--overlay` - hands that diff instead and must not have a second
+    # made on top. A stage that did not make one hands a WORKING COPY it moved into work, and
+    # that file is the artifact; wrapping it protects nothing and sends every write into a
+    # session overlay that is deleted on the way out.
+    #
+    # Run 42831281414 is that second case, and it cost a whole chain:
+    #
+    #     [overlay] overlay out/session-overlay.qcow2
+    #     [overlay] released the overlay (2639 MiB written this run)
+    #     [oci-push] Exists f7bd5255e8b0 macos15-desktop.qcow2
+    #
+    # 2639 MiB of wizard answers went into a diff that was deleted, the published disk was the
+    # untouched base, and `macos15-desktop` ended up with the same content digest as
+    # `macos15-setup`. The next stage booted it and found the Setup Assistant still on screen.
+    for path in ("macos/15/ssh.py", "macos/15/dev.py", "macos/15/desktop.py"):
+        # CODE, NOT PROSE. All three files explain this mistake in a comment - that is the point
+        # of the comment - so a check for the words would fail on the documentation that warns
+        # about them.
+        body = read(path)
+        code = "\n".join(line for line in body.splitlines()
+                         if not line.lstrip().startswith("#"))
+        # TWO SPELLINGS, because the three stages are not written the same way: the two that
+        # build a dict say `"copy": False`, and desktop.py passes `boot_options=dict(...,
+        # copy=False)` into an existing mapping.
+        check(f"{path} does not wrap its own disk twice", path,
+              "run_overlay is None" not in code
+              and ('"copy": False' in code or "copy=False" in code))
+
     # AND THE FUNCTION THE CALLER'S BOOT OPTIONS GO TO HAS TO ACCEPT THEM.
     #
     # `start()` passed `boot_options=` and `_start_machine()` did not declare it, so every macOS

@@ -362,6 +362,18 @@ jobs:
           path: out/macos15-desktop.qcow2
           kind: macos15-desktop
           tag: ${{ inputs.publish_tag || 'macos15-desktop' }}
+          # THIS STAGE CHANGES THE DISK, SO ITS OUTPUT MUST DIFFER FROM ITS INPUT.
+          #
+          # Run 42831281414 published a `macos15-desktop` whose content layer digest was
+          # IDENTICAL to `macos15-setup` - eight minutes of video showing the Setup Assistant
+          # still on screen, and sixteen walkthrough steps reported green. oras reused the
+          # layer, the push said "Uploaded", and the ssh stage that pulled it booted a disk
+          # that had never been through the wizard.
+          #
+          # The tag this stage was given is the file oci-pull wrote into `out/`, and each
+          # stage writes its output under a different name - so the input can be named here
+          # without guessing.
+          distinct-from: out/${{ inputs.desktop_from || needs.setup.outputs.tag }}.qcow2
           token: ${{ github.token }}
   ssh:
     needs: desktop
@@ -470,6 +482,10 @@ jobs:
           path: out/macos15-ssh.qcow2
           kind: macos15-ssh
           tag: ${{ inputs.publish_tag || 'macos15-ssh' }}
+          # TURNING REMOTE LOGIN ON WRITES TO THE DISK - the launchd job, the sshd config, the
+          # account's access table - so an output identical to the input is a stage that did
+          # nothing and published anyway. See the longer note on the desktop push.
+          distinct-from: out/${{ inputs.ssh_from || needs.desktop.outputs.tag }}.qcow2
           token: ${{ github.token }}
   # ===========================================================================
   # SHARE - the host directory and the login hook, BEFORE any toolchain.
@@ -694,6 +710,9 @@ jobs:
           path: out/macos15-dev.qcow2
           kind: macos15-dev
           tag: ${{ inputs.publish_tag || 'macos15-dev' }}
+          # XCODE, NODE AND PYTHON ARE GIGABYTES ON THIS DISK; a dev disk identical to the ssh
+          # disk it came from is a toolchain stage that installed nothing.
+          distinct-from: out/${{ inputs.dev_from || needs.ssh.outputs.tag }}.qcow2
           token: ${{ github.token }}
 
   # ===========================================================================

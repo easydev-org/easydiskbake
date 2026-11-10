@@ -148,9 +148,9 @@ steps:
   #
   # THREE CLICKS SPACED OUT, because a click that arrives before the dialog is drawn lands on
   # wallpaper and looks identical in the log to one that dismissed it (run 42162859846).
-  - name: dismiss the keyboard assistant
-    python: ssh_panes:dismiss_keyboard_assistant
-    timeout: 180
+  - name: dismiss the overlays macOS puts up on a first login
+    python: ssh_panes:dismiss_post_login_windows
+    timeout: 240
     optional: true
 
   # AND NOW THE PASSWORD CAN BE JUDGED. This is the only step that can tell an accepted password

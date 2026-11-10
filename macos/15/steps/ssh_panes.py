@@ -149,6 +149,73 @@ def dismiss_keyboard_assistant(driver, step) -> bool:
     return True
 
 
+# THE WINDOWS THAT CAN COVER THE WHOLE SCREEN AFTER A LOGIN, AND WHY EACH IS A REAL FAILURE.
+#
+# `is_macos_desktop` reads Finder's menu bar, and that is the right test - it says what the
+# MACHINE is doing rather than how its wallpaper reflects light. But it is a test about the TOP
+# STRIP, and a sheet or a window that covers the screen takes the strip with it. Run 42831281414
+# is what that costs:
+#
+#     [steps 15:03:23] === wait for the desktop
+#     [steps 15:08:56]   === NO DESKTOP AFTER LOGGING IN ===
+#     [desktop] menu bar reads ['oe'], finder=no -> not a macos desktop
+#
+# and the last frame is a VoiceOver Tutorial sheet - "The VoiceOver Modifier", 1 of 11, a
+# "Practice the VoiceOver modifier" hint in the corner - filling the screen over a machine that
+# had logged in successfully. The password was right; the desktop was there; a window was on top
+# of it. The stage threw away a working disk for it.
+#
+# VOICEOVER IS ENABLED BY THE KEYBOARD ASSISTANT. The dialogs are the same class of problem
+# (lib/steps.py's own note about the Keyboard Setup Assistant eating the next keystroke), and
+# they arrive for the same reason: this guest has no Apple keyboard, macOS asks what to do about
+# that, and one of the answers turns on an accessibility overlay that then teaches itself.
+#
+# Escape is the documented way out of the tutorial (`Press the escape key to hear how to set up
+# your Mac with VoiceOver.` is printed on the sheet itself), and Command-Q closes the app. Both
+# are sent, because the sheet answers Escape and a full app would not.
+VOICEOVER_KEYS = ("esc", "meta_l+q", "esc")
+
+
+def dismiss_post_login_windows(driver, step) -> bool:
+    """Close the overlays macOS puts up on a first login, before judging the desktop.
+
+    THE JUDGEMENT IS `wait_for_desktop`, ONE STEP LATER, and it is a test on the menu bar. This
+    step exists so that test is about the machine rather than about which window happens to be
+    on top of it.
+
+    THE CLICKS ARE HARMLESS ON A CLEAN DESKTOP: they land on wallpaper, which is what the
+    Keyboard Setup Assistant's Quit has always relied on (see ssh.py's three-click note - one
+    click can arrive before the dialog is drawn).
+    """
+    import qmp as qmpmod
+
+    q = qmpmod.QMP(driver.qmp_path)
+    try:
+        # THE KEYBOARD ASSISTANT FIRST. It is the one that ENABLES the VoiceOver tutorial, so
+        # closing it first is what stops a second sheet from arriving behind the first.
+        import ssh as sshstage
+
+        sshstage.dismiss_keyboard_assistant(_Guest(driver.qmp_path), q=q)
+
+        # AND THEN WHATEVER ACCESSIBILITY SHEET IS ON TOP. Not conditional on recognising it:
+        # a keystroke on a desktop with no sheet is a keystroke, and the price of guessing is
+        # one lost keystroke while the price of not guessing is the whole stage.
+        for one in VOICEOVER_KEYS:
+            driver.log(f"  sending {one!r} to close a post-login overlay")
+            # `key_combo` TAKES THE KEYS AS SEPARATE ARGUMENTS - it builds the chord from held
+            # state (modifiers down, key down/up, modifiers up in reverse). Passing the string
+            # "meta_l+q" would ask QMP for a keycode that does not exist.
+            if "+" in one:
+                qmpmod.key_combo(q, *one.split("+"))
+            else:
+                qmpmod.key(q, one)
+            time.sleep(2)
+    finally:
+        q.close()
+    driver.look("post-login-windows-dismissed")
+    return True
+
+
 def wait_for_desktop(driver, step) -> bool:
     """Wait until a macOS desktop is on screen. This is the verdict on the password.
 
@@ -168,15 +235,63 @@ def wait_for_desktop(driver, step) -> bool:
     frames = _frames_dir(driver)
     started = time.time()
     driver.log(f"waiting up to {ceiling:.0f}s for the desktop")
-    while time.time() - started < ceiling:
-        # THE RECORDING, NOT `shots/`. `shots/` is where the driver leaves the handful of pictures
-        # it takes around its own clicks; the sampler writes frame-NNNN.* one per second for the
-        # whole run, and that is the sequence that has this boot's desktop in it.
-        if desktop.reached_desktop(frames, kind="macos"):
-            driver.log(f"a macOS desktop is on screen ({time.time() - started:.0f}s)")
-            return True
-        time.sleep(5)
+
+    # A WINDOW CAN ARRIVE AFTER THE DISMISSER RAN, AND DID.
+    #
+    # `dismiss the overlays macOS puts up on a first login` runs before this step, and on run
+    # 42831281414 the VoiceOver tutorial was still on screen 300 seconds later - either because
+    # it arrived late or because the sheet ignores a keystroke that lands while it is drawing.
+    # Waiting the full budget on it is a stage that fails over a machine that is logged in, so
+    # the wait retries the dismissal at intervals and says it is doing so.
+    import qmp as qmpmod
+
+    retry_every = 60.0
+    next_retry = started + retry_every
+    q = None
+    try:
+        while time.time() - started < ceiling:
+            # THE RECORDING, NOT `shots/`. `shots/` is where the driver leaves the handful of
+            # pictures it takes around its own clicks; the sampler writes frame-NNNN.* one per
+            # second for the whole run, and that is the sequence that has this boot's desktop in.
+            if desktop.reached_desktop(frames, kind="macos"):
+                driver.log(f"a macOS desktop is on screen ({time.time() - started:.0f}s)")
+                return True
+
+            if time.time() >= next_retry:
+                next_retry = time.time() + retry_every
+                driver.log(f"  still not a desktop after {time.time() - started:.0f}s; "
+                           f"closing anything on top of it and looking again")
+                try:
+                    q = q or qmpmod.QMP(driver.qmp_path)
+                    for one in VOICEOVER_KEYS:
+                        if "+" in one:
+                            qmpmod.key_combo(q, *one.split("+"))
+                        else:
+                            qmpmod.key(q, one)
+                        time.sleep(1)
+                except (OSError, RuntimeError) as exc:      # noqa: BLE001
+                    driver.log(f"  the dismissal keys could not be sent: {exc}")
+                    q = None
+            time.sleep(5)
+    finally:
+        if q is not None:
+            try:
+                q.close()
+            except Exception:                            # noqa: BLE001
+                pass
     driver.log("=== NO DESKTOP AFTER LOGGING IN ===")
     driver.log("  the password was typed and the screen still is not a desktop; check the")
     driver.log("  recording - the login window shakes its field when the password is wrong")
+    # AND SAY WHAT THE SCREEN IS, BECAUSE "not a desktop" IS NOT A DIAGNOSIS.
+    #
+    # Run 42831281414's log said only "no desktop", and the answer was on the last frame: a
+    # VoiceOver Tutorial sheet over a logged-in machine. Reading the menu bar here makes the
+    # log say which of the two failures it was - a window on top of a desktop, or a machine
+    # that never got past the login window.
+    from lib import desktop as deskmod
+
+    newest = deskmod.newest_frame(frames)
+    if newest:
+        driver.log(f"  the newest frame is {newest}")
+        deskmod.is_macos_desktop(newest, explain=True)
     return False

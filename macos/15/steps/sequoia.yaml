@@ -418,9 +418,9 @@ steps:
   # THE KEYBOARD SETUP ASSISTANT COMES UP WITH THE FIRST DESKTOP SESSION and eats the next
   # keystroke - which is how sshd was never enabled on six runs (42034256322). It is dismissed
   # here because this is where the first session begins.
-  - name: dismiss the keyboard assistant
-    python: ssh_panes:dismiss_keyboard_assistant
-    timeout: 180
+  - name: dismiss the overlays macOS puts up on a first login
+    python: ssh_panes:dismiss_post_login_windows
+    timeout: 240
     optional: true
     skip_when_unfinished: true
 
