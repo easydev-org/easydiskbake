@@ -396,6 +396,30 @@ def main() -> int:
         check("neither launcher invokes python", "lib/bootstrap.py", not invokes)
         check("the macos launcher runs under /bin/sh", "lib/bootstrap.py",
               "/bin/sh" in bootstrap.macos_plist("__X__"))
+        # EVERY SYMBOL lib/steps.py REACHES FOR HAS TO EXIST. A rewrite of this module once
+        # dropped `windows_ps1` while the macOS branch kept working, so the loss only showed up
+        # in a Windows CI run - one full cycle later. This is the cheap check that would have
+        # caught it at the desk.
+        # EVERY SYMBOL lib/steps.py REACHES FOR HAS TO EXIST. A rewrite of this module once
+        # dropped `windows_ps1` while the macOS branch kept working, so the loss only showed up
+        # in a Windows CI run - one full cycle later. This is the cheap check that would have
+        # caught it at the desk.
+        #
+        # PARSED OUT OF THE CODE, NOT THE PROSE: the comments here mention bootstrap.plist and
+        # bootstrap.py - paths and former names - and a check that read those would fail on the
+        # documentation rather than on the code.
+        import ast
+        wanted = set()
+        for node in ast.walk(ast.parse(read("lib/steps.py"))):
+            if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+                    and node.value.id == "bootstrap"):
+                wanted.add(node.attr)
+        missing = sorted(n for n in wanted if not hasattr(bootstrap, n))
+        if missing:
+            check(f"every bootstrap symbol lib/steps.py uses exists (missing: "
+                  f"{', '.join(missing)})", "lib/bootstrap.py", False)
+        else:
+            check("every bootstrap symbol lib/steps.py uses exists", "lib/bootstrap.py", True)
     except Exception as exc:                          # noqa: BLE001
         check(f"bootstrap imports ({exc})", "lib/bootstrap.py", False)
 
@@ -434,13 +458,31 @@ def main() -> int:
         # that cannot carry one.
         check("macos does not pretend nsmb.conf can hold a password", "lib/hostshare.py",
               "nsmb.conf" not in mac)
-        check("the macos mount goes through root", "lib/hostshare.py",
-              "sudo -S" in mac and "mount_smbfs" in mac)
-        # AND THE PASSWORD IS FED ON STDIN FROM A FILE. `printf pass | sudo -S mount_smbfs`
-        # cannot work: sudo reads that line first, mount_smbfs gets EOF, and an empty password
-        # is what the server answered NT_STATUS_WRONG_PASSWORD about for three runs.
-        check("the macos mount feeds the password from a file", "lib/hostshare.py",
-              "sudo -S" in mac and "< /tmp/.smbpw" in mac)
+        # AND macOS SUPPLIES NO PASSWORD AT ALL, BECAUSE IT CANNOT. Four runs reached the server
+        # with a real NTLMv2 response computed from an empty password - URL form, nsmb.conf with
+        # -N, as root, and as root reading a password file on stdin. So this client presents a
+        # name samba does not have, and `map to guest = Bad User` maps it to the guest account
+        # without checking one.
+        # THE COMMAND IS RENDERED, so this checks what it will actually say: the mapped name,
+        # and NOT the authenticated account's password.
+        check("the macos mount presents the mapped guest name", "lib/hostshare.py",
+              f"//{hostshare.MACOS_GUEST_USER}@" in mac)
+        check("the macos mount carries no password", "lib/hostshare.py",
+              hostshare.SMB_PASSWORD not in mac)
+        check("the macos client name is not the authenticated account", "lib/hostshare.py",
+              "MACOS_GUEST_USER" in read("lib/hostshare.py")
+              and 'MACOS_GUEST_USER = os.environ.get("HOSTSHARE_MACOS_USER", "macguest")'
+              in read("lib/hostshare.py"))
+        # THE SERVER HAS TO PERMIT IT, which is `map to guest` plus `guest ok` on the share.
+        conf = hostshare.config_text("/tmp/x")
+        check("the server maps an unknown name to guest", "lib/hostshare.py",
+              "map to guest = Bad User" in conf)
+        check("the share admits the mapped guest", "lib/hostshare.py",
+              "guest ok = yes" in conf)
+        # AND WINDOWS STILL AUTHENTICATES: it can supply a password, and it refuses guests.
+        check("windows still authenticates as the real account", "lib/hostshare.py",
+              f"/user:{hostshare.SMB_USER}" in win
+              and f" {hostshare.SMB_PASSWORD} " in win)
         # NOT `cmdkey`, WHICH CANNOT WORK HERE AT ALL. CredWriteW answers
         # ERROR_NO_SUCH_LOGON_SESSION for a network logon - "Network logon sessions do not have
         # an associated credential set" - and Win32-OpenSSH hardcodes that logon type. Run

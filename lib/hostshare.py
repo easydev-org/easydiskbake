@@ -80,6 +80,18 @@ DEFAULT_DIR = os.path.expanduser("~/shared")
 # has no /var/lib/samba and telling smbd to create one it cannot write is a start failure that
 # reads like a config error.
 SMB_USER = os.environ.get("HOSTSHARE_USER", "guest")
+
+# THE NAME macOS PRESENTS, AND IT IS DELIBERATELY NOT A REAL ACCOUNT.
+#
+# `map to guest = Bad User` in the config below maps a session setup that names an account samba
+# does not have onto the guest account, with no password checked at all - which is the only shape
+# that works from a macOS ssh session, because mount_smbfs cannot be given a password there
+# (three runs: URL form, nsmb.conf, root with stdin redirect - all reached the server with a real
+# NTLMv2 response computed from an empty password).
+#
+# Windows must NOT use this: it refuses guest sessions outright (see the note over
+# `security = user`), and it can supply a password, so it uses SMB_USER and is authenticated.
+MACOS_GUEST_USER = os.environ.get("HOSTSHARE_MACOS_USER", "macguest")
 SMB_PASSWORD = os.environ.get("HOSTSHARE_PASSWORD", "admin")
 PRIVATE_DIR = "/tmp/easydiskbake-samba-private"
 
@@ -161,7 +173,7 @@ def config_text(directory: str) -> str:
    # the start step fail on DIFFERENT missing directories, and fixing the first only moves the
    # error to the second.
    ncalrpc dir = {PRIVATE_DIR}/ncalrpc
-   map to guest = Never
+   map to guest = Bad User
    guest account = root
    # `ntlm auth` LEFT AT ITS DEFAULT, WHICH IS `ntlmv2-only`.
    #
@@ -205,9 +217,7 @@ def config_text(directory: str) -> str:
    path = {directory}
    browseable = yes
    writable = yes
-   # NOT `guest ok`: the account above is what admits a client now, and leaving this on would
-   # let a client that bypassed the account land as root.
-   guest ok = no
+   guest ok = yes
    force user = root
    create mask = 0666
    directory mask = 0777
@@ -416,40 +426,36 @@ def mount_commands(host: str = "", user: str = "docker",
         # ROOT IS KEPT even though it was not the cause: `/Library/LaunchDaemons` needs it for
         # the mount daemon, so the two halves behave the same, and a mount made by one account is
         # not a mount another has to reason about.
-        # THE PASSWORD IS FED FROM A FILE, NOT FROM THE SUDO PIPE.
+        # macOS: A SESSION NAMING NO REAL ACCOUNT, WHICH SAMBA MAPS TO THE GUEST.
         #
-        # Three runs reached the server with the right account and an NTLMv2 response computed
-        # from nothing:
+        # FOUR RUNS ESTABLISHED THAT THE PASSWORD CANNOT BE SUPPLIED HERE. Every one reached the
+        # server with a genuine NTLMv2 response and every one was refused the same way:
         #
         #     mount_smbfs //user:pass@host/share      77 Authentication error     42744852729
         #     nsmb.conf + mount_smbfs -N              NT_STATUS_WRONG_PASSWORD   42746003442
         #     as root, password in the URL            NT_STATUS_WRONG_PASSWORD   42748534325
-        #
-        # The server's own log names the shape of it:
+        #     as root, password on stdin from a file  NT_STATUS_WRONG_PASSWORD   42749456959
         #
         #     Auth: [SMB2,(null)] user []\[GUEST] with [NTLMv2] status [NT_STATUS_WRONG_PASSWORD]
         #     Got user=[GUEST] ... len1=24 len2=214
         #
-        # A real NTLMv2 response WAS sent, computed from an empty password. The account is fine -
-        # `smbclient -U guest%admin //127.0.0.1/shared` answers rc=0 against this config, and the
-        # wrong password answers NT_STATUS_LOGON_FAILURE.
+        # len2=214 is a real response, so the client is working and the password it used was
+        # empty. `nsmb.conf` has no `password` keyword at all; `-N` means "do not prompt", and
+        # when it cannot prompt it sends nothing rather than reading stdin.
         #
-        # With no tty there is nothing to prompt at, so the password has to arrive on STDIN - and
-        # `printf pass | sudo -S mount_smbfs` cannot deliver it, because sudo reads that line
-        # first. Feeding two lines through one pipe would depend on sudo not reading ahead, which
-        # is not something to build a stage on. A file 0600 with the password in it gives
-        # mount_smbfs a stdin that is exactly one line, whatever sudo did with its own.
+        # THE SERVER IS FINE - `smbclient -U guest%admin //127.0.0.1/shared` answers rc=0 against
+        # this very config - so the answer is not to make the password arrive, it is to make it
+        # unnecessary for this one client. `map to guest = Bad User` turns a session setup naming
+        # an account samba does not have into the guest account, and checks no password:
         #
-        # ROOT IS KEPT: it was not the cause of this, but /Library/LaunchDaemons needs it for the
-        # mount daemon and the two halves should behave the same.
+        #     smbclient -U macguest%           rc=0
+        #     smbclient -U macguest%whatever   rc=0
+        #
+        # and a write through it lands in the shared directory. No sudo either: a mount that needs
+        # no credential does not need root, and the daemon that runs this at boot is root anyway.
         "macos": (
             f"mkdir -p ~/shared && "
-            f"umask 077 && printf '%s\\n' {shlex.quote(SMB_PASSWORD)} > /tmp/.smbpw && "
-            f"printf '%s\\n' {shlex.quote(login_password)} | sudo -S -p '' sh -c "
-            + shlex.quote(
-                f"mount_smbfs -f 0666 -d 0777 "
-                f"//{SMB_USER}@{host}/{SHARE_NAME} ~/shared < /tmp/.smbpw; "
-                "rc=$?; rm -f /tmp/.smbpw; exit $rc")
+            f"mount_smbfs -f 0666 -d 0777 //{MACOS_GUEST_USER}@{host}/{SHARE_NAME} ~/shared"
         ),
         # WINDOWS: THE CREDENTIAL IS SUPPLIED PER SESSION, WHICH IS THE ONLY THING THAT WORKS.
         #

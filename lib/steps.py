@@ -1146,9 +1146,12 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
             # ONE SUDO PREFIX FOR THE WHOLE SCRIPT, built from the account's password. `-S`
             # reads it from stdin and `-p ''` stops the prompt text landing in the output.
             sudo = f"printf '%s\\n' {shlex.quote(password or 'admin')} | sudo -S -p '' "
+            # THE NAME THE DAEMON PRESENTS IS THE ONE SAMBA MAPS TO ITS GUEST, not the share's
+            # real account: mount_smbfs cannot be handed a password from here, and the mapped
+            # name needs none. See lib/hostshare.py's mount_commands.
             mount_script = bootstrap.macos_mount_script(
-                net.BRIDGE_IP, hostshare.SMB_USER, hostshare.SHARE_NAME,
-                hostshare.SMB_PASSWORD, home=f"/Users/{login or 'docker'}")
+                net.BRIDGE_IP, hostshare.MACOS_GUEST_USER, hostshare.SHARE_NAME,
+                home=f"/Users/{login or 'docker'}")
             mount_local = os.path.join(driver.work or ".", "smbmount.sh")
             with open(mount_local, "w") as fh:
                 fh.write(mount_script)

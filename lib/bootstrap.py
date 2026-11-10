@@ -129,30 +129,32 @@ def macos_mount_plist(script: str) -> str:
 """
 
 
-def macos_mount_script(host: str, user: str, share: str, password: str,
+def macos_mount_script(host: str, user: str, share: str, password: str = "",
                        home: str = "/Users/docker") -> str:
     """The script the daemon runs: wait for the network, then mount.
 
     IT RETRIES, because a daemon that runs at boot can start before this guest has an address -
     and a mount that failed once is not a mount that cannot work. `KeepAlive` restarts the job on
     a failed exit, so the retry and the daemon's supervisor point the same way.
+
+    `password` IS ACCEPTED AND NOT USED, and the signature keeps it because the caller passes the
+    share's credential and it would be misleading for that to silently vanish. The reason it is
+    unused is in the body: mount_smbfs cannot be handed a password in this position at all.
     """
     return f"""\
 #!/bin/sh
 # Mount the host share. INSTALLED BY macos/15/steps/share.yaml, run by launchd as root at boot.
 #
-# ROOT, AND THAT IS THE WHOLE REASON THIS IS A DAEMON. `mount_smbfs` against Samba refuses a
-# non-root caller with "Authentication error" while accepting the same credential from root.
+# ROOT, BECAUSE IT RUNS AT BOOT BEFORE ANYBODY HAS LOGGED IN. There is no user session to mount
+# into and no keychain to unlock, so this is where a mount that has to exist at login belongs.
 #
-# THE PASSWORD IS IN THIS FILE. That is only defensible because the file is 0600 and owned by
-# root on a throwaway VM whose share password is `admin`; there is no keychain here to use
-# instead, because a keychain belongs to a login session and this runs before there is one.
+# THE FILE CARRIES NO PASSWORD. Nothing it could do with one would work - see the note at the
+# mount below - so it does not carry one, and a published disk loses nothing if it is read.
 set -u
 
 SERVER="{host}"
 SHARE="{share}"
 USER="{user}"
-PASSWORD="{password}"
 MOUNT="{home}/shared"
 
 mkdir -p "$MOUNT"
@@ -164,23 +166,18 @@ if mount | grep -q " on $MOUNT "; then
     exit 0
 fi
 
-# THE PASSWORD ARRIVES ON STDIN, WHICH IS THE ONLY PLACE mount_smbfs LOOKS WITHOUT A TTY.
+# NO PASSWORD, BECAUSE mount_smbfs CANNOT BE GIVEN ONE HERE.
 #
-# Not `//user:pass@host/share` - with no terminal it ignores that and prompts, reads EOF, and
-# sends an empty password. The server answered exactly that for three runs:
+# Four runs reached the server with a real NTLMv2 response computed from an empty password - the
+# URL form, nsmb.conf with -N, as root, and as root reading a password file on stdin. `-N` means
+# "do not prompt"; with no tty it sends nothing rather than reading stdin.
 #
-#     Auth: [SMB2,(null)] user []\\[GUEST] with [NTLMv2] status [NT_STATUS_WRONG_PASSWORD]
-#
-# This daemon has no sudo in front of it to consume the line, so its own printf is enough.
-PW_FILE=/tmp/.easydiskbake-smbpw
-umask 077
-printf '%s\n' "$PASSWORD" > "$PW_FILE"
-trap 'rm -f "$PW_FILE"' EXIT
-
+# $USER is therefore a name samba does not have, and `map to guest = Bad User` maps it to the
+# guest account without checking a password. See lib/hostshare.py's mount_commands.
 i=0
 while [ "$i" -lt 30 ]; do
     i=$((i + 1))
-    if mount_smbfs -f 0666 -d 0777 "//$USER@$SERVER/$SHARE" "$MOUNT" < "$PW_FILE" 2>&1; then
+    if mount_smbfs -f 0666 -d 0777 "//$USER@$SERVER/$SHARE" "$MOUNT" 2>&1; then
         echo "mounted $SERVER/$SHARE on $MOUNT"
         exit 0
     fi
@@ -370,6 +367,37 @@ def launcher_body(family: str, host: str = "", user: str = "", share: str = "",
     if family == "windows":
         return windows_launcher(host, user, share, password)
     raise SystemExit(f"no bootstrap launcher for {family!r}; known: macos, windows")
+
+
+def windows_ps1(launcher: str) -> str:
+    """The script that registers the logon task.
+
+    POWERSHELL 5.1, WHICH WINDOWS 11 HAS. The task runs the launcher through
+    `powershell.exe -WindowStyle Hidden`, so no console flashes on the desktop.
+
+    `/RL LIMITED` AND NOT `/RL HIGHEST`: the hook does not need elevation - it writes to the
+    user's own profile and to the share - and a task that asked for it would fail to start for a
+    user who was not in the administrators group.
+    """
+    return f"""\
+# Register the logon task that runs the share's bootstrap once.
+#
+# INSTALLED BY windows/11/steps/share.yaml.
+#
+# NO PYTHON: the share is installed before the toolchain on this disk.
+$ErrorActionPreference = 'Stop'
+
+$launcher = "{launcher}"
+$action = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$launcher`""
+
+schtasks /Create /F /TN "{WINDOWS_TASK}" /TR $action /SC ONLOGON /RL LIMITED | Out-String | Write-Output
+
+if ($LASTEXITCODE -ne 0) {{
+    Write-Output "SCHTASKS_FAILED: $LASTEXITCODE"
+    exit 1
+}}
+Write-Output "BOOTSTRAP_TASK_REGISTERED"
+"""
 
 
 def launcher_name(family: str) -> str:
