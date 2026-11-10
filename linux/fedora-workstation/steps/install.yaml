@@ -215,7 +215,53 @@ steps:
     timeout: 900
     poll: 10
 
-  # 1. LANGUAGE. English is preselected; Next.
+  # 1. LANGUAGE. THE LIST IS ORDERED BY GEOIP AND NOTHING IS PRESELECTED IN ENGLISH.
+  #
+  # The old comment here said "English is preselected"; MEASURED ON THE SECOND BOOT OF A DISK
+  # THIS BAKE HAD JUST WRITTEN, it is not. The wizard's own frame:
+  #
+  #     Willkommen!
+  #     [ search box ]
+  #       Deutsch        Deutschland
+  #       English        United States
+  #       Espanol        Espana
+  #       Francais       France
+  #       ...
+  #       汉语  CHECKED  中国
+  #
+  # - `Willkommen!` because the LIST is ordered by geoip, and this pod's egress reports Hong
+  # Kong while the CI runners' reports the United States. SO A COORDINATE CANNOT NAME A ROW:
+  # (960,600) is `English` here and `Espanol` on a runner whose egress is Mexico, and the
+  # footer is `前进(N)` here and `Next` there.
+  #
+  # THE SEARCH BOX IS WHAT MAKES THE TARGET STABLE. Typing `English` filters the list to the
+  # English entries regardless of what the geoip answer was, so the first result is in the
+  # same place on every runner. It is the one control on this page whose position does not
+  # depend on where the machine thinks it is.
+  # SEARCH THE COUNTRY, NOT THE LANGUAGE: `united states` LEAVES EXACTLY ONE ROW.
+  #
+  # MEASURED ON THE SECOND BOOT OF A DISK THIS BAKE WROTE, both searches on the same page:
+  #
+  #     type `English`        -> English / United Kingdom   [tick]
+  #                              English / United States
+  #                              ... nine more English countries ...
+  #     type `united states`  -> English / United States   [tick]  <- one row, y 550
+  #
+  # TWO ROWS IS ALREADY TOO MANY. Filtering by language leaves a list whose FIRST row depends
+  # on the geoip answer (`United Kingdom` here), so its coordinate names a different country on
+  # a runner whose egress is elsewhere. Filtering by COUNTRY leaves one row everywhere, and
+  # `United States` is the answer this repository asks for.
+  - name: language - search for the United States
+    at: [960, 492]
+    type: united states
+    settle: 5
+
+  - name: language - pick English (United States)
+    at: [960, 550]
+    settle: 6
+
+  # THE FOOTER IS THE WIZARD'S `Next`, AND ITS LABEL IS NOW ENGLISH BECAUSE OF THE CLICK ABOVE.
+  # (1432,181) is where it sat in the English layout this file was measured against.
   - name: language
     at: [1432, 181]
     settle: 10
