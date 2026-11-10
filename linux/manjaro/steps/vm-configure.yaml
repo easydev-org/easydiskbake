@@ -192,8 +192,18 @@ steps:
       set -e
       mount | grep ' on ' | grep shared
       ls -la ~/shared | head -20
-      printf 'written-by-%s\n' "$(hostname)" > ~/shared/from-guest.txt
-      test "$(cat ~/shared/from-guest.txt)" = "written-by-{{ hostname }}"
+      # THE FILE'S CONTENT IS A FIXED WORD, NOT THE MACHINE'S NAME.
+      #
+      # It was `written-by-$(hostname)`, and that made this proof depend on a fact the step above
+      # does not control: on NixOS the kernel keeps answering its boot-time name until the next
+      # boot (a rebuild writes /etc/hostname through the store and never re-runs `hostname`), so
+      # run 4eb9322 wrote `written-by-nixos` while `--static` was correct - and this step, which
+      # is about the SHARE, failed for a reason that had nothing to do with it.
+      #
+      # What has to be proven here is that a file written on the guest is readable back through
+      # the mount. The word in it only has to come back unchanged.
+      printf 'written-by-the-guest\n' > ~/shared/from-guest.txt
+      test "$(cat ~/shared/from-guest.txt)" = "written-by-the-guest"
       echo "round trip ok"
     timeout: 120
 
