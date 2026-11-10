@@ -1,10 +1,10 @@
 # EndeavourOS: the live desktop to a written disk, as a sequence.
 #
-#     python3 lib/steps.py linux/endeavour-gui/steps/install.yaml --qmp /work/drive.sock.qmp
+#     python3 lib/steps.py linux/endeavour/steps/install.yaml --qmp /work/drive.sock.qmp
 #
 # WHAT THIS REPLACES
 #
-# linux/endeavour-gui/install.py's walk_calamares(). install.py keeps the machine, the
+# linux/endeavour/install.py's walk_calamares(). install.py keeps the machine, the
 # frames, the recording and the publish; the walk is here.
 #
 # THE ONE STEP HERE THAT IS NOT A CLICK IS THE LANGUAGE PIN, AND IT IS THE REASON THIS FILE
@@ -37,7 +37,7 @@
 # rather than timing out. It is `run` because the value it changes is inside the image, not
 # on the screen; every other step here is a measured coordinate.
 
-name: endeavour-gui - the Calamares walk
+name: endeavour - the Calamares walk
 resolution: [1920, 1080]
 
 vars:
@@ -96,7 +96,7 @@ steps:
   # =======================================================================================
   #
   # Measured on Welcome, Location, Keyboard, Bootloader, Partitions, Users and Summary of
-  # this ISO: y=873 is the same on all of them. (Contrast cachyos-gui, whose window resizes.)
+  # this ISO: y=873 is the same on all of them. (Contrast cachyos, whose window resizes.)
   #
   # The default location is kept: it is whatever Calamares detected, and the requirement is a
   # disk that installs, not a particular country.
@@ -176,7 +176,7 @@ steps:
   # never appeared in the reading. The languages made it worse: that runner's wizard was
   # SPANISH, so even the English sentences were the wrong ones to look for.
   #
-  # So the duration is the answer, which is what mint-gui and opensuse-gui already do and for
+  # So the duration is the answer, which is what mint and opensuse already do and for
   # the same reason: a graphical installer's last pane is a font and a layout that OCR reads
   # badly, and a correct disk must not depend on reading it.
   #

@@ -1,10 +1,10 @@
 # Kubuntu's Calamares: the panes that need more than one click, as a sequence.
 #
-#     python3 lib/steps.py linux/kubuntu-gui/steps/install.yaml --qmp /work/drive.sock.qmp
+#     python3 lib/steps.py linux/kubuntu/steps/install.yaml --qmp /work/drive.sock.qmp
 #
 # WHAT THIS REPLACES
 #
-# linux/kubuntu-gui/install.py's walk_calamares(). install.py keeps the machine, the kernel
+# linux/kubuntu/install.py's walk_calamares(). install.py keeps the machine, the kernel
 # and initrd, the frames, the recording and the publish.
 #
 # WHY TWO OF THE STEPS ARE `python:` AND THE REST ARE `at:`
@@ -23,7 +23,7 @@
 # form is typed into it. Both live in panes.py beside this file, which is where a measured
 # exception belongs.
 
-name: kubuntu-gui - the Calamares walk
+name: kubuntu - the Calamares walk
 resolution: [1920, 1080]
 
 vars:

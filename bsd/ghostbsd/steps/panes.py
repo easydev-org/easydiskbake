@@ -19,7 +19,7 @@ the number is not.
 
 AND IT IS NOT A LOOKUP THAT CHOOSES A CLICK. Every other step in this repository forbids
 reading the screen to decide WHERE to click, because a lookup can be talked into clicking a
-word in a paragraph - that is what stalled kubuntu-gui for eighty-seven minutes. This is the
+word in a paragraph - that is what stalled kubuntu for eighty-seven minutes. This is the
 other case: the instruction is not "go here", it is "double-click the installer's icon", and
 a coordinate cannot say that. The icon is identified by its own pixels - a saturated teal
 disc, the only one on that desktop - so the click lands on the installer whichever row it is

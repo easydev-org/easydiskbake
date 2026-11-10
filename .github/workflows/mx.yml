@@ -1,11 +1,11 @@
-name: mx-gui
+name: mx
 
 # Install MX Linux from its official Live ISO, through minstall, its graphical installer.
 #
 # MX IS NEITHER CALAMARES NOR UBIQUITY. `minstall` asks three questions, touches the disk,
 # and then asks the REST of its questions while it writes - so the driver's flow is
 # "terms, type, start, then a sequence of Next pages", not "all the questions then install".
-# linux/mx-gui/install.py has the pane-by-pane measurements.
+# linux/mx/install.py has the pane-by-pane measurements.
 #
 # THE MEDIUM IS antiX'S, NOT CASPER'S: the kernel is at `antiX/vmlinuz` and the initrd at
 # `antiX/initrd.gz`, and the driver hands both to qemu the way this image's own isolinux
@@ -41,8 +41,8 @@ on:
         description: "seconds the installer may take"
         default: "5400"
       publish_tag:
-        description: "tag to publish under; empty for linux-mint-gui"
-        default: "linux-mx-gui"
+        description: "tag to publish under; empty for linux-mint"
+        default: "linux-mx"
       boot_timeout:
         description: "stage 2: seconds the booted disk has to reach its desktop"
         default: "900"
@@ -66,7 +66,7 @@ on:
         default: true
 
 concurrency:
-  group: mx-gui-${{ github.ref }}
+  group: mx-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -98,7 +98,7 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: mx-gui-prepare
+          name: mx-prepare
           interval: "10"
           command: |
             set -euo pipefail
@@ -108,7 +108,7 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: mx-gui-iso
+          name: mx-iso
           interval: "10"
           command: |
             set -euo pipefail
@@ -121,7 +121,7 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: mx-gui-install
+          name: mx-install
           interval: "15"
           command: |
             set -euo pipefail
@@ -129,9 +129,9 @@ jobs:
             export SNAPSHOT_INTERVAL=2
             ISO=$(ls out/iso/*.iso | head -1)
             echo "iso: $ISO"
-            python3 linux/mx-gui/install.py \
+            python3 linux/mx/install.py \
               --iso "$ISO" \
-              --out out/mx-gui.qcow2 \
+              --out out/mx.qcow2 \
               --disk-size "${{ inputs.disk_size || '64G' }}" \
               --timeout "${{ inputs.install_timeout || '5400' }}"
 
@@ -139,7 +139,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mx-gui-recording
+          name: mx-recording
           path: |
             out/install.mp4
             out/last-frame.png
@@ -151,9 +151,9 @@ jobs:
         id: publish
         uses: easydev-org/easyactions/oci-push@main
         with:
-          path: out/mx-gui.qcow2
-          kind: linux-mx-gui
-          tag: ${{ inputs.publish_tag || 'linux-mx-gui' }}
+          path: out/mx.qcow2
+          kind: linux-mx
+          tag: ${{ inputs.publish_tag || 'linux-mx' }}
           token: ${{ github.token }}
 
   # ===========================================================================
@@ -203,26 +203,26 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: mx-gui-launch
+          name: mx-launch
           interval: "20"
           command: |
             set -euo pipefail
             python3 lib/launch_linux.py \
-              --tag "${{ needs.bake.outputs.tag || 'linux-mx-gui' }}" \
-              --kind mx-gui \
+              --tag "${{ needs.bake.outputs.tag || 'linux-mx' }}" \
+              --kind mx \
               --ssh skip \
-              --artifacts "out/mx-gui-launch" \
+              --artifacts "out/mx-launch" \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}"
 
       - name: keep the verdict
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mx-gui-launch
+          name: mx-launch
           path: |
-            out/mx-gui-launch/launch.txt
-            out/mx-gui-launch/console.log
-            out/mx-gui-launch/screen.png
+            out/mx-launch/launch.txt
+            out/mx-launch/console.log
+            out/mx-launch/screen.png
           if-no-files-found: warn
           retention-days: 14
 
@@ -282,14 +282,14 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: mx-gui-ssh
+          name: mx-ssh
           interval: "20"
           command: |
             set -euo pipefail
             python3 lib/ssh_step.py \
-              --tag "${{ inputs.ssh_from || needs.bake.outputs.tag || 'linux-mx-gui' }}" \
-              --kind mx-gui \
-              --artifacts out/mx-gui-ssh \
+              --tag "${{ inputs.ssh_from || needs.bake.outputs.tag || 'linux-mx' }}" \
+              --kind mx \
+              --artifacts out/mx-ssh \
               --ssh-port "${{ inputs.ssh_port || '2222' }}" \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}"
 
@@ -297,12 +297,12 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mx-gui-ssh
+          name: mx-ssh
           path: |
-            out/mx-gui-ssh/ssh.txt
-            out/mx-gui-ssh/install.mp4
-            out/mx-gui-ssh/last-frame.png
-            out/mx-gui-ssh/console.log
-            out/mx-gui-ssh/steps/*.png
+            out/mx-ssh/ssh.txt
+            out/mx-ssh/install.mp4
+            out/mx-ssh/last-frame.png
+            out/mx-ssh/console.log
+            out/mx-ssh/steps/*.png
           if-no-files-found: warn
           retention-days: 14

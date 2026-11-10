@@ -1,4 +1,4 @@
-name: kubuntu-gui
+name: kubuntu
 
 # Install Kubuntu from the official desktop ISO, through Calamares, its own graphical
 # installer.
@@ -15,14 +15,14 @@ name: kubuntu-gui
 # nine panes in a sidebar layout, versus Ubuntu's thirteen in a floating card. Nothing about
 # the two installers is shared, which is the reason for a second workflow rather than a flag.
 #
-# THE MEASUREMENTS ARE FROM A REAL RUN. Every coordinate in linux/kubuntu-gui/install.py was
+# THE MEASUREMENTS ARE FROM A REAL RUN. Every coordinate in linux/kubuntu/install.py was
 # taken by clicking it on a live ISO and looking at the next frame, including the two that are
 # not where the obvious default would put them:
 #
 #     Install Kubuntu       (1326, 841)   the welcome screen's own button, not a footer
 #     Next / Install        (1775, 1040)  bottom right, 21 px higher than Ubuntu's
 #
-# MANUAL ONLY, like ubuntu-gui: an installer driven by synthetic clicks is not something to run
+# MANUAL ONLY, like ubuntu: an installer driven by synthetic clicks is not something to run
 # on every push.
 
 on:
@@ -48,8 +48,8 @@ on:
         description: "seconds the installer may take"
         default: "5400"
       publish_tag:
-        description: "tag to publish under; empty for linux-kubuntu-gui"
-        default: "linux-kubuntu-gui"
+        description: "tag to publish under; empty for linux-kubuntu"
+        default: "linux-kubuntu"
       boot_timeout:
         description: "stage 2: seconds the booted disk has to reach its desktop"
         default: "900"
@@ -73,7 +73,7 @@ on:
         default: true
 
 concurrency:
-  group: kubuntu-gui-${{ github.ref }}
+  group: kubuntu-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -105,7 +105,7 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: kubuntu-gui-prepare
+          name: kubuntu-prepare
           interval: "10"
           command: |
             set -euo pipefail
@@ -115,7 +115,7 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: kubuntu-gui-iso
+          name: kubuntu-iso
           interval: "10"
           command: |
             set -euo pipefail
@@ -126,14 +126,14 @@ jobs:
 
       # CALAMARES, DRIVEN BY POSITION.
       #
-      # No detector per pane: kubuntu-gui's first draft of ubuntu-gui skipped five panes in a
+      # No detector per pane: kubuntu's first draft of ubuntu skipped five panes in a
       # second because the disk pane's title did not contain the word its detector looked for.
       # A fixed sequence has one failure mode and this one is a measured position.
       - name: install through Calamares
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: kubuntu-gui-install
+          name: kubuntu-install
           interval: "15"
           command: |
             set -euo pipefail
@@ -141,9 +141,9 @@ jobs:
             export SNAPSHOT_INTERVAL=2
             ISO=$(ls out/iso/*.iso | head -1)
             echo "iso: $ISO"
-            python3 linux/kubuntu-gui/install.py \
+            python3 linux/kubuntu/install.py \
               --iso "$ISO" \
-              --out out/kubuntu-gui.qcow2 \
+              --out out/kubuntu.qcow2 \
               --disk-size "${{ inputs.disk_size || '64G' }}" \
               --timeout "${{ inputs.install_timeout || '5400' }}"
 
@@ -151,7 +151,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: kubuntu-gui-recording
+          name: kubuntu-recording
           path: |
             out/install.mp4
             out/last-frame.png
@@ -163,9 +163,9 @@ jobs:
         id: publish
         uses: easydev-org/easyactions/oci-push@main
         with:
-          path: out/kubuntu-gui.qcow2
-          kind: linux-kubuntu-gui
-          tag: ${{ inputs.publish_tag || 'linux-kubuntu-gui' }}
+          path: out/kubuntu.qcow2
+          kind: linux-kubuntu
+          tag: ${{ inputs.publish_tag || 'linux-kubuntu' }}
           token: ${{ github.token }}
 
   # ===========================================================================
@@ -215,26 +215,26 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: kubuntu-gui-launch
+          name: kubuntu-launch
           interval: "20"
           command: |
             set -euo pipefail
             python3 lib/launch_linux.py \
-              --tag "${{ needs.bake.outputs.tag || 'linux-kubuntu-gui' }}" \
-              --kind kubuntu-gui \
+              --tag "${{ needs.bake.outputs.tag || 'linux-kubuntu' }}" \
+              --kind kubuntu \
               --ssh skip \
-              --artifacts "out/kubuntu-gui-launch" \
+              --artifacts "out/kubuntu-launch" \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}"
 
       - name: keep the verdict
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: kubuntu-gui-launch
+          name: kubuntu-launch
           path: |
-            out/kubuntu-gui-launch/launch.txt
-            out/kubuntu-gui-launch/console.log
-            out/kubuntu-gui-launch/screen.png
+            out/kubuntu-launch/launch.txt
+            out/kubuntu-launch/console.log
+            out/kubuntu-launch/screen.png
           if-no-files-found: warn
           retention-days: 14
 
@@ -294,14 +294,14 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: kubuntu-gui-ssh
+          name: kubuntu-ssh
           interval: "20"
           command: |
             set -euo pipefail
             python3 lib/ssh_step.py \
-              --tag "${{ inputs.ssh_from || needs.bake.outputs.tag || 'linux-kubuntu-gui' }}" \
-              --kind kubuntu-gui \
-              --artifacts out/kubuntu-gui-ssh \
+              --tag "${{ inputs.ssh_from || needs.bake.outputs.tag || 'linux-kubuntu' }}" \
+              --kind kubuntu \
+              --artifacts out/kubuntu-ssh \
               --ssh-port "${{ inputs.ssh_port || '2222' }}" \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}"
 
@@ -309,12 +309,12 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: kubuntu-gui-ssh
+          name: kubuntu-ssh
           path: |
-            out/kubuntu-gui-ssh/ssh.txt
-            out/kubuntu-gui-ssh/install.mp4
-            out/kubuntu-gui-ssh/last-frame.png
-            out/kubuntu-gui-ssh/console.log
-            out/kubuntu-gui-ssh/steps/*.png
+            out/kubuntu-ssh/ssh.txt
+            out/kubuntu-ssh/install.mp4
+            out/kubuntu-ssh/last-frame.png
+            out/kubuntu-ssh/console.log
+            out/kubuntu-ssh/steps/*.png
           if-no-files-found: warn
           retention-days: 14

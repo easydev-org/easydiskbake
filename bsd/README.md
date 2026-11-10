@@ -15,7 +15,7 @@ one that is baked.
 
 ## GhostBSD, and the loader variable it needs
 
-`bsd/ghostbsd/install.py` drives gbi the same way `linux/ubuntu-gui` drives Ubuntu's
+`bsd/ghostbsd/install.py` drives gbi the same way `linux/ubuntu` drives Ubuntu's
 installer: a fixed sequence of positions, with OCR only writing to the log. It needs one
 thing the Linux guests never did, and the reason is worth knowing before anyone "fixes"
 `lib/qmp.py` over it.

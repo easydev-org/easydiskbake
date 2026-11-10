@@ -1,6 +1,6 @@
 """Boot the NixOS graphical ISO and measure its Calamares, before a driver is written for it.
 
-    python3 linux/nixos-gui/probe.py --iso out/iso/nixos-graphical.iso --out out/probe
+    python3 linux/nixos/probe.py --iso out/iso/nixos-graphical.iso --out out/probe
 
 WHY A PROBE AND NOT AN INSTALLER
 

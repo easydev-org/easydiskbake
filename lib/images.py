@@ -165,7 +165,7 @@ LINUX = {
 # SEPARATE FROM LINUX, AND FOR THE SAME REASON BSD IS: the LINUX entries above are installer
 # media an answer file drives (subiquity, bsdinstall's script, nixos' console). These are
 # desktop live sessions with a graphical installer, driven by a measured coordinate and a
-# measured wait - see linux/*-gui/install.py. Keeping them apart means a GUI workflow can
+# measured wait - see linux/*/install.py. Keeping them apart means a GUI workflow can
 # pull its image from ghcr without ever touching a table that a file-driven bake reads.
 #
 # EVERY ENTRY CARRIES size AND sha256, both taken from the file the corresponding driver was
@@ -247,14 +247,14 @@ DESKTOP = {
     "popos-desktop": {
         # Pop!_OS 24.04 with COSMIC. Its installer is `pop-os-installer`, a GTK application
         # started from the desktop - not Calamares and not Ubiquity - so it has a driver of
-        # its own: linux/popos-gui/install.py.
+        # its own: linux/popos/install.py.
         "url": "https://iso.pop-os.org/24.04/amd64/intel/9/pop-os_24.04_amd64_intel_9.iso",
         "sha256": "894bc15abcad05839b226655121a113ad16cfbc4ada98e93e3ffb74a853fdcd4",
         "size": 2693218304,
     },
     "nixos-graphical": {
         # THE GRAPHICAL IMAGE, NOT THE MINIMAL ONE. This is the ISO that carries Calamares
-        # and a GNOME session, so it is driven the same way every other -gui bake is: a
+        # and a GNOME session, so it is driven the same way every other bake here is: a
         # measured coordinate and a measured wait, from a desktop that is already running.
         #
         # IT IS A DATED SNAPSHOT AND NOT THE CHANNEL ALIAS. `channels.nixos.org` answers 302

@@ -1,4 +1,4 @@
-name: cachyos-gui
+name: cachyos
 
 # Install CachyOS from its official Live ISO, through Calamares, its graphical installer.
 #
@@ -39,8 +39,8 @@ on:
         description: "seconds the installer may take"
         default: "5400"
       publish_tag:
-        description: "tag to publish under; empty for linux-cachyos-gui"
-        default: "linux-cachyos-gui"
+        description: "tag to publish under; empty for linux-cachyos"
+        default: "linux-cachyos"
       boot_timeout:
         description: "stage 2: seconds the booted disk has to reach its desktop"
         default: "900"
@@ -64,7 +64,7 @@ on:
         default: true
 
 concurrency:
-  group: cachyos-gui-${{ github.ref }}
+  group: cachyos-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -96,7 +96,7 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: cachyos-gui-prepare
+          name: cachyos-prepare
           interval: "10"
           command: |
             set -euo pipefail
@@ -106,7 +106,7 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: cachyos-gui-iso
+          name: cachyos-iso
           interval: "10"
           command: |
             set -euo pipefail
@@ -119,7 +119,7 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: cachyos-gui-install
+          name: cachyos-install
           interval: "15"
           command: |
             set -euo pipefail
@@ -127,9 +127,9 @@ jobs:
             export SNAPSHOT_INTERVAL=2
             ISO=$(ls out/iso/*.iso | head -1)
             echo "iso: $ISO"
-            python3 linux/cachyos-gui/install.py \
+            python3 linux/cachyos/install.py \
               --iso "$ISO" \
-              --out out/cachyos-gui.qcow2 \
+              --out out/cachyos.qcow2 \
               --disk-size "${{ inputs.disk_size || '64G' }}" \
               --timeout "${{ inputs.install_timeout || '5400' }}"
 
@@ -137,7 +137,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cachyos-gui-recording
+          name: cachyos-recording
           path: |
             out/install.mp4
             out/last-frame.png
@@ -149,9 +149,9 @@ jobs:
         id: publish
         uses: easydev-org/easyactions/oci-push@main
         with:
-          path: out/cachyos-gui.qcow2
-          kind: linux-cachyos-gui
-          tag: ${{ inputs.publish_tag || 'linux-cachyos-gui' }}
+          path: out/cachyos.qcow2
+          kind: linux-cachyos
+          tag: ${{ inputs.publish_tag || 'linux-cachyos' }}
           token: ${{ github.token }}
 
   # ===========================================================================
@@ -201,26 +201,26 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: cachyos-gui-launch
+          name: cachyos-launch
           interval: "20"
           command: |
             set -euo pipefail
             python3 lib/launch_linux.py \
-              --tag "${{ needs.bake.outputs.tag || 'linux-cachyos-gui' }}" \
-              --kind cachyos-gui \
+              --tag "${{ needs.bake.outputs.tag || 'linux-cachyos' }}" \
+              --kind cachyos \
               --ssh skip \
-              --artifacts "out/cachyos-gui-launch" \
+              --artifacts "out/cachyos-launch" \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}"
 
       - name: keep the verdict
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cachyos-gui-launch
+          name: cachyos-launch
           path: |
-            out/cachyos-gui-launch/launch.txt
-            out/cachyos-gui-launch/console.log
-            out/cachyos-gui-launch/screen.png
+            out/cachyos-launch/launch.txt
+            out/cachyos-launch/console.log
+            out/cachyos-launch/screen.png
           if-no-files-found: warn
           retention-days: 14
 
@@ -280,7 +280,7 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: cachyos-gui-ssh
+          name: cachyos-ssh
           interval: "20"
           command: |
             set -euo pipefail
@@ -298,9 +298,9 @@ jobs:
             grep -o -m1 -w -E 'avx2|avx512f|bmi2|fma' /proc/cpuinfo | sort -u | tr '\n' ' '
             echo
             python3 lib/ssh_step.py \
-              --tag "${{ inputs.ssh_from || needs.bake.outputs.tag || 'linux-cachyos-gui' }}" \
-              --kind cachyos-gui \
-              --artifacts out/cachyos-gui-ssh \
+              --tag "${{ inputs.ssh_from || needs.bake.outputs.tag || 'linux-cachyos' }}" \
+              --kind cachyos \
+              --artifacts out/cachyos-ssh \
               --ssh-port "${{ inputs.ssh_port || '2222' }}" \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}"
 
@@ -308,12 +308,12 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cachyos-gui-ssh
+          name: cachyos-ssh
           path: |
-            out/cachyos-gui-ssh/ssh.txt
-            out/cachyos-gui-ssh/install.mp4
-            out/cachyos-gui-ssh/last-frame.png
-            out/cachyos-gui-ssh/console.log
-            out/cachyos-gui-ssh/steps/*.png
+            out/cachyos-ssh/ssh.txt
+            out/cachyos-ssh/install.mp4
+            out/cachyos-ssh/last-frame.png
+            out/cachyos-ssh/console.log
+            out/cachyos-ssh/steps/*.png
           if-no-files-found: warn
           retention-days: 14

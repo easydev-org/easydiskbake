@@ -1,7 +1,7 @@
 """Install Kubuntu from its desktop ISO, through Calamares.
 
-    python3 linux/kubuntu-gui/install.py --iso out/iso/kubuntu-26.04.1-desktop-amd64.iso \
-                                         --out out/kubuntu-gui.qcow2
+    python3 linux/kubuntu/install.py --iso out/iso/kubuntu-26.04.1-desktop-amd64.iso \
+                                         --out out/kubuntu.qcow2
 
 WHY CALAMARES NEEDS ITS OWN DRIVER
 
@@ -13,7 +13,7 @@ buttons at the very bottom right. The coordinates do not transfer and neither do
 
 WHY THE SEQUENCE IS POSITIONS AND NOT DETECTORS
 
-ubuntu-gui's first version decided each pane from the words tesseract read, and on its first CI
+ubuntu's first version decided each pane from the words tesseract read, and on its first CI
 run one wrong pair of words skipped five panes in a second and then waited out the whole
 timeout. drive.py's docstring has the argument:
 
@@ -131,7 +131,7 @@ SIDEBAR_WIDTH = 190
 
 
 def log(msg: str) -> None:
-    print(f"[kubuntu-gui {time.strftime('%H:%M:%S')}] {msg}", flush=True)
+    print(f"[kubuntu {time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
 class Driver:
@@ -467,9 +467,9 @@ def main(argv: list[str]) -> int:
     work = args.work or os.path.dirname(os.path.abspath(args.out))
     os.makedirs(work, exist_ok=True)
 
-    disk = os.path.join(work, "kubuntu-gui.qcow2")
+    disk = os.path.join(work, "kubuntu.qcow2")
     # compress.run(), not a bare qemu-img: see lib/compress.py on the Android SDK's 2.12.0
-    # shadowing /usr/bin on PATH. The same mistake made the ubuntu-gui flatten fail at the
+    # shadowing /usr/bin on PATH. The same mistake made the ubuntu flatten fail at the
     # last step of a complete install.
     compress.run("create", "-f", "qcow2", disk, args.disk_size)
     log(f"disk created: {args.disk_size}")
@@ -516,7 +516,7 @@ def main(argv: list[str]) -> int:
         shape=uefi.shape_with_uefi(
             vm.Shape(cpus=args.cpus, mem_mb=args.mem, machine="q35", vga="std",
                        vnc_bind=os.environ.get("VNC_BIND", "127.0.0.1")),
-            work, "kubuntu-gui"),
+            work, "kubuntu"),
         stdout=os.path.join(work, "console.log"),
     )
 
@@ -589,9 +589,9 @@ def main(argv: list[str]) -> int:
     # A DISK WITH NOTHING ON IT IS NOT A SUCCESS, AND THAT WAS INVISIBLE.
     #
     # The caller only compresses when the walk reports success, so a driver that pressed the
-    # right coordinates on the wrong screen still "passed": endeavour-gui's run 42454363051
+    # right coordinates on the wrong screen still "passed": endeavour's run 42454363051
     # clicked the Asturian wizard's footer at the English coordinate, never left Welcome,
-    # reported success, and uploaded `out/endeavour-gui.qcow2: 0 MiB`. The workflow was
+    # reported success, and uploaded `out/endeavour.qcow2: 0 MiB`. The workflow was
     # green and the artefact was empty.
     #
     # A written system is gigabytes; an unwritten sparse image is kilobytes. The threshold

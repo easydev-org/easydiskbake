@@ -1,6 +1,6 @@
-# Stage three for linux-zorin-gui: put sshd on THIS disk and prove ssh works.
+# Stage three for linux-zorin: put sshd on THIS disk and prove ssh works.
 #
-#     python3 lib/steps.py linux/zorin-gui/steps/ssh.yaml --qmp /work/drive.sock.qmp --ssh-port 2222
+#     python3 lib/steps.py linux/zorin/steps/ssh.yaml --qmp /work/drive.sock.qmp --ssh-port 2222
 #
 # WHY THIS FILE IS PER-DISTRIBUTION AND NOT ONE SHARED WALK
 #
@@ -27,7 +27,7 @@
 # 42551299241, whose console said `BdsDxe: starting Boot0001` and then nothing - so `run:`
 # is the only way in.
 
-name: linux-zorin-gui - sshd
+name: linux-zorin - sshd
 
 resolution: [1920, 1080]
 
@@ -74,7 +74,7 @@ steps:
   # WAKE THE SCREEN BEFORE TOUCHING THE KEYBOARD.
   #
   # The launch stage's verdict for this same disk is PASS and its frame is a DESKTOP
-  # (`42519158623`, `VERDICT PASS kind=fedora-gui`) - so the session is already logged in and
+  # (`42519158623`, `VERDICT PASS kind=fedora`) - so the session is already logged in and
   # what the ssh stage photographs is the LOCK SCREEN, not a greeter. An idle lock screen
   # ignores synthetic keys until it has been woken, which is why three runs typed a password
   # at (936,628), showed the caret in the entry, and left `Password` in it.

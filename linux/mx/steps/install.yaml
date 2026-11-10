@@ -1,10 +1,10 @@
 # MX Linux: minstall's panes, as a sequence with a title wait before each click.
 #
-#     python3 lib/steps.py linux/mx-gui/steps/install.yaml --qmp /work/drive.sock.qmp
+#     python3 lib/steps.py linux/mx/steps/install.yaml --qmp /work/drive.sock.qmp
 #
 # WHAT THIS REPLACES
 #
-# linux/mx-gui/install.py's walk_minstall(). install.py keeps the machine, the frames, the
+# linux/mx/install.py's walk_minstall(). install.py keeps the machine, the frames, the
 # recording and the publish.
 #
 # MX IS NEITHER CALAMARES NOR UBIQUITY, AND ITS SHAPE IS THE REASON EVERY CLICK HERE IS
@@ -35,7 +35,7 @@
 #     General Instructions | Installation Options | Final Review and Confirmation
 #     Create a swap file   | Computer Identity    | Localization Defaults | Default User Login
 
-name: mx-gui - the minstall walk
+name: mx - the minstall walk
 resolution: [1920, 1080]
 
 vars:
@@ -188,7 +188,7 @@ steps:
 
   # AUTOLOGIN, SO THE DISK COMES UP AT A DESKTOP. The launch stage boots the disk with no
   # installer and no ssh, so a disk that stops at a greeter can only be judged by its picture.
-  # Ticking this makes the desk the thing that appears - the same reason kubuntu-gui presses
+  # Ticking this makes the desk the thing that appears - the same reason kubuntu presses
   # `Log in automatically`. Measured: the checkbox square is x=693..708, y=554..569.
   - name: autologin
     at: [700, 561]

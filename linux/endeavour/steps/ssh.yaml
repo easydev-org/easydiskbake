@@ -1,6 +1,6 @@
-# Stage three for linux-endeavour-gui: put sshd on THIS disk and prove ssh works.
+# Stage three for linux-endeavour: put sshd on THIS disk and prove ssh works.
 #
-#     python3 lib/steps.py linux/endeavour-gui/steps/ssh.yaml --qmp /work/drive.sock.qmp --ssh-port 2222
+#     python3 lib/steps.py linux/endeavour/steps/ssh.yaml --qmp /work/drive.sock.qmp --ssh-port 2222
 #
 # WHY THIS FILE IS PER-DISTRIBUTION AND NOT ONE SHARED WALK
 #
@@ -27,7 +27,7 @@
 # 42551299241, whose console said `BdsDxe: starting Boot0001` and then nothing - so `run:`
 # is the only way in.
 
-name: linux-endeavour-gui - sshd
+name: linux-endeavour - sshd
 
 resolution: [1920, 1080]
 

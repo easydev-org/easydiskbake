@@ -70,58 +70,53 @@ import vm  # noqa: E402
 # script. What differs per entry is only what its own init prints on the serial console and
 # which compositor proves a session - both of which are facts about that distribution.
 BOOTED_MARKER = {
+    "freebsd": "FreeBSD/amd64",
+    # --- the GUI bakes, one name per distribution -----------------------------------
     "ubuntu": "Ubuntu",
     "kubuntu": "Ubuntu",
-    "freebsd": "FreeBSD/amd64",
-    # --- the GUI bakes, in the order .github/workflows lists them -------------------
-    "ubuntu-gui": "Ubuntu",
-    "kubuntu-gui": "Ubuntu",
-    "fedora-gui": "Fedora",
-    "mint-gui": "Linux Mint",
-    "opensuse-gui": "openSUSE",
-    "cachyos-gui": "CachyOS",
-    "manjaro-gui": "Manjaro",
+    "fedora": "Fedora",
+    "mint": "Linux Mint",
+    "opensuse": "openSUSE",
+    "cachyos": "CachyOS",
+    "manjaro": "Manjaro",
     "ghostbsd-mate": "FreeBSD/amd64",
-    "endeavour-gui": "EndeavourOS",
-    "zorin-gui": "Zorin",
-    "mx-gui": "MX Linux",
-    "popos-gui": "Pop!_OS",
-    "nixos-gui": "NixOS",
+    "endeavour": "EndeavourOS",
+    "zorin": "Zorin",
+    "mx": "MX Linux",
+    "popos": "Pop!_OS",
+    "nixos": "NixOS",
 }
 
 # THE COMPOSITOR THAT PROVES A DESKTOP SESSION, or "" for a system that has none.
-# See configuration-desktop.nix and the two Ubuntu answer files.
 # THE COMPOSITOR THAT PROVES A DESKTOP SESSION, or "" for a system that has none.
 #
 # FreeBSD runs XFCE ON XORG - an X session, not a Wayland one - because that is what its
 # ports tree recommends for a VM and what the disk was built to run. `ALLOW_X11` below says
 # so, rather than the session check carrying a list of distributions.
 COMPOSITOR = {
-    "ubuntu": "gnome-shell",
-    "kubuntu": "kwin_wayland",
     "freebsd": "xfce4-session",
     # The GUI bakes. Each is the compositor its ISO actually runs, so a disk whose desktop
     # failed to start is told apart from one whose desktop never existed.
-    "ubuntu-gui": "gnome-shell",
-    "kubuntu-gui": "kwin_wayland",
-    "fedora-gui": "gnome-shell",
-    "mint-gui": "cinnamon",          # Cinnamon runs on Xorg
-    "opensuse-gui": "kwin_wayland",
-    "cachyos-gui": "kwin_wayland",
-    "manjaro-gui": "kwin_wayland",
+    "ubuntu": "gnome-shell",
+    "kubuntu": "kwin_wayland",
+    "fedora": "gnome-shell",
+    "mint": "cinnamon",          # Cinnamon runs on Xorg
+    "opensuse": "kwin_wayland",
+    "cachyos": "kwin_wayland",
+    "manjaro": "kwin_wayland",
     "ghostbsd-mate": "mate-session",  # MATE on Xorg
-    "endeavour-gui": "kwin_wayland",
-    "zorin-gui": "gnome-shell",
-    "mx-gui": "xfce4-session",        # Xfce on Xorg
-    "popos-gui": "cosmic-comp",
-    "nixos-gui": "gnome-shell",
+    "endeavour": "kwin_wayland",
+    "zorin": "gnome-shell",
+    "mx": "xfce4-session",        # Xfce on Xorg
+    "popos": "cosmic-comp",
+    "nixos": "gnome-shell",
 }
 
 # DISKS WHOSE DESKTOP IS AN X SESSION BY DESIGN. Only FreeBSD, for the reason above.
 # has no display manager at all and its entry is "" so this is never consulted for it.
 # DISKS WHOSE DESKTOP IS AN X SESSION BY DESIGN. The three that ship an X desktop - Mint's
 # Cinnamon, GhostBSD's MATE and MX's Xfce - plus FreeBSD, for the reason above.
-ALLOW_X11 = {"freebsd", "mint-gui", "ghostbsd-mate", "mx-gui"}
+ALLOW_X11 = {"freebsd", "mint", "ghostbsd-mate", "mx"}
 
 
 def log(message: str) -> None:
@@ -386,7 +381,7 @@ def main(argv: list[str]) -> int:
     # bake did not keep it.
     # ANY .vars BESIDE THE DISK, because the bake names it after the WORK directory, not after
     # the kind: Zorin's install left `zt.vars` next to `zt/d.qcow2`, and looking for
-    # `zorin-gui.vars` missed it - measured, the firmware fell through to PXE and the disk was
+    # `zorin.vars` missed it - measured, the firmware fell through to PXE and the disk was
     # never read. A directory holding one disk and one vars image holds that disk's NVRAM.
     sibling = None
     disk_dir = os.path.dirname(disk)

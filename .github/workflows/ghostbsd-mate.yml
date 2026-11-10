@@ -164,7 +164,7 @@ jobs:
         with:
           path: out/ghostbsd-mate.qcow2
           kind: bsd-ghostbsd-mate
-          tag: ${{ inputs.publish_tag || 'bsd-ghostbsd-gui' }}
+          tag: ${{ inputs.publish_tag || 'bsd-ghostbsd-mate' }}
           token: ${{ github.token }}
 
   # ===========================================================================

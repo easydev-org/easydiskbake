@@ -1,10 +1,10 @@
 # Zorin OS: Ubiquity's panes, as a sequence.
 #
-#     python3 lib/steps.py linux/zorin-gui/steps/install.yaml --qmp /work/drive.sock.qmp
+#     python3 lib/steps.py linux/zorin/steps/install.yaml --qmp /work/drive.sock.qmp
 #
 # WHAT THIS REPLACES
 #
-# linux/zorin-gui/install.py's walk_ubiquity() and start_the_installer(). install.py keeps
+# linux/zorin/install.py's walk_ubiquity() and start_the_installer(). install.py keeps
 # the machine, the frames, the recording and the publish.
 #
 # NOTHING HERE IS READ TO DECIDE ANYTHING. The screen is read after each step and the reading
@@ -22,7 +22,7 @@
 #
 # A translated wizard is not a broken one, and the coordinate is the same in every language.
 
-name: zorin-gui - the ubiquity walk
+name: zorin - the ubiquity walk
 resolution: [1920, 1080]
 
 vars:
@@ -178,7 +178,7 @@ steps:
   #
   # The disk is written from here, and this ISO's completion is not a word this walk can
   # rely on. Forty minutes is the measured thirty with room for a slower runner - the same
-  # number mint-gui uses for the same reason and the same family of installer.
+  # number mint uses for the same reason and the same family of installer.
   #
   # THE KEEP-ALIVE CLICK IS PART OF THE WAIT: this is a session whose screen saver races the
   # installer, and the `run` step above is the other half of that defence.

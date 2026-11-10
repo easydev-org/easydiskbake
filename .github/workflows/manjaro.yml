@@ -1,4 +1,4 @@
-name: manjaro-gui
+name: manjaro
 
 # Install Manjaro Linux 26.1.0 KDE from its official Live ISO, through Calamares, its graphical installer.
 #
@@ -42,8 +42,8 @@ on:
         description: "seconds the installer may take"
         default: "5400"
       publish_tag:
-        description: "tag to publish under; empty for linux-manjaro-gui"
-        default: "linux-manjaro-gui"
+        description: "tag to publish under; empty for linux-manjaro"
+        default: "linux-manjaro"
       boot_timeout:
         description: "stage 2: seconds the booted disk has to reach its desktop"
         default: "900"
@@ -67,7 +67,7 @@ on:
         default: true
 
 concurrency:
-  group: manjaro-gui-${{ github.ref }}
+  group: manjaro-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -99,7 +99,7 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: manjaro-gui-prepare
+          name: manjaro-prepare
           interval: "10"
           command: |
             set -euo pipefail
@@ -109,7 +109,7 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: manjaro-gui-iso
+          name: manjaro-iso
           interval: "10"
           command: |
             set -euo pipefail
@@ -122,7 +122,7 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: manjaro-gui-install
+          name: manjaro-install
           interval: "15"
           command: |
             set -euo pipefail
@@ -130,9 +130,9 @@ jobs:
             export SNAPSHOT_INTERVAL=2
             ISO=$(ls out/iso/*.iso | head -1)
             echo "iso: $ISO"
-            python3 linux/manjaro-gui/install.py \
+            python3 linux/manjaro/install.py \
               --iso "$ISO" \
-              --out out/manjaro-gui.qcow2 \
+              --out out/manjaro.qcow2 \
               --disk-size "${{ inputs.disk_size || '64G' }}" \
               --timeout "${{ inputs.install_timeout || '5400' }}"
 
@@ -140,7 +140,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: manjaro-gui-recording
+          name: manjaro-recording
           path: |
             out/install.mp4
             out/last-frame.png
@@ -152,9 +152,9 @@ jobs:
         id: publish
         uses: easydev-org/easyactions/oci-push@main
         with:
-          path: out/manjaro-gui.qcow2
-          kind: linux-manjaro-gui
-          tag: ${{ inputs.publish_tag || 'linux-manjaro-gui' }}
+          path: out/manjaro.qcow2
+          kind: linux-manjaro
+          tag: ${{ inputs.publish_tag || 'linux-manjaro' }}
           token: ${{ github.token }}
 
   # ===========================================================================
@@ -204,26 +204,26 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: manjaro-gui-launch
+          name: manjaro-launch
           interval: "20"
           command: |
             set -euo pipefail
             python3 lib/launch_linux.py \
-              --tag "${{ needs.bake.outputs.tag || 'linux-manjaro-gui' }}" \
-              --kind manjaro-gui \
+              --tag "${{ needs.bake.outputs.tag || 'linux-manjaro' }}" \
+              --kind manjaro \
               --ssh skip \
-              --artifacts "out/manjaro-gui-launch" \
+              --artifacts "out/manjaro-launch" \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}"
 
       - name: keep the verdict
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: manjaro-gui-launch
+          name: manjaro-launch
           path: |
-            out/manjaro-gui-launch/launch.txt
-            out/manjaro-gui-launch/console.log
-            out/manjaro-gui-launch/screen.png
+            out/manjaro-launch/launch.txt
+            out/manjaro-launch/console.log
+            out/manjaro-launch/screen.png
           if-no-files-found: warn
           retention-days: 14
 
@@ -283,14 +283,14 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: manjaro-gui-ssh
+          name: manjaro-ssh
           interval: "20"
           command: |
             set -euo pipefail
             python3 lib/ssh_step.py \
-              --tag "${{ inputs.ssh_from || needs.bake.outputs.tag || 'linux-manjaro-gui' }}" \
-              --kind manjaro-gui \
-              --artifacts out/manjaro-gui-ssh \
+              --tag "${{ inputs.ssh_from || needs.bake.outputs.tag || 'linux-manjaro' }}" \
+              --kind manjaro \
+              --artifacts out/manjaro-ssh \
               --ssh-port "${{ inputs.ssh_port || '2222' }}" \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}"
 
@@ -298,12 +298,12 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: manjaro-gui-ssh
+          name: manjaro-ssh
           path: |
-            out/manjaro-gui-ssh/ssh.txt
-            out/manjaro-gui-ssh/install.mp4
-            out/manjaro-gui-ssh/last-frame.png
-            out/manjaro-gui-ssh/console.log
-            out/manjaro-gui-ssh/steps/*.png
+            out/manjaro-ssh/ssh.txt
+            out/manjaro-ssh/install.mp4
+            out/manjaro-ssh/last-frame.png
+            out/manjaro-ssh/console.log
+            out/manjaro-ssh/steps/*.png
           if-no-files-found: warn
           retention-days: 14

@@ -110,7 +110,7 @@ def type_text(q, text: str, per_char: float = 0.15, hold: float = 0.02) -> list[
     the shift RELEASE often enough that the modifier stayed down - and from that character on
     every keystroke arrived shifted.
 
-    Measured on run 42573056391's own recording (mx-gui), the command this stage typed:
+    Measured on run 42573056391's own recording (mx), the command this stage typed:
 
         export DEBIAN_FRONTEND=NONINTERACTIVE; apt-get update && apt-get install ...
         export DEBIAN_FRONTEND+NONINTERACTIVE; APT_GET UPDATE && apt-get install ...

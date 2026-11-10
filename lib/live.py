@@ -345,7 +345,7 @@ class LiveArtifacts:
             # produces a recording at 640x480 - the whole install, in a picture the size of
             # the boot screen.
             #
-            # That is exactly what ubuntu-gui's run 42359740623 uploaded: 542 frames, 542
+            # That is exactly what ubuntu's run 42359740623 uploaded: 542 frames, 542
             # seconds, 640x480, while the last-frame.png beside it in the same artifact was
             # 1920x1080. Nothing failed and nothing warned; the video was simply the size of
             # frame zero, which was SeaBIOS.

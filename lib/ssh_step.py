@@ -1,11 +1,11 @@
 """Stage three: boot a finished desktop disk, put sshd on it, and prove ssh works.
 
-    python3 lib/ssh_step.py --disk out/popos-gui.qcow2 --kind popos-gui
-    python3 lib/ssh_step.py --tag linux-mint-gui --kind mint-gui --artifacts out/ssh
+    python3 lib/ssh_step.py --disk out/popos.qcow2 --kind popos
+    python3 lib/ssh_step.py --tag linux-mint --kind mint --artifacts out/ssh
 
 WHY THIS STAGE EXISTS
 
-A `-gui` disk is installed by clicking through a desktop installer, and that installer does
+A disk here is installed by clicking through a desktop installer, and that installer does
 not install an sshd. Measured on the images this repository bakes:
 
     NixOS        calamares-nixos-extensions' own template ships
@@ -35,11 +35,11 @@ WHAT IT INSTALLS IS NOT DECIDED HERE
 
     <distro>/steps/ssh.yaml is the whole of that distribution's ssh install:
 
-        linux/ubuntu-gui/steps/ssh.yaml     apt-get install openssh-server
-        linux/cachyos-gui/steps/ssh.yaml    pacman -S openssh, `sshd` not `ssh`
-        linux/fedora-gui/...                dnf, plus firewall-cmd --add-service=ssh
-        linux/opensuse-gui/...              zypper, plus firewalld
-        linux/nixos-gui/...                 append the attribute, nixos-rebuild switch
+        linux/ubuntu/steps/ssh.yaml     apt-get install openssh-server
+        linux/cachyos/steps/ssh.yaml    pacman -S openssh, `sshd` not `ssh`
+        linux/fedora/...                dnf, plus firewall-cmd --add-service=ssh
+        linux/opensuse/...              zypper, plus firewalld
+        linux/nixos/...                 append the attribute, nixos-rebuild switch
         bsd/ghostbsd/steps/ssh.yaml         sysrc sshd_enable=YES, service sshd start
 
     Thirteen distributions whose package manager, unit name, firewall and even whether sshd
@@ -76,8 +76,8 @@ import vm       # noqa: E402
 # Every fact about HOW ssh is installed lives in that distribution's steps/ssh.yaml. This is
 # only so `--kind` refuses a typo with the real names, which is what argparse is for.
 KINDS = (
-    "ubuntu-gui", "kubuntu-gui", "zorin-gui", "mint-gui", "cachyos-gui", "manjaro-gui",
-    "mx-gui", "opensuse-gui", "endeavour-gui", "fedora-gui", "popos-gui", "nixos-gui",
+    "ubuntu", "kubuntu", "zorin", "mint", "cachyos", "manjaro",
+    "mx", "opensuse", "endeavour", "fedora", "popos", "nixos",
     "ghostbsd-mate",
 )
 
@@ -252,7 +252,7 @@ def main(argv: list[str]) -> int:
         #
         # `snapshots.py` screendumps on an interval into `frames/`, and `lib/live.py` ffmpegs
         # those frames into `install.mp4` and keeps `last-frame.png` current. macos/15/bake.py
-        # has done this since its first stage, and all twelve -gui bakes do it too.
+        # has done this since its first stage, and all twelve bakes do it too.
         #
         # THIS STAGE DID NOT, AND THAT IS WHY ITS FIRST THREE FAILURES WERE UNEXPLAINED. The
         # question after `sshd did not answer` is always "what was on the screen" - an empty

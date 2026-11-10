@@ -1,4 +1,4 @@
-"""The three measured exceptions in kubuntu-gui's walk, kept beside the YAML that names them.
+"""The three measured exceptions in kubuntu's walk, kept beside the YAML that names them.
 
 WHY THESE THREE ARE PYTHON AND THE OTHER TWENTY STEPS ARE NOT
 

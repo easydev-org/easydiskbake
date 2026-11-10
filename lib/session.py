@@ -94,7 +94,7 @@ def ssh(port: int, command: str, timeout: int = 30, host: str | None = None,
     derives the login name from the full name, so its disk carries `dockeruser` while every
     other image here carries the name it was given. That is one distribution's fact, so it
     travels with that distribution's file: the walk's `ssh_user` var reaches the `ssh:` steps
-    through this parameter. See linux/popos-gui/steps/ssh.yaml.
+    through this parameter. See linux/popos/steps/ssh.yaml.
 
     NO KEY, NO TERMINAL. The password is the one every image here uses, and sshpass is
     what supplies it - there is no tty to prompt at.

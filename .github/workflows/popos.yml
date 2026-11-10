@@ -1,9 +1,9 @@
-name: popos-gui
+name: popos
 
 # Install Pop!_OS from its official Live ISO, through `pop-os-installer`, its GTK installer.
 #
 # POP!_OS HAS ITS OWN INSTALLER - not Calamares, not Ubiquity, not Anaconda. It opens by
-# itself on the live desktop as a fixed-size GTK card, and linux/popos-gui/install.py drives it
+# itself on the live desktop as a fixed-size GTK card, and linux/popos/install.py drives it
 # pane by pane: four selection panes whose defaults are right, `Clean Install`, the drive row,
 # the two account panes, and `Don't Encrypt`.
 #
@@ -36,8 +36,8 @@ on:
         description: "seconds the installer may take"
         default: "5400"
       publish_tag:
-        description: "tag to publish under; empty for linux-mint-gui"
-        default: "linux-popos-gui"
+        description: "tag to publish under; empty for linux-mint"
+        default: "linux-popos"
       boot_timeout:
         description: "stage 2: seconds the booted disk has to reach its desktop"
         default: "900"
@@ -61,7 +61,7 @@ on:
         default: true
 
 concurrency:
-  group: popos-gui-${{ github.ref }}
+  group: popos-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -93,7 +93,7 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: popos-gui-prepare
+          name: popos-prepare
           interval: "10"
           command: |
             set -euo pipefail
@@ -103,7 +103,7 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: popos-gui-iso
+          name: popos-iso
           interval: "10"
           command: |
             set -euo pipefail
@@ -116,7 +116,7 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: popos-gui-install
+          name: popos-install
           interval: "15"
           command: |
             set -euo pipefail
@@ -124,9 +124,9 @@ jobs:
             export SNAPSHOT_INTERVAL=2
             ISO=$(ls out/iso/*.iso | head -1)
             echo "iso: $ISO"
-            python3 linux/popos-gui/install.py \
+            python3 linux/popos/install.py \
               --iso "$ISO" \
-              --out out/popos-gui.qcow2 \
+              --out out/popos.qcow2 \
               --disk-size "${{ inputs.disk_size || '64G' }}" \
               --timeout "${{ inputs.install_timeout || '5400' }}"
 
@@ -134,7 +134,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: popos-gui-recording
+          name: popos-recording
           path: |
             out/install.mp4
             out/last-frame.png
@@ -146,9 +146,9 @@ jobs:
         id: publish
         uses: easydev-org/easyactions/oci-push@main
         with:
-          path: out/popos-gui.qcow2
-          kind: linux-popos-gui
-          tag: ${{ inputs.publish_tag || 'linux-popos-gui' }}
+          path: out/popos.qcow2
+          kind: linux-popos
+          tag: ${{ inputs.publish_tag || 'linux-popos' }}
           token: ${{ github.token }}
 
   # ===========================================================================
@@ -198,26 +198,26 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: popos-gui-launch
+          name: popos-launch
           interval: "20"
           command: |
             set -euo pipefail
             python3 lib/launch_linux.py \
-              --tag "${{ needs.bake.outputs.tag || 'linux-popos-gui' }}" \
-              --kind popos-gui \
+              --tag "${{ needs.bake.outputs.tag || 'linux-popos' }}" \
+              --kind popos \
               --ssh skip \
-              --artifacts "out/popos-gui-launch" \
+              --artifacts "out/popos-launch" \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}"
 
       - name: keep the verdict
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: popos-gui-launch
+          name: popos-launch
           path: |
-            out/popos-gui-launch/launch.txt
-            out/popos-gui-launch/console.log
-            out/popos-gui-launch/screen.png
+            out/popos-launch/launch.txt
+            out/popos-launch/console.log
+            out/popos-launch/screen.png
           if-no-files-found: warn
           retention-days: 14
 
@@ -277,14 +277,14 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: popos-gui-ssh
+          name: popos-ssh
           interval: "20"
           command: |
             set -euo pipefail
             python3 lib/ssh_step.py \
-              --tag "${{ inputs.ssh_from || needs.bake.outputs.tag || 'linux-popos-gui' }}" \
-              --kind popos-gui \
-              --artifacts out/popos-gui-ssh \
+              --tag "${{ inputs.ssh_from || needs.bake.outputs.tag || 'linux-popos' }}" \
+              --kind popos \
+              --artifacts out/popos-ssh \
               --ssh-port "${{ inputs.ssh_port || '2222' }}" \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}"
 
@@ -292,12 +292,12 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: popos-gui-ssh
+          name: popos-ssh
           path: |
-            out/popos-gui-ssh/ssh.txt
-            out/popos-gui-ssh/install.mp4
-            out/popos-gui-ssh/last-frame.png
-            out/popos-gui-ssh/console.log
-            out/popos-gui-ssh/steps/*.png
+            out/popos-ssh/ssh.txt
+            out/popos-ssh/install.mp4
+            out/popos-ssh/last-frame.png
+            out/popos-ssh/console.log
+            out/popos-ssh/steps/*.png
           if-no-files-found: warn
           retention-days: 14

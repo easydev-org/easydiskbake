@@ -14,7 +14,7 @@ WHAT IT CHECKS AFTER THE PULL
 The size and the sha256 from `lib/images.py` are checked again here, on the file as it sits
 on the runner. The registry has its own digest, but a digest says the layer arrived intact -
 it does not say the layer is the build whose pixels were measured. Those are two different
-claims, and the drivers in linux/*-gui depend on the second one.
+claims, and the drivers in linux/* depend on the second one.
 
 NO FALLBACK TO THE VENDOR. If the tag is not published, this stops and says which tag and
 which command publishes it; a silent mirror download is a run that succeeds slowly from a

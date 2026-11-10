@@ -1,11 +1,11 @@
 # Linux Mint 22.3 Cinnamon, Ubiquity installer, 1920x1080.
 #
-#     python3 lib/steps.py linux/mint-gui/steps/ubiquity.yaml --qmp /work/drive.sock.qmp
+#     python3 lib/steps.py linux/mint/steps/ubiquity.yaml --qmp /work/drive.sock.qmp
 #
 # WHERE EVERY NUMBER CAME FROM
 #
 # Measured on a live Mint session, one frame per pane, the same frames the Python driver in
-# linux/mint-gui/install.py was written from. The values are not re-derived here - they are
+# linux/mint/install.py was written from. The values are not re-derived here - they are
 # copied, because a second set of measurements is a second thing that can disagree.
 #
 # WHY THIS WALKTHROUGH IS WORTH READING AS DATA

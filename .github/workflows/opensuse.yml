@@ -1,4 +1,4 @@
-name: opensuse-gui
+name: opensuse
 
 # Install openSUSE Tumbleweed KDE from its official Live ISO, through YaST2, its graphical installer.
 #
@@ -40,8 +40,8 @@ on:
         description: "seconds the installer may take"
         default: "5400"
       publish_tag:
-        description: "tag to publish under; empty for linux-opensuse-gui"
-        default: "linux-opensuse-gui"
+        description: "tag to publish under; empty for linux-opensuse"
+        default: "linux-opensuse"
       boot_timeout:
         description: "stage 2: seconds the booted disk has to reach its desktop"
         default: "900"
@@ -65,7 +65,7 @@ on:
         default: true
 
 concurrency:
-  group: opensuse-gui-${{ github.ref }}
+  group: opensuse-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -97,7 +97,7 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: opensuse-gui-prepare
+          name: opensuse-prepare
           interval: "10"
           command: |
             set -euo pipefail
@@ -107,7 +107,7 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: opensuse-gui-iso
+          name: opensuse-iso
           interval: "10"
           command: |
             set -euo pipefail
@@ -120,7 +120,7 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: opensuse-gui-install
+          name: opensuse-install
           interval: "15"
           command: |
             set -euo pipefail
@@ -128,9 +128,9 @@ jobs:
             export SNAPSHOT_INTERVAL=2
             ISO=$(ls out/iso/*.iso | head -1)
             echo "iso: $ISO"
-            python3 linux/opensuse-gui/install.py \
+            python3 linux/opensuse/install.py \
               --iso "$ISO" \
-              --out out/opensuse-gui.qcow2 \
+              --out out/opensuse.qcow2 \
               --disk-size "${{ inputs.disk_size || '64G' }}" \
               --timeout "${{ inputs.install_timeout || '5400' }}"
 
@@ -138,7 +138,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: opensuse-gui-recording
+          name: opensuse-recording
           path: |
             out/install.mp4
             out/last-frame.png
@@ -150,9 +150,9 @@ jobs:
         id: publish
         uses: easydev-org/easyactions/oci-push@main
         with:
-          path: out/opensuse-gui.qcow2
-          kind: linux-opensuse-gui
-          tag: ${{ inputs.publish_tag || 'linux-opensuse-gui' }}
+          path: out/opensuse.qcow2
+          kind: linux-opensuse
+          tag: ${{ inputs.publish_tag || 'linux-opensuse' }}
           token: ${{ github.token }}
 
   # ===========================================================================
@@ -202,26 +202,26 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: opensuse-gui-launch
+          name: opensuse-launch
           interval: "20"
           command: |
             set -euo pipefail
             python3 lib/launch_linux.py \
-              --tag "${{ needs.bake.outputs.tag || 'linux-opensuse-gui' }}" \
-              --kind opensuse-gui \
+              --tag "${{ needs.bake.outputs.tag || 'linux-opensuse' }}" \
+              --kind opensuse \
               --ssh skip \
-              --artifacts "out/opensuse-gui-launch" \
+              --artifacts "out/opensuse-launch" \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}"
 
       - name: keep the verdict
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: opensuse-gui-launch
+          name: opensuse-launch
           path: |
-            out/opensuse-gui-launch/launch.txt
-            out/opensuse-gui-launch/console.log
-            out/opensuse-gui-launch/screen.png
+            out/opensuse-launch/launch.txt
+            out/opensuse-launch/console.log
+            out/opensuse-launch/screen.png
           if-no-files-found: warn
           retention-days: 14
 
@@ -281,14 +281,14 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: opensuse-gui-ssh
+          name: opensuse-ssh
           interval: "20"
           command: |
             set -euo pipefail
             python3 lib/ssh_step.py \
-              --tag "${{ inputs.ssh_from || needs.bake.outputs.tag || 'linux-opensuse-gui' }}" \
-              --kind opensuse-gui \
-              --artifacts out/opensuse-gui-ssh \
+              --tag "${{ inputs.ssh_from || needs.bake.outputs.tag || 'linux-opensuse' }}" \
+              --kind opensuse \
+              --artifacts out/opensuse-ssh \
               --ssh-port "${{ inputs.ssh_port || '2222' }}" \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}"
 
@@ -296,12 +296,12 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: opensuse-gui-ssh
+          name: opensuse-ssh
           path: |
-            out/opensuse-gui-ssh/ssh.txt
-            out/opensuse-gui-ssh/install.mp4
-            out/opensuse-gui-ssh/last-frame.png
-            out/opensuse-gui-ssh/console.log
-            out/opensuse-gui-ssh/steps/*.png
+            out/opensuse-ssh/ssh.txt
+            out/opensuse-ssh/install.mp4
+            out/opensuse-ssh/last-frame.png
+            out/opensuse-ssh/console.log
+            out/opensuse-ssh/steps/*.png
           if-no-files-found: warn
           retention-days: 14

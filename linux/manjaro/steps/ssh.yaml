@@ -1,6 +1,6 @@
-# Stage three for linux-manjaro-gui: put sshd on THIS disk and prove ssh works.
+# Stage three for linux-manjaro: put sshd on THIS disk and prove ssh works.
 #
-#     python3 lib/steps.py linux/manjaro-gui/steps/ssh.yaml --qmp /work/drive.sock.qmp --ssh-port 2222
+#     python3 lib/steps.py linux/manjaro/steps/ssh.yaml --qmp /work/drive.sock.qmp --ssh-port 2222
 #
 # WHY THIS FILE IS PER-DISTRIBUTION AND NOT ONE SHARED WALK
 #
@@ -27,7 +27,7 @@
 # 42551299241, whose console said `BdsDxe: starting Boot0001` and then nothing - so `run:`
 # is the only way in.
 
-name: linux-manjaro-gui - sshd
+name: linux-manjaro - sshd
 
 resolution: [1920, 1080]
 

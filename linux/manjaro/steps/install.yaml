@@ -1,11 +1,11 @@
 # Manjaro KDE: the live desktop to `All done`, as a sequence.
 #
-#     python3 lib/steps.py linux/manjaro-gui/steps/install.yaml \
+#     python3 lib/steps.py linux/manjaro/steps/install.yaml \
 #         --qmp /work/drive.sock.qmp
 #
 # WHAT THIS REPLACES
 #
-# linux/manjaro-gui/install.py's walk_calamares() is 130 lines of measured clicks. Every
+# linux/manjaro/install.py's walk_calamares() is 130 lines of measured clicks. Every
 # coordinate and every reason below came from it, and the reasons are the part worth keeping:
 # the Python around them is mostly comment, which is the tell that it was already trying to be
 # a table of contents. The machine start, the recording and the publish stay in install.py -
@@ -34,7 +34,7 @@
 # So the steps below CLICK AND WAIT. Nothing is read to decide anything. The screen is read
 # afterwards into the log, where it is useful for a post-mortem.
 
-name: manjaro-gui - the Calamares walk
+name: manjaro - the Calamares walk
 resolution: [1920, 1080]
 
 vars:
@@ -207,7 +207,7 @@ steps:
   # to use, because a live session's language depends on what the network said at startup.
   #
   # THE KEEP-ALIVE CLICK IS PART OF THE WAIT. An idle desktop raises its lock screen, and a
-  # locked desktop has no installer on it: mint-gui's last frame was a full-window lock screen
+  # locked desktop has no installer on it: mint's last frame was a full-window lock screen
   # while a correct install finished underneath it.
   - name: the installer finishes
     until_any:

@@ -83,7 +83,7 @@ jobs:
             export SNAPSHOT_INTERVAL=5
             ISO=$(ls out/iso/*.iso | head -1)
             echo "iso: $ISO"
-            python3 linux/endeavour-gui/probe.py \
+            python3 linux/endeavour/probe.py \
               --iso "$ISO" \
               --out out/probe
 

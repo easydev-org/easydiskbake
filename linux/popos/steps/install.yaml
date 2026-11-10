@@ -1,10 +1,10 @@
 # Pop!_OS: `pop-os-installer`'s panes, as a sequence.
 #
-#     python3 lib/steps.py linux/popos-gui/steps/install.yaml --qmp /work/drive.sock.qmp
+#     python3 lib/steps.py linux/popos/steps/install.yaml --qmp /work/drive.sock.qmp
 #
 # WHAT THIS REPLACES
 #
-# linux/popos-gui/install.py's walk_installer(). install.py keeps the machine, the frames,
+# linux/popos/install.py's walk_installer(). install.py keeps the machine, the frames,
 # the recording and the publish.
 #
 # POP!_OS HAS AN INSTALLER OF ITS OWN - not Calamares, not Ubiquity, not Anaconda. It is a GTK
@@ -30,7 +30,7 @@
 # User Name. One `Tab` leaves the field, which is the event the pane listens for; it also moves
 # the focus to the footer, so it cannot type into another control.
 
-name: popos-gui - the pop installer walk
+name: popos - the pop installer walk
 resolution: [1920, 1080]
 
 vars:
@@ -188,7 +188,7 @@ steps:
   # ambiguity: from 20:12 onwards the screen read only the desktop (seven words, no installer
   # window at all), which is what BOTH a finished install and a crashed one look like.
   #
-  # So the finish is `disk_settle`, the same measurement fedora-gui now uses: an install writes
+  # So the finish is `disk_settle`, the same measurement fedora now uses: an install writes
   # gigabytes into the target qcow2 and a stopped guest writes nothing, so st_blocks is the
   # thing that can tell slow from stopped. `disk_min_mb: 512` stops an untouched sparse image
   # looking settled; `disk_settle: 180` covers a qcow2 flush without spending minutes after

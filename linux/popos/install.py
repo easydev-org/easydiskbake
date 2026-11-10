@@ -1,7 +1,7 @@
 """Install Pop!_OS from its Live ISO, through `pop-os-installer`, its GTK installer.
 
-    python3 linux/popos-gui/install.py --iso out/iso/pop-os_24.04_amd64_intel_9.iso \
-                                       --out out/popos-gui.qcow2
+    python3 linux/popos/install.py --iso out/iso/pop-os_24.04_amd64_intel_9.iso \
+                                       --out out/popos.qcow2
 
 POP!_OS HAS AN INSTALLER OF ITS OWN - NOT CALAMARES, NOT UBIQUITY, NOT ANACONDA.
 
@@ -138,7 +138,7 @@ INSTALL_SECONDS = 2400
 
 
 def log(msg: str) -> None:
-    print(f"[popos-gui {time.strftime('%H:%M:%S')}] {msg}", flush=True)
+    print(f"[popos {time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
 class Driver:
@@ -442,7 +442,7 @@ def main(argv: list[str]) -> int:
     work = args.work or os.path.dirname(os.path.abspath(args.out))
     os.makedirs(work, exist_ok=True)
 
-    disk = os.path.join(work, "popos-gui.qcow2")
+    disk = os.path.join(work, "popos.qcow2")
     if os.path.exists(disk):
         os.unlink(disk)
     compress.run("create", "-f", "qcow2", disk, args.disk_size)
@@ -473,7 +473,7 @@ def main(argv: list[str]) -> int:
         shape=uefi.shape_with_uefi(
             vm.Shape(cpus=args.cpus, mem_mb=args.mem, machine="q35", vga="std",
                        vnc_bind=os.environ.get("VNC_BIND", "127.0.0.1")),
-            work, "popos-gui"),
+            work, "popos"),
         stdout=os.path.join(work, "console.log"),
     )
 
@@ -545,9 +545,9 @@ def main(argv: list[str]) -> int:
     # A DISK WITH NOTHING ON IT IS NOT A SUCCESS, AND THAT WAS INVISIBLE.
     #
     # The caller only compresses when the walk reports success, so a driver that pressed the
-    # right coordinates on the wrong screen still "passed": endeavour-gui's run 42454363051
+    # right coordinates on the wrong screen still "passed": endeavour's run 42454363051
     # clicked the Asturian wizard's footer at the English coordinate, never left Welcome,
-    # reported success, and uploaded `out/endeavour-gui.qcow2: 0 MiB`. The workflow was
+    # reported success, and uploaded `out/endeavour.qcow2: 0 MiB`. The workflow was
     # green and the artefact was empty.
     #
     # A written system is gigabytes; an unwritten sparse image is kilobytes. The threshold

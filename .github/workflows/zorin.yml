@@ -1,9 +1,9 @@
-name: zorin-gui
+name: zorin
 
 # Install Zorin OS from its official Live ISO, through Ubiquity, its graphical installer.
 #
 # Zorin is an Ubuntu derivative and its installer is Ubiquity - the same program Mint uses,
-# with the same seven panes - so linux/zorin-gui/install.py is mint-gui's driver with this
+# with the same seven panes - so linux/zorin/install.py is mint's driver with this
 # desktop's two differences handled: GNOME refuses to run the desktop's own installer
 # launcher (it is not marked trusted), and the session blanks and locks itself. Both are
 # dealt with by one terminal that starts `pkexec ubiquity`, disables the X and GNOME blanks,
@@ -46,8 +46,8 @@ on:
         description: "seconds the installer may take"
         default: "5400"
       publish_tag:
-        description: "tag to publish under; empty for linux-mint-gui"
-        default: "linux-zorin-gui"
+        description: "tag to publish under; empty for linux-mint"
+        default: "linux-zorin"
       boot_timeout:
         description: "stage 2: seconds the booted disk has to reach its desktop"
         default: "900"
@@ -71,7 +71,7 @@ on:
         default: true
 
 concurrency:
-  group: zorin-gui-${{ github.ref }}
+  group: zorin-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -103,7 +103,7 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: zorin-gui-prepare
+          name: zorin-prepare
           interval: "10"
           command: |
             set -euo pipefail
@@ -113,7 +113,7 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: zorin-gui-iso
+          name: zorin-iso
           interval: "10"
           command: |
             set -euo pipefail
@@ -126,7 +126,7 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: zorin-gui-install
+          name: zorin-install
           interval: "15"
           command: |
             set -euo pipefail
@@ -134,9 +134,9 @@ jobs:
             export SNAPSHOT_INTERVAL=2
             ISO=$(ls out/iso/*.iso | head -1)
             echo "iso: $ISO"
-            python3 linux/zorin-gui/install.py \
+            python3 linux/zorin/install.py \
               --iso "$ISO" \
-              --out out/zorin-gui.qcow2 \
+              --out out/zorin.qcow2 \
               --disk-size "${{ inputs.disk_size || '64G' }}" \
               --timeout "${{ inputs.install_timeout || '5400' }}"
 
@@ -144,7 +144,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: zorin-gui-recording
+          name: zorin-recording
           path: |
             out/install.mp4
             out/last-frame.png
@@ -156,9 +156,9 @@ jobs:
         id: publish
         uses: easydev-org/easyactions/oci-push@main
         with:
-          path: out/zorin-gui.qcow2
-          kind: linux-zorin-gui
-          tag: ${{ inputs.publish_tag || 'linux-zorin-gui' }}
+          path: out/zorin.qcow2
+          kind: linux-zorin
+          tag: ${{ inputs.publish_tag || 'linux-zorin' }}
           token: ${{ github.token }}
 
   # ===========================================================================
@@ -208,26 +208,26 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: zorin-gui-launch
+          name: zorin-launch
           interval: "20"
           command: |
             set -euo pipefail
             python3 lib/launch_linux.py \
-              --tag "${{ needs.bake.outputs.tag || 'linux-zorin-gui' }}" \
-              --kind zorin-gui \
+              --tag "${{ needs.bake.outputs.tag || 'linux-zorin' }}" \
+              --kind zorin \
               --ssh skip \
-              --artifacts "out/zorin-gui-launch" \
+              --artifacts "out/zorin-launch" \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}"
 
       - name: keep the verdict
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: zorin-gui-launch
+          name: zorin-launch
           path: |
-            out/zorin-gui-launch/launch.txt
-            out/zorin-gui-launch/console.log
-            out/zorin-gui-launch/screen.png
+            out/zorin-launch/launch.txt
+            out/zorin-launch/console.log
+            out/zorin-launch/screen.png
           if-no-files-found: warn
           retention-days: 14
 
@@ -287,14 +287,14 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: zorin-gui-ssh
+          name: zorin-ssh
           interval: "20"
           command: |
             set -euo pipefail
             python3 lib/ssh_step.py \
-              --tag "${{ inputs.ssh_from || needs.bake.outputs.tag || 'linux-zorin-gui' }}" \
-              --kind zorin-gui \
-              --artifacts out/zorin-gui-ssh \
+              --tag "${{ inputs.ssh_from || needs.bake.outputs.tag || 'linux-zorin' }}" \
+              --kind zorin \
+              --artifacts out/zorin-ssh \
               --ssh-port "${{ inputs.ssh_port || '2222' }}" \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}"
 
@@ -302,12 +302,12 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: zorin-gui-ssh
+          name: zorin-ssh
           path: |
-            out/zorin-gui-ssh/ssh.txt
-            out/zorin-gui-ssh/install.mp4
-            out/zorin-gui-ssh/last-frame.png
-            out/zorin-gui-ssh/console.log
-            out/zorin-gui-ssh/steps/*.png
+            out/zorin-ssh/ssh.txt
+            out/zorin-ssh/install.mp4
+            out/zorin-ssh/last-frame.png
+            out/zorin-ssh/console.log
+            out/zorin-ssh/steps/*.png
           if-no-files-found: warn
           retention-days: 14

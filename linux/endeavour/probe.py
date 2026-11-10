@@ -1,6 +1,6 @@
 """Boot EndeavourOS and answer one question: what language does Calamares open in?
 
-    python3 linux/endeavour-gui/probe.py --iso out/iso/EndeavourOS-...iso --out out/probe
+    python3 linux/endeavour/probe.py --iso out/iso/EndeavourOS-...iso --out out/probe
 
 WHY THIS IS A PROBE AND NOT AN INSTALLER
 
@@ -180,7 +180,7 @@ def main(argv: list[str]) -> int:
         os.makedirs(drv_shots, exist_ok=True)
         # THE SOCKET IS NOT THERE YET WHEN QEMU HAS JUST STARTED, AND ocr.Screen DOES NOT
         # WAIT FOR IT. Every driver in this repository has its own wait loop for exactly
-        # this reason - `Driver.__init__` in linux/kubuntu-gui/install.py is the reference -
+        # this reason - `Driver.__init__` in linux/kubuntu/install.py is the reference -
         # and the first version of this probe skipped it:
         #
         #     File "lib/ocr.py", line 57, in __init__

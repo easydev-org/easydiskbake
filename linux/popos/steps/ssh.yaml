@@ -1,6 +1,6 @@
-# Stage three for linux-popos-gui: put sshd on THIS disk and prove ssh works.
+# Stage three for linux-popos: put sshd on THIS disk and prove ssh works.
 #
-#     python3 lib/steps.py linux/popos-gui/steps/ssh.yaml --qmp /work/drive.sock.qmp --ssh-port 2222
+#     python3 lib/steps.py linux/popos/steps/ssh.yaml --qmp /work/drive.sock.qmp --ssh-port 2222
 #
 # WHY THIS FILE IS PER-DISTRIBUTION AND NOT ONE SHARED WALK
 #
@@ -27,7 +27,7 @@
 # 42551299241, whose console said `BdsDxe: starting Boot0001` and then nothing - so `run:`
 # is the only way in.
 
-name: linux-popos-gui - sshd
+name: linux-popos - sshd
 
 resolution: [1920, 1080]
 
@@ -40,7 +40,7 @@ vars:
     default: docker
   # THE ACCOUNT THIS DISK ACTUALLY HAS, WHICH IS NOT THE ONE THE WALK WAS GIVEN.
   #
-  # Pop!_OS' installer DERIVES the login name from the full name. `linux/popos-gui/steps/
+  # Pop!_OS' installer DERIVES the login name from the full name. `linux/popos/steps/
   # install.yaml` types `Docker User` into Full Name and leaves User Name to the installer,
   # which fills in `dockeruser` - visible on the recording of run 42570186630 in the
   # terminal's own prompt:

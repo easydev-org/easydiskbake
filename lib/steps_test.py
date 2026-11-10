@@ -563,7 +563,7 @@ def test_headless_needs_no_screen() -> None:
 def test_real_files() -> None:
     print("\n=== the committed walkthroughs parse")
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    for relative in ("linux/mint-gui/steps/ubiquity.yaml",
+    for relative in ("linux/mint/steps/ubiquity.yaml",
                      "bsd/ghostbsd/steps/gbi.yaml",
                      "macos/15/steps/sequoia.yaml",
                      "macos/15/steps/setup.yaml",

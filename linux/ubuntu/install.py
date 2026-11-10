@@ -1,7 +1,7 @@
 """Install Ubuntu from the official desktop ISO, through the installer's own GUI.
 
-    python3 linux/ubuntu-gui/install.py --iso out/iso/ubuntu-26.04.1-desktop-amd64.iso \
-                                        --out out/ubuntu-gui.qcow2
+    python3 linux/ubuntu/install.py --iso out/iso/ubuntu-26.04.1-desktop-amd64.iso \
+                                        --out out/ubuntu.qcow2
 
 WHY A GUI DRIVER AND NOT AN ANSWER FILE
 
@@ -124,7 +124,7 @@ TIMEZONE_MAP_NEW_YORK = (762, 483)
 
 
 def log(msg: str) -> None:
-    print(f"[ubuntu-gui {time.strftime('%H:%M:%S')}] {msg}", flush=True)
+    print(f"[ubuntu {time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
 class Installer:
@@ -177,7 +177,7 @@ class Installer:
         USED ONLY TO NOTICE THAT THE SCREEN STOPPED CHANGING - never to decide where to
         click. Those are different questions and only one of them is safe: a lookup can be
         talked into clicking a word in a paragraph, which is exactly what stalled the
-        sibling kubuntu-gui driver for eighty-seven minutes.
+        sibling kubuntu driver for eighty-seven minutes.
         """
         return " ".join(w[0].lower() for w in self.words)
 
@@ -284,7 +284,7 @@ def main(argv: list[str]) -> int:
     work = args.work or os.path.dirname(os.path.abspath(args.out))
     os.makedirs(work, exist_ok=True)
 
-    disk = os.path.join(work, "ubuntu-gui.qcow2")
+    disk = os.path.join(work, "ubuntu.qcow2")
     # compress.run(), NOT A BARE qemu-img, for the reason lib/compress.py's docstring gives:
     # the bake image puts the Android SDK's emulator directory ahead of /usr/bin, and its
     # qemu-img is 2.12.0, which cannot create or read what the rest of this repository
@@ -331,7 +331,7 @@ def main(argv: list[str]) -> int:
                 vga="std",
                 vnc_bind=os.environ.get("VNC_BIND", "127.0.0.1"),
             ),
-            work, "ubuntu-gui",
+            work, "ubuntu",
         ),
         stdout=os.path.join(work, "console.log"),
     )
@@ -403,9 +403,9 @@ def main(argv: list[str]) -> int:
     # A DISK WITH NOTHING ON IT IS NOT A SUCCESS, AND THAT WAS INVISIBLE.
     #
     # The caller only compresses when the walk reports success, so a driver that pressed the
-    # right coordinates on the wrong screen still "passed": endeavour-gui's run 42454363051
+    # right coordinates on the wrong screen still "passed": endeavour's run 42454363051
     # clicked the Asturian wizard's footer at the English coordinate, never left Welcome,
-    # reported success, and uploaded `out/endeavour-gui.qcow2: 0 MiB`. The workflow was
+    # reported success, and uploaded `out/endeavour.qcow2: 0 MiB`. The workflow was
     # green and the artefact was empty.
     #
     # A written system is gigabytes; an unwritten sparse image is kilobytes. The threshold

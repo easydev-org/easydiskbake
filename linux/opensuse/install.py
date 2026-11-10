@@ -1,7 +1,7 @@
 """Install openSUSE Tumbleweed from its KDE Live ISO, through YaST2's graphical installer.
 
-    python3 linux/opensuse-gui/install.py --iso out/iso/openSUSE-...-Media.iso \
-                                         --out out/opensuse-gui.qcow2
+    python3 linux/opensuse/install.py --iso out/iso/openSUSE-...-Media.iso \
+                                         --out out/opensuse.qcow2
 
 YAST2, NOT CALAMARES, AND THE DIFFERENCE COST A WRONG GUESS.
 
@@ -120,7 +120,7 @@ CONFIRM_INSTALL = (922, 707)
 
 
 def log(msg: str) -> None:
-    print(f"[opensuse-gui {time.strftime('%H:%M:%S')}] {msg}", flush=True)
+    print(f"[opensuse {time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
 class Driver:
@@ -228,7 +228,7 @@ def walk_yast2(drv: Driver, args) -> bool:
 
     NOTHING IS READ TO DECIDE ANYTHING. Every step is a number in this file and a duration;
     the screen is read afterwards and the reading goes into the log, where it is useful for
-    a post-mortem and dangerous as a decision. This is the rule ubuntu-gui and kubuntu-gui
+    a post-mortem and dangerous as a decision. This is the rule ubuntu and kubuntu
     already follow, and the reason both of them are green.
 
     WHAT A DETECTOR COST HERE. The first version of this driver skipped the Online
@@ -343,7 +343,7 @@ def walk_yast2(drv: Driver, args) -> bool:
     #    for as long as the run was allowed to continue.
     #
     #    So the completion test was one this installer can never satisfy, and a finished
-    #    disk would have been thrown away at the timeout - the same failure mint-gui had
+    #    disk would have been thrown away at the timeout - the same failure mint had
     #    for the same reason.
     #
     #    THE DURATION IS THE MEASUREMENT. From the confirmation dialog's `Install` to the
@@ -351,7 +351,7 @@ def walk_yast2(drv: Driver, args) -> bool:
     #    show the same span). Thirty minutes is that with room for a slower runner.
     #
     #    THE POINTER IS CLICKED INSIDE THE LOOP to keep the session awake - a locked screen
-    #    has no installer on it, and mint-gui's last frame was exactly that.
+    #    has no installer on it, and mint's last frame was exactly that.
     log(f"waiting {INSTALL_SECONDS}s for the install (measured: about 15 minutes)")
     started = time.time()
     while time.time() - started < min(INSTALL_SECONDS, args.timeout):
@@ -387,7 +387,7 @@ def main(argv: list[str]) -> int:
     work = args.work or os.path.dirname(os.path.abspath(args.out))
     os.makedirs(work, exist_ok=True)
 
-    disk = os.path.join(work, "opensuse-gui.qcow2")
+    disk = os.path.join(work, "opensuse.qcow2")
     if os.path.exists(disk):
         os.unlink(disk)
     compress.run("create", "-f", "qcow2", disk, args.disk_size)
@@ -424,7 +424,7 @@ def main(argv: list[str]) -> int:
         shape=uefi.shape_with_uefi(
             vm.Shape(cpus=args.cpus, mem_mb=args.mem, machine="q35", vga="std",
                        vnc_bind=os.environ.get("VNC_BIND", "127.0.0.1")),
-            work, "opensuse-gui"),
+            work, "opensuse"),
         stdout=os.path.join(work, "console.log"),
     )
 
@@ -491,9 +491,9 @@ def main(argv: list[str]) -> int:
     # A DISK WITH NOTHING ON IT IS NOT A SUCCESS, AND THAT WAS INVISIBLE.
     #
     # The caller only compresses when the walk reports success, so a driver that pressed the
-    # right coordinates on the wrong screen still "passed": endeavour-gui's run 42454363051
+    # right coordinates on the wrong screen still "passed": endeavour's run 42454363051
     # clicked the Asturian wizard's footer at the English coordinate, never left Welcome,
-    # reported success, and uploaded `out/endeavour-gui.qcow2: 0 MiB`. The workflow was
+    # reported success, and uploaded `out/endeavour.qcow2: 0 MiB`. The workflow was
     # green and the artefact was empty.
     #
     # A written system is gigabytes; an unwritten sparse image is kilobytes. The threshold

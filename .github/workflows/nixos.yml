@@ -1,4 +1,4 @@
-name: nixos-gui
+name: nixos
 
 # Install NixOS from its GRAPHICAL ISO, through the Calamares that image carries, and prove
 # the disk started and answers on ssh.
@@ -47,8 +47,8 @@ on:
         description: "seconds the installer may take"
         default: "5400"
       publish_tag:
-        description: "tag to publish under; empty for linux-nixos-gui"
-        default: "linux-nixos-gui"
+        description: "tag to publish under; empty for linux-nixos"
+        default: "linux-nixos"
       launch_run:
         description: "stage 2: boot the finished disk and check the desktop comes up"
         type: boolean
@@ -75,7 +75,7 @@ on:
         default: true
 
 concurrency:
-  group: nixos-gui-${{ github.ref }}
+  group: nixos-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -94,7 +94,7 @@ jobs:
       checks: write
       packages: write
     outputs:
-      tag: ${{ inputs.publish_tag || 'linux-nixos-gui' }}
+      tag: ${{ inputs.publish_tag || 'linux-nixos' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -109,7 +109,7 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: nixos-gui-prepare
+          name: nixos-prepare
           interval: "10"
           command: |
             set -euo pipefail
@@ -131,7 +131,7 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: nixos-gui-iso
+          name: nixos-iso
           interval: "10"
           command: |
             set -euo pipefail
@@ -142,7 +142,7 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: nixos-gui-install
+          name: nixos-install
           interval: "15"
           command: |
             set -euo pipefail
@@ -150,9 +150,9 @@ jobs:
             export SNAPSHOT_INTERVAL=2
             ISO=$(ls out/iso/*.iso | head -1)
             echo "iso: $ISO"
-            python3 linux/nixos-gui/install.py \
+            python3 linux/nixos/install.py \
               --iso "$ISO" \
-              --out out/nixos-gui.qcow2 \
+              --out out/nixos.qcow2 \
               --disk-size "${{ inputs.disk_size || '64G' }}" \
               --timeout "${{ inputs.install_timeout || '5400' }}"
 
@@ -160,7 +160,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: nixos-gui-recording
+          name: nixos-recording
           path: |
             out/install.mp4
             out/last-frame.png
@@ -172,9 +172,9 @@ jobs:
         id: publish
         uses: easydev-org/easyactions/oci-push@main
         with:
-          path: out/nixos-gui.qcow2
-          kind: linux-nixos-gui
-          tag: ${{ inputs.publish_tag || 'linux-nixos-gui' }}
+          path: out/nixos.qcow2
+          kind: linux-nixos
+          tag: ${{ inputs.publish_tag || 'linux-nixos' }}
           token: ${{ github.token }}
 
   # ===========================================================================
@@ -211,26 +211,26 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: nixos-gui-launch
+          name: nixos-launch
           interval: "20"
           command: |
             set -euo pipefail
             python3 lib/launch_linux.py \
-              --tag "${{ needs.bake.outputs.tag || 'linux-nixos-gui' }}" \
-              --kind nixos-gui \
+              --tag "${{ needs.bake.outputs.tag || 'linux-nixos' }}" \
+              --kind nixos \
               --ssh skip \
-              --artifacts "out/nixos-gui-launch" \
+              --artifacts "out/nixos-launch" \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}"
 
       - name: keep the verdict
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: nixos-gui-launch
+          name: nixos-launch
           path: |
-            out/nixos-gui-launch/launch.txt
-            out/nixos-gui-launch/console.log
-            out/nixos-gui-launch/screen.png
+            out/nixos-launch/launch.txt
+            out/nixos-launch/console.log
+            out/nixos-launch/screen.png
           if-no-files-found: warn
           retention-days: 14
 
@@ -291,14 +291,14 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: nixos-gui-ssh
+          name: nixos-ssh
           interval: "20"
           command: |
             set -euo pipefail
             python3 lib/ssh_step.py \
-              --tag "${{ inputs.ssh_from || needs.bake.outputs.tag || 'linux-nixos-gui' }}" \
-              --kind nixos-gui \
-              --artifacts out/nixos-gui-ssh \
+              --tag "${{ inputs.ssh_from || needs.bake.outputs.tag || 'linux-nixos' }}" \
+              --kind nixos \
+              --artifacts out/nixos-ssh \
               --ssh-port "${{ inputs.ssh_port || '2222' }}" \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}"
 
@@ -306,12 +306,12 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: nixos-gui-ssh
+          name: nixos-ssh
           path: |
-            out/nixos-gui-ssh/ssh.txt
-            out/nixos-gui-ssh/install.mp4
-            out/nixos-gui-ssh/last-frame.png
-            out/nixos-gui-ssh/console.log
-            out/nixos-gui-ssh/steps/*.png
+            out/nixos-ssh/ssh.txt
+            out/nixos-ssh/install.mp4
+            out/nixos-ssh/last-frame.png
+            out/nixos-ssh/console.log
+            out/nixos-ssh/steps/*.png
           if-no-files-found: warn
           retention-days: 14

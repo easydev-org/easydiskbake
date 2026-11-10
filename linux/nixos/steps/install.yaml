@@ -1,6 +1,6 @@
 # NixOS graphical ISO: Calamares' seven panes, as a sequence, then GNOME.
 #
-#     python3 lib/steps.py linux/nixos-gui/steps/install.yaml --qmp /work/drive.sock.qmp
+#     python3 lib/steps.py linux/nixos/steps/install.yaml --qmp /work/drive.sock.qmp
 #
 # WHAT THIS DRIVES
 #
@@ -13,8 +13,8 @@
 # because `notesqml@unfree` is a QML page no other distribution in this repository shows.
 #
 # A SEQUENCE, NOT PANES. Calamares does not skip panes: the list above is the order it draws
-# them in, so a list of clicks is the whole truth. This is the same shape as manjaro-gui's and
-# cachyos-gui's walks, and the same warning applies: a word-per-pane detector reads panels it
+# them in, so a list of clicks is the whole truth. This is the same shape as manjaro's and
+# cachyos's walks, and the same warning applies: a word-per-pane detector reads panels it
 # is not on, because Calamares' sidebar names every pane at all times.
 #
 # THE FOOTER IS MEASURED PER PANE, AND THE NUMBERS BELOW COME FROM THIS IMAGE'S OWN FRAMES.
@@ -23,7 +23,7 @@
 # some of them it moves BETWEEN panes: CachyOS' is at 747 / 796 / 902, Manjaro's at 801 / 794.
 # This image's branding.desc says `windowSize: 800px,520px` with `windowExpanding: normal`, so
 # the window starts small and grows to fit each pane's content - which means the footer moves
-# and the numbers have to be per pane. `linux/nixos-gui/probe.py` measures them, and the
+# and the numbers have to be per pane. `linux/nixos/probe.py` measures them, and the
 # `FOOTER` table below is that measurement.
 #
 # THE TWO ANSWERS THAT ARE NOT THE DEFAULTS
@@ -36,7 +36,7 @@
 #                  that is explicitly allowed (`allowWeakPasswords: true`), so `admin` trips
 #                  the warning and the warning has to be accepted.
 
-name: nixos-gui - the Calamares walk
+name: nixos - the Calamares walk
 resolution: [1920, 1080]
 
 vars:
@@ -282,7 +282,7 @@ steps:
   # the target. The progress page is a slideshow with a percentage, and a completed disk must
   # not depend on reading it: an installation writes gigabytes into the target qcow2 and a
   # stopped guest writes nothing, so st_blocks is the only honest "it is written". This is the
-  # same measurement fedora-gui and popos-gui use.
+  # same measurement fedora and popos use.
   - name: the install is written
     disk_settle: 180
     disk_min_mb: 1024

@@ -1,7 +1,7 @@
 """Install CachyOS from its live ISO, through Calamares.
 
-    python3 linux/cachyos-gui/install.py --iso out/iso/cachyos-desktop-linux-260809.iso \
-                                         --out out/cachyos-gui.qcow2
+    python3 linux/cachyos/install.py --iso out/iso/cachyos-desktop-linux-260809.iso \
+                                         --out out/cachyos.qcow2
 
 CACHYOS IS AN ARCHISO DERIVATIVE AND CALAMARES IS ITS INSTALLER.
 
@@ -9,7 +9,7 @@ The live medium is archiso's, so the kernel and initrd are where archiso puts th
 (`/arch/boot/x86_64/`) and the initramfs finds its squashfs through
 `archisobasedir=arch archisolabel=<the ISO's volume id>`. The installer itself is
 Calamares, the same program Kubuntu uses - so this driver has the same shape as
-linux/kubuntu-gui and shares its rules.
+linux/kubuntu and shares its rules.
 
 THE INSTALLER IS LAUNCHED FROM A WELCOME WINDOW, NOT FROM A DESKTOP ICON.
 
@@ -126,7 +126,7 @@ DESKTOP_SECONDS = 230
 
 
 def log(msg: str) -> None:
-    print(f"[cachyos-gui {time.strftime('%H:%M:%S')}] {msg}", flush=True)
+    print(f"[cachyos {time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
 class Driver:
@@ -192,7 +192,7 @@ class Driver:
 def wait_for_desktop(drv: Driver, timeout: int) -> bool:
     """Wait a MEASURED TIME, then stop waiting.
 
-    The same design as linux/opensuse-gui's wait and for the same reason: desktop chrome is
+    The same design as linux/opensuse's wait and for the same reason: desktop chrome is
     a band of pixels, not a word, and OCR over an archiso KDE desktop returns a handful of
     fragments that change between runs. A duration measured on this image is a number; a
     reading is a guess. 230 s against a measured 170 s, and the click that follows is
@@ -213,7 +213,7 @@ def walk_calamares(drv: Driver, args) -> bool:
 
     NOTHING IS READ TO DECIDE ANYTHING. Every step is a number in this file and a duration;
     the screen is read afterwards and the reading goes into the log, where it is useful for
-    a post-mortem and dangerous as a decision. This is the rule ubuntu-gui and kubuntu-gui
+    a post-mortem and dangerous as a decision. This is the rule ubuntu and kubuntu
     already follow, and the reason both of them are green while this driver kept failing
     its own checks.
 
@@ -308,7 +308,7 @@ def walk_calamares(drv: Driver, args) -> bool:
     # prints at the end cannot miss a pane. Every other step above is a coordinate.
     #
     # A CLICK, NOT A POINTER MOVE, keeps the session awake: an idle desktop raises its lock
-    # screen, and a locked desktop has no installer on it - mint-gui's last frame was a
+    # screen, and a locked desktop has no installer on it - mint's last frame was a
     # full-window lock screen while a correct install finished underneath.
     log("waiting for the installer to finish")
     started = time.time()
@@ -320,7 +320,7 @@ def walk_calamares(drv: Driver, args) -> bool:
         drv.look("installing")
         current = drv.text()
         # THE HEADING IS NOT RELIABLE, THE SENTENCE IS: `All done.` is a large font that
-        # tesseract skips, and the body sentence under it reads cleanly. See manjaro-gui.
+        # tesseract skips, and the body sentence under it reads cleanly. See manjaro.
         #
         # AND IT IS CHECKED IN BOTH LANGUAGES THE INSTALLER ACTUALLY COMES UP IN. On the CI
         # runners the wizard is English; on a machine whose egress reports China it is
@@ -364,7 +364,7 @@ def main(argv: list[str]) -> int:
     work = args.work or os.path.dirname(os.path.abspath(args.out))
     os.makedirs(work, exist_ok=True)
 
-    disk = os.path.join(work, "cachyos-gui.qcow2")
+    disk = os.path.join(work, "cachyos.qcow2")
     if os.path.exists(disk):
         os.unlink(disk)
     compress.run("create", "-f", "qcow2", disk, args.disk_size)
@@ -405,7 +405,7 @@ def main(argv: list[str]) -> int:
         shape=uefi.shape_with_uefi(
             vm.Shape(cpus=args.cpus, mem_mb=args.mem, machine="q35", vga="std",
                        vnc_bind=os.environ.get("VNC_BIND", "127.0.0.1")),
-            work, "cachyos-gui"),
+            work, "cachyos"),
         stdout=os.path.join(work, "console.log"),
     )
 
@@ -473,9 +473,9 @@ def main(argv: list[str]) -> int:
     # A DISK WITH NOTHING ON IT IS NOT A SUCCESS, AND THAT WAS INVISIBLE.
     #
     # The caller only compresses when the walk reports success, so a driver that pressed the
-    # right coordinates on the wrong screen still "passed": endeavour-gui's run 42454363051
+    # right coordinates on the wrong screen still "passed": endeavour's run 42454363051
     # clicked the Asturian wizard's footer at the English coordinate, never left Welcome,
-    # reported success, and uploaded `out/endeavour-gui.qcow2: 0 MiB`. The workflow was
+    # reported success, and uploaded `out/endeavour.qcow2: 0 MiB`. The workflow was
     # green and the artefact was empty.
     #
     # A written system is gigabytes; an unwritten sparse image is kilobytes. The threshold

@@ -1,7 +1,7 @@
 """Install EndeavourOS from its live ISO, through Calamares.
 
-    python3 linux/endeavour-gui/install.py --iso out/iso/EndeavourOS_Titan-Nova-...iso \
-                                           --out out/endeavour-gui.qcow2
+    python3 linux/endeavour/install.py --iso out/iso/EndeavourOS_Titan-Nova-...iso \
+                                           --out out/endeavour.qcow2
 
 THE INSTALLER IS REACHED THROUGH ENDEAVOUROS' OWN WELCOME WINDOW, NOT A DESKTOP ICON.
 
@@ -131,7 +131,7 @@ DESKTOP_SECONDS = 270
 
 
 def log(msg: str) -> None:
-    print(f"[endeavour-gui {time.strftime('%H:%M:%S')}] {msg}", flush=True)
+    print(f"[endeavour {time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
 class Driver:
@@ -196,7 +196,7 @@ class Driver:
 def wait_for_desktop(drv: Driver, timeout: int) -> bool:
     """Wait a MEASURED TIME, then stop waiting.
 
-    The same design as linux/opensuse-gui's wait and for the same reason: desktop chrome is
+    The same design as linux/opensuse's wait and for the same reason: desktop chrome is
     a band of pixels, not a word, and OCR over an archiso KDE desktop returns a handful of
     fragments that change between runs. A duration measured on this image is a number; a
     reading is a guess. 230 s against a measured 170 s, and the click that follows is
@@ -217,7 +217,7 @@ def walk_calamares(drv: Driver, args) -> bool:
 
     NOTHING IS READ TO DECIDE ANYTHING. Every step is a number in this file and a duration;
     the screen is read afterwards and the reading goes into the log, where it is useful for
-    a post-mortem and dangerous as a decision. That is the rule ubuntu-gui and kubuntu-gui
+    a post-mortem and dangerous as a decision. That is the rule ubuntu and kubuntu
     follow, and the reason both of them are green.
     """
     # 0. PIN THE WIZARD'S LANGUAGE BEFORE IT IS STARTED - see LANGUAGE_PIN_COMMAND.
@@ -313,7 +313,7 @@ def walk_calamares(drv: Driver, args) -> bool:
     # is SPANISH (`Instalador de EndeavourOS`), so even the English sentences were the wrong
     # ones to look for.
     #
-    # So the duration is the answer, which is what mint-gui and opensuse-gui already do and
+    # So the duration is the answer, which is what mint and opensuse already do and
     # for the same reason: a graphical installer's last pane is a font and a layout that OCR
     # reads badly, and a correct disk must not depend on reading it.
     #
@@ -356,7 +356,7 @@ def main(argv: list[str]) -> int:
     work = args.work or os.path.dirname(os.path.abspath(args.out))
     os.makedirs(work, exist_ok=True)
 
-    disk = os.path.join(work, "endeavour-gui.qcow2")
+    disk = os.path.join(work, "endeavour.qcow2")
     if os.path.exists(disk):
         os.unlink(disk)
     compress.run("create", "-f", "qcow2", disk, args.disk_size)
@@ -379,7 +379,7 @@ def main(argv: list[str]) -> int:
         shape=uefi.shape_with_uefi(
             vm.Shape(cpus=args.cpus, mem_mb=args.mem, machine="q35", vga="std",
                        vnc_bind=os.environ.get("VNC_BIND", "127.0.0.1")),
-            work, "endeavour-gui"),
+            work, "endeavour"),
         stdout=os.path.join(work, "console.log"),
     )
 
@@ -446,9 +446,9 @@ def main(argv: list[str]) -> int:
     # A DISK WITH NOTHING ON IT IS NOT A SUCCESS, AND THAT WAS INVISIBLE.
     #
     # The caller only compresses when the walk reports success, so a driver that pressed the
-    # right coordinates on the wrong screen still "passed": endeavour-gui's run 42454363051
+    # right coordinates on the wrong screen still "passed": endeavour's run 42454363051
     # clicked the Asturian wizard's footer at the English coordinate, never left Welcome,
-    # reported success, and uploaded `out/endeavour-gui.qcow2: 0 MiB`. The workflow was
+    # reported success, and uploaded `out/endeavour.qcow2: 0 MiB`. The workflow was
     # green and the artefact was empty.
     #
     # A written system is gigabytes; an unwritten sparse image is kilobytes. The threshold

@@ -89,7 +89,7 @@ def _size() -> int:
             #       return int(r.headers["Content-Length"])
             #     TypeError: int() argument must be a string ... not 'NoneType'
             #
-            # which killed cachyos-gui twice before it downloaded a byte. The HEAD answers
+            # which killed cachyos twice before it downloaded a byte. The HEAD answers
             # 200 and simply omits the header - a chunked or dynamically-fronted origin is
             # entitled to - so the branch below falls through to the one-byte probe, which
             # reads the total out of Content-Range and does not depend on this header at

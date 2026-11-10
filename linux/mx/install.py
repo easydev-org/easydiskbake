@@ -1,7 +1,7 @@
 """Install MX Linux from its Live ISO, through minstall, its GTK installer.
 
-    python3 linux/mx-gui/install.py --iso out/iso/MX-25.3_Xfce_x64.iso \
-                                    --out out/mx-gui.qcow2
+    python3 linux/mx/install.py --iso out/iso/MX-25.3_Xfce_x64.iso \
+                                    --out out/mx.qcow2
 
 MX IS NEITHER CALAMARES NOR UBIQUITY. Its installer is `minstall`, and it is a different
 program with a different shape: THREE questions first (terms, installation type, a final
@@ -148,7 +148,7 @@ INSTALL_SECONDS = 1800
 
 
 def log(msg: str) -> None:
-    print(f"[mx-gui {time.strftime('%H:%M:%S')}] {msg}", flush=True)
+    print(f"[mx {time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
 class Driver:
@@ -377,7 +377,7 @@ def walk_minstall(drv: Driver, args) -> bool:
     # AUTOLOGIN, SO THE DISK COMES UP AT A DESKTOP. The launch stage boots the disk with no
     # installer and no ssh, so a disk that stops at a greeter can only be judged by its
     # picture. Ticking this makes the desk the thing that appears - the same reason
-    # kubuntu-gui presses `Log in automatically`.
+    # kubuntu presses `Log in automatically`.
     drv.click(AUTOLOGIN, "Autologin: tick", settle=4.0)
     drv.look("autologin ticked")
 
@@ -434,7 +434,7 @@ def main(argv: list[str]) -> int:
     work = args.work or os.path.dirname(os.path.abspath(args.out))
     os.makedirs(work, exist_ok=True)
 
-    disk = os.path.join(work, "mx-gui.qcow2")
+    disk = os.path.join(work, "mx.qcow2")
     if os.path.exists(disk):
         os.unlink(disk)
     compress.run("create", "-f", "qcow2", disk, args.disk_size)
@@ -467,7 +467,7 @@ def main(argv: list[str]) -> int:
         shape=uefi.shape_with_uefi(
             vm.Shape(cpus=args.cpus, mem_mb=args.mem, machine="q35", vga="std",
                      vnc_bind=os.environ.get("VNC_BIND", "127.0.0.1")),
-            work, "mx-gui"),
+            work, "mx"),
         stdout=os.path.join(work, "console.log"),
     )
 

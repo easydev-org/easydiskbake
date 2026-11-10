@@ -1,7 +1,7 @@
 """Install NixOS from its GRAPHICAL ISO, through the Calamares that image carries.
 
-    python3 linux/nixos-gui/install.py --iso out/iso/nixos-graphical.iso \
-                                      --out out/nixos-gui.qcow2
+    python3 linux/nixos/install.py --iso out/iso/nixos-graphical.iso \
+                                      --out out/nixos.qcow2
 
 WHY THIS EXISTS, AND WHY IT IS NOT linux/nixos/bake.py
 
@@ -18,7 +18,7 @@ sequence
     -> finished
 
 - a six-pane wizard with a footer, exactly like Manjaro's, CachyOS's and EndeavourOS's.
-So this is a `-gui` bake in the same sense they are: it boots a live desktop, drives the
+So this is a GUI bake in the same sense they are: it boots a live desktop, drives the
 installer, and is judged by the disk it wrote.
 
 WHAT IT INSTALLS, AND THE TWO ANSWERS THAT ARE NOT THE DEFAULTS
@@ -71,7 +71,7 @@ DESKTOP_SECONDS = 300
 
 
 def log(msg: str) -> None:
-    print(f"[nixos-gui {time.strftime('%H:%M:%S')}] {msg}", flush=True)
+    print(f"[nixos {time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
 class Driver:
@@ -156,7 +156,7 @@ def main(argv: list[str]) -> int:
     work = args.work or os.path.dirname(os.path.abspath(args.out))
     os.makedirs(work, exist_ok=True)
 
-    disk = os.path.join(work, "nixos-gui.qcow2")
+    disk = os.path.join(work, "nixos.qcow2")
     if os.path.exists(disk):
         os.unlink(disk)
     compress.run("create", "-f", "qcow2", disk, args.disk_size)
@@ -181,7 +181,7 @@ def main(argv: list[str]) -> int:
         shape=uefi.shape_with_uefi(
             vm.Shape(cpus=args.cpus, mem_mb=args.mem, machine="q35", vga="std",
                      vnc_bind=os.environ.get("VNC_BIND", "127.0.0.1")),
-            work, "nixos-gui"),
+            work, "nixos"),
         stdout=os.path.join(work, "console.log"),
     )
 
@@ -215,7 +215,7 @@ def main(argv: list[str]) -> int:
     try:
         drv = Driver(guest.paths.drive, work)
         if wait_for_desktop(drv, args.timeout):
-            # THE WALK IS A YAML FILE, the same shape every other -gui bake here uses. The
+            # THE WALK IS A YAML FILE, the same shape every other bake here uses. The
             # driver is closed first because qemu serves one QMP client per socket.
             drv.close()
             import steps

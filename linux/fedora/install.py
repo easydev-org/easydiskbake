@@ -1,7 +1,7 @@
 """Install Fedora Workstation from its Live ISO, through Anaconda, its GTK installer.
 
-    python3 linux/fedora-gui/install.py --iso out/iso/Fedora-Workstation-Live-43-1.6.x86_64.iso \
-                                        --out out/fedora-gui.qcow2
+    python3 linux/fedora/install.py --iso out/iso/Fedora-Workstation-Live-43-1.6.x86_64.iso \
+                                        --out out/fedora.qcow2
 
 WHY THIS IS A LIVE ISO AND NOT AN INSTALLER
 
@@ -11,7 +11,7 @@ started from there - from a Welcome dialog that the live session opens BY ITSELF
 the first thing this driver relies on and the kind of detail that is only found by running
 it.
 
-THE ISO'S OWN KERNEL, NOT THE ISO'S MENU. The same reason linux/ubuntu-gui boots casper's
+THE ISO'S OWN KERNEL, NOT THE ISO'S MENU. The same reason linux/ubuntu boots casper's
 kernel directly: a boot menu is a screen, and a screen is something a driver would have to
 read. `root=live:CDLABEL=Fedora-WS-Live-43 rd.live.image` is what the ISO's own GRUB says,
 copied here so qemu passes it instead of a person pressing Enter.
@@ -107,7 +107,7 @@ TOUR_SKIP = (852, 756)           # the tour offer, after the wizard
 
 
 def log(msg: str) -> None:
-    print(f"[fedora-gui {time.strftime('%H:%M:%S')}] {msg}", flush=True)
+    print(f"[fedora {time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
 class Driver:
@@ -230,7 +230,7 @@ def walk_anaconda(drv: Driver, args) -> bool:
 
     WHY THE CHECK IS A WORD FROM THE PANE BEING REACHED. Anaconda's footer buttons do not
     move, so a click that misses them does nothing at all - which means a run can walk every
-    step and never leave the first pane. ubuntu-gui's first CI run did exactly that and was
+    step and never leave the first pane. ubuntu's first CI run did exactly that and was
     only found from the uploaded last frame, so each step here says what it expects to see
     afterwards.
     """
@@ -457,7 +457,7 @@ def main(argv: list[str]) -> int:
     work = args.work or os.path.dirname(os.path.abspath(args.out))
     os.makedirs(work, exist_ok=True)
 
-    disk = os.path.join(work, "fedora-gui.qcow2")
+    disk = os.path.join(work, "fedora.qcow2")
     if os.path.exists(disk):
         os.unlink(disk)
     compress.run("create", "-f", "qcow2", disk, args.disk_size)
@@ -499,7 +499,7 @@ def main(argv: list[str]) -> int:
         shape=uefi.shape_with_uefi(
             vm.Shape(cpus=args.cpus, mem_mb=args.mem, machine="q35", vga="std",
                        vnc_bind=os.environ.get("VNC_BIND", "127.0.0.1")),
-            work, "fedora-gui"),
+            work, "fedora"),
         stdout=os.path.join(work, "console.log"),
     )
 
@@ -582,7 +582,7 @@ def main(argv: list[str]) -> int:
             extra=["-drive", f"file={disk},if=virtio,format=qcow2,discard=unmap"],
             # UEFI AGAIN, AND WITH ITS OWN NVRAM. The disk was installed on the EFI path, so
             # its bootloader is on an ESP and a BIOS boot of it finds nothing to chain to.
-            # The vars file is separate from the installer's (`fedora-gui` above) because the
+            # The vars file is separate from the installer's (`fedora` above) because the
             # installer's NVRAM holds the live medium's boot entry, not this disk's.
             shape=uefi.shape_with_uefi(
                 vm.Shape(cpus=args.cpus, mem_mb=args.mem, machine="q35", vga="std",
@@ -625,9 +625,9 @@ def main(argv: list[str]) -> int:
     # A DISK WITH NOTHING ON IT IS NOT A SUCCESS, AND THAT WAS INVISIBLE.
     #
     # The caller only compresses when the walk reports success, so a driver that pressed the
-    # right coordinates on the wrong screen still "passed": endeavour-gui's run 42454363051
+    # right coordinates on the wrong screen still "passed": endeavour's run 42454363051
     # clicked the Asturian wizard's footer at the English coordinate, never left Welcome,
-    # reported success, and uploaded `out/endeavour-gui.qcow2: 0 MiB`. The workflow was
+    # reported success, and uploaded `out/endeavour.qcow2: 0 MiB`. The workflow was
     # green and the artefact was empty.
     #
     # A written system is gigabytes; an unwritten sparse image is kilobytes. The threshold

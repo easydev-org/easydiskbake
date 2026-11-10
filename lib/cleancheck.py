@@ -91,7 +91,7 @@ EXPECTED = {
     "macos26.yml":     {"setup": None,  "desktop": None},
     # THE GUI BAKES DO NOT INSTALL SSHD, AND THAT IS WHY STAGE THREE EXISTS.
     #
-    # A `-gui` disk is installed by clicking through a desktop installer, and none of those
+    # A baked disk is installed by clicking through a desktop installer, and none of those
     # installers puts an ssh package on the target. Measured on NixOS's own Calamares
     # template, which ships `# services.openssh.enable = true;` COMMENTED OUT. So `bake`
     # cannot clean (no sshd), and `launch` cannot either - its whole job is to start the
@@ -101,23 +101,23 @@ EXPECTED = {
     # workflows that could clean - and it does not, deliberately: its product is the disk
     # with sshd on it, and a clean between the install and that proof would mean booting
     # the disk a second time before the thing being verified has been verified.
-    "ubuntu-gui.yml":   {"bake": None, "launch": None, "ssh": False},
-    "kubuntu-gui.yml":  {"bake": None, "launch": None, "ssh": False},
-    "zorin-gui.yml":    {"bake": None, "launch": None, "ssh": False},
-    "mint-gui.yml":     {"bake": None, "launch": None, "ssh": False},
-    "cachyos-gui.yml":  {"bake": None, "launch": None, "ssh": False},
-    "manjaro-gui.yml":  {"bake": None, "launch": None, "ssh": False},
-    "mx-gui.yml":       {"bake": None, "launch": None, "ssh": False},
-    "opensuse-gui.yml": {"bake": None, "launch": None, "ssh": False},
-    "endeavour-gui.yml": {"bake": None, "launch": None, "ssh": False},
-    "fedora-gui.yml":   {"bake": None, "launch": None, "ssh": False},
-    "popos-gui.yml":    {"bake": None, "launch": None, "ssh": False},
+    "ubuntu.yml":   {"bake": None, "launch": None, "ssh": False},
+    "kubuntu.yml":  {"bake": None, "launch": None, "ssh": False},
+    "zorin.yml":    {"bake": None, "launch": None, "ssh": False},
+    "mint.yml":     {"bake": None, "launch": None, "ssh": False},
+    "cachyos.yml":  {"bake": None, "launch": None, "ssh": False},
+    "manjaro.yml":  {"bake": None, "launch": None, "ssh": False},
+    "mx.yml":       {"bake": None, "launch": None, "ssh": False},
+    "opensuse.yml": {"bake": None, "launch": None, "ssh": False},
+    "endeavour.yml": {"bake": None, "launch": None, "ssh": False},
+    "fedora.yml":   {"bake": None, "launch": None, "ssh": False},
+    "popos.yml":    {"bake": None, "launch": None, "ssh": False},
     # GhostBSD's gbi has no sshd either, and its launch stage already proves the desktop.
     "ghostbsd-mate.yml": {"bake": None, "launch": None, "ssh": False},
     # NIXOS-GUI IS THE SAME SHAPE as the other GUI bakes, and the one where the missing
     # sshd is a documented fact rather than an omission: its installer's template has the
     # openssh line commented out.
-    "nixos-gui.yml":    {"bake": None, "launch": None, "ssh": False},
+    "nixos.yml":    {"bake": None, "launch": None, "ssh": False},
     # android.yml BAKE MAKES AN AVD, not a disk: a directory of raw images driven by the
     # emulator, which has no sshd and is not something fstrim or trim or ReTrim can reach.
     "android.yml":     {"bake": None},

@@ -1,10 +1,10 @@
 # Ubuntu 26.04 LTS desktop: subiquity's panes, as a sequence.
 #
-#     python3 lib/steps.py linux/ubuntu-gui/steps/install.yaml --qmp /work/drive.sock.qmp
+#     python3 lib/steps.py linux/ubuntu/steps/install.yaml --qmp /work/drive.sock.qmp
 #
 # WHAT THIS REPLACES
 #
-# linux/ubuntu-gui/install.py's Installer.walk() and its PANES table. install.py keeps the
+# linux/ubuntu/install.py's Installer.walk() and its PANES table. install.py keeps the
 # machine, the kernel and initrd, the frames, the recording and the publish.
 #
 # A FIXED SEQUENCE OF CLICKS, NOT A SET OF CONDITIONS TO MATCH - and the file that first said
@@ -24,7 +24,7 @@
 # So every step below is a position and a wait. The screen is read afterwards into the log,
 # where it is a diagnostic, never a branch.
 
-name: ubuntu-gui - the subiquity walk
+name: ubuntu - the subiquity walk
 resolution: [1920, 1080]
 
 vars:
@@ -111,8 +111,8 @@ steps:
     settle: 3
 
   # AUTOLOGIN, SO LATER STAGES CAN REACH THE DESKTOP WITHOUT A PASSWORD PROMPT. The tick is
-  # ON when the pane opens, so this click CLEARS it - which is the opposite of mx-gui and
-  # kubuntu-gui, where the same setting starts off. Measured; that is why it is written down.
+  # ON when the pane opens, so this click CLEARS it - which is the opposite of mx and
+  # kubuntu, where the same setting starts off. Measured; that is why it is written down.
   - name: clear 'require my password to log in'
     at: [923, 670]
     settle: 3

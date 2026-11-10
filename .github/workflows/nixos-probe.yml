@@ -83,7 +83,7 @@ jobs:
             export SNAPSHOT_INTERVAL=3
             ISO=$(ls out/iso/*.iso | head -1)
             echo "iso: $ISO"
-            python3 linux/nixos-gui/probe.py \
+            python3 linux/nixos/probe.py \
               --iso "$ISO" \
               --out out/probe \
               --panes "${{ inputs.panes || '5' }}" \

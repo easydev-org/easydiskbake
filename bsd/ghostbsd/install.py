@@ -1,7 +1,7 @@
 """Install GhostBSD from its official ISO, through gbi, its GTK installer.
 
     python3 bsd/ghostbsd/install.py --iso out/iso/GhostBSD-24.10.1.iso \
-                                    --out out/ghostbsd-gui.qcow2
+                                    --out out/ghostbsd-mate.qcow2
 
 WHY GHOSTBSD AND NOT FREEBBSD
 
@@ -63,7 +63,7 @@ THE SEQUENCE
         desktop         double-click Install GhostBSD
         gbi             welcome -> timezone -> ... -> install
 
-Everything after the loader is a position, for the reason ubuntu-gui's first draft proved: a
+Everything after the loader is a position, for the reason ubuntu's first draft proved: a
 driver that decides each pane from the words tesseract read skipped five panes in one second
 when a title did not contain the word it looked for, and then waited out the whole timeout. A
 fixed sequence has one failure mode - being wrong about a position - and that is found on the
@@ -535,7 +535,7 @@ def install_to_disk(drv: Driver, args) -> bool:
 
     NOTHING IS READ TO DECIDE ANYTHING. Every step is a number in this file and a duration;
     the screen is read afterwards and the reading goes into the log, where it is useful for
-    a post-mortem and dangerous as a decision. This is the rule ubuntu-gui and kubuntu-gui
+    a post-mortem and dangerous as a decision. This is the rule ubuntu and kubuntu
     follow, and the reason they are green while this driver kept "succeeding" without
     writing a disk.
 
@@ -632,7 +632,7 @@ def main(argv: list[str]) -> int:
     work = args.work or os.path.dirname(os.path.abspath(args.out))
     os.makedirs(work, exist_ok=True)
 
-    disk = os.path.join(work, "ghostbsd-gui.qcow2")
+    disk = os.path.join(work, "ghostbsd-mate.qcow2")
     if os.path.exists(disk):
         os.unlink(disk)
     compress.run("create", "-f", "qcow2", disk, args.disk_size)
@@ -738,9 +738,9 @@ def main(argv: list[str]) -> int:
     # A DISK WITH NOTHING ON IT IS NOT A SUCCESS, AND THAT WAS INVISIBLE.
     #
     # The caller only compresses when the walk reports success, so a driver that pressed the
-    # right coordinates on the wrong screen still "passed": endeavour-gui's run 42454363051
+    # right coordinates on the wrong screen still "passed": endeavour's run 42454363051
     # clicked the Asturian wizard's footer at the English coordinate, never left Welcome,
-    # reported success, and uploaded `out/endeavour-gui.qcow2: 0 MiB`. The workflow was
+    # reported success, and uploaded `out/endeavour.qcow2: 0 MiB`. The workflow was
     # green and the artefact was empty.
     #
     # A written system is gigabytes; an unwritten sparse image is kilobytes. The threshold

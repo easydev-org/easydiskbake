@@ -1,7 +1,7 @@
 """Install Linux Mint from its Live ISO, through Ubiquity, its GTK installer.
 
-    python3 linux/mint-gui/install.py --iso out/iso/linuxmint-22.3-cinnamon-64bit.iso \
-                                      --out out/mint-gui.qcow2
+    python3 linux/mint/install.py --iso out/iso/linuxmint-22.3-cinnamon-64bit.iso \
+                                      --out out/mint.qcow2
 
 MINT IS A LIVE ISO, LIKE FEDORA AND openSUSE - AND UNLIKE DEBIAN.
 
@@ -106,7 +106,7 @@ ACCOUNT = {
 
 
 def log(msg: str) -> None:
-    print(f"[mint-gui {time.strftime('%H:%M:%S')}] {msg}", flush=True)
+    print(f"[mint {time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
 class Driver:
@@ -377,7 +377,7 @@ def walk_ubiquity(drv: Driver, args) -> bool:
     # the disk away, and the ones that existed (`restart now`, `installation is complete`)
     # did exactly that on every CI run.
     #
-    # So this driver waits a MEASURED TIME, the same way ubuntu-gui and kubuntu-gui do. The
+    # So this driver waits a MEASURED TIME, the same way ubuntu and kubuntu do. The
     # measurement: from `Continue` on the Who-are-you pane to the completion modal is about
     # 25 minutes on this ISO - 22:51 to 23:16 in the local run that ended in the frame
     # above, and 21:20 to 22:0x in CI. FORTY MINUTES is that with room for a slower runner.
@@ -419,7 +419,7 @@ def main(argv: list[str]) -> int:
     work = args.work or os.path.dirname(os.path.abspath(args.out))
     os.makedirs(work, exist_ok=True)
 
-    disk = os.path.join(work, "mint-gui.qcow2")
+    disk = os.path.join(work, "mint.qcow2")
     if os.path.exists(disk):
         os.unlink(disk)
     compress.run("create", "-f", "qcow2", disk, args.disk_size)
@@ -455,7 +455,7 @@ def main(argv: list[str]) -> int:
         shape=uefi.shape_with_uefi(
             vm.Shape(cpus=args.cpus, mem_mb=args.mem, machine="q35", vga="std",
                        vnc_bind=os.environ.get("VNC_BIND", "127.0.0.1")),
-            work, "mint-gui"),
+            work, "mint"),
         stdout=os.path.join(work, "console.log"),
     )
 
@@ -522,9 +522,9 @@ def main(argv: list[str]) -> int:
     # A DISK WITH NOTHING ON IT IS NOT A SUCCESS, AND THAT WAS INVISIBLE.
     #
     # The caller only compresses when the walk reports success, so a driver that pressed the
-    # right coordinates on the wrong screen still "passed": endeavour-gui's run 42454363051
+    # right coordinates on the wrong screen still "passed": endeavour's run 42454363051
     # clicked the Asturian wizard's footer at the English coordinate, never left Welcome,
-    # reported success, and uploaded `out/endeavour-gui.qcow2: 0 MiB`. The workflow was
+    # reported success, and uploaded `out/endeavour.qcow2: 0 MiB`. The workflow was
     # green and the artefact was empty.
     #
     # A written system is gigabytes; an unwritten sparse image is kilobytes. The threshold

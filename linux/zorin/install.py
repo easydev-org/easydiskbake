@@ -1,7 +1,7 @@
 """Install Zorin OS from its Live ISO, through Ubiquity, its GTK installer.
 
-    python3 linux/zorin-gui/install.py --iso out/iso/Zorin-OS-18.1-Core-64-bit.iso \
-                                       --out out/zorin-gui.qcow2
+    python3 linux/zorin/install.py --iso out/iso/Zorin-OS-18.1-Core-64-bit.iso \
+                                       --out out/zorin.qcow2
 
 ZORIN IS AN UBUNTU DERIVATIVE, SO ITS INSTALLER IS UBIQUITY AND THIS DRIVER IS MINT'S.
 
@@ -27,7 +27,7 @@ So the installer is started from a terminal, by its own command:
     pkexec ubiquity &                               the installer, as root
     exit                                            the terminal closes itself
 
-THE SCREEN SAVER IS THE SECOND REASON FOR THAT FILE. Measured on zorin-gui, whose desktop
+THE SCREEN SAVER IS THE SECOND REASON FOR THAT FILE. Measured on zorin, whose desktop
 has the same behaviour: an idle session raises a lock screen showing a large clock and
 nothing else, so every later reading is a clock, and a correct install finishes underneath
 a screen the driver cannot read.
@@ -121,7 +121,7 @@ ACCOUNT = {
 
 
 def log(msg: str) -> None:
-    print(f"[zorin-gui {time.strftime('%H:%M:%S')}] {msg}", flush=True)
+    print(f"[zorin {time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
 class Driver:
@@ -370,7 +370,7 @@ def walk_ubiquity(drv: Driver, args) -> bool:
 
     # 8. A MEASURED WAIT. Zorin's Ubiquity copies files and then puts up `Installation
     #    Complete`; that pane is a heading in a font OCR reads badly on this image (the same
-    #    problem mint-gui documents), so the duration is the answer.
+    #    problem mint documents), so the duration is the answer.
     #
     #    MEASURED: about 15 minutes from `Continue` on Who-are-you to that dialog on a
     #    runner. FORTY is that with room for a slower one, and `--timeout` still bounds it.
@@ -422,7 +422,7 @@ def main(argv: list[str]) -> int:
     work = args.work or os.path.dirname(os.path.abspath(args.out))
     os.makedirs(work, exist_ok=True)
 
-    disk = os.path.join(work, "zorin-gui.qcow2")
+    disk = os.path.join(work, "zorin.qcow2")
     if os.path.exists(disk):
         os.unlink(disk)
     compress.run("create", "-f", "qcow2", disk, args.disk_size)
@@ -453,7 +453,7 @@ def main(argv: list[str]) -> int:
         shape=uefi.shape_with_uefi(
             vm.Shape(cpus=args.cpus, mem_mb=args.mem, machine="q35", vga="std",
                        vnc_bind=os.environ.get("VNC_BIND", "127.0.0.1")),
-            work, "zorin-gui"),
+            work, "zorin"),
         stdout=os.path.join(work, "console.log"),
     )
 
@@ -520,9 +520,9 @@ def main(argv: list[str]) -> int:
     # A DISK WITH NOTHING ON IT IS NOT A SUCCESS, AND THAT WAS INVISIBLE.
     #
     # The caller only compresses when the walk reports success, so a driver that pressed the
-    # right coordinates on the wrong screen still "passed": endeavour-gui's run 42454363051
+    # right coordinates on the wrong screen still "passed": endeavour's run 42454363051
     # clicked the Asturian wizard's footer at the English coordinate, never left Welcome,
-    # reported success, and uploaded `out/endeavour-gui.qcow2: 0 MiB`. The workflow was
+    # reported success, and uploaded `out/endeavour.qcow2: 0 MiB`. The workflow was
     # green and the artefact was empty.
     #
     # A written system is gigabytes; an unwritten sparse image is kilobytes. The threshold

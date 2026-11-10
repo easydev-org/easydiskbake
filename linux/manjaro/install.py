@@ -1,7 +1,7 @@
 """Install Manjaro from its KDE Live ISO, through Calamares.
 
-    python3 linux/manjaro-gui/install.py --iso out/iso/manjaro-kde-26.1.0-260812-linux71.iso \
-                                        --out out/manjaro-gui.qcow2
+    python3 linux/manjaro/install.py --iso out/iso/manjaro-kde-26.1.0-260812-linux71.iso \
+                                        --out out/manjaro.qcow2
 
 MANJARO'S CALAMARES IS ITS OWN BUILD, AND THREE OF ITS PANES DO NOT BEHAVE LIKE THE
 OTHERS IN THIS REPOSITORY.
@@ -107,7 +107,7 @@ ACCOUNT = {
 DESKTOP_SECONDS = 240
 
 def log(msg: str) -> None:
-    print(f"[manjaro-gui {time.strftime('%H:%M:%S')}] {msg}", flush=True)
+    print(f"[manjaro {time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
 class Driver:
@@ -135,7 +135,7 @@ class Driver:
     def text(self) -> str:
         """Everything OCR read, for the LOG ONLY.
 
-        IT DECIDES NOTHING. This driver - like ubuntu-gui and kubuntu-gui - advances on a
+        IT DECIDES NOTHING. This driver - like ubuntu and kubuntu - advances on a
         measured coordinate and a measured wait; the reading exists so that a failed run
         can be diagnosed from its log without the recording. See walk_calamares for the two
         detectors that were tried here and both made the run worse.
@@ -211,7 +211,7 @@ def walk_calamares(drv: Driver, args) -> bool:
 
     NOTHING IS READ TO DECIDE ANYTHING. Each step is a number in this file and a duration;
     the screen is read afterwards and the reading goes into the log, where it is useful for
-    a post-mortem and dangerous as a decision. This is the rule ubuntu-gui and kubuntu-gui
+    a post-mortem and dangerous as a decision. This is the rule ubuntu and kubuntu
     already follow, and the reason both of them are green.
 
     WHAT WENT WRONG WHEN THIS DRIVER DID DECIDE, TWICE:
@@ -304,7 +304,7 @@ def walk_calamares(drv: Driver, args) -> bool:
     # prints at the end cannot miss a pane.
     #
     # A CLICK, NOT A POINTER MOVE, keeps the session awake: an idle desktop raises its lock
-    # screen, and a locked desktop has no installer on it - mint-gui's last frame was a
+    # screen, and a locked desktop has no installer on it - mint's last frame was a
     # full-window lock screen while a correct install finished underneath.
     log("waiting for the installer to finish")
     started = time.time()
@@ -359,7 +359,7 @@ def main(argv: list[str]) -> int:
     work = args.work or os.path.dirname(os.path.abspath(args.out))
     os.makedirs(work, exist_ok=True)
 
-    disk = os.path.join(work, "manjaro-gui.qcow2")
+    disk = os.path.join(work, "manjaro.qcow2")
     if os.path.exists(disk):
         os.unlink(disk)
     compress.run("create", "-f", "qcow2", disk, args.disk_size)
@@ -380,7 +380,7 @@ def main(argv: list[str]) -> int:
         shape=uefi.shape_with_uefi(
             vm.Shape(cpus=args.cpus, mem_mb=args.mem, machine="q35", vga="std",
                      vnc_bind=os.environ.get("VNC_BIND", "127.0.0.1")),
-            work, "manjaro-gui"),
+            work, "manjaro"),
         stdout=os.path.join(work, "console.log"),
     )
 
@@ -450,9 +450,9 @@ def main(argv: list[str]) -> int:
     # A DISK WITH NOTHING ON IT IS NOT A SUCCESS, AND THAT WAS INVISIBLE.
     #
     # The caller only compresses when the walk reports success, so a driver that pressed the
-    # right coordinates on the wrong screen still "passed": endeavour-gui's run 42454363051
+    # right coordinates on the wrong screen still "passed": endeavour's run 42454363051
     # clicked the Asturian wizard's footer at the English coordinate, never left Welcome,
-    # reported success, and uploaded `out/endeavour-gui.qcow2: 0 MiB`. The workflow was
+    # reported success, and uploaded `out/endeavour.qcow2: 0 MiB`. The workflow was
     # green and the artefact was empty.
     #
     # A written system is gigabytes; an unwritten sparse image is kilobytes. The threshold

@@ -1,10 +1,10 @@
 # CachyOS KDE: Calamares' eleven panes, as a sequence.
 #
-#     python3 lib/steps.py linux/cachyos-gui/steps/install.yaml --qmp /work/drive.sock.qmp
+#     python3 lib/steps.py linux/cachyos/steps/install.yaml --qmp /work/drive.sock.qmp
 #
 # WHAT THIS REPLACES
 #
-# linux/cachyos-gui/install.py's walk_calamares(). Every number and every reason below came
+# linux/cachyos/install.py's walk_calamares(). Every number and every reason below came
 # from it; install.py keeps the machine, the frames, the recording and the publish.
 #
 # WHY A SEQUENCE, AND NOT A DETECTOR
@@ -31,7 +31,7 @@
 #
 # A single constant is wrong by 106 pixels on Summary and by 49 on Welcome.
 
-name: cachyos-gui - the Calamares walk
+name: cachyos - the Calamares walk
 resolution: [1920, 1080]
 
 vars:
@@ -109,7 +109,7 @@ steps:
   # NO CONFIRMATION IS SHOWN HERE ON THIS ISO - measured, Next goes straight to Desktop. The
   # press is kept for builds that do ask: on this one it lands on the Desktop pane's blank
   # space and selects nothing, which is the same shape as the "dismiss it whether or not it is
-  # up" clicks in mx-gui and mint-gui.
+  # up" clicks in mx and mint.
   - name: the erase confirmation's continue (if it is shown)
     at: [1010, 640]
     settle: 3
