@@ -71,7 +71,7 @@ jobs:
           interval: "20"
           command: |
             set -euo pipefail
-            export MACOS_USER=docker
+            export MACOS_USER=vmuser
             export MACOS_PASSWORD=admin
             DISK=$(ls out/*.qcow2 | head -1)
             echo "disk: $DISK"

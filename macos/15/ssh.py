@@ -70,7 +70,7 @@ import machine  # noqa: E402  - macos/15/machine.py, beside this file
 
 # The password the desktop stage was given. Remote Login is turned on from a root shell
 # started with sudo, so this is the account's password, not root's.
-GUEST_USER = os.environ.get("MACOS_USER", "docker")
+GUEST_USER = os.environ.get("MACOS_USER", "vmuser")
 GUEST_PASSWORD = os.environ.get("MACOS_PASSWORD", "admin")
 
 
@@ -594,7 +594,7 @@ def enable_remote_login(guest: vm.Guest, q=None) -> None:
 
     So the switch is pressed in the application that HAS the privilege, which is System
     Settings. Measured on this machine: after this sequence, `sshpass -p admin ssh -p 2222
-    docker@172.30.0.1` returns SSH_OK, `sw_vers` and `id` run, and a second connection later
+    vmuser@172.30.0.1` returns SSH_OK, `sw_vers` and `id` run, and a second connection later
     still works. THE ADDRESS IS THE BRIDGE'S, not loopback: lib/net.py's OUTPUT rule explains
     why a forward cannot be reached at 127.0.0.1.
 

@@ -143,7 +143,7 @@ def macos_mount_plist(script: str) -> str:
 
 
 def macos_mount_script(host: str, user: str, share: str, password: str = "",
-                       home: str = "/Users/docker") -> str:
+                       home: str = "/Users/vmuser") -> str:
     """The script the daemon runs: wait for the network, then mount.
 
     IT RETRIES, because a daemon that runs at boot can start before this guest has an address -

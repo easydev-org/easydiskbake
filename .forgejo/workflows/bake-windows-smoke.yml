@@ -64,6 +64,7 @@ jobs:
 
           text = open(os.path.join(args.answer, "Autounattend.xml"), encoding="utf-8").read()
           for placeholder, value in {
+              "__ADMIN_USER__": "vmuser",
               "__ADMIN_PASSWORD__": "docker",
               "__COMPUTER_NAME__": "sandbox",
               "__WINDOWS_IMAGE_INDEX__": str(pin["index"]),

@@ -1021,7 +1021,7 @@ class MachineSession:
             # any shutdown was attempted. `user` comes from the walkthrough's own `vars` (the same
             # one its `ssh:` steps use); `docker` is what every disk here was installed with.
             capabilities.require("ssh", port=self.guest.shape.ssh_port,
-                                 user=user or "docker", password=password or "admin")
+                                 user=user or "vmuser", password=password or "admin")
             vm_session.stop(self.guest, family=self.family, overlay=owned,
                             share=False, method="ssh", password=password or "admin", log=log)
         elif method == "acpi":
@@ -1352,7 +1352,7 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
                 step["requires"],
                 guest=getattr(session, "guest", None) if session is not None else None,
                 port=ssh_port,
-                user=values.get("ssh_user") or "docker",
+                user=values.get("ssh_user") or "vmuser",
                 password=password or "admin")
         except capabilities.Broken as exc:
             raise StepError(f"{step.name}: {exc}") from exc
@@ -1541,7 +1541,7 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
         body = body.replace("\r\n", "\n").replace("\n", "\r\n") if shell == "cmd" else body
         with open(local, "w", newline="") as fh:
             fh.write(body)
-        remote = f"C:/Users/{login or 'docker'}/{name}"
+        remote = f"C:/Users/{login or 'vmuser'}/{name}"
         if shell == "sh":
             remote = f"/tmp/{name}"
         timeout = int(step.get("timeout", 1800))
@@ -1688,7 +1688,7 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
             raise StepError(
                 f"{step.name}: nothing is serving on port 445; a `share_serve:` step comes first")
 
-        command = hostshare.mount_commands(user=login or "docker",
+        command = hostshare.mount_commands(user=login or "vmuser",
                                           login_password=password or "admin")[family]
         timeout = int(step.get("timeout", 180))
         status, output = session.ssh(ssh_port, command, timeout=timeout, user=login,
@@ -2645,7 +2645,7 @@ def driver_for(qmp_path: str, *, work: str = "", width: int = 1920, height: int 
 
 
 def walk_with(steps: Walk, driver: "Driver", *, values: dict[str, str] | None = None,
-              ssh_port: int = 2222, user: str = "docker",
+              ssh_port: int = 2222, user: str = "vmuser",
               password: str = "admin", frames: str = "",
               start_at: str = "", stop_before: str = "") -> tuple[bool, list[str]]:
     """Walk `steps` against `driver` - the half of run_file that does not open a connection.
@@ -2672,7 +2672,7 @@ def walk_with(steps: Walk, driver: "Driver", *, values: dict[str, str] | None = 
 
 
 def run_file(walkthrough: str, qmp_path: str, *, work: str = "",
-             user: str = "docker", password: str = "admin",
+             user: str = "vmuser", password: str = "admin",
              disk_path: str | None = None, ssh_port: int = 2222,
              start_at: str = "", stop_before: str = "",
              release: str = "15", frames: str = "",
@@ -2828,7 +2828,7 @@ def main(argv: list[str]) -> int:
     p.add_argument("--qmp", default="",
                    help="the guest's QMP socket; omit for a walkthrough with no GUI steps")
     p.add_argument("--work", default=None)
-    p.add_argument("--user", default="docker")
+    p.add_argument("--user", default="vmuser")
     p.add_argument("--password", default="admin")
     p.add_argument("--disk", default=None,
                    help="the target qcow2; a setup pane watches it for growth")

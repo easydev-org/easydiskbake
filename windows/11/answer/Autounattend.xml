@@ -331,12 +331,21 @@
            A Microsoft account is not possible and not wanted: OOBE without
            network would block, and the disk is a sandbox rather than a user's
            machine. The password is fixed because it is a throwaway VM; the
-           workflow passes it through so it is visible in one place. -->
+           workflow passes it through so it is visible in one place.
+
+           THE NAME IS A PLACEHOLDER FOR THE SAME REASON THE PASSWORD IS. It is
+           baked into the disk, so every later stage has to be told it - sshd
+           admits it, `C:/Users/<name>` is where the launcher and the task
+           registration go, and `schtasks` runs the launcher from there. A literal
+           here would mean the answer file and the four stage scripts each spell
+           the account out, and the one that disagrees fails at a login prompt
+           three stages later. windows/11/bake.py substitutes it from
+           WINDOWS_ADMIN_USER, default `vmuser`. -->
       <UserAccounts>
         <LocalAccounts>
           <LocalAccount wcm:action="add">
-            <Name>docker</Name>
-            <DisplayName>docker</DisplayName>
+            <Name>__ADMIN_USER__</Name>
+            <DisplayName>__ADMIN_USER__</DisplayName>
             <Group>Administrators</Group>
             <Password>
               <Value>__ADMIN_PASSWORD__</Value>
@@ -348,7 +357,7 @@
 
       <AutoLogon>
         <Enabled>true</Enabled>
-        <Username>docker</Username>
+        <Username>__ADMIN_USER__</Username>
         <Password>
           <Value>__ADMIN_PASSWORD__</Value>
           <PlainText>true</PlainText>

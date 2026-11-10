@@ -679,7 +679,7 @@ def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--qmp", required=True)
     p.add_argument("--frames", required=True)
-    p.add_argument("--user", default=os.environ.get("MACOS_USER", "docker"))
+    p.add_argument("--user", default=os.environ.get("MACOS_USER", "vmuser"))
     p.add_argument("--password", default=os.environ.get("MACOS_PASSWORD", "admin"))
     p.add_argument("--boot-timeout", type=int, default=1800)
     p.add_argument("--release", default=os.environ.get("MACOS_RELEASE", "15"),

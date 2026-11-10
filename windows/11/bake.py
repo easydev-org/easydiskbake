@@ -229,10 +229,22 @@ class Baker:
         os.makedirs(staging, exist_ok=True)
 
         password = os.environ.get("WINDOWS_ADMIN_PASSWORD", "admin")
+        # THE ACCOUNT NAME, SUBSTITUTED LIKE THE PASSWORD AND FOR THE SAME REASON. It is baked
+        # into the disk - sshd admits it, `C:/Users/<name>` holds the launcher, `schtasks` runs
+        # the launcher from there - so it must come from one place rather than from an answer
+        # file and four stage scripts that each spell it out.
+        #
+        # `vmuser` AND NOT `docker`. `docker` was the name this repository used when every guest
+        # was started by a container; the account is the person's, and the surname of the
+        # tooling is not a good name for it. More practically, `docker` collides with a real
+        # command in every shell these guests open, and an account whose name is also a verb is
+        # an account whose login prompt reads like a prompt to run something.
+        account = os.environ.get("WINDOWS_ADMIN_USER", "vmuser")
         name = os.environ.get("WINDOWS_COMPUTER_NAME", "sandbox")
         pin = images.pin_for_bake(self.args.image)
 
         substitutions = {
+            "__ADMIN_USER__": account,
             "__ADMIN_PASSWORD__": password,
             "__COMPUTER_NAME__": name,
             "__WINDOWS_IMAGE_INDEX__": str(pin["index"]),

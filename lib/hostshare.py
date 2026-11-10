@@ -469,7 +469,7 @@ def _unlink_pid() -> None:
         pass
 
 
-def mount_commands(host: str = "", user: str = "docker",
+def mount_commands(host: str = "", user: str = "vmuser",
                    login_password: str = "admin") -> dict[str, str]:
     """What a guest types to mount this share, per family.
 

@@ -36,12 +36,12 @@ resolution: [1920, 1080]
 vars:
   user:
     from: args.user
-    default: docker
+    default: vmuser
   password:
     from: args.password
     default: admin
 
-ssh_user: docker
+ssh_user: vmuser
 ssh_port: 2222
 
 # 25 minutes each is not generous, it is measured: the BuildTools installer alone takes most of

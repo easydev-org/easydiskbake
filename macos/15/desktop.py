@@ -100,7 +100,7 @@ def main(argv: list[str]) -> int:
     p.add_argument("--work", default=None)
     p.add_argument("--mem", type=int, default=8192)
     p.add_argument("--cpus", type=int, default=4)
-    p.add_argument("--user", default=os.environ.get("MACOS_USER", "docker"))
+    p.add_argument("--user", default=os.environ.get("MACOS_USER", "vmuser"))
     p.add_argument("--password", default=os.environ.get("MACOS_PASSWORD", "admin"))
     p.add_argument("--release", default=os.environ.get("MACOS_RELEASE", "15"),
                    help="which release the setup disk is; drive.py has a coordinate table "
@@ -268,7 +268,24 @@ def main(argv: list[str]) -> int:
         log(f"=== the Setup Assistant: steps {os.path.basename(args.steps)} ===")
         import steps as stepslib
 
-        shutdown_method = "kill" if run_overlay is not None else "ssh"
+        # THE METHOD IS `kill`, AND IT IS NOT A SHORTCUT - THERE IS NO GRACEFUL ROUTE HERE.
+        #
+        # This stage is given the disk the setup stage produced: macOS is installed, and NOTHING
+        # is configured yet. There is no sshd (that is the next stage's whole job), no guest
+        # agent (vm-configure installs it), and ACPI opens the Restart/Sleep/Cancel/Shut Down
+        # dialog and waits for a click. So "graceful" would be a five-minute wait for a dialog
+        # nobody clicks, then a kill - which is what the old `guest.stop(acpi_first=arrived)`
+        # did, and reported as a clean shutdown.
+        #
+        # Run 42817815462 is what the other choice costs: `shutdown: ssh` refused by name
+        # (`Connection refused` on 2222) after the wizard had finished and the desktop was on
+        # screen, so a disk that was complete was not published. A capability check that fires
+        # correctly on a method the stage can never have is still a stage that cannot finish.
+        #
+        # The disk is safe to kill for the same reason a stage on an overlay is: the guest had
+        # already settled (the wait for the desktop stops the machine after a settle), and what
+        # it wrote before that is on disk.
+        shutdown_method = "kill"
         session = stepslib.MachineSession(
             "macos", disk, work,
             # NO SHARE: the disk at this stage has been installed but not configured, so nothing

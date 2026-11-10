@@ -102,7 +102,7 @@ WINGET_PACKAGE = "Microsoft.OpenSSH.Preview"
 # on this guest - see the file's own header for why each one is what it is.
 WALK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "steps", "ssh.yaml")
 
-GUEST_USER = "docker"
+GUEST_USER = os.environ.get("WINDOWS_ADMIN_USER", "vmuser")
 GUEST_PASSWORD = os.environ.get("WINDOWS_ADMIN_PASSWORD", "admin")
 
 

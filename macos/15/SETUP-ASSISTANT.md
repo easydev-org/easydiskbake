@@ -16,7 +16,7 @@ node with a bridged tap. The machine reached a Finder menu bar and a Dock.
 | 3 | Written and Spoken Languages | Continue (1306,810) | 12s |
 | 4 | Accessibility | **Not Now** (1306,810) | 12s |
 | 5 | Data & Privacy | Continue (1306,810) | 12s |
-| 6 | Create a Mac Account | Full name is already focused; type `docker`. Password (850,531) `admin`, verify (1086,531) `admin`, Continue (1306,810) | **90s** |
+| 6 | Create a Mac Account | Full name is already focused; type `vmuser`. Password (850,531) `admin`, verify (1086,531) `admin`, Continue (1306,810) | **90s** |
 | 7 | Sign In to Your Apple Account | `Set Up Later` (620,811), then the sheet's **Skip** (1026,634) | 12s |
 | 8 | Terms and Conditions | footer Agree (1302,805), then the sheet's **Agree** (1019,613) | 15s |
 | 9 | Enable Location Services | Continue (1306,810), then the sheet's **Don't Use** (960,632) | 12s |

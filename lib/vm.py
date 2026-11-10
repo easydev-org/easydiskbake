@@ -728,7 +728,7 @@ class Guest:
             time.sleep(0.2)
         time.sleep(1.0)
 
-    def shutdown_command(self, command: str, timeout: int, *, user: str = "docker",
+    def shutdown_command(self, command: str, timeout: int, *, user: str = "vmuser",
                          password: str = "admin") -> bool:
         """Run an in-guest shutdown command and wait. Returns True if qemu exited.
 

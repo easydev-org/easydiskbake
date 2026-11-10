@@ -60,10 +60,18 @@ name: macos 15 remote login
 resolution: [1920, 1080]
 # This is a sequence, not a pane set: the settings window does not skip panes, and each step
 # depends on the one before it having landed.
+#
+# THE ACCOUNT THE ssh: STEPS LOG IN AS is the one the Setup Assistant created, and it is named
+# here rather than left to lib/steps.py's fallback: a stage that depends on a default it does
+# not state is a stage that breaks when the default moves - and this default has just moved
+# from `docker` to `vmuser`.
+ssh_user: vmuser
+ssh_port: 2222
+
 vars:
   user:
     from: args.user
-    default: docker
+    default: vmuser
   password:
     from: args.password
     default: admin
@@ -421,10 +429,14 @@ steps:
   # through `sudo -S` on STDIN - `printf` in a pipe, not a here-string, because the remote shell
   # is `sh` and `<<<` is a bash extension that fails with "unexpected redirection".
   #
+  # THE NAME IS THE ACCOUNT'S, as it always was - this line used to carry the literal `docker`,
+  # which was the account name. It is `{{ user }}` now so that renaming the account renames the
+  # machine with it instead of leaving a disk whose login prompt and host name disagree.
+  #
   # It is also `optional`: this step names the disk, it does not prove anything, and a naming
   # failure must not fail a stage whose real evidence is the three checks above it.
   - name: name the machine
-    ssh: printf '%s\n' "{{ password }}" | sudo -S scutil --set LocalHostName docker
+    ssh: printf '%s\n' "{{ password }}" | sudo -S scutil --set LocalHostName {{ user }}
     optional: true
 
   # --- 3. A READ-MEANT-TO-FAIL IS NOT A FAILURE -----------------------------------------

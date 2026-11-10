@@ -211,7 +211,7 @@ jobs:
             export GITHUB_TOKEN="${{ github.token }}"
             export SNAPSHOT_INTERVAL="${{ inputs.snapshot_interval || '1' }}"
             export RECORD_FPS=1
-            export MACOS_USER=docker
+            export MACOS_USER=vmuser
             export MACOS_PASSWORD=admin
             python3 macos/15/bake.py \
               --steps macos/15/steps/setup.yaml \
@@ -322,7 +322,7 @@ jobs:
             set -euo pipefail
             export GITHUB_TOKEN="${{ github.token }}"
             export SNAPSHOT_INTERVAL=1
-            export MACOS_USER=docker
+            export MACOS_USER=vmuser
             export MACOS_PASSWORD=admin
             DISK=$(ls out/*.qcow2 | head -1)
             echo "setup disk: $DISK"
@@ -418,7 +418,7 @@ jobs:
             set -euo pipefail
             export GITHUB_TOKEN="${{ github.token }}"
             export SNAPSHOT_INTERVAL=1
-            export MACOS_USER=docker
+            export MACOS_USER=vmuser
             export MACOS_PASSWORD=admin
             DISK=$(ls out/*.qcow2 | head -1)
             python3 macos/15/ssh.py \

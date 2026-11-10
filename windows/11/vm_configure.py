@@ -52,7 +52,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 WALK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "steps", "vm-configure.yaml")
 
 SSH_PORT = 2222
-SSH_USER = "docker"
+SSH_USER = os.environ.get("WINDOWS_ADMIN_USER", "vmuser")
 SSH_PASSWORD = os.environ.get("WINDOWS_ADMIN_PASSWORD", "admin")
 
 # THE FORWARDED PORT EXISTS ON THE BRIDGE ADDRESS AND NOWHERE ELSE. A probe to

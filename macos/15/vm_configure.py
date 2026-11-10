@@ -65,7 +65,7 @@ sys.path.insert(0, HERE)
 
 from lib import compress, net, smoke  # noqa: E402
 
-SSH_USER = os.environ.get("MACOS_USER", "docker")
+SSH_USER = os.environ.get("MACOS_USER", "vmuser")
 SSH_PASSWORD = os.environ.get("MACOS_PASSWORD", "admin")
 
 # THE BREW RECIPE, THE PACKAGE LIST AND THE THREE FUNCTIONS THAT USED THEM lived here and

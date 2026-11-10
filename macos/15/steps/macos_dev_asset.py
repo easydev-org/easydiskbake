@@ -144,7 +144,7 @@ def copy_packages(driver, step) -> bool:
 
     values = getattr(driver, "values", {}) or {}
     port = int(getattr(driver, "ssh_port", 0) or values.get("ssh_port") or 2222)
-    user = str(values.get("user") or "docker")
+    user = str(values.get("user") or "vmuser")
     password = str(getattr(driver, "password", "") or values.get("password") or "admin")
 
     work = _work(driver)
@@ -184,7 +184,7 @@ def copy_xcode(driver, step) -> bool:
     # `ssh_port:` would be a second answer to one question.
     values = getattr(driver, "values", {}) or {}
     port = int(getattr(driver, "ssh_port", 0) or values.get("ssh_port") or 2222)
-    user = str(values.get("user") or "docker")
+    user = str(values.get("user") or "vmuser")
     password = str(getattr(driver, "password", "") or values.get("password") or "admin")
 
     work = _work(driver)

@@ -599,7 +599,7 @@ def cli(bakery: Bakery, argv: list[str]) -> int:
     p.add_argument("--mem", type=int, default=bakery.mem_mb)
     p.add_argument("--cpus", type=int, default=bakery.cpus)
     p.add_argument("--timeout", type=int, default=bakery.timeout)
-    p.add_argument("--user", default=os.environ.get(f"{prefix}_USER", "docker"))
+    p.add_argument("--user", default=os.environ.get(f"{prefix}_USER", "vmuser"))
     p.add_argument("--password", default=os.environ.get(f"{prefix}_PASSWORD", "admin"))
     args = p.parse_args(argv)
     return run_bake(bakery, args)

@@ -173,7 +173,7 @@ jobs:
             export GITHUB_TOKEN="${{ github.token }}"
             export SNAPSHOT_INTERVAL="${{ inputs.snapshot_interval || '1' }}"
             export RECORD_FPS=1
-            export MACOS_USER=docker
+            export MACOS_USER=vmuser
             export MACOS_PASSWORD=admin
 
             export MACOS_RELEASE=26
@@ -290,7 +290,7 @@ jobs:
             set -euo pipefail
             export GITHUB_TOKEN="${{ github.token }}"
             export SNAPSHOT_INTERVAL=1
-            export MACOS_USER=docker
+            export MACOS_USER=vmuser
             export MACOS_PASSWORD=admin
 
             export MACOS_RELEASE=26

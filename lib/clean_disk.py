@@ -43,7 +43,7 @@ from __future__ import annotations
 # Both take (port=, note=) and make their own connection, so this table is the whole
 # difference between them.
 SYSTEMS = {
-    "windows": ("winclean", {"user": "docker"}),
+    "windows": ("winclean", {"user": "vmuser"}),
     "linux": ("linclean", {}),
     # NO `user` HERE. linclean and bsdclean talk to the guest as the account every image in
     # this repository creates, and lib/session.ssh already supplies it; only winclean needs the

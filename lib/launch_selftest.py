@@ -99,7 +99,7 @@ def main(argv: list[str]) -> int:
                    help="a published disk to pull instead of --disk")
     p.add_argument("--work", default=None)
     p.add_argument("--ssh-port", type=int, default=2222)
-    p.add_argument("--user", default="docker")
+    p.add_argument("--user", default=os.environ.get("VM_USER") or "vmuser")
     p.add_argument("--password", default="admin")
     p.add_argument("--boot-timeout", type=int, default=900)
     p.add_argument("--login-timeout", type=int, default=180,

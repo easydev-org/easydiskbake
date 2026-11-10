@@ -1,7 +1,7 @@
 """Clean a Windows guest before its disk is exported, and say what was freed.
 
     from winclean import clean
-    ok = clean(scp=scp_to, ssh_run=ssh_run, user="docker", note=log)
+    ok = clean(scp=scp_to, ssh_run=ssh_run, user="vmuser", note=log)
 
 WHY THIS IS IN lib/ AND NOT windows/11/
 
@@ -67,7 +67,7 @@ def _allocated_mib(disk: str) -> int:
         return -1
 
 
-def clean(*, port: int, user: str = "docker", note=print, timeout: int = 1800,
+def clean(*, port: int, user: str = "vmuser", note=print, timeout: int = 1800,
           disk: str | None = None) -> bool:
     """Copy clean.ps1 into the guest, run it, and report what it freed.
 

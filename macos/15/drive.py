@@ -880,7 +880,7 @@ def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--qmp", required=True, help="the drive QMP socket")
     p.add_argument("--frames", default=None, help="where to save a frame after each action")
-    p.add_argument("--user", default=os.environ.get("MACOS_USER", "docker"))
+    p.add_argument("--user", default=os.environ.get("MACOS_USER", "vmuser"))
     p.add_argument("--password", default=os.environ.get("MACOS_PASSWORD", "admin"))
     p.add_argument("--release", default=os.environ.get("MACOS_RELEASE", "15"),
                    help="which release's coordinates to use; see ACCOUNT_FIELDS")

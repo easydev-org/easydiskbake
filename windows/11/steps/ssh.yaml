@@ -42,14 +42,14 @@ resolution: [1920, 1080]
 vars:
   user:
     from: args.user
-    default: docker
+    default: vmuser
   password:
     from: args.password
     default: admin
 
 # The account the answer file creates, and the port the host's forward points at.
 # lib/vm.build_args() forwards host 2222 -> guest 22, so sshd has to be on 22.
-ssh_user: docker
+ssh_user: vmuser
 ssh_port: 2222
 
 steps:

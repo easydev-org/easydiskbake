@@ -613,6 +613,54 @@ def main() -> int:
     check("the ssh stage does not serve a share it has no job for", "macos/15/ssh.py",
           'share="",' in read("macos/15/ssh.py"))
 
+    # --- THE ACCOUNT NAME, WHICH IS BAKED INTO EACH DISK -------------------------------
+    #
+    # The name is not a setting. Windows' answer file CREATES it, so sshd admits it and
+    # `C:/Users/<name>` is where the launcher and the task registration live; macOS' Setup
+    # Assistant CREATES it, so it is the account every later stage logs in as. A rename that
+    # misses one of these produces a disk that answers nothing, three stages after the mistake -
+    # which is the same shape as the `dockeruser` failure lib/session.py records.
+    #
+    # SO THE RULES ARE: the answer file names the account through a PLACEHOLDER (one literal,
+    # substituted from one variable), and no stage script falls back to the old name.
+    win_answer_src = read("windows/11/answer/Autounattend.xml")
+    check("the windows account comes from a placeholder", "windows/11/answer/Autounattend.xml",
+          win_answer_src.count("__ADMIN_USER__") == 3)
+    check("the windows answer file does not name the old account",
+          "windows/11/answer/Autounattend.xml", ">docker<" not in win_answer_src)
+    bake_win = read("windows/11/bake.py")
+    check("the windows account is substituted from one variable", "windows/11/bake.py",
+          'os.environ.get("WINDOWS_ADMIN_USER", "vmuser")' in bake_win
+          and '"__ADMIN_USER__": account' in bake_win)
+    for path in ("windows/11/ssh.py", "windows/11/vm_configure.py", "windows/11/devtools.py"):
+        check(f"{path} reads the account the disk was built with", path,
+              'os.environ.get("WINDOWS_ADMIN_USER", "vmuser")' in read(path))
+    # MACOS CREATES THE ACCOUNT THROUGH THE WIZARD, so the file's `vars:` is the only place the
+    # name appears - and `scutil` must use that value, not a literal.
+    for path in ("macos/15/steps/sequoia.yaml", "macos/15/steps/ssh.yaml",
+                 "macos/15/steps/vm-configure.yaml", "macos/15/steps/dev.yaml"):
+        walk = load_yaml(path)
+        users = [v for k, v in (walk.get("vars") or {}).items() if k == "user"]
+        check(f"{path} names the account vmuser", path,
+              bool(users) and users[0].get("default") == "vmuser")
+    check("the macos host name is the account, not a literal", "macos/15/steps/ssh.yaml",
+          "scutil --set LocalHostName {{ user }}" in read("macos/15/steps/ssh.yaml"))
+    # AND THE STAGE SCRIPTS AGREE. A script that still defaults to `docker` would log into a disk
+    # whose account is `vmuser` and report Permission denied against a working sshd.
+    for path in ("macos/15/ssh.py", "macos/15/bake.py", "macos/15/desktop.py",
+                 "macos/15/dev.py", "macos/15/vm_configure.py"):
+        body = read(path)
+        check(f"{path} does not default to the old account", path,
+              'MACOS_USER", "docker"' not in body and 'MACOS_USER", "vmuser"' in body)
+    # AND THE WORKFLOWS PASS THE SAME NAME, because the scripts read it from the environment.
+    mac_workflows = read(".github/workflows/macos15.yml")
+    check("the macos workflow logs in as vmuser", ".github/workflows/macos15.yml",
+          "MACOS_USER=vmuser" in mac_workflows and "MACOS_USER=docker" not in mac_workflows)
+    win_workflow = read(".github/workflows/windows-11.yml")
+    check("the windows workflow passes the account to both jobs",
+          ".github/workflows/windows-11.yml",
+          win_workflow.count("WINDOWS_ADMIN_USER=vmuser") == 2)
+
     # AND `requires:` RUNS BEFORE `boot:`, WHICH IS ONE OF THE STEPS THAT CAN CARRY IT.
     #
     # The first version sat after the block that defines `login`, so `boot: requires: [overlay]`
@@ -624,7 +672,7 @@ def main() -> int:
           steps_src_early.index("requires:` IS CHECKED") <
           steps_src_early.index('if step["boot"]:'))
     check("the capability check does not depend on a later local", "lib/steps.py",
-          'user=values.get("ssh_user") or "docker"' in steps_src_early)
+          'user=values.get("ssh_user") or "vmuser"' in steps_src_early)
 
     # AND `shutdown:` TAKES A METHOD, NOT A BOOLEAN, WITH NO SILENT CHAIN BEHIND IT.
     steps_src = read("lib/steps.py")

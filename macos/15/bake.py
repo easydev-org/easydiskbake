@@ -117,7 +117,7 @@ def parse(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--wizard-timeout", type=int, default=2 * 60 * 60,
                    help="seconds to wait for the installer to finish and the wizard to "
                         "appear; this is the copy and the first boot, not the wizard")
-    p.add_argument("--user", default=os.environ.get("MACOS_USER", "docker"))
+    p.add_argument("--user", default=os.environ.get("MACOS_USER", "vmuser"))
     p.add_argument("--password", default=os.environ.get("MACOS_PASSWORD", "admin"))
     p.add_argument("--steps", default="",
                    help="the installation walkthrough; macos/15/steps/setup.yaml. Required: "

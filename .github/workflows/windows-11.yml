@@ -212,6 +212,12 @@ jobs:
           command: |
             set -euo pipefail
             export GITHUB_TOKEN="${{ github.token }}"
+            # THE ACCOUNT THE DISK IS INSTALLED WITH. It is baked in by the answer file, so the
+            # jobs after this one have to be told the same name - `WINDOWS_ADMIN_USER` is read by
+            # windows/11/bake.py (the substitution), ssh.py, vm_configure.py and devtools.py.
+            # One variable, so a disk and the stages that log into it cannot disagree.
+            export WINDOWS_ADMIN_USER=vmuser
+            export WINDOWS_ADMIN_PASSWORD=admin
             python3 windows/11/bake.py \
               --out out/windows11.qcow2 \
               --answer windows/11/answer \
@@ -474,6 +480,9 @@ jobs:
           command: |
             set -euo pipefail
             export GITHUB_TOKEN="${{ github.token }}"
+            # THE SAME ACCOUNT THE BAKE INSTALLED (see the base job), so the toolchain stage
+            # logs in as the account the disk actually has rather than one it assumed.
+            export WINDOWS_ADMIN_USER=vmuser
             export WINDOWS_ADMIN_PASSWORD=admin
             python3 windows/11/devtools.py \
               --ssh out/windows11-ssh.qcow2 \

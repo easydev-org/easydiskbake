@@ -193,8 +193,12 @@ def run(out: str, *, wait_boot: int, clicks: int, interval: float) -> int:
     args.cpus = 4
     args.out = os.path.join(out, "probe.qcow2")
     args.timeout = 3600
-    args.user = "docker"
-    args.password = "docker"
+    # THE ACCOUNT AND PASSWORD THE WIZARD WILL CREATE, from the same environment variables the
+    # stages use. This is a MEASUREMENT tool - it boots the installer and photographs panes - so
+    # it has no account of its own to log in as; what it needs is the pair to type, and typing a
+    # pair the stages no longer use would measure a disk nobody ships.
+    args.user = os.environ.get("MACOS_USER", "vmuser")
+    args.password = os.environ.get("MACOS_PASSWORD", "admin")
     args.keep_work = True
 
     baker = bake.Baker(args)

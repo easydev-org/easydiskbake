@@ -95,10 +95,12 @@ boot_poll: 10
 stuck_after: 20
 pane_limit: 3
 
+# THIS FILE CREATES THE ACCOUNT, so it has no `ssh_user:` - the wizard types `user` into the
+# account form and nothing here logs in. Every later stage names the same value.
 vars:
   user:
     from: args.user
-    default: docker
+    default: vmuser
   password:
     from: args.password
     default: admin

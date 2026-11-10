@@ -125,7 +125,7 @@ def macos_mount_script(driver, step, **_kwargs) -> bool:
     # account is a walkthrough var - so it is read from the driver, which is where run_file puts
     # the resolved values.
     values = getattr(driver, "values", {}) or {}
-    account = values.get("user") or "docker"
+    account = values.get("user") or "vmuser"
     _write(work, "smbmount.sh", bootstrap.macos_mount_script(
         net.BRIDGE_IP, hostshare.SMB_USER, hostshare.SHARE_NAME,
         home=f"/Users/{account}"))
@@ -147,7 +147,7 @@ def windows_task(driver, step, **_kwargs) -> bool:
 
     work = _work(driver)
     values = getattr(driver, "values", {}) or {}
-    account = values.get("user") or "docker"
+    account = values.get("user") or "vmuser"
     launcher_path = f"C:/Users/{account}/{bootstrap.launcher_name('windows')}"
     _write(work, "bootstrap-install.ps1", bootstrap.windows_ps1(launcher_path))
     return True

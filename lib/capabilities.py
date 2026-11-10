@@ -57,7 +57,7 @@ def _log(message: str) -> None:
 # looking at a log rather than at this file: "no qga socket at <path>" beats "False".
 
 
-def probe_ssh(port: int = 2222, *, user: str = "docker", password: str = "admin",
+def probe_ssh(port: int = 2222, *, user: str = "vmuser", password: str = "admin",
               timeout: int = 5) -> tuple[bool, str]:
     """Does a shell answer on this port, over the same channel the `ssh:` step uses?"""
     try:
@@ -125,7 +125,7 @@ def probe_share(host: str = "", port: int = 445) -> tuple[bool, str]:
 # the probes above stay functions of their own arguments rather than globals.
 
 
-def check(name: str, *, guest=None, port: int = 2222, user: str = "docker",
+def check(name: str, *, guest=None, port: int = 2222, user: str = "vmuser",
           password: str = "admin", host: str = "", share_port: int = 445,
           log=_log) -> tuple[bool, str]:
     """Is `name` available? Returns (ok, why)."""
@@ -145,7 +145,7 @@ def check(name: str, *, guest=None, port: int = 2222, user: str = "docker",
                    f"overlay")
 
 
-def require(names, *, guest=None, port: int = 2222, user: str = "docker",
+def require(names, *, guest=None, port: int = 2222, user: str = "vmuser",
             password: str = "admin", host: str = "", share_port: int = 445) -> None:
     """Raise Broken unless every capability in `names` is available.
 
