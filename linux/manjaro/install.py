@@ -28,7 +28,7 @@ BAKE = livebake.Bakery(
     name="manjaro",
     kernel=(),
     cmdline='',
-    after=livebake.After(seconds=180),
+    after=livebake.After(seconds=240),
     mem_mb=4096,
 )
 

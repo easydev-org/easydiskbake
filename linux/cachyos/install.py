@@ -28,7 +28,7 @@ BAKE = livebake.Bakery(
     name="cachyos",
     kernel=('arch/boot/x86_64/vmlinuz-linux-cachyos','arch/boot/x86_64/initramfs-linux-cachyos.img'),
     cmdline='archisobasedir=arch archisolabel=COS_202608 locale=en_US.UTF-8 quiet',
-    after=livebake.After(seconds=170),
+    after=livebake.After(seconds=230),
     mem_mb=4096,
 )
 

@@ -28,7 +28,7 @@ BAKE = livebake.Bakery(
     name="endeavour",
     kernel=(),
     cmdline='',
-    after=livebake.After(seconds=200),
+    after=livebake.After(seconds=270),
     mem_mb=4096,
 )
 

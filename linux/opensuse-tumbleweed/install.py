@@ -28,7 +28,7 @@ BAKE = livebake.Bakery(
     name="opensuse-tumbleweed",
     kernel=('boot/x86_64/loader/linux','boot/x86_64/loader/initrd'),
     cmdline='root=live:CDLABEL=openSUSE_Tumbleweed_KDE_Live rd.live.image locale=en_US.UTF-8 quiet splash=silent systemd.show_status=yes',
-    after=livebake.After(seconds=180),
+    after=livebake.After(seconds=240),
     mem_mb=4096,
 )
 

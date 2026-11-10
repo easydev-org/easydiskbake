@@ -85,7 +85,14 @@ def log(name: str, message: str) -> None:
 
 @dataclass(frozen=True)
 class After:
-    """Wait a measured number of seconds and stop.
+    """Wait a BUDGET of seconds and stop. This is a timeout, not a measurement.
+
+    THE DISTINCTION WAS LOST ONCE AND IS WORTH STATING. Each distribution's driver recorded
+    two numbers - `DESKTOP_SECONDS = 230` and a log line "(measured: about 170s)" - and what
+    the loop used was the FIRST one. Folding the drivers in, the measured value was used as
+    the budget, which is strictly tighter: a machine 40 s slower than the one that was
+    measured would fail a bake that used to pass. The numbers below are the budgets, and the
+    measured values stay in each file's comment where they belong.
 
     USED WHERE OCR IS NOT TRUSTWORTHY ON THE LIVE MEDIUM. CachyOS, EndeavourOS, Manjaro and
     openSUSE all boot to a KDE session whose panel OCR reads inconsistently across runs, and
@@ -248,6 +255,8 @@ def _wait_for_desktop(drv, bakery: Bakery, seconds: int) -> bool:
     if bakery.after is not None:
         gap = float(bakery.after.seconds)
         log(bakery.name, f"waiting {gap:.0f}s for the live desktop")
+        # `min` WITH THE CALLER'S `--timeout`, because a bake may deliberately ask for less
+        # time than the budget - the workflows pass `install_timeout` and 5400 is the default.
         deadline = time.time() + min(gap, seconds)
         while time.time() < deadline:
             drv.look("boot")

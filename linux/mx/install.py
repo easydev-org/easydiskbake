@@ -33,6 +33,7 @@ BAKE = livebake.Bakery(
     # welcome window. Its own driver always said `"mx" in text and "install" in text`.
     desktop=livebake.DesktopWhen(all_of=('mx', 'install')),
     mem_mb=4096,
+    timeout=210,
 )
 
 
