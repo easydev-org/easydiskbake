@@ -58,6 +58,14 @@ steps:
       ls -la ~/shared | head -20 && printf 'written-by-%s\n' "$(hostname)" > ~/shared/from-guest.txt && cat ~/shared/from-guest.txt
     timeout: 120
 
+  # THE LOGIN HOOK. A LaunchAgent in ~/Library/LaunchAgents is loaded by launchd at the next
+  # graphical login - which is exactly when this is meant to run, and there is no gui domain to
+  # load it into from an ssh session (see the note in lib/steps.py).
+  - name: install the bootstrap launcher
+    bootstrap_install: true
+    share_family: macos
+    timeout: 300
+
   # THE MOUNT IS A LAUNCHDAEMON, BECAUSE A USER CANNOT MOUNT A SAMBA SHARE.
   #
   # `mount_smbfs` as a normal account against Samba answers "server rejected the connection:
@@ -79,14 +87,6 @@ steps:
     ssh: |
       mount | grep ' on /Users/' && ls -la ~/shared | head -10
     timeout: 120
-
-  # THE LOGIN HOOK. A LaunchAgent in ~/Library/LaunchAgents is loaded by launchd at the next
-  # graphical login - which is exactly when this is meant to run, and there is no gui domain to
-  # load it into from an ssh session (see the note in lib/steps.py).
-  - name: install the bootstrap launcher
-    bootstrap_install: true
-    share_family: macos
-    timeout: 300
 
   # THE PLIST HAS TO BE VALID AND HAS TO NAME THE LAUNCHER. `plutil -lint` in the install step
   # catches malformed XML; this catches a plist that is well formed and points at nothing.

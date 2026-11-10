@@ -10,9 +10,10 @@ the launcher only fires at LOGIN and the dev stage is already logged in - and an
 stage writes to prove it would go onto the published disk.
 
 So this starts the disk a second time, exactly as a person would: mount the share, drop a
-bootstrap into it, log in, and look at what appeared. NOTHING HERE IS PUBLISHED. `~/hello.txt`
-is written inside the guest and dies with the launch, which is the property that makes it a
-test rather than a fixture.
+bootstrap into it, log in, and look at what appeared. NOTHING HERE IS PUBLISHED, and the reason is
+the same one every stage keeps: hello.txt is written into the SHARE, so it lands on the host and
+cannot be part of the image. A file on the disk would be a fixture; a file on the share is a
+measurement.
 
 THE CHAIN IT PROVES, IN ORDER
 
