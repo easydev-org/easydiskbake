@@ -108,17 +108,25 @@ def fill_account_name(driver, step) -> bool:
     """
     user = str((getattr(driver, "values", {}) or {}).get("user") or "docker")
 
-    # THE DISPLAY NAME IS THE LOGIN NAME, BECAUSE THIS INSTALLER DERIVES ONE FROM THE OTHER.
+    # THE DISPLAY NAME MUST DIFFER FROM THE LOGIN NAME, AND THE LOGIN MUST STILL BE `docker`.
     #
-    # This used to be `user.capitalize() + " User"` = `Docker User`, and pop-os-installer
-    # derives the login by lowercasing the display name and dropping the spaces: `Docker User`
-    # -> `dockeruser`. Measured on run 42570186630's own prompt, `dockeruser@pop-os:~$`, and
-    # again on 9e2168b's ssh stage where `id -un` returned `dockeruser`.
+    # TWO CONSTRAINTS, AND THEY ARE BOTH MEASURED:
     #
-    # A display name of `User` was considered and is worse: this pane shows Full Name to the
-    # HUMAN at the greeter, and the greeter is what the ssh stage answers. `docker` in both
-    # fields keeps the two in step, and it is the value every other image here carries.
-    display = user
+    #   pop-os-installer DERIVES the login from the display name by lowercasing it and
+    #   dropping spaces. `Docker User` -> `dockeruser` (run 42570186630's prompt, and
+    #   `id -un` on 9e2168b's ssh stage).
+    #
+    #   IT ALSO REFUSES THE TWO BEING EQUAL. Typing `docker` into Full Name on 508d45e made
+    #   User Name `docker` and the footer NEXT VANISHED:
+    #
+    #       click (1188, 494) - type 'docker'
+    #       === create user account (python footer:press_footer)
+    #       === NO FOOTER BUTTON ON THIS PANE ===
+    #
+    # So the display name has to derive to `docker` while not being `docker` itself. The
+    # derivation is lowercase-and-strip, which makes `Docker` the unique answer: it lowercases
+    # to `docker`, and as a STRING it is not `docker`, so the equality check passes.
+    display = user.capitalize() if user.lower() == user else user
 
     deadline = time.time() + float(step.get("timeout", 90))
     seen = ""
