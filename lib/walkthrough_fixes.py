@@ -465,14 +465,19 @@ def main() -> int:
         # without checking one.
         # THE COMMAND IS RENDERED, so this checks what it will actually say: the mapped name,
         # and NOT the authenticated account's password.
-        # THE COLON BEFORE THE @ IS LOAD-BEARING. `//user@host` means "ask for a password", and
-        # with no tty that gives up before any session setup: run 42750412479 selected SMB3_11 and
-        # reset the connection, and the server log had no GUEST line at all. The man page's own
-        # passwordless example is `//guest:@myserver/PUBLIC`.
-        check("the macos mount presents the mapped guest name with an empty password",
-              "lib/hostshare.py", f"//{hostshare.MACOS_GUEST_USER}:@" in mac)
-        check("the macos mount carries no password", "lib/hostshare.py",
-              hostshare.SMB_PASSWORD not in mac)
+        # THE PASSWORD GOES THROUGH A PTY. mount_smbfs asks for it on a terminal; a pipe is not
+        # one, and the client gives up rather than reading it - six runs and the server's own log
+        # established that every session setup it received carried an NTLMv2 response computed
+        # from an empty password. `script -q /dev/null` supplies the terminal.
+        check("the macos mount feeds the password through a pty", "lib/hostshare.py",
+              "script -q /dev/null mount_smbfs" in mac)
+        check("the macos mount uses the real account", "lib/hostshare.py",
+              f"//{hostshare.SMB_USER}@" in mac)
+        # THE PASSWORD IS PRESENT, because the pty is what makes it usable. What must NOT be
+        # present is the earlier, empty-password form - `//user:@host` - which the guest mapping
+        # needed and which the client reset before any session setup.
+        check("the macos mount is not the empty-password form", "lib/hostshare.py",
+              f"//{hostshare.SMB_USER}:@" not in mac)
         check("the macos client name is not the authenticated account", "lib/hostshare.py",
               "MACOS_GUEST_USER" in read("lib/hostshare.py")
               and 'MACOS_GUEST_USER = os.environ.get("HOSTSHARE_MACOS_USER", "macguest")'

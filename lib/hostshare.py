@@ -426,41 +426,36 @@ def mount_commands(host: str = "", user: str = "docker",
         # ROOT IS KEPT even though it was not the cause: `/Library/LaunchDaemons` needs it for
         # the mount daemon, so the two halves behave the same, and a mount made by one account is
         # not a mount another has to reason about.
-        # macOS: A SESSION NAMING NO REAL ACCOUNT, WHICH SAMBA MAPS TO THE GUEST.
+        # macOS: THE PASSWORD GOES THROUGH A PSEUDO-TERMINAL, BECAUSE mount_smbfs WANTS A TTY.
         #
-        # FOUR RUNS ESTABLISHED THAT THE PASSWORD CANNOT BE SUPPLIED HERE. Every one reached the
-        # server with a genuine NTLMv2 response and every one was refused the same way:
+        # Five runs, and the server's log ruled out the server every time:
         #
-        #     mount_smbfs //user:pass@host/share      77 Authentication error     42744852729
-        #     nsmb.conf + mount_smbfs -N              NT_STATUS_WRONG_PASSWORD   42746003442
-        #     as root, password in the URL            NT_STATUS_WRONG_PASSWORD   42748534325
-        #     as root, password on stdin from a file  NT_STATUS_WRONG_PASSWORD   42749456959
+        #     //user:pass@host/share                  77 Authentication error    42744852729
+        #     nsmb.conf + -N                          NT_STATUS_WRONG_PASSWORD  42746003442
+        #     root, password in the URL               NT_STATUS_WRONG_PASSWORD  42748534325
+        #     root, password on stdin from a file     NT_STATUS_WRONG_PASSWORD  42749456959
+        #     //macguest:@host/share, mapped to guest NT_STATUS_NO_SUCH_USER     42751258104
+        #                                              then the client reset
         #
-        #     Auth: [SMB2,(null)] user []\[GUEST] with [NTLMv2] status [NT_STATUS_WRONG_PASSWORD]
-        #     Got user=[GUEST] ... len1=24 len2=214
+        # Every session-setup that arrived carried a real NTLMv2 response computed from an EMPTY
+        # password, and `smbclient -U guest%admin` against this very config answers rc=0. So the
+        # password is the missing piece, and mount_smbfs takes it from a TERMINAL, not from stdin
+        # and not from the URL. A pipe is not a terminal; `script` gives it one.
         #
-        # len2=214 is a real response, so the client is working and the password it used was
-        # empty. `nsmb.conf` has no `password` keyword at all; `-N` means "do not prompt", and
-        # when it cannot prompt it sends nothing rather than reading stdin.
+        # THIS IS THE ONE MECHANISM LEFT THAT ACTUALLY DELIVERS A PASSWORD, and it is the standard
+        # answer to this exact question - `printf pass | script -q /dev/null mount_smbfs ...`
+        # hands the client a pty, so its prompt is answered instead of being met with EOF.
         #
-        # THE SERVER IS FINE - `smbclient -U guest%admin //127.0.0.1/shared` answers rc=0 against
-        # this very config - so the answer is not to make the password arrive, it is to make it
-        # unnecessary for this one client. `map to guest = Bad User` turns a session setup naming
-        # an account samba does not have into the guest account, and checks no password:
-        #
-        #     smbclient -U macguest%           rc=0
-        #     smbclient -U macguest%whatever   rc=0
-        #
-        # and a write through it lands in the shared directory. No sudo either: a mount that needs
-        # no credential does not need root, and the daemon that runs this at boot is root anyway.
+        # THE GUEST MAPPING STAYS IN THE SERVER CONFIG as a second way in, but the client no
+        # longer depends on it: a real account with a real password is what the other family
+        # uses, and one authentication story is easier to reason about than two.
         "macos": (
             f"mkdir -p ~/shared && "
-            # THE COLON IS NOT DECORATION. `//user@host` means "ask for a password" and, with no
-            # tty, mounts nothing at all - run 42750412479 negotiated SMB3_11 and aborted before
-            # any session setup, which is why the server log had no GUEST line in it. The man
-            # page's own example for a passwordless session is `//guest:@myserver/PUBLIC`: user,
-            # colon, empty password.
-            f"mount_smbfs -f 0666 -d 0777 //{MACOS_GUEST_USER}:@{host}/{SHARE_NAME} ~/shared"
+            f"printf '%s\\n' {shlex.quote(login_password)} | sudo -S -p '' sh -c "
+            + shlex.quote(
+                f"printf '%s\\n' {shlex.quote(SMB_PASSWORD)} | "
+                f"script -q /dev/null mount_smbfs -f 0666 -d 0777 "
+                f"//{SMB_USER}@{host}/{SHARE_NAME} ~/shared")
         ),
         # WINDOWS: THE CREDENTIAL IS SUPPLIED PER SESSION, WHICH IS THE ONLY THING THAT WORKS.
         #

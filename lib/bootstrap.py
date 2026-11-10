@@ -148,13 +148,15 @@ def macos_mount_script(host: str, user: str, share: str, password: str = "",
 # ROOT, BECAUSE IT RUNS AT BOOT BEFORE ANYBODY HAS LOGGED IN. There is no user session to mount
 # into and no keychain to unlock, so this is where a mount that has to exist at login belongs.
 #
-# THE FILE CARRIES NO PASSWORD. Nothing it could do with one would work - see the note at the
-# mount below - so it does not carry one, and a published disk loses nothing if it is read.
+# THE PASSWORD IS IN THIS FILE, 0600 and root-owned. It is here because mount_smbfs cannot be
+# given one any other way from a script - see the note at the mount below - and this is a
+# throwaway VM whose share password is `admin`.
 set -u
 
 SERVER="{host}"
 SHARE="{share}"
 USER="{user}"
+PASSWORD="{password}"
 MOUNT="{home}/shared"
 
 mkdir -p "$MOUNT"
@@ -166,21 +168,18 @@ if mount | grep -q " on $MOUNT "; then
     exit 0
 fi
 
-# NO PASSWORD, BECAUSE mount_smbfs CANNOT BE GIVEN ONE HERE.
+# THE PASSWORD GOES THROUGH A PSEUDO-TERMINAL. mount_smbfs asks for it on a TERMINAL - not in the
+# URL, not from nsmb.conf (which has no `password` keyword), and not from a pipe, because a pipe
+# is not a tty and the client gives up rather than reading it. `script` supplies the terminal.
 #
-# Four runs reached the server with a real NTLMv2 response computed from an empty password - the
-# URL form, nsmb.conf with -N, as root, and as root reading a password file on stdin. `-N` means
-# "do not prompt"; with no tty it sends nothing rather than reading stdin.
-#
-# $USER is therefore a name samba does not have, and `map to guest = Bad User` maps it to the
-# guest account without checking a password. See lib/hostshare.py's mount_commands.
+# Five runs reached the server with a real NTLMv2 response computed from an empty password before
+# this was understood, and the server was never the problem: `smbclient -U guest%admin` against
+# the same config answers rc=0.
 i=0
 while [ "$i" -lt 30 ]; do
     i=$((i + 1))
-    # THE COLON SEPARATES USER FROM AN EMPTY PASSWORD. `//user@host` asks for one instead, and
-    # with no tty it gives up before any session setup - run 42750412479 selected SMB3_11 and
-    # then reset the connection.
-    if mount_smbfs -f 0666 -d 0777 "//$USER:@$SERVER/$SHARE" "$MOUNT" 2>&1; then
+    if printf '%s\n' "$PASSWORD" |
+       script -q /dev/null mount_smbfs -f 0666 -d 0777 "//$USER@$SERVER/$SHARE" "$MOUNT" 2>&1; then
         echo "mounted $SERVER/$SHARE on $MOUNT"
         exit 0
     fi

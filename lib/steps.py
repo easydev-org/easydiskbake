@@ -1150,8 +1150,8 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
             # real account: mount_smbfs cannot be handed a password from here, and the mapped
             # name needs none. See lib/hostshare.py's mount_commands.
             mount_script = bootstrap.macos_mount_script(
-                net.BRIDGE_IP, hostshare.MACOS_GUEST_USER, hostshare.SHARE_NAME,
-                home=f"/Users/{login or 'docker'}")
+                net.BRIDGE_IP, hostshare.SMB_USER, hostshare.SHARE_NAME,
+                hostshare.SMB_PASSWORD, home=f"/Users/{login or 'docker'}")
             mount_local = os.path.join(driver.work or ".", "smbmount.sh")
             with open(mount_local, "w") as fh:
                 fh.write(mount_script)
