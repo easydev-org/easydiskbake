@@ -69,6 +69,9 @@ on:
       hostname:
         description: "stage 4: the machine's name; empty for easyvm-<8 random characters>"
         default: ""
+      vm_configure_boot_timeout:
+        description: "stage 4: seconds the configured disk has to answer ssh"
+        default: "1800"
       launch_run:
         description: "stage 2: boot the finished disk and check the desktop comes up"
         type: boolean
@@ -420,7 +423,7 @@ jobs:
               --out out/fedora-vm-configure.qcow2 \
               --walk linux/fedora-workstation/steps/vm-configure.yaml \
               --ssh-port "${{ inputs.ssh_port || '2222' }}" \
-              --boot-timeout "${{ inputs.boot_timeout || '1800' }}" \
+              --boot-timeout "${{ inputs.vm_configure_boot_timeout || '1800' }}" \
               --hostname "${{ inputs.hostname }}" \
               | tee out/hostname.txt
 
