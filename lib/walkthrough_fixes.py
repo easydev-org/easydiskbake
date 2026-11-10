@@ -453,85 +453,101 @@ def main() -> int:
         import hostshare
         mac = hostshare.mount_commands()["macos"]
         win = hostshare.mount_commands()["windows"]
-        # NOT `nsmb.conf`, WHICH HAS NO `password` KEYWORD. Run 42746003442 had the server
-        # answer NT_STATUS_WRONG_PASSWORD for an empty password that -N supplied from a file
-        # that cannot carry one.
+        conf = hostshare.config_text("/tmp/x")
+
+        # ONE ACCOUNT, AND IT HAS NO PASSWORD. That is what lets BOTH clients work with the
+        # credential they can actually produce: mount_smbfs sends an empty password and cannot be
+        # made to send anything else from a script, and a Windows network logon cannot reach the
+        # credential vault at all. Six macOS runs and one Windows run established both halves.
+        check("the share account has no password", "lib/hostshare.py",
+              hostshare.SMB_PASSWORD == "")
+        check("the server accepts an empty password", "lib/hostshare.py",
+              "null passwords = yes" in conf)
+        # AND THE EMPTY ONE IS STILL CHECKED. `null passwords` must not become "any password".
+        # `guest ok = no` plus the real account is what keeps a wrong password refused.
+        check("the share is not open to an unknown name", "lib/hostshare.py",
+              "guest ok = no" in conf and "map to guest = Never" in conf)
+
+        # BOTH CLIENTS MOUNT THE SAME ACCOUNT WITH NO PASSWORD, spelled for each shell.
+        # THE COLON IS THE SPELLING, not a test for an absent password: SMB_PASSWORD is "",
+        # which is a substring of everything, so "password not in command" cannot be asserted.
+        check("the macos mount uses the no-password form", "lib/hostshare.py",
+              f"//{hostshare.SMB_USER}:@" in mac)
+        check("the windows mount passes an empty password", "lib/hostshare.py",
+              '"" /user:' + hostshare.SMB_USER in win)
+        # NOT `nsmb.conf`, WHICH HAS NO `password` KEYWORD AT ALL.
         check("macos does not pretend nsmb.conf can hold a password", "lib/hostshare.py",
               "nsmb.conf" not in mac)
-        # AND macOS SUPPLIES NO PASSWORD AT ALL, BECAUSE IT CANNOT. Four runs reached the server
-        # with a real NTLMv2 response computed from an empty password - URL form, nsmb.conf with
-        # -N, as root, and as root reading a password file on stdin. So this client presents a
-        # name samba does not have, and `map to guest = Bad User` maps it to the guest account
-        # without checking one.
-        # THE COMMAND IS RENDERED, so this checks what it will actually say: the mapped name,
-        # and NOT the authenticated account's password.
-        # THE PASSWORD GOES THROUGH A PTY. mount_smbfs asks for it on a terminal; a pipe is not
-        # one, and the client gives up rather than reading it - six runs and the server's own log
-        # established that every session setup it received carried an NTLMv2 response computed
-        # from an empty password. `script -q /dev/null` supplies the terminal.
-        check("the macos mount feeds the password through a pty", "lib/hostshare.py",
-              "script -q /dev/null mount_smbfs" in mac)
-        check("the macos mount uses the real account", "lib/hostshare.py",
-              f"//{hostshare.SMB_USER}@" in mac)
-        # THE PASSWORD IS PRESENT, because the pty is what makes it usable. What must NOT be
-        # present is the earlier, empty-password form - `//user:@host` - which the guest mapping
-        # needed and which the client reset before any session setup.
-        check("the macos mount is not the empty-password form", "lib/hostshare.py",
-              f"//{hostshare.SMB_USER}:@" not in mac)
-        check("the macos client name is not the authenticated account", "lib/hostshare.py",
-              "MACOS_GUEST_USER" in read("lib/hostshare.py")
-              and 'MACOS_GUEST_USER = os.environ.get("HOSTSHARE_MACOS_USER", "macguest")'
-              in read("lib/hostshare.py"))
-        # THE SERVER HAS TO PERMIT IT, which is `map to guest` plus `guest ok` on the share.
-        conf = hostshare.config_text("/tmp/x")
-        check("the server maps an unknown name to guest", "lib/hostshare.py",
-              "map to guest = Bad User" in conf)
-        check("the share admits the mapped guest", "lib/hostshare.py",
-              "guest ok = yes" in conf)
-        # AND WINDOWS STILL AUTHENTICATES: it can supply a password, and it refuses guests.
-        check("windows still authenticates as the real account", "lib/hostshare.py",
-              f"/user:{hostshare.SMB_USER}" in win
-              and f" {hostshare.SMB_PASSWORD} " in win)
-        # NOT `cmdkey`, WHICH CANNOT WORK HERE AT ALL. CredWriteW answers
-        # ERROR_NO_SUCH_LOGON_SESSION for a network logon - "Network logon sessions do not have
-        # an associated credential set" - and Win32-OpenSSH hardcodes that logon type. Run
-        # 42748563969 measured it: "CMDKEY: Credentials cannot be saved from this logon session."
+        # NOT A PTY: it was an attempt to smuggle a password to a client that does not need one
+        # any more. SUDO STAYS, because mounting a filesystem is privileged - what changed is
+        # that it no longer carries a share password, only the login password it always needed.
+        check("the macos mount needs no pty", "lib/hostshare.py", "script -q" not in mac)
+        check("the macos mount is still privileged", "lib/hostshare.py", "sudo -S" in mac)
+        # NOT `cmdkey`: CredWriteW answers ERROR_NO_SUCH_LOGON_SESSION for a network logon, which
+        # Win32-OpenSSH hardcodes. Run 42748563969 measured the refusal.
         check("the windows mount does not pretend the vault is reachable", "lib/hostshare.py",
               "cmdkey" not in win)
-        # AND A DRIVE LETTER WOULD BE A DIFFERENT MISTAKE: it belongs to the session that made
-        # it, which is run 42737785611 - 0 from `net use Z:`, "The system cannot find the path"
-        # from the very next command.
+        # AND NO DRIVE LETTER: it belongs to the logon session that made it (run 42737785611).
         check("the windows mount claims no drive letter", "lib/hostshare.py",
               "net use Z:" not in win)
-        # WHAT IS LEFT IS THE SESSION, with the credential supplied inline.
-        check("the windows mount supplies the credential to its own session", "lib/hostshare.py",
-              "net use" in win and "/user:" in win and "SMB_PASSWORD" in read("lib/hostshare.py"))
-        # AND THE LAUNCHER DOES THE SAME, because it runs in a session of its own at logon.
-        win_agent = bootstrap.launcher_body("windows", "172.30.0.1", "guest", "shared", "admin")
-        win_cmds = [line for line in win_agent.splitlines()
-                    if not line.lstrip().startswith("#")]
-        check("the windows launcher opens its own smb session", "lib/bootstrap.py",
-              any("net use" in line for line in win_cmds))
-        check("the windows launcher addresses the share by unc path", "lib/bootstrap.py",
-              "\\\\172.30.0.1\\shared" in win_agent)
-        check("the windows launcher has no drive letter", "lib/bootstrap.py",
-              not any("Z:" in line for line in win_cmds))
 
-        check("the macos mount is a LaunchDaemon, because a user cannot mount a samba share",
-              "lib/bootstrap.py",
-              "MACOS_MOUNT_LABEL" in read("lib/bootstrap.py")
-              and "LaunchDaemons" in read("lib/steps.py"))
-        # THE AGENT NO LONGER MOUNTS. Two things that both mount are two things that can
-        # disagree about whether the share is up. The word survives in the comment that explains
-        # why it is the daemon's job, so the check is for a command.
-        agent = bootstrap.launcher_body("macos", "172.30.0.1", "guest", "shared")
-        agent_cmds = [line for line in agent.splitlines()
-                      if not line.lstrip().startswith("#")]
-        check("the macos agent waits for the daemon instead of mounting", "lib/bootstrap.py",
-              not any("mount_smbfs" in line for line in agent_cmds))
-        check("the macos daemon carries the mount", "lib/bootstrap.py",
-              "mount_smbfs" in bootstrap.macos_mount_script(
-                  "172.30.0.1", "guest", "shared", "admin"))
+        # --- THE FOUR HOUSE RULES, EACH ONE CHECKABLE -------------------------------
+        #
+        # 1. THE ACCOUNT HAS NO PASSWORD. Checked above; repeated here because it is a stated
+        #    requirement rather than an implementation detail.
+        check("1. the smb account has no password", "lib/hostshare.py",
+              hostshare.SMB_PASSWORD == "")
+
+        # 2. THE JOB IS CALLED vm-bootstrap ON BOTH DISKS, with no product name in it.
+        check("2. the macOS agent is org.vm.bootstrap", "lib/bootstrap.py",
+              bootstrap.MACOS_LABEL == "org.vm.bootstrap")
+        check("2. the windows task is vm-bootstrap", "lib/bootstrap.py",
+              bootstrap.WINDOWS_TASK == "vm-bootstrap")
+        check("2. the mount daemon is org.vm.smbmount", "lib/bootstrap.py",
+              bootstrap.MACOS_MOUNT_LABEL == "org.vm.smbmount")
+        # AND NOTHING ANYWHERE STILL SAYS THE OLD NAME, which is how a rename half-happens.
+        for path in ("lib/bootstrap.py", "lib/steps.py", "lib/launch_selftest.py",
+                     "macos/15/steps/share.yaml", "windows/11/steps/share.yaml"):
+            body = read(path)
+            check(f"2. {path} has no old job name", path,
+                  "easydiskbake-bootstrap" not in body
+                  and "org.easydiskbake" not in body)
+
+        # 3. THE FALLBACK: NO SCRIPT ON THE SHARE MEANS NOTHING RUNS.
+        mac_agent = bootstrap.launcher_body("macos", "172.30.0.1", "guest", "shared")
+        win_agent = bootstrap.launcher_body("windows", "172.30.0.1", "guest", "shared", "")
+        for family, body in (("macos", mac_agent), ("windows", win_agent)):
+            check(f"3. the {family} launcher refuses to run without a script", "lib/bootstrap.py",
+                  "nothing to run" in body and "exit 0" in body)
+        # AND IT MUST NOT INVENT ONE, so the branch that runs the script is the one that checked.
+        check("3. the macOS launcher checks before it runs", "lib/bootstrap.py",
+              mac_agent.index('if [ ! -f "$SCRIPT" ]') < mac_agent.index('/bin/sh "$SCRIPT"'))
+        check("3. the windows launcher checks before it runs", "lib/bootstrap.py",
+              win_agent.index("if (-not $found)") < win_agent.index("-File $Script"))
+
+        # 4. THE PROBE WRITES hello.txt INTO THE SHARE, AND NOTHING ELSE GETS WRITTEN THERE.
+        #    A file on the disk would be published; a file on the share cannot be.
+        for path, name in (("lib/bootstrap_probe.sh", "sh"),
+                           ("lib/bootstrap_probe.ps1", "ps1")):
+            body = read(path)
+            check(f"4. {path} writes hello.txt into the share", path, "hello.txt" in body)
+            check(f"4. {path} writes nothing else into the share", path,
+                  body.count("> \"$OUT\"") <= 2 and "hello.txt" in body)
+        # AND THE LAUNCHER KEEPS ITS OWN BOOKKEEPING OUT OF THE SHARE, because when the mount
+        # failed the share's path is a local directory and anything written there is in the image.
+        check("4. the macOS launcher logs outside the share", "lib/bootstrap.py",
+              'LOG="$HOME/' in bootstrap.launcher_body("macos", "1.1.1.1", "guest", "shared"))
+        check("4. the windows launcher logs outside the share", "lib/bootstrap.py",
+              "Join-Path $env:USERPROFILE" in
+              bootstrap.launcher_body("windows", "1.1.1.1", "guest", "shared", ""))
+        # AND THE PROBE REFUSES TO WRITE WHEN THE SHARE IS NOT REALLY MOUNTED: the mount point is
+        # a local directory, and a hello.txt there would ship with the disk.
+        probe = read("lib/bootstrap_probe.sh")
+        check("4. the probe checks the mount before writing", "lib/bootstrap_probe.sh",
+              'mount | grep -q " on $SHARE "' in probe)
+        check("4. the probe refuses into the guest, not the share", "lib/bootstrap_probe.sh",
+              "bootstrap-refused.txt" in probe
+              and probe.index("bootstrap-refused.txt") < probe.index('> "$OUT"'))
     except Exception as exc:                          # noqa: BLE001
         check(f"hostshare imports ({exc})", "lib/hostshare.py", False)
 

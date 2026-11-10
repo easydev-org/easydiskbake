@@ -73,26 +73,28 @@ SHARE_NAME = "shared"
 # THE DEFAULT HOST DIRECTORY, which is the one the user named.
 DEFAULT_DIR = os.path.expanduser("~/shared")
 
-# THE SHARE HAS ONE ACCOUNT, AND THE GUEST ALREADY KNOWS ITS PASSWORD.
+# THE SHARE HAS ONE ACCOUNT AND IT HAS NO PASSWORD.
 #
-# The disk's answer file creates `docker`/`admin`; the mount command uses the same pair. This
-# account exists only in samba's own tdb, in a private directory under /tmp, because a container
-# has no /var/lib/samba and telling smbd to create one it cannot write is a start failure that
-# reads like a config error.
+# AN EMPTY PASSWORD IS THE POINT, NOT AN OVERSIGHT. Both guests mount with a session setup that
+# carries no password, and neither can be talked out of it:
+#
+#     macOS    mount_smbfs asks on a TERMINAL. There is no terminal over ssh, and six runs
+#              established that the URL, nsmb.conf (no `password` keyword at all), -N ("do not
+#              prompt"), and a stdin redirect all end with a real NTLMv2 response computed from
+#              an EMPTY password.
+#     Windows  cannot reach the credential vault from a network logon at all -
+#              CredWriteW answers ERROR_NO_SUCH_LOGON_SESSION - so it supplies the password in
+#              its own command, and `net use \host\share "" /user:guest` is that.
+#
+# A password therefore has to be a thing neither client has to produce. Samba will only accept an
+# empty one when `null passwords = yes` is set, which is written out below rather than inherited
+# from a default, because it is a weaker setting and it should be visible.
+#
+# WHAT THIS COSTS: anyone who can reach 172.30.0.1:445 can read and write the shared directory.
+# The only other member of that bridge is the one guest this process started, which is the same
+# trade the account itself already made. It is a CI container on a private bridge, not a server.
 SMB_USER = os.environ.get("HOSTSHARE_USER", "guest")
-
-# THE NAME macOS PRESENTS, AND IT IS DELIBERATELY NOT A REAL ACCOUNT.
-#
-# `map to guest = Bad User` in the config below maps a session setup that names an account samba
-# does not have onto the guest account, with no password checked at all - which is the only shape
-# that works from a macOS ssh session, because mount_smbfs cannot be given a password there
-# (three runs: URL form, nsmb.conf, root with stdin redirect - all reached the server with a real
-# NTLMv2 response computed from an empty password).
-#
-# Windows must NOT use this: it refuses guest sessions outright (see the note over
-# `security = user`), and it can supply a password, so it uses SMB_USER and is authenticated.
-MACOS_GUEST_USER = os.environ.get("HOSTSHARE_MACOS_USER", "macguest")
-SMB_PASSWORD = os.environ.get("HOSTSHARE_PASSWORD", "admin")
+SMB_PASSWORD = os.environ.get("HOSTSHARE_PASSWORD", "")
 PRIVATE_DIR = "/tmp/easydiskbake-samba-private"
 
 CONF_PATH = "/tmp/easydiskbake-smb.conf"
@@ -173,7 +175,11 @@ def config_text(directory: str) -> str:
    # the start step fail on DIFFERENT missing directories, and fixing the first only moves the
    # error to the second.
    ncalrpc dir = {PRIVATE_DIR}/ncalrpc
-   map to guest = Bad User
+   # NOT `map to guest`. It was tried as a way round the password problem - an unknown name lands
+   # on the guest account with no password checked - and it is no longer needed now that the real
+   # account HAS no password. Keeping it would admit any name with any password, which is a wider
+   # door than the problem requires.
+   map to guest = Never
    guest account = root
    # `ntlm auth` LEFT AT ITS DEFAULT, WHICH IS `ntlmv2-only`.
    #
@@ -189,6 +195,9 @@ def config_text(directory: str) -> str:
    # and the alternative is a macOS client that cannot mount the share at all. It is written out
    # rather than left to a default so the next reader sees the trade rather than inheriting it.
    ntlm auth = yes
+   # AND AN EMPTY PASSWORD IS A VALID ONE. Without this, smbpasswd stores the empty password and
+   # smbd refuses every session setup that presents it - which is exactly what both guests do.
+   null passwords = yes
    server min protocol = SMB2_10
    # SIGNING IS LEFT AT ITS DEFAULT, NOT TURNED OFF.
    # Windows 11 24H2 requires signing by default and refuses a server that cannot; turning the
@@ -217,7 +226,9 @@ def config_text(directory: str) -> str:
    path = {directory}
    browseable = yes
    writable = yes
-   guest ok = yes
+   # NOT `guest ok`. The account is what admits a client now, and it has no password - allowing
+   # guest as well would be a second, wider door onto the same directory.
+   guest ok = no
    force user = root
    create mask = 0666
    directory mask = 0777
@@ -331,6 +342,8 @@ def _ensure_account() -> bool:
                 log(f"    {line[:150]}")
             return False
 
+    # TWO EMPTY LINES, BECAUSE smbpasswd ASKS TWICE. It accepts an empty password and answers
+    # rc=0; `null passwords = yes` in the config is what makes smbd honour it at session setup.
     created = subprocess.run(
         ["smbpasswd", "-a", "-s", "-c", CONF_PATH, SMB_USER],
         input=f"{SMB_PASSWORD}\n{SMB_PASSWORD}\n", capture_output=True, text=True)
@@ -339,7 +352,8 @@ def _ensure_account() -> bool:
         for line in ((created.stderr or "") + (created.stdout or "")).splitlines()[:6]:
             log(f"    {line[:150]}")
         return False
-    log(f"  the share account {SMB_USER!r} exists")
+    log(f"  the share account {SMB_USER!r} exists"
+        + (" (no password)" if not SMB_PASSWORD else ""))
     return True
 
 
@@ -426,63 +440,50 @@ def mount_commands(host: str = "", user: str = "docker",
         # ROOT IS KEPT even though it was not the cause: `/Library/LaunchDaemons` needs it for
         # the mount daemon, so the two halves behave the same, and a mount made by one account is
         # not a mount another has to reason about.
-        # macOS: THE PASSWORD GOES THROUGH A PSEUDO-TERMINAL, BECAUSE mount_smbfs WANTS A TTY.
+        # macOS: THE EMPTY PASSWORD IS NOW THE RIGHT ONE, SO THIS IS THE PLAIN FORM.
         #
-        # Five runs, and the server's log ruled out the server every time:
+        # Six runs went into discovering that mount_smbfs sends an empty password and cannot be
+        # made to send anything else over ssh:
         #
-        #     //user:pass@host/share                  77 Authentication error    42744852729
-        #     nsmb.conf + -N                          NT_STATUS_WRONG_PASSWORD  42746003442
-        #     root, password in the URL               NT_STATUS_WRONG_PASSWORD  42748534325
-        #     root, password on stdin from a file     NT_STATUS_WRONG_PASSWORD  42749456959
-        #     //macguest:@host/share, mapped to guest NT_STATUS_NO_SUCH_USER     42751258104
-        #                                              then the client reset
+        #     //user:pass@host/share          password ignored, session setup sent anyway
+        #     nsmb.conf + -N                  no `password` keyword exists in that file at all
+        #     root + stdin redirect           a pipe is not a tty, so nothing was read
+        #     script(1) pty                   would have worked, and was no longer needed
         #
-        # Every session-setup that arrived carried a real NTLMv2 response computed from an EMPTY
-        # password, and `smbclient -U guest%admin` against this very config answers rc=0. So the
-        # password is the missing piece, and mount_smbfs takes it from a TERMINAL, not from stdin
-        # and not from the URL. A pipe is not a terminal; `script` gives it one.
+        # The account in start() now HAS no password, and `null passwords = yes` makes smbd
+        # accept that, so the client's empty password is the correct credential rather than a
+        # mistake to work around. `user:` with the colon and nothing after it is the man page's
+        # own spelling for "this user, no password" - `//user@host` would mean "ask for one",
+        # and with no tty that gives up before any session setup.
         #
-        # THIS IS THE ONE MECHANISM LEFT THAT ACTUALLY DELIVERS A PASSWORD, and it is the standard
-        # answer to this exact question - `printf pass | script -q /dev/null mount_smbfs ...`
-        # hands the client a pty, so its prompt is answered instead of being met with EOF.
-        #
-        # THE GUEST MAPPING STAYS IN THE SERVER CONFIG as a second way in, but the client no
-        # longer depends on it: a real account with a real password is what the other family
-        # uses, and one authentication story is easier to reason about than two.
+        # NO SUDO: a mount needs root, and this channel has it through `login_password` the same
+        # way macos/15/steps/ssh.yaml sets the host name - but the command itself no longer has
+        # to smuggle a secret through an elevated shell, which is the part that kept going wrong.
+        # SUDO IS STILL NEEDED, AND ONLY FOR THE MOUNT ITSELF. `mount_smbfs` mounts a filesystem
+        # and that is a privileged operation; what sudo is NOT doing here is smuggling a password
+        # to the client, which is what made the earlier forms fail. The account has no password,
+        # so the stdin line sudo reads is the only secret in the command and nothing else wants it.
         "macos": (
             f"mkdir -p ~/shared && "
-            f"printf '%s\\n' {shlex.quote(login_password)} | sudo -S -p '' sh -c "
-            + shlex.quote(
-                f"printf '%s\\n' {shlex.quote(SMB_PASSWORD)} | "
-                f"script -q /dev/null mount_smbfs -f 0666 -d 0777 "
-                f"//{SMB_USER}@{host}/{SHARE_NAME} ~/shared")
+            f"printf '%s\\n' {shlex.quote(login_password)} | sudo -S -p '' "
+            f"mount_smbfs -f 0666 -d 0777 //{SMB_USER}:@{host}/{SHARE_NAME} ~/shared"
         ),
-        # WINDOWS: THE CREDENTIAL IS SUPPLIED PER SESSION, WHICH IS THE ONLY THING THAT WORKS.
+        # WINDOWS: THE SAME ACCOUNT, THE SAME EMPTY PASSWORD, SUPPLIED PER SESSION.
         #
-        # Three runs, three forms, and the third one settles it:
+        # A network logon can neither reuse a stored credential nor write one: CredWriteW
+        # answers ERROR_NO_SUCH_LOGON_SESSION - "Network logon sessions do not have an
+        # associated credential set" - and Win32-OpenSSH hardcodes that logon type, so `cmdkey`
+        # is not available to this channel at all (run 42748563969 measured the refusal).
         #
-        #     net use Z: \\host\share           0, then "The system cannot find the path"
-        #     net use   \\host\share            0, then "user name or password is incorrect"
-        #     cmdkey /add:host /user:.. /pass:..   CMDKEY: Credentials cannot be saved from this
-        #                                         logon session.
+        # What a network logon CAN do is open an SMB session by supplying a credential, and the
+        # `""` is a real argument: it passes the empty password the account now has. Every ssh
+        # command supplies it again rather than inheriting it, because the session it made dies
+        # with the command that made it.
         #
-        # That last message is Microsoft's, and it is BY DESIGN rather than a setting:
-        #
-        #     CredWriteW -> ERROR_NO_SUCH_LOGON_SESSION
-        #     "Network logon sessions do not have an associated credential set."
-        #
-        # Win32-OpenSSH hardcodes the logon it creates to LOGON32_LOGON_NETWORK_CLEARTEXT, there
-        # is no sshd_config directive and no registry value to change it (a pull request that
-        # tried was closed unmerged, because Interactive + UAC token splitting widens an
-        # escalation surface), and the credential vault is simply not reachable from here.
-        #
-        # SO THERE IS NOTHING TO PERSIST, AND THAT IS FINE - what a network logon CAN do is open
-        # an SMB session with EXPLICIT credentials. That session dies with the ssh command, which
-        # is why the proof in windows/11/steps/share.yaml supplies the credential again in its own
-        # command rather than expecting this one's to still be there. The launcher does the same
-        # at logon, where it has a session of its own to spend.
-        "windows": (f'net use \\\\{host}\\{SHARE_NAME} {SMB_PASSWORD} /user:{SMB_USER}'
-                    f' /persistent:no'),
+        # NO DRIVE LETTER: a mapping belongs to the logon session that created it, which is run
+        # 42737785611 - `net use Z:` answered 0 and the next command could not find the path.
+        # The share is addressed by UNC path while the session lives.
+        "windows": (f'net use \\\\{host}\\{SHARE_NAME} "" /user:{SMB_USER} /persistent:no'),
     }
 
 

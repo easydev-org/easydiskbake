@@ -107,7 +107,18 @@ def fill_account_name(driver, step) -> bool:
     and nowhere else, and typing into a card that has not drawn yet lands nowhere.
     """
     user = str((getattr(driver, "values", {}) or {}).get("user") or "docker")
-    display = user.capitalize() + " User"
+
+    # THE DISPLAY NAME IS THE LOGIN NAME, BECAUSE THIS INSTALLER DERIVES ONE FROM THE OTHER.
+    #
+    # This used to be `user.capitalize() + " User"` = `Docker User`, and pop-os-installer
+    # derives the login by lowercasing the display name and dropping the spaces: `Docker User`
+    # -> `dockeruser`. Measured on run 42570186630's own prompt, `dockeruser@pop-os:~$`, and
+    # again on 9e2168b's ssh stage where `id -un` returned `dockeruser`.
+    #
+    # A display name of `User` was considered and is worse: this pane shows Full Name to the
+    # HUMAN at the greeter, and the greeter is what the ssh stage answers. `docker` in both
+    # fields keeps the two in step, and it is the value every other image here carries.
+    display = user
 
     deadline = time.time() + float(step.get("timeout", 90))
     seen = ""

@@ -1221,12 +1221,12 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
                 # placeholder would be looked up as a variable and fail at run time.
                 f"{sudo}sh -c '"
                 "mkdir -p /Library/LaunchDaemons && "
-                "cp /tmp/smbmount.sh /usr/local/bin/easydiskbake-smbmount.sh && "
+                "cp /tmp/smbmount.sh /usr/local/bin/vm-smbmount.sh && "
                 # 0700, BECAUSE THE SCRIPT CARRIES THE SHARE PASSWORD. root runs it; nobody else
                 # has any business reading it, and no keychain exists to hold it instead.
-                "chmod 700 /usr/local/bin/easydiskbake-smbmount.sh && "
-                "chown root:wheel /usr/local/bin/easydiskbake-smbmount.sh && "
-                "sed \"s|__SCRIPT__|/usr/local/bin/easydiskbake-smbmount.sh|\" "
+                "chmod 700 /usr/local/bin/vm-smbmount.sh && "
+                "chown root:wheel /usr/local/bin/vm-smbmount.sh && "
+                "sed \"s|__SCRIPT__|/usr/local/bin/vm-smbmount.sh|\" "
                 f"/tmp/smbmount.plist > /Library/LaunchDaemons/{bootstrap.MACOS_MOUNT_LABEL}.plist && "
                 f"chmod 644 /Library/LaunchDaemons/{bootstrap.MACOS_MOUNT_LABEL}.plist && "
                 "chown root:wheel "

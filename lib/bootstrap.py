@@ -46,8 +46,8 @@ LOG = "bootstrap.log"
 MARKER = "bootstrap.done"
 
 # WHERE EACH FAMILY PUTS THE LAUNCHER AND WHAT RUNS IT.
-MACOS_LABEL = "org.easydiskbake.bootstrap"
-WINDOWS_TASK = "easydiskbake-bootstrap"
+MACOS_LABEL = "org.vm.bootstrap"
+WINDOWS_TASK = "vm-bootstrap"
 
 LAUNCHER = "bootstrap-launcher"
 
@@ -83,7 +83,7 @@ def macos_plist(launcher: str) -> str:
 """
 
 
-MACOS_MOUNT_LABEL = "org.easydiskbake.smbmount"
+MACOS_MOUNT_LABEL = "org.vm.smbmount"
 
 
 def macos_mount_plist(script: str) -> str:
@@ -137,9 +137,9 @@ def macos_mount_script(host: str, user: str, share: str, password: str = "",
     and a mount that failed once is not a mount that cannot work. `KeepAlive` restarts the job on
     a failed exit, so the retry and the daemon's supervisor point the same way.
 
-    `password` IS ACCEPTED AND NOT USED, and the signature keeps it because the caller passes the
-    share's credential and it would be misleading for that to silently vanish. The reason it is
-    unused is in the body: mount_smbfs cannot be handed a password in this position at all.
+    `password` IS ACCEPTED AND NOT USED. The share's account has no password - that is the whole
+    reason this works - and the parameter stays so the caller can keep passing one fact rather than
+    growing a special case.
     """
     return f"""\
 #!/bin/sh
@@ -148,15 +148,13 @@ def macos_mount_script(host: str, user: str, share: str, password: str = "",
 # ROOT, BECAUSE IT RUNS AT BOOT BEFORE ANYBODY HAS LOGGED IN. There is no user session to mount
 # into and no keychain to unlock, so this is where a mount that has to exist at login belongs.
 #
-# THE PASSWORD IS IN THIS FILE, 0600 and root-owned. It is here because mount_smbfs cannot be
-# given one any other way from a script - see the note at the mount below - and this is a
-# throwaway VM whose share password is `admin`.
+# THIS FILE CARRIES NO SECRET. The account it mounts as has no password, so there is nothing to
+# keep here and nothing lost if a published disk is read.
 set -u
 
 SERVER="{host}"
 SHARE="{share}"
 USER="{user}"
-PASSWORD="{password}"
 MOUNT="{home}/shared"
 
 mkdir -p "$MOUNT"
@@ -168,18 +166,20 @@ if mount | grep -q " on $MOUNT "; then
     exit 0
 fi
 
-# THE PASSWORD GOES THROUGH A PSEUDO-TERMINAL. mount_smbfs asks for it on a TERMINAL - not in the
-# URL, not from nsmb.conf (which has no `password` keyword), and not from a pipe, because a pipe
-# is not a tty and the client gives up rather than reading it. `script` supplies the terminal.
+# THE ACCOUNT HAS NO PASSWORD, AND THAT IS WHAT MAKES THIS WORK.
 #
-# Five runs reached the server with a real NTLMv2 response computed from an empty password before
-# this was understood, and the server was never the problem: `smbclient -U guest%admin` against
-# the same config answers rc=0.
+# mount_smbfs sends an empty password and cannot be made to send anything else from a script: not
+# from the URL, not from nsmb.conf (no `password` keyword exists there), not from a pipe (a pipe is
+# not a tty, so the prompt reads EOF), and not through `-N` ("do not prompt"). Six runs reached the
+# server with a genuine NTLMv2 response computed from nothing before this was understood.
+#
+# So the account itself carries no password and `null passwords = yes` makes smbd accept that - see
+# lib/hostshare.py. `user:` with the colon and nothing after it is the man page's own spelling for
+# "this user, no password".
 i=0
 while [ "$i" -lt 30 ]; do
     i=$((i + 1))
-    if printf '%s\n' "$PASSWORD" |
-       script -q /dev/null mount_smbfs -f 0666 -d 0777 "//$USER@$SERVER/$SHARE" "$MOUNT" 2>&1; then
+    if mount_smbfs -f 0666 -d 0777 "//$USER:@$SERVER/$SHARE" "$MOUNT" 2>&1; then
         echo "mounted $SERVER/$SHARE on $MOUNT"
         exit 0
     fi
@@ -202,8 +202,8 @@ def macos_launcher(host: str, user: str, share: str) -> str:
     ~/shared to appear would wait a minute, find an empty directory, and exit 0. That reads as
     "the bootstrap ran and did nothing", which is the worst failure this file can have.
 
-    So it mounts first. The credential is already on the disk - the share stage wrote
-    ~/Library/Preferences/nsmb.conf - which is what makes this possible without a prompt.
+    So it mounts first, with no password at all: the share's account has none, and
+    `null passwords = yes` lets smbd accept the empty one mount_smbfs always sends.
     """
     return f"""\
 #!/bin/sh
@@ -219,9 +219,17 @@ set -u
 SERVER="{host}"
 SHARE="{share}"
 SHARED="$HOME/shared"
+
+# THE SCRIPT COMES FROM THE SHARE; THE LOG AND THE MARKER DO NOT.
+#
+# THAT SPLIT IS THE WHOLE SAFETY PROPERTY OF THIS FILE. When the share is not mounted, $SHARED is
+# just a local empty directory on the disk - the mount point the mount command made before trying.
+# Anything written there would be written to the IMAGE, and the image is what gets published. So
+# the log and the marker live under $HOME, where a stray file costs nothing, and the share is only
+# ever read from.
+LOG="$HOME/{LOG}"
+MARKER="$HOME/{MARKER}"
 SCRIPT="$SHARED/{SCRIPT['macos']}"
-LOG="$SHARED/{LOG}"
-MARKER="$SHARED/{MARKER}"
 
 say() {{
     echo "$@" >> "$LOG" 2>/dev/null || echo "$@"
@@ -229,18 +237,25 @@ say() {{
 
 # WAIT FOR THE MOUNT, WHICH THE DAEMON DOES.
 #
-# The mount is `org.easydiskbake.smbmount`, a LaunchDaemon: a non-root mount_smbfs against Samba
-# is refused, and this agent runs as the user. Two jobs, two triggers, and the handover is the
-# file this waits for - so whichever of the two starts first, the other catches up.
+# The mount is `org.vm.smbmount`, a LaunchDaemon: a non-root mount_smbfs against Samba is refused,
+# and this agent runs as the user. Two jobs, two triggers, and the handover is the file this waits
+# for - so whichever of the two starts first, the other catches up.
 i=0
 while [ ! -f "$SCRIPT" ] && [ "$i" -lt 60 ]; do
     i=$((i + 1))
     sleep 1
 done
 
+# THE FALLBACK: NO SCRIPT, NO RUN.
+#
+# A disk is published with this launcher installed and nothing else. If the share is up but the
+# person has not put a bootstrap there, or the mount failed, or the host is gone - this exits 0 and
+# says so. It must never invent something to run, and it must never fail loudly enough to look like
+# a broken disk: a login hook that does nothing is the correct behaviour for a machine nobody has
+# configured yet.
 [ -f "$MARKER" ] && exit 0
 if [ ! -f "$SCRIPT" ]; then
-    say "[$(date)] $SCRIPT did not appear; is the host share up?"
+    say "[$(date)] no $SCRIPT on the share; nothing to run"
     exit 0
 fi
 
@@ -298,16 +313,19 @@ $SmbUser = '{user}'
 $SmbPass = '{password}'
 $Base    = '{unc}'
 $Script  = '{unc}\\{win}'
-$Log     = '{unc}\\{LOG}'
-$Marker  = '{unc}\\{MARKER}'
-$Local   = Join-Path $env:USERPROFILE '{LOG}'
+
+# THE SCRIPT COMES FROM THE SHARE; THE LOG AND THE MARKER DO NOT.
+#
+# Anything this writes must not end up in the published image, and the share is a UNC path with no
+# local directory that can be fallen into by accident - but the profile is still the right place
+# for bookkeeping, because it is this disk's own and a stray file there costs nothing. The share is
+# only ever read from.
+$Log     = Join-Path $env:USERPROFILE '{LOG}'
+$Marker  = Join-Path $env:USERPROFILE '{MARKER}'
 
 function Say($message) {{
-    $line = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $message"
-    # THE SHARE'S LOG FIRST, THE LOCAL ONE SECOND: a hook that cannot reach the share has to be
-    # able to say so somewhere.
-    Add-Content -Path $Log -Value $line -ErrorAction SilentlyContinue
-    Add-Content -Path $Local -Value $line -ErrorAction SilentlyContinue
+    Add-Content -Path $Log -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $message" `
+        -ErrorAction SilentlyContinue
 }}
 
 # THE SESSION, EXPLICITLY. `/persistent:no` because nothing here survives the process, and
@@ -327,9 +345,15 @@ for ($i = 0; $i -lt 60; $i++) {{
 if (-not $found) {{
     # SAID OUT LOUD, because "the task ran and nothing happened" is otherwise indistinguishable
     # from "the task never ran".
-    Say "$Script did not appear; is the host share up?"
+    Say "no $Script on the share; nothing to run"
     exit 0
 }}
+# THE FALLBACK: NO SCRIPT, NO RUN.
+#
+# A published disk carries this launcher and nothing else. If the share is up but there is no
+# bootstrap on it, or the session could not be opened, or the host is gone - this exits 0 and says
+# so. It must never invent something to run, and never fail loudly enough to look like a broken
+# disk: a login hook that does nothing is the correct behaviour for a machine nobody has set up.
 if (Test-Path $Marker) {{ exit 0 }}
 
 Say "running $Script"

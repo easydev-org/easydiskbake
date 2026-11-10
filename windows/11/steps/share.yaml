@@ -36,9 +36,11 @@ vars:
   smb_user:
     from: args.smb_user
     default: guest
+  # EMPTY, AND THAT IS THE ACCOUNT'S REAL PASSWORD - see lib/hostshare.py. It is a var so the
+  # command below reads as one fact rather than a stray pair of quotes.
   smb_pass:
     from: args.smb_pass
-    default: admin
+    default: ""
 
 ssh_user: docker
 ssh_port: 2222
@@ -79,7 +81,7 @@ steps:
   # failure - what is being tested is the dir that follows it.
   - name: prove the share is readable and writable
     ssh: |
-      cmd /c "net use \\{{ host }}\shared {{ smb_pass }} /user:{{ smb_user }} /persistent:no >nul 2>&1 & dir \\{{ host }}\shared & echo written-by-this-session > \\{{ host }}\shared\from-guest.txt & type \\{{ host }}\shared\from-guest.txt"
+      cmd /c net use \\{{ host }}\shared "" /user:{{ smb_user }} /persistent:no >nul 2>&1 & dir \\{{ host }}\shared & echo written-by-this-session > \\{{ host }}\shared\from-guest.txt & type \\{{ host }}\shared\from-guest.txt
     timeout: 120
 
   # THE LOGON HOOK: a Task Scheduler task at ONLOGON, running the launcher through
@@ -102,5 +104,5 @@ steps:
   # /C: takes the whole phrase as one pattern and needs no surrounding quotes to survive cmd.
   - name: prove the logon task is registered
     ssh: |
-      cmd /c "schtasks /Query /TN easydiskbake-bootstrap /V /FO LIST | findstr /i /C:TaskName /C:Status"
+      cmd /c "schtasks /Query /TN vm-bootstrap /V /FO LIST | findstr /i /C:TaskName /C:Status"
     timeout: 60

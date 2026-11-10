@@ -67,9 +67,9 @@ steps:
   # mount and an agent owns the bootstrap, and the file the agent waits for is the handover.
   - name: prove the mount daemon is installed
     ssh: |
-      ls -l /Library/LaunchDaemons/org.easydiskbake.smbmount.plist /usr/local/bin/easydiskbake-smbmount.sh &&
-      plutil -lint /Library/LaunchDaemons/org.easydiskbake.smbmount.plist &&
-      printf '%s\n' '{{ password }}' | sudo -S -p '' launchctl print system/org.easydiskbake.smbmount | head -12
+      ls -l /Library/LaunchDaemons/org.vm.smbmount.plist /usr/local/bin/vm-smbmount.sh &&
+      plutil -lint /Library/LaunchDaemons/org.vm.smbmount.plist &&
+      printf '%s\n' '{{ password }}' | sudo -S -p '' launchctl print system/org.vm.smbmount | head -12
     timeout: 120
 
   # THE PROOF THAT MATTERS MOST: the mount the daemon made is on the system's mount table and
@@ -92,7 +92,7 @@ steps:
   # catches malformed XML; this catches a plist that is well formed and points at nothing.
   - name: prove the login hook is installed
     ssh: |
-      ls -l ~/Library/LaunchAgents/org.easydiskbake.bootstrap.plist ~/bootstrap-launcher.sh &&
-      plutil -lint ~/Library/LaunchAgents/org.easydiskbake.bootstrap.plist &&
-      grep -c bootstrap-launcher.sh ~/Library/LaunchAgents/org.easydiskbake.bootstrap.plist
+      ls -l ~/Library/LaunchAgents/org.vm.bootstrap.plist ~/bootstrap-launcher.sh &&
+      plutil -lint ~/Library/LaunchAgents/org.vm.bootstrap.plist &&
+      grep -c bootstrap-launcher.sh ~/Library/LaunchAgents/org.vm.bootstrap.plist
     timeout: 60

@@ -95,7 +95,7 @@ steps:
     settle: 2
   - name: create your account - hostname
     at: [1139, 447]
-    type: ubuntu
+    type: "{{ user }}"
     settle: 2
   - name: create your account - username
     at: [1139, 501]

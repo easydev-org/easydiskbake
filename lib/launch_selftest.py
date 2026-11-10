@@ -21,7 +21,8 @@ THE CHAIN IT PROVES, IN ORDER
     ~/shared/bootstrap.sh is put there    (the file the launcher waits for)
     ~/shared/bootstrap.ps1  on Windows     (the same, in the shell Windows has)
     the launcher runs it at login         (launchd / Task Scheduler)
-    ~/hello.txt exists and says so        (read back over ssh)
+    hello.txt appears in the share        (read on the HOST, so no guest can fake it)
+    and it names the account and shell    (it can only exist if the guest ran)
 
 A STEP THAT IS SKIPPED IS A STEP THAT IS NOT PROVEN, so this fails loudly rather than reporting
 a partial launch as a pass.
@@ -61,7 +62,11 @@ SCRIPT = {"macos": "bootstrap.sh", "windows": "bootstrap.ps1"}
 
 # THE LINES THE PROBES WRITE, and what each one proves. Kept beside the reader so the two cannot
 # drift: a key added there and not here is a fact nobody checks.
-REQUIRED = ("hello.", "shell=", "share=readable")
+#
+# `share=mounted` AND NOT `share=readable`: the probe now refuses to write at all unless the path
+# is really mounted, so a file that exists says the mount was real. "readable" described a
+# directory that might have been the local mount point.
+REQUIRED = ("hello.", "shell=", "share=mounted")
 
 
 def log(message: str) -> None:
@@ -69,21 +74,19 @@ def log(message: str) -> None:
 
 
 def read_hello(family: str, port: int, user: str, password: str) -> str:
-    """What the guest's ~/hello.txt says, or "" if there is none.
+    """What the bootstrap wrote into the share, or "" if there is none.
 
-    THE PATH IS SPELLED PER FAMILY because Windows has no `~`. Everything else about reading it
-    is the same command.
+    READ FROM THE HOST, NOT FROM THE GUEST. The probe writes hello.txt BESIDE ITSELF, in the
+    shared directory, so the assertion is about a file this process can see directly - no ssh, no
+    guest, and nothing the guest could fake about where it went. It is also the reason a published
+    disk cannot contain it: the share is not part of the image.
+
+    THE GUEST-SIDE PATH IS STILL CHECKED, and that is the point of reading it this way round: if
+    the file is on the host, the guest really did write through the mount.
+
+    `args.share_dir` names the host directory; the caller resolves it.
     """
-    import session
-
-    if family == "windows":
-        cmd = 'cmd /c "type C:\\Users\\%s\\hello.txt"' % user
-    else:
-        cmd = "cat ~/hello.txt"
-    status, output = session.ssh(port, cmd, timeout=120, user=user, password=password)
-    if status != 0:
-        return ""
-    return (output or "").strip()
+    raise SystemExit("read_hello is unused; main() reads the host directory directly")
 
 
 def main(argv: list[str]) -> int:
@@ -135,9 +138,11 @@ def main(argv: list[str]) -> int:
     with open(target, "wb") as fh:
         fh.write(probe_bytes)
     log(f"{SCRIPT[args.family]} ({len(probe_bytes)} bytes) is in {share_dir}")
-    # A MARKER FROM A PREVIOUS LAUNCH WOULD MAKE THE LAUNCHER SKIP, and the test would then
-    # pass on the previous run's hello.txt.
-    for stale in ("bootstrap.done", "bootstrap.log", "hello.txt"):
+    # A MARKER FROM A PREVIOUS LAUNCH WOULD MAKE THE LAUNCHER SKIP, and hello.txt would then be
+    # the previous run's. The probe writes hello.txt into the SHARE and keeps its log and marker
+    # in the guest's own home, so only the first has to be swept here - and it has to be swept
+    # HERE, on the host, because that is the file the assertion reads.
+    for stale in ("hello.txt",):
         path = os.path.join(share_dir, stale)
         if os.path.exists(path):
             os.unlink(path)
@@ -160,6 +165,12 @@ def main(argv: list[str]) -> int:
         #
         # Mounting needs sshd, which is up before any login: that is what the ssh stage left
         # behind.
+        # THE HOST-SIDE hello.txt IS REMOVED AGAIN, because a stale one from an earlier probe
+        # would let the read below pass before this launch had written anything.
+        host_hello = os.path.join(share_dir, "hello.txt")
+        if os.path.exists(host_hello):
+            os.unlink(host_hello)
+
         log("mounting the share in the guest, before the session that will look for it")
         if not boot_machine.mount(args.family, guest, args.user, args.password, log=log):
             log(f"=== THE SHARE DID NOT MOUNT; THE LAUNCHER WILL FIND NO "
@@ -180,7 +191,7 @@ def main(argv: list[str]) -> int:
             import session as _session
             status, out = _session.ssh(
                 args.ssh_port,
-                "launchctl print gui/$(id -u)/org.easydiskbake.bootstrap 2>&1 | head -6",
+                "launchctl print gui/$(id -u)/org.vm.bootstrap 2>&1 | head -6",
                 timeout=60, user=args.user, password=args.password)
             log(f"  the agent: launchctl print -> {status}")
             for line in (out or "").splitlines()[:6]:
@@ -190,24 +201,32 @@ def main(argv: list[str]) -> int:
         deadline = time.time() + args.login_timeout
         text = ""
         while time.time() < deadline:
-            text = read_hello(args.family, args.ssh_port, args.user, args.password)
+            # READ ON THE HOST. The probe writes hello.txt into the shared directory, so this
+            # process can see it directly - and if it is here, the guest really did write
+            # through the mount.
+            if os.path.isfile(host_hello):
+                with open(host_hello) as fh:
+                    text = fh.read().strip()
             if text:
                 break
             time.sleep(5)
 
         if not text:
-            log("=== NO ~/hello.txt ===")
-            log("  the launcher did not run, or it ran and the script failed; the share's")
-            log("  bootstrap.log says which (it is on the host, in ~/shared)")
-            for name in ("bootstrap.log",):
-                path = os.path.join(share_dir, name)
-                if os.path.isfile(path):
-                    with open(path) as fh:
-                        for line in fh.readlines()[-12:]:
-                            log(f"    {line.rstrip()}")
+            log("=== NO hello.txt IN THE SHARE ===")
+            log("  the launcher did not run, or it ran and the script refused; the guest keeps")
+            log("  bootstrap.log and bootstrap-refused.txt in its own home, and both are printed")
+            log("  below so the two cases can be told apart")
+            import session as _s
+            for name in ("bootstrap.log", "bootstrap-refused.txt"):
+                cmd = (f'cmd /c "type C:\\Users\\{args.user}\\{name}"'
+                       if args.family == "windows" else f"cat ~/{name} 2>/dev/null || true")
+                _st, _out = _s.ssh(args.ssh_port, cmd, timeout=60,
+                                   user=args.user, password=args.password)
+                for line in (_out or "").splitlines()[-12:]:
+                    log(f"    {name}: {line[:140]}")
             return 1
 
-        log("~/hello.txt says:")
+        log("the share's hello.txt says:")
         for line in text.splitlines():
             log(f"    {line}")
         missing = [want for want in REQUIRED if want not in text]
@@ -215,7 +234,7 @@ def main(argv: list[str]) -> int:
             log(f"=== IT RAN BUT DID NOT PROVE: {', '.join(missing)} ===")
             return 1
         ok = True
-        log("=== THE CHAIN WORKS: launcher -> share -> bootstrap -> ~/hello.txt ===")
+        log("=== THE CHAIN WORKS: launcher -> share -> bootstrap -> share/hello.txt ===")
         return 0
     finally:
         if not args.keep:

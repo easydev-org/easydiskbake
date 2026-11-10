@@ -108,7 +108,7 @@ steps:
     settle: 2
   - name: users - host name
     at: [296, 188]
-    type: kubuntu
+    type: "{{ user }}"
     settle: 2
   - name: users - password
     at: [296, 254]
