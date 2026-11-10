@@ -26,8 +26,21 @@ import livebake     # noqa: E402
 
 BAKE = livebake.Bakery(
     name="kubuntu",
-    # THIS ONE IS OR-BY-NATURE: kubuntu's driver waits for the word anywhere in the frame,
-    # because its live session draws `kubuntu` across the middle of the screen.
+    # `kubuntu` ALONE IS NOT ENOUGH ANY MORE, AND RUN 6eeff43 IS WHY.
+    #
+    # That was OR-by-nature because the live desktop draws `kubuntu` across the middle of the
+    # screen - but the ISO's own GRUB menu says `Install Kubuntu` too, and matching it declared
+    # the session up while the machine was still ON THE BOOT MENU:
+    #
+    #     look boot: 58 words :: GNU | GRUB | version | 2.14 | or | Install | Kubuntu | ...
+    #     === the walk: install.yaml ===
+    #     click (1326,841) - install kubuntu on the live desktop   <- on a GRUB MENU
+    #
+    # THE TWO WORDS THAT ARE ONLY ON THE SESSION are its greeter's: `Try Kubuntu` and
+    # `Install Kubuntu` are both cards there, and the boot menu has no `Try`.
+    #
+    # (The A boot is what exposed this. The B boot skipped GRUB by extracting the kernel, so a
+    # marker that matched a menu entry never had a menu to match.)
     # THE MEDIUM BOOTS ITSELF - no -kernel, no -initrd, no -append.
     #
     # This ISO's own GRUB has `set timeout=30`, so it takes its first entry and starts without
@@ -38,7 +51,7 @@ BAKE = livebake.Bakery(
     # MEASURED THE A WAY IN A LOCAL POD: the live desktop arrives with no keypress and no
     # hand-written cmdline. See lib/livebake.py `_boot_args` for why the extracted-kernel path
     # still exists.
-    desktop=livebake.DesktopWhen(any_of=('kubuntu',)),
+    desktop=livebake.DesktopWhen(any_of=('try kubuntu',)),
     mem_mb=4096,
 )
 
