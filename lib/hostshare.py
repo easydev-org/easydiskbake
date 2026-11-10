@@ -134,8 +134,21 @@ def config_text(directory: str) -> str:
    # from the answer file. It is created in start() before smbd is launched.
    security = user
    passdb backend = tdbsam
-   # smbpasswd needs this to find its tdb files in a container with no /var/lib/samba.
+   # THREE DIRECTORIES A CONTAINER DOES NOT HAVE, ALL OF THEM REQUIRED.
+   #
+   # `testparm` accepts the config and then says, in warnings that are easy to read past:
+   #
+   #     WARNING: lock directory /run/samba does not exist
+   #     WARNING: pid directory /run/samba does not exist
+   #
+   # and `smbpasswd` answers "Can't load <conf>" for a file that testparm just parsed, because
+   # the load fails on the missing directory rather than on the syntax. All three are pointed at
+   # one writable directory under /tmp, 0700 because the passdb holds a password hash.
    private dir = {PRIVATE_DIR}
+   lock directory = {PRIVATE_DIR}
+   state directory = {PRIVATE_DIR}
+   cache directory = {PRIVATE_DIR}
+   pid directory = {PRIVATE_DIR}
    map to guest = Never
    guest account = root
    # NTLMv2 only: the client blocks NTLMv1, and this server has no reason to offer it.
@@ -203,13 +216,26 @@ def start(directory: str = DEFAULT_DIR, *, wait: float = 10.0) -> bool:
     os.makedirs(directory, exist_ok=True)
     log(f"share {SHARE_NAME!r} -> {directory} (read-write, account {SMB_USER!r})")
 
+    # THE CONFIG FIRST, BECAUSE `smbpasswd -c` READS IT.
+    #
+    # It was the other way round, and smbpasswd answered
+    #
+    #     Can't load /tmp/easydiskbake-smb.conf - run testparm to debug it
+    #
+    # for a file that had not been written yet. Run 42732853845.
+    #
+    # `private dir` IS TRANSFERABLE, NOT MACHINE-SPECIFIC. It is the tdb directory the passdb
+    # writes into, and a container has no /var/lib/samba - an unset one makes smbd try to create
+    # a directory under /var that it cannot write, which fails at startup rather than at the
+    # password step. 0700 because it holds the password hash.
     os.makedirs(PRIVATE_DIR, exist_ok=True)
     os.chmod(PRIVATE_DIR, 0o700)
-    if not _ensure_account():
-        return False
 
     with open(CONF_PATH, "w") as fh:
         fh.write(config_text(directory))
+
+    if not _ensure_account():
+        return False
 
     # STOP ONE THIS MODULE STARTED EARLIER. `smbd -D` daemonises, so the process is not a
     # child and cannot be waited on - which is why the pid file is written rather than a
