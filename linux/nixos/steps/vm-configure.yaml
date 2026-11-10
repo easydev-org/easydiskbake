@@ -169,9 +169,22 @@ steps:
       printf '%s\n' '{{ password }}' | sudo -S -p '' systemctl enable --now qemu-guest-agent 2>&1 | tail -3
     timeout: 120
 
-  # THE NAME, NOW THAT THE SYSTEM THAT OWNS IT HAS BEEN REBUILT. This is the check that would have
-  # caught `--transient`: a name set that way is answering now and gone at the next boot, and the
-  # file it is declared in is the only place that survives one.
+  # THE NAME, NOW THAT THE SYSTEM THAT OWNS IT HAS BEEN REBUILT.
+  #
+  # `hostnamectl --static` IS THE ONE THAT HAS TO MATCH, AND `hostname` IS THE ONE THAT DOES NOT YET.
+  # Run 222a0da measured both in the same command:
+  #
+  #     static:   easyvm-bd8daeb2     <- the name the system carries
+  #     kernel:   nixos               <- the name this boot's kernel is still answering
+  #     declared: 1 line(s)
+  #
+  # A rebuild writes /etc/hostname through the store and does not re-run the boot-time `hostname`
+  # call, so the kernel keeps the old name until the next boot - which is the NEXT stage, and the
+  # only place the two can disagree. Requiring them to match here would fail every healthy disk.
+  #
+  # `--static` matching is also what rules out `--transient`, the shortcut the error message
+  # suggests: a transient name answers in `hostname` and never reaches `/etc/hostname`, so it would
+  # pass a kernel check and fail this one.
   - name: prove the name
     ssh: |
       set -e
@@ -179,7 +192,6 @@ steps:
       echo "kernel:   $(hostname)"
       echo "declared: $(grep -c 'networking.hostName.*{{ hostname }}' /etc/nixos/configuration.nix) line(s)"
       test "$(hostnamectl --static)" = "{{ hostname }}"
-      test "$(hostname)" = "{{ hostname }}"
     timeout: 60
 
   # THE DEVICE AND THE PROCESS, BECAUSE THEY FAIL DIFFERENTLY - the same pair macOS' file

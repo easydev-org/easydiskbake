@@ -169,10 +169,19 @@ steps:
   # THE DEVICE AND THE PROCESS, BECAUSE THEY FAIL DIFFERENTLY - the same pair macOS' file
   # checks. A unit that is active with no /dev/virtio-ports/... behind it is an agent that will
   # never answer, and `systemctl is-active` would call that success.
+  # THE DEVICE AND A PROCESS, AND THE PROCESS NAME IS NOT THE PACKAGE NAME.
+  #
+  # Run 222a0da found the virtio port and then failed on `pgrep -fl qemu-guest-agent` - the daemon
+  # this package installs is `/usr/sbin/qemu-ga`, so the package's name matches nothing. What has
+  # to be true is that SOMETHING is holding the port, so the check is for a running `qemu-ga` and
+  # the two failures stay distinguishable:
+  #
+  #     no /dev/virtio-ports/...   the guest was started without the device
+  #     the port but no process    the agent is installed and not running
   - name: prove the guest agent is running
     ssh: |
       ls -l /dev/virtio-ports/org.qemu.guest_agent.0 2>&1 &&
-      pgrep -fl qemu-guest-agent
+      pgrep -af 'qemu-ga'
     timeout: 120
 
   # =======================================================================================
