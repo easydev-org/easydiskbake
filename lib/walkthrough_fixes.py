@@ -511,6 +511,26 @@ def main() -> int:
         # directory. Run 42755669848.
         check("2. the daemon install creates /usr/local/bin", "lib/steps.py",
               "mkdir -p /Library/LaunchDaemons /usr/local/bin" in read("lib/steps.py"))
+        # AND THE DAEMON MUST NOT RETRY IN A TIGHT LOOP. `KeepAlive SuccessfulExit false` alone
+        # restarts it whenever it exits non-zero, and the script exits 1 after its own minute of
+        # retries - so any machine without a share running (the clean stage, a published disk
+        # somebody booted on its own) would attempt a mount every sixty seconds forever.
+        plist = bootstrap.macos_mount_plist("/usr/local/bin/vm-smbmount.sh")
+        check("2. the mount daemon throttles its retries", "lib/bootstrap.py",
+              "<key>ThrottleInterval</key>" in plist)
+        # AND IT IS A PLIST, not something that merely looks like one.
+        import plistlib
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".plist", delete=False) as fh:
+            fh.write(plist)
+            path = fh.name
+        try:
+            parsed = plistlib.load(open(path, "rb"))
+            check("2. the mount plist parses", "lib/bootstrap.py",
+                  parsed["Label"] == bootstrap.MACOS_MOUNT_LABEL
+                  and parsed["ThrottleInterval"] > 0)
+        finally:
+            os.unlink(path)
         # AND NOTHING ANYWHERE STILL SAYS THE OLD NAME, which is how a rename half-happens.
         for path in ("lib/bootstrap.py", "lib/steps.py", "lib/launch_selftest.py",
                      "macos/15/steps/share.yaml", "windows/11/steps/share.yaml"):

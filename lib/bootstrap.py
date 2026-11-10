@@ -114,12 +114,25 @@ def macos_mount_plist(script: str) -> str:
     </array>
     <key>RunAtLoad</key>
     <true/>
-    <!-- AND AGAIN IF IT COMES DOWN, because a share that unmounted is a share that is gone. -->
+    <!-- RETRY ON FAILURE, BUT NOT IN A TIGHT LOOP.
+         #
+         # `SuccessfulExit false` alone means "restart whenever it exits non-zero", and the script
+         # exits 1 after its own 60 seconds of retries - so a host with no share running (the
+         # clean stage, a published disk someone booted without the container) becomes an endless
+         # mount attempt every sixty seconds, for as long as the machine is up. ThrottleInterval
+         # puts a floor under that: launchd will not start the job more than once per this many
+         # seconds, so a machine with no server costs one attempt a minute and nothing else.
+         #
+         # NOT `KeepAlive true`: that would ALSO restart it after a successful mount, and the
+         # script would find the share mounted and exit 0 - correct, but a process waking up to
+         # say so forever. -->
     <key>KeepAlive</key>
     <dict>
         <key>SuccessfulExit</key>
         <false/>
     </dict>
+    <key>ThrottleInterval</key>
+    <integer>300</integer>
     <key>StandardOutPath</key>
     <string>/var/log/{MACOS_MOUNT_LABEL}.out</string>
     <key>StandardErrorPath</key>
