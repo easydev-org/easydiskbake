@@ -183,6 +183,18 @@ def main() -> int:
     # AND THE RECOVERY IMAGE IS AN OPTION, NOT WHAT EVERY macOS GUEST GETS. An extra USB disk is
     # one more row in Disk Utility, and the erase step chooses its target by CAPACITY.
     vm_sess2 = read("lib/vm_session.py")
+    # AND EVERY macOS STAGE TELLS THE SESSION IT IS A MACOS GUEST. This is not cosmetic:
+    # `family` is what picks the qga transport (isa-serial for macOS, virtio for everyone else)
+    # and what selects the shutdown command. macos/15/bake.py passed `self.args.release` - the
+    # string "15" - which would have started a guest the session did not recognise.
+    for path in ("macos/15/bake.py", "macos/15/desktop.py", "macos/15/ssh.py",
+                 "macos/15/dev.py", "macos/15/vm_configure.py"):
+        body = read(path)
+        if "MachineSession(" not in body:
+            continue
+        check(f"{path} says its guest is macos", path,
+              '"macos", ' in body.split("MachineSession(", 1)[1].split(")")[0])
+
     check("the recovery image is a boot option", "lib/vm_session.py",
           'recovery = (boot_options or {}).get("recovery") or ""' in vm_sess2)
 

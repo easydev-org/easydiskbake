@@ -270,7 +270,7 @@ def main(argv: list[str]) -> int:
 
         shutdown_method = "kill" if run_overlay is not None else "ssh"
         session = stepslib.MachineSession(
-            args.release, disk, work,
+            "macos", disk, work,
             # NO SHARE: the disk at this stage has been installed but not configured, so nothing
             # in the guest mounts anything. `""` is vm_session's documented "do not serve one".
             share="",

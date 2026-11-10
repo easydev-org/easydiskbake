@@ -318,7 +318,7 @@ class Baker:
 
         log(f"=== installation: steps {os.path.basename(self.args.steps)} ===")
         session = steps.MachineSession(
-            self.args.release, self.disk, self.work,
+            "macos", self.disk, self.work,
             # NO SHARE: nothing in a recovery environment mounts one.
             share="",
             cpus=self.args.cpus, mem_mb=self.args.mem,
