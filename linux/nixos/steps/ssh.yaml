@@ -336,10 +336,12 @@ steps:
   # stage proves is `docker`, not root - turning root logins on would open an account nothing
   # here uses. The firewall IS turned off: the graphical install leaves it on and it drops 22,
   # which is the difference this distribution has from every other one here.
-  - name: install sshd
+  # THREE ACTS, THREE STEPS - the shape macOS' and Windows' vm-configure files were split into
+  # (commit 96596c2). Writing the config and rebuilding a declarative system fail for different
+  # reasons, and one `run:` reported neither. They still share one terminal and one `type_gap`.
+  - name: declare openssh in configuration.nix
     run: |
       echo {{ password }} | sudo -S sh -c 'sed -i "$ d" /etc/nixos/configuration.nix; printf "  services.openssh.enable = true;\n  services.openssh.settings.PasswordAuthentication = true;\n  networking.firewall.enable = false;\n}\n" >> /etc/nixos/configuration.nix'
-      echo {{ password }} | sudo -S nixos-rebuild switch 2>&1 | tail -8
     terminal_wait: 0
     # 150 ms, NOT THE 40 ms `run:` USES FOR A POSIX SHELL, AND THIS IS A MEASURED GUEST.
     #
@@ -354,7 +356,19 @@ steps:
     # append line is not idempotent, and a second append would put the attributes in the file
     # twice.
     type_gap: 0.15
+    settle: 6
+
+  - name: rebuild the system
+    run: echo {{ password }} | sudo -S nixos-rebuild switch 2>&1 | tail -8
+    terminal_wait: 0
+    type_gap: 0.15
     settle: 300
+
+  - name: prove sshd is active
+    run: systemctl is-active sshd
+    terminal_wait: 0
+    type_gap: 0.15
+    settle: 5
 
   # =======================================================================================
   # 2. WAIT FOR THE DAEMON THAT STEP ENABLED

@@ -227,11 +227,28 @@ steps:
   #
   # `sysrc` and `service` are still this image's own: an rc.conf knob and an rc.d script, not
   # a systemd unit.
-  - name: install sshd
-    run: |
-      echo {{ password }} | sudo -S sh -c 'sysrc sshd_enable=YES; printf "PasswordAuthentication yes\n" >> /etc/ssh/sshd_config; grep -c "^PasswordAuthentication yes" /etc/ssh/sshd_config; service sshd restart || service sshd start; service sshd status; sockstat -4 -l | grep sshd' 2>&1 | tail -14
+  # FOUR ACTS, FOUR STEPS - the shape macOS' and Windows' vm-configure files were split into
+  # (commit 96596c2). Enabling at boot, allowing the password, starting the daemon and proving
+  # it listens fail for different reasons, and one `run:` named none of them.
+  - name: enable sshd at boot
+    run: echo {{ password }} | sudo -S sysrc sshd_enable=YES 2>&1 | tail -3
     terminal_wait: 0
-    settle: 90
+    settle: 5
+
+  - name: allow password authentication
+    run: echo {{ password }} | sudo -S sh -c 'printf "PasswordAuthentication yes\n" >> /etc/ssh/sshd_config; grep -c "^PasswordAuthentication yes" /etc/ssh/sshd_config' 2>&1 | tail -3
+    terminal_wait: 0
+    settle: 5
+
+  - name: start sshd
+    run: echo {{ password }} | sudo -S sh -c 'service sshd restart || service sshd start' 2>&1 | tail -3
+    terminal_wait: 0
+    settle: 20
+
+  - name: prove sshd is listening
+    run: echo {{ password }} | sudo -S sh -c 'service sshd status; sockstat -4 -l | grep sshd' 2>&1 | tail -6
+    terminal_wait: 0
+    settle: 8
   - name: wait for sshd
     require_ssh: true
     timeout: 600

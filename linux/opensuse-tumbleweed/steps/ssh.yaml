@@ -124,11 +124,33 @@ steps:
   #
   # `--permanent` plus `--reload`, then `--list-services` so the recording shows ssh in the
   # list rather than leaving the next stage to find out.
-  - name: install sshd
-    run: |
-      echo {{ password }} | sudo -S sh -c "zypper --non-interactive --no-gpg-checks install openssh && systemctl enable sshd; systemctl restart sshd; systemctl is-active sshd; firewall-cmd --add-service=ssh --permanent; firewall-cmd --reload; firewall-cmd --list-services" 2>&1 | tail -14
+  # ATOMIC STEPS, the shape macOS' and Windows' vm-configure files were split into
+  # (commit 96596c2): one act per step, so a failure names the act. This was a single `run:`
+  # that installed, enabled, started and verified in one line.
+  - name: install openssh
+    run: echo {{ password }} | sudo -S zypper --non-interactive --no-gpg-checks install openssh 2>&1 | tail -5
     terminal_wait: 0
-    settle: 90
+    settle: 60
+
+  - name: enable sshd at boot
+    run: echo {{ password }} | sudo -S systemctl enable sshd 2>&1 | tail -3
+    terminal_wait: 0
+    settle: 8
+
+  - name: start sshd
+    run: echo {{ password }} | sudo -S systemctl restart sshd 2>&1 | tail -3
+    terminal_wait: 0
+    settle: 10
+
+  - name: prove sshd is active
+    run: systemctl is-active sshd
+    terminal_wait: 0
+    settle: 5
+
+  - name: open the firewall for ssh
+    run: echo {{ password }} | sudo -S sh -c "firewall-cmd --add-service=ssh --permanent; firewall-cmd --reload; firewall-cmd --list-services" 2>&1 | tail -5
+    terminal_wait: 0
+    settle: 8
 
   # =======================================================================================
   # 2. WAIT FOR THE DAEMON THAT STEP ENABLED

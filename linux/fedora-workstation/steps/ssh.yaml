@@ -188,11 +188,37 @@ steps:
   #
   # So the three actions are separate and each one reports: enable (boot), restart (now),
   # is-active (the answer). `tail -12` so the status line survives in the recording.
-  - name: install sshd
-    run: |
-      echo {{ password }} | sudo -S sh -c "dnf install -y openssh-server && systemctl enable sshd; systemctl restart sshd; systemctl is-active sshd; firewall-cmd --add-service=ssh --permanent || true; firewall-cmd --reload || true; firewall-cmd --list-services || true" 2>&1 | tail -14
+  # FIVE ACTS, FIVE STEPS. This was one `run:` doing all of them, and the comment above already
+  # insisted the three "are separate" - the command disagreed with the prose. A failure in any
+  # of them reported `install sshd failed` and named none, which is the same complaint macOS'
+  # and Windows' vm-configure files were split for (commit 96596c2).
+  #
+  # `terminal_wait: 0` ON EACH: the terminal is opened by the step above and stays open, so
+  # these are five commands typed into ONE shell - which is what makes the split cheap.
+  - name: install openssh-server
+    run: echo {{ password }} | sudo -S dnf install -y openssh-server 2>&1 | tail -5
     terminal_wait: 0
-    settle: 90
+    settle: 45
+
+  - name: enable sshd at boot
+    run: echo {{ password }} | sudo -S systemctl enable sshd 2>&1 | tail -3
+    terminal_wait: 0
+    settle: 8
+
+  - name: start sshd
+    run: echo {{ password }} | sudo -S systemctl restart sshd 2>&1 | tail -3
+    terminal_wait: 0
+    settle: 10
+
+  - name: prove sshd is active
+    run: systemctl is-active sshd
+    terminal_wait: 0
+    settle: 5
+
+  - name: open the firewall for ssh
+    run: echo {{ password }} | sudo -S sh -c "firewall-cmd --add-service=ssh --permanent; firewall-cmd --reload; firewall-cmd --list-services" 2>&1 | tail -5
+    terminal_wait: 0
+    settle: 8
 
   # =======================================================================================
   # 2. WAIT FOR THE DAEMON THAT STEP ENABLED
