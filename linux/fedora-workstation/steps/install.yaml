@@ -284,11 +284,32 @@ steps:
     at: [1432, 181]
     settle: 10
 
-  # 4. TIME ZONE. THE MAP, NOT THE SEARCH BOX. Searching `united states` returns airports
-  #    with `Charlotte Amalie ... Virgin Islands` first, and the list is long enough that
-  #    picking the right row is a worse question than clicking the continent.
-  - name: time zone from the map
-    at: [590, 560]
+  # 4. TIME ZONE, BY SEARCHING FOR THE CITY - THE MAP WAS MEASURED AND IS NOT BETTER.
+  #
+  # The old step clicked (590,560), described here as "the continent". MEASURED ON THE SECOND
+  # BOOT OF A DISK THIS BAKE WROTE, that press lands in ALASKA:
+  #
+  #     AKST (UTC-09)  Nome, United States   00:49
+  #
+  # The map is a picture with a coordinate-to-timezone mapping behind it, not a set of cities,
+  # so a pixel names whatever happens to sit under it - and at that pixel it is Nome.
+  #
+  # SEARCHING FOR A CITY DOES RETURN AIRPORTS, which is what the old comment warned about, and
+  # it is fine: they are all in the city's own time zone. Typing `new york`:
+  #
+  #     Albany International Airport, New York, United States
+  #     Binghamton Regional Airport, New York, United States
+  #     ...
+  #
+  # and taking a row sets `EST (UTC-05) New York, United States`. The rows are ordered by
+  # distance from the city, so the first is stable.
+  - name: time zone - search for New York
+    at: [960, 462]
+    type: new york
+    settle: 5
+
+  - name: time zone - take the first result
+    at: [960, 497]
     settle: 6
 
   - name: time zone
@@ -302,6 +323,18 @@ steps:
 
   # 6. THE ACCOUNT. ONE FIELD, AND THE USERNAME IS NOT TOUCHED AT ALL.
   #
+  # THE COORDINATES HERE WERE MEASURED ON A SECOND BOOT, IN ENGLISH, AND THE OLD ONES WERE OFF.
+  # `(830,511)` is 170 px left of the Full Name entry's centre, `(830,486)`/`(830,629)` the same
+  # for the two password entries. Measured centres:
+  #
+  #     Full Name        (1000, 528)
+  #     Password         ( 960, 493)
+  #     Confirm Password ( 960, 630)
+  #
+  # AND FEDORA'S USERNAME FOLLOWS `Full Name` EXACTLY - typing `docker` gave
+  # `Username docker`, not the `dockeruser` that Pop!_OS' installer produces from the same
+  # input. That is why this pane needs no override and why it is one field.
+  #
   # Run 42405729683 filled this pane twice. GNOME's initial setup copies whatever is typed
   # into Full Name into Username as you go, so a second click on the username field and a
   # second `docker` produced
@@ -311,7 +344,7 @@ steps:
   # on the next pane - three fragments run together - and the wizard would not complete. One
   # field is filled and Username is left to follow.
   - name: about you - full name
-    at: [830, 511]
+    at: [1000, 528]
     type: "{{ user }}"
     settle: 2
 
@@ -323,12 +356,12 @@ steps:
   #    every other bake here uses and a mismatch between images would be worse than a short
   #    password.
   - name: password - password
-    at: [830, 486]
+    at: [960, 493]
     type: "{{ password }}"
     settle: 2
 
   - name: password - confirm
-    at: [830, 629]
+    at: [960, 630]
     type: "{{ password }}"
     settle: 3
 
