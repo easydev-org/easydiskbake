@@ -64,6 +64,30 @@ def _is_button(r: int, g: int, b: int) -> bool:
     return 110 < r < 185 and abs(r - g) < 10 and abs(r - b) < 10   # the disabled grey
 
 
+def _label_centre(px, x0: int, y0: int, x1: int, y1: int):
+    """The centre of the footer's LABEL, for a button drawn with no fill.
+
+    The label is the only thing in the footer box that is lighter than the card: COSMIC's
+    `Next` is (50,50,50) on (48,48,48) with the text at (135,135,135). Counting those pixels
+    and taking their bounding box gives the button's own centre, because a label is centred in
+    its button.
+
+    NOTHING IS RETURNED WHEN THE BOX IS EMPTY OR THE LABEL IS TOO SMALL TO BE ONE - a single
+    anti-aliasing pixel is not a button, and pressing it would press wallpaper.
+    """
+    pts = []
+    for y in range(y0, y1):
+        for x in range(x0, x1):
+            r, g, b = px[x, y]
+            if 100 < r < 200 and abs(r - g) < 12 and abs(r - b) < 12:
+                pts.append((x, y))
+    if len(pts) < 30:                     # a `Next` label is ~89 px at this size
+        return None
+    xs = sorted(p[0] for p in pts)
+    ys = sorted(p[1] for p in pts)
+    return ((xs[0] + xs[-1]) // 2, (ys[0] + ys[-1]) // 2)
+
+
 def footer_button(driver) -> tuple | None:
     """The centre of the footer button, or None when this pane does not draw one."""
     ppm = driver.screen.grab(f"{driver.n:03d}-footer")
@@ -94,6 +118,21 @@ def footer_button(driver) -> tuple | None:
             if _is_button(r, g, b):
                 tally[(r // 8 * 8, g // 8 * 8, b // 8 * 8)] += 1
     if not tally:
+        # A BUTTON WITH NO FILL IS STILL A BUTTON, AND THE LABEL IS WHERE IT IS.
+        #
+        # COSMIC draws this pane's `Next` as the CARD'S OWN FILL (50,50,50 against a 48,48,48
+        # background) with the label in grey - so there is no fill to find and `tally` is
+        # empty. Measured on run e242215's frame: the whole footer box is 46..51 grey except
+        # the label's 89 pixels at x 1354..1380, y 806..815.
+        #
+        # THE LABEL IS INSIDE THE BUTTON, so its centre is the button's centre. Falling back to
+        # it is what makes a flat-styled footer pressable; without it the step reports
+        # `NO FOOTER BUTTON ON THIS PANE` and returns False on a pane whose button is on screen.
+        label = _label_centre(px, x0, y0, x1, y1)
+        if label is not None:
+            cx, cy = label
+            driver.log(f"  no fill in the footer; pressing the label's centre ({cx},{cy})")
+            return (cx, cy, cx - 40, cx + 40, cy - 12, cy + 12)
         return None
     colour, count = tally.most_common(1)[0]
     # A DISABLED BUTTON IS DRAWN AT THE CARD'S OWN FILL (about 50,50,50), so it is not a

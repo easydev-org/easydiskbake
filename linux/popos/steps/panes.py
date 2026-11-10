@@ -116,17 +116,29 @@ def fill_account_name(driver, step) -> bool:
     #   dropping spaces. `Docker User` -> `dockeruser` (run 42570186630's prompt, and
     #   `id -un` on 9e2168b's ssh stage).
     #
-    #   IT ALSO REFUSES THE TWO BEING EQUAL. Typing `docker` into Full Name on 508d45e made
-    #   User Name `docker` and the footer NEXT VANISHED:
+    #   IT ALSO REFUSES THE TWO BEING EQUAL, AND THAT CHECK IGNORES CASE.
     #
-    #       click (1188, 494) - type 'docker'
-    #       === create user account (python footer:press_footer)
-    #       === NO FOOTER BUTTON ON THIS PANE ===
+    # Two attempts, both measured, and the second one corrects the first:
     #
-    # So the display name has to derive to `docker` while not being `docker` itself. The
-    # derivation is lowercase-and-strip, which makes `Docker` the unique answer: it lowercases
-    # to `docker`, and as a STRING it is not `docker`, so the equality check passes.
-    display = user.capitalize() if user.lower() == user else user
+    #   Full Name `docker`   (run 508d45e)  User Name `docker`      Next GONE
+    #   Full Name `Docker`   (run e242215)  User Name `docker`      Next GREY
+    #
+    # The second frame is the evidence that case does not help: `Docker` lowercases to
+    # `docker`, so the pane sees two equal names and keeps its footer disabled - the entry is
+    # even outlined in the pane's warning colour. `Docker` is not a way round the check; it is
+    # the same value after the check's own normalisation.
+    #
+    # SO THE TWO FIELDS ARE FILLED SEPARATELY: a display name that derives to something else,
+    # then the login name typed over the derived value.
+    #
+    #     Full Name   Docker User     -> derives `dockeruser`
+    #     User Name   docker          -> typed over it, with Tab and select-all, NOT a click
+    #
+    # `Docker User` is what this file used before the `dockeruser` bug was found, and it is
+    # kept as the display name because it derives to a DIFFERENT string. The user name is then
+    # corrected by keyboard: a CLICK on that field has been measured to land on the artwork
+    # picker beside it, which puts a file chooser over the form.
+    display = user.capitalize() + " User"
 
     deadline = time.time() + float(step.get("timeout", 90))
     seen = ""
@@ -145,9 +157,25 @@ def fill_account_name(driver, step) -> bool:
 
     # THE FOCUS-OUT IS WHAT ENABLES `Next`: a GTK entry validates on focus-out, and nothing
     # here moved the focus after the last character until this was added (run 42502695338 sat
-    # with Next grey for forty-two minutes). It is the ONLY thing this step does after typing.
+    # with Next grey for forty-two minutes).
+    #
+    # AND THE SAME KEYSTROKE LANDS IN USER NAME, WHICH IS WHERE THE OVERRIDE HAPPENS. Tab from
+    # Full Name moves into User Name - keyboard, not a click, because a click there has been
+    # measured to open the artwork picker. The derived value is selected and replaced with the
+    # login name this repository asks for, and the last Tab leaves the form so the pane
+    # validates once more.
     driver.qmpmod.key(driver.q, "tab")
     time.sleep(1.0)
+    driver.qmpmod.key_combo(driver.q, "ctrl", "a")
+    time.sleep(0.5)
+    import keys as _keys
+    for _ in range(40):
+        driver.qmpmod.key(driver.q, "backspace")
+        time.sleep(0.02)
+    _keys.type_text(driver.q, user, per_char=0.1)
+    time.sleep(0.8)
+    driver.qmpmod.key(driver.q, "tab")
+    time.sleep(1.5)
     driver.look("account name filled")
     return True
 
