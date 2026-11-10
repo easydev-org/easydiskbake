@@ -26,8 +26,15 @@ import livebake     # noqa: E402
 
 BAKE = livebake.Bakery(
     name="mx",
-    kernel=('antiX/vmlinuz','antiX/initrd.gz'),
-    cmdline='quiet splash lang=en_US tz=UTC',
+    # THE MEDIUM BOOTS ITSELF - no -kernel, no -initrd, no -append.
+    #
+    # Read out of the ISO: `boot/grub/grub.cfg` has `set timeout=60`, so it takes its first
+    # entry with no keystroke. The entry loads `/antiX/vmlinuz` and `/antiX/initrd.gz` - the
+    # same two members this file used to extract - and passes its own `lang=en_US tz=UTC`.
+    #
+    # 60 s IS THE LONGEST MENU HERE, and it is inside the 210-second desktop budget, so the
+    # wait covers it. If this image ever stops auto-booting the fix is `grub_key='ret'` with a
+    # `grub_delay` past 60, the way mint's is set.
     # AND, NOT OR. MX's boot prints `MX` on the console long before `MX Welcome` is drawn,
     # so any_of would have matched a text console - and the walk's first step clicks the
     # welcome window. Its own driver always said `"mx" in text and "install" in text`.
