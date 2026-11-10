@@ -127,8 +127,22 @@ def _stop(guest, args) -> None:
     import vm_session
 
     try:
+        # `share=False`: THE STAGE IS ABOUT TO EXIT, SO THERE IS NOTHING TO CLEAN UP AFTER.
+        #
+        # The container ends with the step and smbd goes with it - stopping it explicitly bought
+        # nothing and cost a full run: `hostshare.stop()` walks its pidfile with a sleep between
+        # each signal, and run ff85c1e was signalled INSIDE that walk:
+        #
+        #     File "lib/vm_session.py", line 596, in stop
+        #         hostshare.stop()
+        #     File "lib/hostshare.py", line 463, in stop
+        #         time.sleep(0.5)
+        #     === SIGNALLED: SIGTERM (15) ===
+        #
+        # macOS' vm_configure.py has passed `share=False` here since it needed the same thing,
+        # for the same reason, in the same place.
         vm_session.stop(guest, acpi_first=False, family="linux",
-                        password=args.password, share=True, overlay=None)
+                        password=args.password, share=False, overlay=None)
     except Exception as exc:                           # noqa: BLE001
         log(f"  could not stop the machine cleanly: {exc}")
 
@@ -154,9 +168,22 @@ def _note_signals() -> None:
             name = str(number)
         print(f"=== SIGNALLED: {name} ({number}) ===", flush=True)
         import traceback
-        print("=== the stack when it arrived ===", flush=True)
-        traceback.print_stack(frame)
-        print("=== end of stack ===", flush=True)
+        # A PRINT FROM A SIGNAL HANDLER CAN RAISE, AND WHEN IT DID IT HID THE SIGNAL ITSELF.
+        #
+        # Run ff85c1e's handler died with `BrokenPipeError` and the traceback that followed was
+        # about the handler rather than about the stack it was called from - the one thing this
+        # exists to show. When stdout is a closed pipe there is nowhere to write, so the message
+        # goes to stderr as well and neither write is allowed to raise.
+        try:
+            print("=== the stack when it arrived ===", flush=True)
+            traceback.print_stack(frame)
+            print("=== end of stack ===", flush=True)
+        except OSError:
+            try:
+                import sys as _sys
+                traceback.print_stack(frame, file=_sys.stderr)
+            except OSError:
+                pass
         raise SystemExit(128 + number)
 
     for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
