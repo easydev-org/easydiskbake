@@ -177,25 +177,34 @@ steps:
   #     To install or remove software, you need to authenticate.
   #                                            [ Cancel ]  [ Authenticate ]
   #
-  # That is polkit's agent, raised by Zorin's Software Updater - `Updated software has been
-  # issued since Zorin OS 18 was released` is in the same frames, so the updater had woken on
-  # its own and was contending for the same dpkg lock. The dialog takes the keyboard, so the
-  # `sudo -S` password typed after it went nowhere, `openssh-server` was never installed, and
-  # the stage waited ten minutes against a port that never opened:
+  # That is polkit's agent, raised by Zorin's own Software Updater - `Updated software has been
+  # issued since Zorin OS 18 was released` is in the same frames, so the updater had woken on its
+  # own and was contending for the same dpkg lock. The dialog takes the keyboard, so the
+  # `sudo -S` password typed after it went nowhere, `openssh-server` was never installed, and the
+  # stage waited ten minutes against a port that never opened:
   #
   #     ssh: connect to host 172.30.0.1 port 2222: Connection refused
   #
-  # Ubuntu and Pop!_OS run this identical command and pass, because their images do not raise
-  # a modal polkit prompt on a timer. This is a fact about Zorin, so it is answered here.
+  # Ubuntu and Pop!_OS run this identical command and pass, because their images do not raise a
+  # modal polkit prompt on a timer. This is a fact about Zorin, so it is answered here.
   #
-  # Stopping the two services is not a workaround for the install - it removes the thing that
-  # was holding the lock and the keyboard. `|| true` because an image without one of them is
-  # a disk where the command has nothing to do, not a disk where it failed.
+  # SERVICES ONLY - NO `pkill`, AND THAT IS A CORRECTION. The first version of this step also ran
+  # `pkill -f gnome-software`, which is the running desktop's own process tree: run c3fe4d3 killed
+  # the session that was typing, the terminal went with it, and the four steps after this one
+  # reported success while typing into nothing. `systemctl stop` on the two units that hold the
+  # lock is what is needed, and it does not touch the session.
+  #
+  # `|| true` because an image without one of them is a disk where the command has nothing to do,
+  # not a disk where it failed.
   - name: stop the updater that puts a dialog over the terminal
-    run: echo {{ password }} | sudo -S sh -c "systemctl stop packagekit 2>/dev/null; systemctl stop unattended-upgrades 2>/dev/null; pkill -f gnome-software 2>/dev/null; true" 2>&1 | tail -3
+    run: echo {{ password }} | sudo -S sh -c "systemctl stop packagekit 2>/dev/null; systemctl stop unattended-upgrades 2>/dev/null; systemctl stop apt-daily.service 2>/dev/null; systemctl stop apt-daily-upgrade.service 2>/dev/null; true" 2>&1 | tail -3
     terminal_wait: 0
-    settle: 10
+    settle: 15
 
+  # APT GETS A LOCK TIMEOUT AND A NONINTERACTIVE FRONTEND, AND BOTH ARE LOAD-BEARING. With the
+  # units stopped the lock should be free, but a lock is still a lock: `DPkg::Lock::Timeout=600`
+  # waits instead of failing, which turns "the updater was mid-run" into a slow install rather
+  # than a failed one.
   - name: install openssh-server
     run: echo {{ password }} | sudo -S sh -c "export DEBIAN_FRONTEND=noninteractive; apt-get update -o DPkg::Lock::Timeout=600 && apt-get install -y -o DPkg::Lock::Timeout=600 openssh-server" 2>&1 | tail -6
     terminal_wait: 0

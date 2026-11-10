@@ -82,20 +82,27 @@ steps:
   # static name and leaves the loopback line alone, and some programs resolve the local name
   # through /etc/hosts and then fail to find it. Replacing the `127.0.1.1` line rather than
   # appending is what keeps the file from growing a line per boot.
-  - name: set the machine's name
-    ssh: |
-      printf '%s\n' '{{ password }}' | sudo -S -p '' hostnamectl set-hostname {{ hostname }}
-    timeout: 120
-
-  - name: point the loopback line at that name
+  # /etc/hostname IS A SYMLINK INTO THE NIX STORE ON THIS SYSTEM, SO IT CANNOT BE WRITTEN - AND
+  # `hostnamectl` SAID SO IN AS MANY WORDS ON RUN c3fe4d3:
+  #
+  #     Could not set static hostname: /etc/hostname is in a read-only filesystem.
+  #     Hint: use --transient option when /etc/hostname or /etc/machine-info cannot be modified
+  #
+  # `--transient` WOULD BE THE WRONG ANSWER: it sets the name until the next boot and nothing
+  # more, so the disk would answer `easyvm-...` for exactly one run - this one - and go back to
+  # `nixos` at every boot after it. The name has to be DECLARED, like everything else here.
+  #
+  # SO IT GOES IN THE SAME configuration.nix THAT THE REBUILD ALREADY TOUCHES. The agent and the
+  # cifs client are declared in the step below this one, and one rebuild delivers all three -
+  # which is why `networking.hostName` is written here and the rebuild is there: the two have to
+  # land together or the disk carries a name its configuration disagrees with.
+  - name: declare the machine's name
     ssh: |
       printf '%s\n' '{{ password }}' | sudo -S -p '' sh -c '
-        if grep -q "^127\.0\.1\.1" /etc/hosts; then
-          sed -i "s/^127\.0\.1\.1.*/127.0.1.1\t{{ hostname }}/" /etc/hosts
-        else
-          printf "127.0.1.1\t%s\n" "{{ hostname }}" >> /etc/hosts
-        fi'
-    timeout: 120
+        sed -i "/networking.hostName/d" /etc/nixos/configuration.nix
+        sed -i "\$ d" /etc/nixos/configuration.nix
+        printf "  networking.hostName = \"%s\";\n}\n" "{{ hostname }}" >> /etc/nixos/configuration.nix'
+    timeout: 300
 
   # THE PROOF IS THE VALUE, READ BACK FROM THE SYSTEM THAT HOLDS IT. A `hostnamectl` that
   # answered 0 and a name that did not change is exactly the failure this catches.
@@ -104,15 +111,14 @@ steps:
   # pure-ssh walkthrough runs headless, and `HeadlessDriver.says()` raises rather than reading a
   # screen that does not exist. The verdict here is the shell's own exit status, so the comparison
   # is inside the command - `test ... || exit 1` is what makes a wrong name a failed step.
-  - name: prove the name
+  # THE PROOF RUNS AFTER THE REBUILD, NOT HERE - see the note on `prove the name` below.
+  # What this step can say now is that the DECLARATION is on the disk, which is the fact the
+  # rebuild is about to act on.
+  - name: prove the name is declared
     ssh: |
       set -e
-      echo "static: $(hostnamectl --static)"
-      echo "kernel: $(hostname)"
-      echo "hosts:  $(grep -c '{{ hostname }}' /etc/hosts) line(s)"
-      test "$(hostnamectl --static)" = "{{ hostname }}"
-      test "$(hostname)" = "{{ hostname }}"
-      grep -q '{{ hostname }}' /etc/hosts
+      grep -n "networking.hostName" /etc/nixos/configuration.nix
+      grep -q 'networking.hostName.*{{ hostname }}' /etc/nixos/configuration.nix
     timeout: 60
 
   # =======================================================================================
@@ -162,6 +168,19 @@ steps:
     ssh: |
       printf '%s\n' '{{ password }}' | sudo -S -p '' systemctl enable --now qemu-guest-agent 2>&1 | tail -3
     timeout: 120
+
+  # THE NAME, NOW THAT THE SYSTEM THAT OWNS IT HAS BEEN REBUILT. This is the check that would have
+  # caught `--transient`: a name set that way is answering now and gone at the next boot, and the
+  # file it is declared in is the only place that survives one.
+  - name: prove the name
+    ssh: |
+      set -e
+      echo "static:   $(hostnamectl --static)"
+      echo "kernel:   $(hostname)"
+      echo "declared: $(grep -c 'networking.hostName.*{{ hostname }}' /etc/nixos/configuration.nix) line(s)"
+      test "$(hostnamectl --static)" = "{{ hostname }}"
+      test "$(hostname)" = "{{ hostname }}"
+    timeout: 60
 
   # THE DEVICE AND THE PROCESS, BECAUSE THEY FAIL DIFFERENTLY - the same pair macOS' file
   # checks. A unit that is active with no /dev/virtio-ports/... behind it is an agent that will

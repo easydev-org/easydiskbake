@@ -82,9 +82,23 @@ steps:
   # static name and leaves the loopback line alone, and some programs resolve the local name
   # through /etc/hosts and then fail to find it. Replacing the `127.0.1.1` line rather than
   # appending is what keeps the file from growing a line per boot.
+  # MX-25 BOOTS SysVinit, SO `hostnamectl` CANNOT WORK HERE AT ALL - AND IT SAYS SO.
+  #
+  # Measured on run c3fe4d3's own job:
+  #
+  #     System has not been booted with systemd as init system (PID 1). Can't operate.
+  #     Failed to connect to system scope bus via local transport: Host is down
+  #
+  # That is the same fact mx/steps/ssh.yaml records about `systemctl enable --now sshd`: the
+  # distribution is antiX-based and systemd is not PID 1. The name is therefore written the way
+  # SysVinit systems do it - /etc/hostname for the next boot, `hostname` for this one - and both
+  # are needed: the file alone leaves the running kernel answering the old name, and the command
+  # alone is lost at reboot.
   - name: set the machine's name
     ssh: |
-      printf '%s\n' '{{ password }}' | sudo -S -p '' hostnamectl set-hostname {{ hostname }}
+      printf '%s\n' '{{ password }}' | sudo -S -p '' sh -c '
+        printf "%s\n" "{{ hostname }}" > /etc/hostname
+        hostname "{{ hostname }}"'
     timeout: 120
 
   - name: point the loopback line at that name
@@ -107,10 +121,10 @@ steps:
   - name: prove the name
     ssh: |
       set -e
-      echo "static: $(hostnamectl --static)"
+      echo "file:   $(cat /etc/hostname)"
       echo "kernel: $(hostname)"
       echo "hosts:  $(grep -c '{{ hostname }}' /etc/hosts) line(s)"
-      test "$(hostnamectl --static)" = "{{ hostname }}"
+      test "$(cat /etc/hostname)" = "{{ hostname }}"
       test "$(hostname)" = "{{ hostname }}"
       grep -q '{{ hostname }}' /etc/hosts
     timeout: 60
@@ -146,7 +160,10 @@ steps:
 
   - name: enable the guest agent
     ssh: |
-      printf '%s\n' '{{ password }}' | sudo -S -p '' systemctl enable --now qemu-guest-agent 2>&1 | tail -3
+      # `update-rc.d` AND `service`, NOT `systemctl`: this is the same SysVinit fact as the name
+      # above. `systemctl enable` would write a symlink and refuse `--now`, leaving nothing
+      # running - which is exactly what mx/steps/ssh.yaml measured for sshd.
+      printf '%s\n' '{{ password }}' | sudo -S -p '' sh -c 'update-rc.d qemu-guest-agent defaults 2>&1; service qemu-guest-agent start 2>&1' | tail -3
     timeout: 120
 
   # THE DEVICE AND THE PROCESS, BECAUSE THEY FAIL DIFFERENTLY - the same pair macOS' file
@@ -154,9 +171,8 @@ steps:
   # never answer, and `systemctl is-active` would call that success.
   - name: prove the guest agent is running
     ssh: |
-      systemctl is-active qemu-guest-agent &&
       ls -l /dev/virtio-ports/org.qemu.guest_agent.0 2>&1 &&
-      systemctl show -p MainPID --value qemu-guest-agent
+      pgrep -fl qemu-guest-agent
     timeout: 120
 
   # =======================================================================================
@@ -208,9 +224,13 @@ steps:
   # below is what looks for it, once per login, and the probe `lib/bootstrap_probe.sh` is what
   # proves the whole chain worked.
   #
-  # A SYSTEMD USER UNIT, NOT A DESKTOP FILE. Every distribution here runs systemd except the BSD,
-  # so one unit type covers all twelve, and `systemctl --user` is what makes it run as the
-  # account rather than as root - which matters because the script is the user's.
+  # AN XDG AUTOSTART ENTRY, WHICH IS THE ONE MECHANISM EVERY DESKTOP HERE HONOURS.
+  #
+  # It was a systemd user unit, and that is right on the eleven systems that run systemd - but MX
+  # boots SysVinit, so `systemctl --user` cannot work there at all (see the name step above for
+  # the same fact, measured). An autostart .desktop file is what GNOME, KDE, Xfce, MATE and
+  # Cinnamon all read at login, and it runs as the logged-in account by construction, which is
+  # what the launcher needs: the script it calls is the user's.
   - name: write the launcher
     python: bootstrap_files:launcher
     family: linux
@@ -225,20 +245,17 @@ steps:
     ssh: |
       set -e
       install -m 0755 /tmp/bootstrap-launcher.sh ~/bootstrap-launcher.sh
-      mkdir -p ~/.config/systemd/user
-      cat > ~/.config/systemd/user/org.vm.bootstrap.service <<'UNIT'
-      [Unit]
-      Description=Run ~/shared/bootstrap.sh at login
-
-      [Service]
-      Type=oneshot
-      ExecStart=%h/bootstrap-launcher.sh
-
-      [Install]
-      WantedBy=default.target
-      UNIT
-      systemctl --user daemon-reload
-      systemctl --user enable org.vm.bootstrap.service
+      mkdir -p ~/.config/autostart
+      cat > ~/.config/autostart/org.vm.bootstrap.desktop <<'DESKTOP'
+      [Desktop Entry]
+      Type=Application
+      Name=vm bootstrap
+      Comment=Run ~/shared/bootstrap.sh at login
+      Exec=%h/bootstrap-launcher.sh
+      Terminal=false
+      NoDisplay=true
+      X-GNOME-Autostart-enabled=true
+      DESKTOP
       echo INSTALLED_FOR_NEXT_LOGIN
     timeout: 300
 
@@ -248,10 +265,10 @@ steps:
   - name: prove the launcher is installed
     ssh: |
       set -e
-      ls -l ~/bootstrap-launcher.sh ~/.config/systemd/user/org.vm.bootstrap.service
-      grep -q bootstrap-launcher.sh ~/.config/systemd/user/org.vm.bootstrap.service
-      systemctl --user is-enabled org.vm.bootstrap.service
-      test "$(systemctl --user is-enabled org.vm.bootstrap.service)" = "enabled"
+      ls -l ~/bootstrap-launcher.sh ~/.config/autostart/org.vm.bootstrap.desktop
+      grep -q bootstrap-launcher.sh ~/.config/autostart/org.vm.bootstrap.desktop
+      grep -q '^Exec=' ~/.config/autostart/org.vm.bootstrap.desktop
+      echo enabled
     timeout: 60
 
   # THE MACHINE IS STOPPED BY THE STAGE, over ssh, for the reason macOS' file records: this
