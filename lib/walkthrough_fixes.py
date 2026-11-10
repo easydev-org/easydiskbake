@@ -810,8 +810,23 @@ def main() -> int:
     body = net_src[net_src.index("def up("):]
     body = body[:body.index("def down(")]
     check("the bridge does not restart DHCP on every call", "lib/net.py",
-          'already = _sh("pgrep -x dnsmasq").returncode == 0' in body
-          and "if already:" in body)
+          'if _sh("pgrep -x dnsmasq").returncode == 0:' in body)
+    # AND THE SKIP HAS TO COVER THE `dnsmasq` LINE, NOT ONLY THE KILL.
+    #
+    # The first version of this fix skipped `pkill` and then started a second dnsmasq anyway,
+    # which cannot bind while the first holds 172.30.0.1:
+    #
+    #     === dnsmasq DID NOT START ===
+    #       dnsmasq: failed to create listening socket for 172.30.0.1: Address already in use
+    #
+    # and took a whole stage down (run 42895632528). The check is an indentation test, because
+    # that is the only thing that distinguishes "guarded" from "guarded the wrong half".
+    tail = body[body.index('if _sh("pgrep -x dnsmasq").returncode == 0:'):]
+    tail = tail[:tail.index("# NO GEOIP")]
+    guarded = [line for line in tail.splitlines()
+               if "pkill -x dnsmasq" in line or line.strip().startswith("started = _sh(")]
+    check("skipping a running dnsmasq also skips starting one", "lib/net.py",
+          len(guarded) == 2 and all(line.startswith("        ") for line in guarded))
 
     # AND THE SHARE STARTS AFTER THE BRIDGE IT BINDS TO. smbd's `interfaces` line names
     # net.BRIDGE_IP, and net.up() is what creates that address - so a share started first

@@ -204,36 +204,66 @@ def up(*, ssh_port: int = 2222, rdp_port: int = 3389,
     # SO: if a dnsmasq of ours is already running against this bridge, leave it alone. The config
     # below is written every time either way, so a changed MTU or range still takes effect on the
     # next real restart.
-    already = _sh("pgrep -x dnsmasq").returncode == 0
-    if already:
-        log("dnsmasq is already running; leaving the leases alone")
+    # A DHCP SERVER THAT IS ALREADY SERVING IS LEFT COMPLETELY ALONE.
+    #
+    # The point is not to avoid a `pkill`, it is to avoid what a restart does: every lease it
+    # handed out is gone, and a guest that has already booted cannot ask again until its next
+    # renew - which is why a macOS clean sat at its own login window for 900 seconds reporting
+    # `No route to host` (run 42890005370).
+    #
+    # AND IT HAS TO SKIP THE `dnsmasq` LINE TOO. A first version of this fix skipped only the
+    # kill and then started a second one, which cannot bind while the first holds 172.30.0.1:
+    #
+    #     === dnsmasq DID NOT START ===
+    #       dnsmasq: failed to create listening socket for 172.30.0.1: Address already in use
+    #
+    # - and that took a whole stage down (run 42895632528). So the config and the start are one
+    # unit, and a running instance makes the whole unit a no-op.
+    # A DHCP SERVER THAT IS ALREADY SERVING IS LEFT COMPLETELY ALONE.
+    #
+    # The point is not to avoid a `pkill`, it is to avoid what a restart does: every lease it
+    # handed out is gone, and a guest that has already booted cannot ask again until its next
+    # renew - which is why a macOS clean sat at its own login window for 900 seconds reporting
+    # `No route to host` (run 42890005370).
+    #
+    # AND IT HAS TO SKIP THE `dnsmasq` LINE TOO. A first version of this fix skipped only the
+    # kill and then started a second one, which cannot bind while the first holds 172.30.0.1:
+    #
+    #     === dnsmasq DID NOT START ===
+    #       dnsmasq: failed to create listening socket for 172.30.0.1: Address already in use
+    #
+    # - and that took a whole stage down (run 42895632528). So the config and the start are one
+    # unit, and a running instance makes the whole unit a no-op.
+    if _sh("pgrep -x dnsmasq").returncode == 0:
+        log("dnsmasq is already running; leaving its leases and its socket alone")
     else:
         _sh("pkill -x dnsmasq")
         time.sleep(1)
-    # NO MAC BINDING. The first version of this pinned the lease to GUEST_MAC, and every
-    # stage afterwards handed the guest a DIFFERENT MAC - OpenCore generates the identity per
-    # work directory, and `machine.shape()` passes it to the NIC - so dnsmasq logged
-    #
-    #     DHCPDISCOVER(qemubr0) 00:16:cb:25:ee:38 no address available
-    #
-    # every ten seconds forever, and the guest booted with no address, no route and no DNS.
-    #
-    # A ONE-ADDRESS RANGE INSTEAD: `--dhcp-range=A,A` hands A to the first client that asks,
-    # whatever its MAC, and there is only ever one client on this bridge.
-    cfg = (
-        f"dhcp-authoritative;dhcp-range={GUEST_IP},{GUEST_IP};"
-        f"dhcp-option=option:netmask,{MASK};"
-        f"dhcp-option=option:router,{BRIDGE_IP};"
-        # THE GUEST'S RESOLVER IS THIS BRIDGE, and dnsmasq forwards to whatever /etc/resolv.conf
-        # in the container says - which is the only resolver that knows how to answer here.
-        f"dhcp-option=option:dns-server,{BRIDGE_IP};"
-        f"dhcp-option=option:mtu,{MTU};"
-        f"interface={BRIDGE};bind-interfaces;no-ping;filter-AAAA;"
-        f"pid-file=/var/run/dnsmasq.vm.pid;log-facility=/var/log/dnsmasq.vm.log;"
-    )
-    started = _sh(f"dnsmasq --conf-file=/dev/null {''.join('--' + opt + ' ' for opt in cfg.rstrip(';').split(';'))}")
-    if started.returncode != 0:
-        raise SystemExit(f"=== dnsmasq DID NOT START ===\n  {started.stderr.strip()[:300]}")
+        # NO MAC BINDING. The first version of this pinned the lease to GUEST_MAC, and every
+        # stage afterwards handed the guest a DIFFERENT MAC - OpenCore generates the identity per
+        # work directory, and `machine.shape()` passes it to the NIC - so dnsmasq logged
+        #
+        #     DHCPDISCOVER(qemubr0) 00:16:cb:25:ee:38 no address available
+        #
+        # every ten seconds forever, and the guest booted with no address, no route and no DNS.
+        #
+        # A ONE-ADDRESS RANGE INSTEAD: `--dhcp-range=A,A` hands A to the first client that asks,
+        # whatever its MAC, and there is only ever one client on this bridge.
+        cfg = (
+            f"dhcp-authoritative;dhcp-range={GUEST_IP},{GUEST_IP};"
+            f"dhcp-option=option:netmask,{MASK};"
+            f"dhcp-option=option:router,{BRIDGE_IP};"
+            # THE GUEST'S RESOLVER IS THIS BRIDGE, and dnsmasq forwards to whatever /etc/resolv.conf
+            # in the container says - which is the only resolver that knows how to answer here.
+            f"dhcp-option=option:dns-server,{BRIDGE_IP};"
+            f"dhcp-option=option:mtu,{MTU};"
+            f"interface={BRIDGE};bind-interfaces;no-ping;filter-AAAA;"
+            f"pid-file=/var/run/dnsmasq.vm.pid;log-facility=/var/log/dnsmasq.vm.log;"
+        )
+        started = _sh(f"dnsmasq --conf-file=/dev/null {''.join('--' + opt + ' ' for opt in cfg.rstrip(';').split(';'))}")
+        if started.returncode != 0:
+            raise SystemExit(
+                f"=== dnsmasq DID NOT START ===\n  {started.stderr.strip()[:300]}")
 
     # NO GEOIP HANDLING. The guest resolves and reaches whatever the network gives it.
     #
