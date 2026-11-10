@@ -291,18 +291,27 @@ def main() -> int:
               "copy=False" in read("lib/clean_step.py"))
         check("the self-test still works on a copy", "lib/boot_machine.py",
               "copy=True" in read("lib/boot_machine.py"))
-        # AND A GUEST GETS LONG ENOUGH TO SHUT DOWN. Sixty seconds is not enough for macOS to
-        # write its logs, unmount the share and close APFS; the wait expires, the process is
-        # killed, and the NEXT boot replays a journal. That is why a clean sat at "waiting for
-        # sshd" for minutes on a disk whose stage had booted in thirty seconds.
-        check("a stop waits for the guest to close its disks", "lib/vm.py",
+        # macOS DOES NOT SHUT DOWN ON AN ACPI POWER BUTTON, and waiting longer cannot fix that.
+        #
+        # It receives `system_powerdown`, puts up the "Restart / Sleep / Cancel / Shut Down"
+        # dialog and waits for an answer. Measured: five minutes and then
+        #
+        #     [vm] the guest did not power off within 300s; killing it      (run 42762244256)
+        #
+        # on a guest that had booted in thirty seconds. So the shutdown is a COMMAND over ssh, and
+        # ACPI is the fallback for a guest whose ssh is gone.
+        session_src = read("lib/vm_session.py")
+        check("macos is shut down with a command, not the power button", "lib/vm_session.py",
+              "shutdown -h now" in session_src)
+        check("acpi stays as the fallback", "lib/vm_session.py",
+              session_src.index("shutdown_command(") < session_src.index("guest.stop("))
+        check("the power-button timeout is still generous", "lib/vm.py",
               "acpi_timeout: int = 300" in read("lib/vm.py"))
-        # AND EVERY OTHER CALLER THAT ASKS FOR A GRACEFUL STOP ALLOWS THAT LONG. A caller that
-        # passes its own number can still be wrong; this is the list of them.
-        for path in ("macos/15/share.py", "lib/clean_step.py", "linux/dev.py"):
-            body = read(path)
-            check(f"{path} allows a slow shutdown", path,
-                  "acpi_timeout=300" in body or "acpi_timeout=180" in body)
+        # AND EVERY STAGE THAT OWNS A GUEST GOES THROUGH THE ONE STOP, so a new stage cannot
+        # inherit the sixty-second kill.
+        for path in ("macos/15/share.py", "macos/15/dev.py", "lib/clean_step.py"):
+            check(f"{path} stops through vm_session", path,
+                  "vm_session.stop(" in read(path))
     except Exception as exc:                          # noqa: BLE001
         check(f"vm_session imports ({exc})", "lib/vm_session.py", False)
 

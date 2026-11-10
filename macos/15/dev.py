@@ -243,7 +243,10 @@ def main(argv: list[str]) -> int:
         ok = True
         return 0
     finally:
-        guest.stop(acpi_first=ok)
+        # SSH FIRST - see the note in macos/15/share.py: macOS puts up a dialog on an ACPI power
+        # button and never shuts down, so the request has to be a command.
+        import vm_session
+        vm_session.stop(guest, acpi_first=ok, family="macos", password=SSH_PASSWORD)
         if ok:
             if not smoke.check_disk(disk, root_fs="apfs"):
                 log("=== THE DISK FAILED ITS CHECKS ===")

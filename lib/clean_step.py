@@ -230,7 +230,9 @@ def main(argv: list[str]) -> int:
         # ACPI FIRST WHEN IT WORKED, AND LONG ENOUGH. The clean wrote gigabytes of zeros
         # seconds ago; a disk killed mid-write repairs itself on every later boot. 60s was
         # not enough and produced "the guest did not power off within 60s; killing it".
-        guest.stop(acpi_first=ok, acpi_timeout=300)
+        # THE SSH SHUTDOWN FIRST - macOS ignores the ACPI power button and shows a dialog
+        # instead. See lib/vm_session.py's SHUTDOWN_COMMAND.
+        vm_session.stop(guest, acpi_first=ok, family=args.kind, password="admin")
         # AND THE SHARE, because a leftover smbd holds 172.30.0.1:445 and the next stage in this
         # container would find it serving a directory that is no longer the one it wants.
         hostshare.stop()

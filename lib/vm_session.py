@@ -198,11 +198,38 @@ def _start_machine(family: str, disk: str, work: str, ssh_port: int, cpus: int,
 # lib/clean_step.py already passed 300 for exactly this reason; it was the only caller that did.
 STOP_TIMEOUT = 300
 
+# WHAT EACH FAMILY HAS TO BE TOLD, OVER SSH, TO ACTUALLY SHUT DOWN.
+#
+# macOS DOES NOT SHUT DOWN ON AN ACPI POWER BUTTON. It receives `system_powerdown` and puts up the
+# "Restart / Sleep / Cancel / Shut Down" dialog, then waits - so the request is not a shutdown, it
+# is a request to ASK, and nothing answers a dialog on a headless guest. Measured: five minutes of
+# waiting and then `killing it` (run 42762244256), which is what leaves a journal for the next
+# boot to replay.
+#
+# Windows and Linux both honour ACPI, so they need no command.
+SHUTDOWN_COMMAND = {
+    # ONE LINE: the ssh channel takes a command, not a script, so the newline printf needs is
+    # written as an escape inside its format rather than as a line break here.
+    "macos": "printf '%s\\n' '{password}' | sudo -S -p '' shutdown -h now",
+}
 
-def stop(guest, *, acpi_first: bool = True, log=print) -> None:
-    """Stop the guest and the share it was using. Both, because a leftover smbd holds the port."""
+
+def stop(guest, *, acpi_first: bool = True, family: str = "", password: str = "admin",
+         log=print) -> None:
+    """Stop the guest and the share it was using. Both, because a leftover smbd holds the port.
+
+    THE SHUTDOWN COMMAND IS TRIED FIRST, AND ACPI IS THE FALLBACK. A failed ssh (a guest whose
+    network has gone) should still get the power button, because that costs nothing and sometimes
+    works.
+    """
     try:
-        guest.stop(acpi_first=acpi_first, acpi_timeout=STOP_TIMEOUT)
+        command = SHUTDOWN_COMMAND.get(family)
+        done = False
+        if command:
+            done = guest.shutdown_command(command.format(password=password), STOP_TIMEOUT,
+                                          password=password)
+        if not done:
+            guest.stop(acpi_first=acpi_first, acpi_timeout=STOP_TIMEOUT)
     except Exception as exc:                                # noqa: BLE001
         log(f"stop: {exc}")
     finally:
@@ -212,7 +239,7 @@ def stop(guest, *, acpi_first: bool = True, log=print) -> None:
 @contextlib.contextmanager
 def open(family: str, disk: str, work: str, *, ssh_port: int = 2222,
          boot_timeout: int = 900, copy: bool = True, share: str | None = None,
-         cpus: int = 4, mem_mb: int = 0, log=print):
+         cpus: int = 4, mem_mb: int = 0, password: str = "admin", log=print):
     """`start()` as a context manager. Stops the guest and the share on the way out."""
     guest, reached = start(family, disk, work, ssh_port=ssh_port, boot_timeout=boot_timeout,
                            copy=copy, share=share, cpus=cpus, mem_mb=mem_mb, log=log)
@@ -220,6 +247,6 @@ def open(family: str, disk: str, work: str, *, ssh_port: int = 2222,
         yield guest if reached else None
     finally:
         if guest is not None:
-            stop(guest, log=log)
+            stop(guest, family=family, password=password, log=log)
         else:
             hostshare.stop()

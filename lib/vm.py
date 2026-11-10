@@ -609,11 +609,8 @@ class Guest:
         It is off by default because every other caller in this repository stops a
         machine that is going to be thrown away or a guest that has already hung.
 
-        FIVE MINUTES WHEN IT IS ON, AND THE NUMBER IS NOT ARBITRARY. Sixty was the default and
-        macOS never finished inside it: the wait expired, the process was killed, and the next
-        boot spent minutes replaying a journal - a stage whose guest had booted in thirty seconds
-        became a clean that could not reach sshd at all (run 42759838906's predecessor). A caller
-        that wants to give up sooner can say so; a caller that wants a clean disk cannot.
+        THE ORDER IS SSH, THEN ACPI, THEN THE KILL - see shutdown_command() for why the ssh step
+        exists at all.
         """
         if self.proc is None:
             return
@@ -634,6 +631,49 @@ class Guest:
                 pass
             self.proc.wait(timeout=5)
         log("qemu stopped")
+
+    def shutdown_command(self, command: str, timeout: int, *, user: str = "docker",
+                         password: str = "admin") -> bool:
+        """Run an in-guest shutdown command and wait. Returns True if qemu exited.
+
+        WHY THIS EXISTS AND ACPI IS NOT ENOUGH. macOS DOES NOT SHUT DOWN ON AN ACPI POWER BUTTON
+        PRESS. It receives it and puts up the "Restart / Sleep / Cancel / Shut Down" dialog - so
+        `system_powerdown` is not a shutdown request to macOS, it is a request to ASK. The guest
+        then sits there until something answers the dialog, and what answered here was the
+        timeout:
+
+            [vm] asking the guest to shut down
+            [vm] the guest did not power off within 300s; killing it      (run 42762244256)
+
+        Five minutes, and it was never going to be enough, because nothing was in progress. The
+        disk was then killed mid-flight and the next boot had a journal to replay.
+
+        The command the caller passes is run over the ssh connection the caller already has; for
+        macOS it is `sudo shutdown -h now`, which is a real shutdown. ACPI stays as the fallback
+        for a guest whose ssh has already gone.
+
+        THE CALLER OWNS THE COMMAND because this module must not learn how to log in to a guest.
+        """
+        import time
+
+        try:
+            import session
+            status, output = session.ssh(self.shape.ssh_port, command, timeout=60,
+                                         user=user, password=password)
+            log(f"asked the guest to shut down over ssh -> {status}")
+            for line in (output or "").splitlines()[:4]:
+                log(f"    {line[:140]}")
+        except Exception as exc:                                # noqa: BLE001
+            log(f"the ssh shutdown could not be sent ({exc})")
+
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self.proc.poll() is not None:
+                log("the guest powered off")
+                return True
+            time.sleep(2)
+        log(f"the guest did not shut down within {timeout}s")
+        return False
 
     def _acpi_shutdown(self, timeout: int) -> None:
         """Send the guest a power button press and wait for it to go away.
