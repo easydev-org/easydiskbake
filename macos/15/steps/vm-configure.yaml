@@ -1,0 +1,166 @@
+# Everything a finished disk needs before the toolchain: the host share, the login hook, and a
+# guest agent that can shut the machine down without a dialog.
+#
+#     python3 lib/steps.py macos/15/steps/vm-configure.yaml --ssh-port 2222
+#
+# WHY THIS STAGE EXISTS AND WHY IT IS NAMED FOR THE VM RATHER THAN THE SHARE
+#
+# It began as `share`, because a directory the guest can mount was the only thing here. It is now
+# where the MACHINE IS CONFIGURED, after ssh works and before a toolchain is installed:
+#
+#     an SMB share on the bridge            a directory the person can put files in
+#     a login hook                          something that runs those files at login
+#     the qemu guest agent                  a shutdown that does not need a dialog
+#
+# The third one is the newest and the reason for the rename. macOS answers an ACPI power button
+# with "Restart / Sleep / Cancel / Shut Down" and waits for a click; on a headless guest nobody
+# clicks, so every stage that wanted a clean shutdown had to use ssh. The agent is the supported
+# answer, and it belongs here - installed once, on a disk that already has sshd, before anything
+# expensive is added to it.
+#
+# WHAT THE LOGIN HOOK RUNS IS `~/shared/bootstrap.sh`, WHICH THE PERSON PUTS THERE. Nothing on
+# this disk is required to make it work - that is the whole point of using the shell the guest
+# already has rather than a toolchain installed two stages later.
+#
+# THIS FILE INSTALLS NO TOOLCHAIN. No package manager, no compiler, no interpreter. If a step here
+# needs something that is not in a stock macOS, it is in the wrong file.
+
+name: macos 15 - configure the vm (share, login hook, guest agent)
+resolution: [1920, 1080]
+
+vars:
+  user:
+    from: args.user
+    default: docker
+  password:
+    from: args.password
+    default: admin
+  # THE SERVER, SO THE PROOFS BELOW DO NOT HARD-CODE AN ADDRESS.
+  #
+  # The default below is this container's end of the bridge. A literal typed into an ssh command
+  # would bake the CI network into a published disk, which is the mistake this variable exists to
+  # prevent - so the address is written ONCE, here, and read everywhere.
+  host:
+    from: args.host
+    default: 172.30.0.1
+
+ssh_user: docker
+ssh_port: 2222
+
+steps:
+  - name: wait for sshd
+    require_ssh: true
+    timeout: 900
+
+  # =========================================================================
+  # THE GUEST AGENT
+  # =========================================================================
+  #
+  # APPLE'S OWN AGENT DOES NOT WORK HERE, AND THAT IS NOT A CONFIGURATION PROBLEM.
+  #
+  # macOS ships /usr/libexec/AppleQEMUGuestAgent, and its IOKit personality matches
+  # AppleVirtIOAgentDevice - a device the applevirtio.console driver creates only under Apple's
+  # Virtualization.framework. Booting through OpenCore means that driver never loads, so the
+  # built-in agent never starts, and /var/log/guestagent.log fills with
+  #
+  #     Error opening serial port: '/dev/tty.org.qemu.guest_agent.0' (No such file or directory)
+  #
+  # So the agent comes from mav2287/mac-guest-agent, which is a native implementation for macOS
+  # under QEMU. It defaults to ISA SERIAL rather than virtio for the same reason: Apple's
+  # Apple16X50Serial.kext has shipped since 10.4 and matches on every macOS, while the virtio
+  # agent device is gated on the framework above.
+  #
+  # The machine therefore gets `-device isa-serial` (see Shape.qga_transport), and this step puts
+  # the binary where its LaunchDaemon expects it.
+  #
+  # THE DOWNLOAD HAPPENS ON THE HOST, so this is a `python:` step and not `script:` - a script
+  # body runs inside the guest, and a curl there would be a download through the guest's own
+  # network to a file the host then has to fetch back.
+  - name: fetch the guest agent on the host
+    python: vm_configure_asset:fetch_guest_agent
+    family: macos
+    python_screen: false
+    timeout: 900
+
+  - name: copy the agent into the guest
+    scp: ["guest-agent/mac-guest-agent", "/tmp/mac-guest-agent"]
+    timeout: 300
+
+  # INSTALL IT THE WAY ITS OWN TOOL WANTS, THEN PROVE IT ANSWERED.
+  #
+  # `--install` writes a LaunchDaemon, which is what makes it start at boot rather than only when
+  # a person runs it. The check afterwards is a process test, not a file test: a plist on disk
+  # and no running agent is exactly the failure Apple's own agent has.
+  - name: install the guest agent
+    ssh: |
+      chmod +x /tmp/mac-guest-agent &&
+      printf '%s\n' '{{ password }}' | sudo -S -p '' /tmp/mac-guest-agent --install 2>&1 | tail -12 &&
+      sleep 5 &&
+      printf '%s\n' '{{ password }}' | sudo -S -p '' launchctl print system/org.mav2287.mac-guest-agent 2>&1 | head -6 ||
+      printf '%s\n' '{{ password }}' | sudo -S -p '' pgrep -fl mac-guest-agent
+    timeout: 600
+
+  - name: prove the guest agent answers
+    ssh: |
+      printf '%s\n' '{{ password }}' | sudo -S -p '' pgrep -fl mac-guest-agent &&
+      ls -l /dev/cu.serial* 2>/dev/null || true
+    timeout: 120
+
+  # =========================================================================
+  # THE HOST SHARE
+  # =========================================================================
+  #
+  # SMB rather than 9p or virtiofs for the reason lib/hostshare.py records at length: Windows has
+  # no 9p driver at all and macOS's 9p client is read-only, so SMB is the only protocol both
+  # guests speak natively, read and write, with nothing installed.
+  - name: mount the host share
+    share_mount: true
+    share_family: macos
+    timeout: 180
+
+  # A MOUNT THAT REPORTS SUCCESS AND A DIRECTORY THAT IS EMPTY ARE DIFFERENT FACTS.
+  - name: prove the share is readable and writable
+    ssh: |
+      ls -la ~/shared | head -20 && printf 'written-by-%s\n' "$(hostname)" > ~/shared/from-guest.txt && cat ~/shared/from-guest.txt
+    timeout: 120
+
+  # =========================================================================
+  # THE LOGIN HOOK
+  # =========================================================================
+  #
+  # A LaunchAgent in ~/Library/LaunchAgents is loaded by launchd at the next graphical login -
+  # which is exactly when this is meant to run, and there is no gui domain to load it into from an
+  # ssh session (see the note in lib/steps.py).
+  - name: install the bootstrap launcher
+    bootstrap_install: true
+    share_family: macos
+    timeout: 300
+
+  # THE MOUNT IS A LAUNCHDAEMON, BECAUSE A USER CANNOT MOUNT A SAMBA SHARE.
+  #
+  # `mount_smbfs` as a normal account against Samba answers "server rejected the connection:
+  # Authentication error" while the same credential from root succeeds - see the note in
+  # lib/hostshare.py's mount_commands. The login hook runs as the user, so it is not the thing
+  # that mounts; a daemon owns the mount and an agent owns the bootstrap.
+  - name: prove the mount daemon is installed
+    ssh: |
+      ls -l /Library/LaunchDaemons/org.vm.smbmount.plist /usr/local/bin/vm-smbmount.sh &&
+      plutil -lint /Library/LaunchDaemons/org.vm.smbmount.plist &&
+      printf '%s\n' '{{ password }}' | sudo -S -p '' launchctl print system/org.vm.smbmount | head -12
+    timeout: 120
+
+  # THE PROOF THAT MATTERS MOST: the mount the daemon made is on the system's mount table and
+  # the share is readable through it. A plist that is valid and loaded can still mount nothing.
+  - name: prove the daemon mounted the share
+    ssh: |
+      mount | grep ' on /Users/' && ls -la ~/shared | head -10
+    timeout: 120
+
+  # THE PLIST HAS TO BE VALID AND HAS TO NAME THE LAUNCHER. `plutil -lint` in the install step
+  # catches malformed XML; this catches a plist that is well formed and points at nothing.
+  - name: prove the login hook is installed
+    ssh: |
+      ls -l ~/Library/LaunchAgents/org.vm.bootstrap.plist ~/bootstrap-launcher.sh &&
+      plutil -lint ~/Library/LaunchAgents/org.vm.bootstrap.plist &&
+      grep -c bootstrap-launcher.sh ~/Library/LaunchAgents/org.vm.bootstrap.plist
+    timeout: 60

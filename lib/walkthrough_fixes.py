@@ -345,18 +345,61 @@ def main() -> int:
         # bought nothing and cost five runs: the SIGTERM arrived inside hostshare.stop(), one
         # line after `kill` returned, and seven experiments found no sender inside this process.
         # macos/15/ssh.py never calls it and never had the problem.
-        check("a stage that exits leaves the share to the container", "macos/15/share.py",
-              "share=False" in read("macos/15/share.py"))
+        check("a stage that exits leaves the share to the container", "macos/15/vm_configure.py",
+              "share=False" in read("macos/15/vm_configure.py"))
         # AND THE SIGNAL NAMES ITSELF, so the next occurrence is not a decode exercise.
-        check("a signal is reported by name", "macos/15/share.py",
-              "SIGNALLED:" in read("macos/15/share.py"))
+        check("a signal is reported by name", "macos/15/vm_configure.py",
+              "SIGNALLED:" in read("macos/15/vm_configure.py"))
         # AND EVERY STAGE THAT OWNS A GUEST GOES THROUGH THE ONE STOP, so a new stage cannot
         # inherit the sixty-second kill.
-        for path in ("macos/15/share.py", "macos/15/dev.py", "lib/clean_step.py"):
+        for path in ("macos/15/vm_configure.py", "macos/15/dev.py", "lib/clean_step.py"):
             check(f"{path} stops through vm_session", path,
                   "vm_session.stop(" in read(path))
     except Exception as exc:                          # noqa: BLE001
         check(f"vm_session imports ({exc})", "lib/vm_session.py", False)
+
+    # --- THE GUEST AGENT, WHICH IS HOW A GUEST SHUTS DOWN WITHOUT A DIALOG -----------------
+    #
+    # macOS answers an ACPI power button with "Restart / Sleep / Cancel / Shut Down" and waits
+    # for a click, which no headless guest can give (runs 42762244256, 42778795463). The agent is
+    # the supported route: the request goes to a process inside the guest that calls the system's
+    # own shutdown, and it needs no ssh - so it also works on a guest whose sshd never came up.
+    try:
+        import qga
+        check("the guest agent client exists", "lib/qga.py",
+              all(hasattr(qga.Agent, m) for m in ("sync", "ping", "wait", "shutdown")))
+        # THE SHUTDOWN REPLY IS EXPECTED TO DIE. The guest powers off while its agent is still
+        # writing the answer, so raising there would report every success as a failure.
+        check("a shutdown whose reply never arrives is not an error", "lib/qga.py",
+              "except (AgentError, OSError):\n            pass" in read("lib/qga.py"))
+        # AND THE GUEST GETS A DEVICE TO ANSWER ON.
+        vm_src = read("lib/vm.py")
+        check("the machine can carry an agent channel", "lib/vm.py",
+              "qga_socket" in vm_src and "org.qemu.guest_agent.0" in vm_src)
+        # TWO TRANSPORTS, BECAUSE THE GUEST-SIDE AGENTS DISAGREE. Windows qemu-ga wants
+        # virtio-serial; the macOS agent Apple ships never loads under QEMU and the third-party
+        # one moved to ISA serial.
+        check("macos gets isa-serial and windows virtio-serial", "lib/vm.py",
+              "isa-serial" in vm_src and "virtserialport" in vm_src)
+        # THE ORDER: AGENT, THEN SSH, THEN THE POWER BUTTON - and the power button is the only one
+        # of the three that cannot work on macOS.
+        vs = read("lib/vm_session.py")
+        check("the guest agent is tried before ssh", "lib/vm_session.py",
+              vs.index("_shutdown_via_agent") < vs.index("SHUTDOWN_COMMAND.get"))
+        # AND THE STAGE THAT INSTALLS IT IS NAMED FOR THE MACHINE, NOT THE SHARE.
+        for path in ("macos/15/steps/vm-configure.yaml", "windows/11/steps/vm-configure.yaml"):
+            walk = load_yaml(path)
+            names = [s.get("name") for s in (walk.get("steps") or [])]
+            check(f"{path} installs the guest agent", path,
+                  "install the guest agent" in names)
+            check(f"{path} proves the agent answers", path,
+                  "prove the guest agent answers" in names)
+            check(f"{path} still configures the share", path,
+                  "mount the host share" in names)
+            check(f"{path} still installs the login hook", path,
+                  "install the bootstrap launcher" in names)
+    except Exception as exc:                          # noqa: BLE001
+        check(f"qga imports ({exc})", "lib/qga.py", False)
 
     # --- A YAML FILE CAN OWN ITS MACHINE -------------------------------------------------
     #
@@ -627,7 +670,7 @@ def main() -> int:
         check(f"bootstrap imports ({exc})", "lib/bootstrap.py", False)
 
     # THE SHARE IS ITS OWN STAGE NOW, so the launcher belongs to share.yaml rather than to dev.
-    for path in ("macos/15/steps/share.yaml", "windows/11/steps/share.yaml"):
+    for path in ("macos/15/steps/vm-configure.yaml", "windows/11/steps/vm-configure.yaml"):
         walk = load_yaml(path)
         names = [s.get("name") for s in (walk.get("steps") or [])]
         check(f"{path} installs the launcher", path, "install the bootstrap launcher" in names)
@@ -736,7 +779,7 @@ def main() -> int:
             os.unlink(path)
         # AND NOTHING ANYWHERE STILL SAYS THE OLD NAME, which is how a rename half-happens.
         for path in ("lib/bootstrap.py", "lib/steps.py", "lib/launch_selftest.py",
-                     "macos/15/steps/share.yaml", "windows/11/steps/share.yaml"):
+                     "macos/15/steps/vm-configure.yaml", "windows/11/steps/vm-configure.yaml"):
             body = read(path)
             check(f"2. {path} has no old job name", path,
                   "easydiskbake-bootstrap" not in body

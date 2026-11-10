@@ -1,20 +1,32 @@
-"""Share a host directory with the guest, and install the logon hook.
+"""Configure the VM after ssh: the guest agent, the host share, and the logon hook.
 
-    python3 windows/11/share.py --ssh out/windows11-ssh.qcow2 --out out/windows11-share.qcow2
+    python3 windows/11/vm_configure.py --ssh out/windows11-ssh.qcow2 --out out/windows11-vm-configure.qcow2
 
-WHY THIS IS A STAGE OF ITS OWN, BEFORE THE TOOLCHAIN
+WHAT CHANGED AND WHY THE NAME CHANGED WITH IT
+
+This was `share.py`, because an SMB credential was the only thing it installed. It now also puts
+the qemu guest agent on the disk:
+
+    the qemu guest agent     a shutdown that survives a guest whose sshd has died
+    an SMB credential        a directory the person can put files in
+    a logon task             something that runs those files at logon
+
+Windows honours an ACPI power button, so it was never blocked the way macOS was - but the agent
+is the only shutdown route that works when the network does not, and installing it here means every
+later stage can stop the machine without relying on ssh still being up.
+
+WHY IT IS STILL BEFORE THE TOOLCHAIN
 
 It needs nothing installed. SMB is native to Windows and the launcher is PowerShell 5.1, which
-ships with Windows 11 - so this runs on a disk straight out of the ssh stage, and a failure here
-is about the share rather than about a 17.14.44 Visual Studio download. Each half can also be
-re-run on its own: a broken mount no longer costs forty minutes of installers first.
+ships with Windows 11. The agent is one MSI.
 
-WHAT IT INSTALLS
+WHAT IT INSTALLS, AND NOTHING ELSE
 
     a credential for an SMB share on the bridge, served by this container (lib/hostshare.py)
+    qemu-ga, from the virtio-win guest tools
     a Task Scheduler task at ONLOGON that runs ~/shared/bootstrap.ps1
 
-and NOTHING ELSE. No winget package, no compiler, no interpreter.
+No winget package, no compiler, no interpreter.
 """
 
 from __future__ import annotations
@@ -37,7 +49,7 @@ import vm  # noqa: E402
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # THE WALKTHROUGH THIS STAGE RUNS. Beside the stage, for the same reason as ssh.py's.
-WALK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "steps", "share.yaml")
+WALK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "steps", "vm-configure.yaml")
 
 SSH_PORT = 2222
 SSH_USER = "docker"
@@ -158,7 +170,7 @@ def wait_for_ssh(seconds: int, why: str = "") -> bool:
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--ssh", required=True, help="the disk windows/11/ssh.py produced")
-    p.add_argument("--out", default="out/windows11-share.qcow2")
+    p.add_argument("--out", default="out/windows11-vm-configure.qcow2")
     p.add_argument("--copy", action="store_true",
                    help="copy the input disk instead of moving it; the default is to "
                         "move, because the disk normally came from ghcr and the "
@@ -229,10 +241,16 @@ def main(argv: list[str]) -> int:
     # NO TPM BY DEFAULT, the same as bake.py and ssh.py.
     tpm = start_swtpm(work) if args.tpm else ""
 
+    # THE AGENT'S CHANNEL - see the note in macos/15/vm_configure.py. Windows uses virtio-serial,
+    # which is what qemu-ga expects.
+    qga_socket = os.path.join(work, "qga.sock")
+    if os.path.exists(qga_socket):
+        os.unlink(qga_socket)
     shape = vm.Shape(
         cpus=args.cpus, mem_mb=args.mem, machine="q35",
         firmware_code=firmware_code, firmware_vars=firmware_vars,
         tpm_socket=tpm, vga="std", ssh_port=SSH_PORT,
+        qga_socket=qga_socket, qga_transport="virtio",
     )
     # THE DISK HAS TO BE ATTACHED - see the longer note in ssh.py. This stage had the
     # same `extra=[]`, so it started a machine with no drive and every later symptom

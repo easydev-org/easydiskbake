@@ -1,0 +1,152 @@
+# Everything a finished Windows disk needs before the toolchain: the host share, the logon hook,
+# and the guest agent.
+#
+#     python3 lib/steps.py windows/11/steps/vm-configure.yaml --ssh-port 2222
+#
+# WHY THIS STAGE EXISTS AND WHY IT IS NAMED FOR THE VM RATHER THAN THE SHARE
+#
+# It began as `share`, because a directory the guest can reach was the only thing here. It is now
+# where the MACHINE IS CONFIGURED, after ssh works and before a toolchain is installed:
+#
+#     an SMB credential on the bridge       a directory the person can put files in
+#     a logon task                          something that runs those files at logon
+#     the qemu guest agent                  a shutdown that does not need a dialog
+#
+# The third one is the newest. Windows honours an ACPI power button, so it was never blocked the
+# way macOS was - but the agent is the only shutdown route that survives a guest whose sshd has
+# died, and it is installed by the same stage that installs the share, on a disk that already
+# answers ssh.
+#
+# WHAT THE LOGON HOOK RUNS IS `~/shared/bootstrap.ps1`, WHICH THE PERSON PUTS THERE. Nothing on
+# this disk is required to make it work.
+#
+# THIS FILE INSTALLS NO TOOLCHAIN.
+
+name: windows 11 - configure the vm (share, logon hook, guest agent)
+resolution: [1920, 1080]
+
+vars:
+  user:
+    from: args.user
+    default: docker
+  password:
+    from: args.password
+    default: admin
+  # THE SERVER, SO THE COMMANDS BELOW DO NOT HARD-CODE AN ADDRESS.
+  #
+  # The default below is this container's end of the bridge: true of every run here and not true
+  # of anything else. A literal typed into an ssh command would bake the CI network into a
+  # published disk, which is the mistake this variable exists to prevent.
+  host:
+    from: args.host
+    default: 172.30.0.1
+  # AND THE SHARE'S OWN ACCOUNT, for the same reason.
+  smb_user:
+    from: args.smb_user
+    default: guest
+  # EMPTY, AND THAT IS THE ACCOUNT'S REAL PASSWORD - see lib/hostshare.py.
+  smb_pass:
+    from: args.smb_pass
+    default: ""
+
+ssh_user: docker
+ssh_port: 2222
+
+steps:
+  - name: wait for sshd
+    require_ssh: true
+    ssh_probe: echo ok
+    timeout: 900
+
+  # =========================================================================
+  # THE GUEST AGENT
+  # =========================================================================
+  #
+  # VIRTIO-SERIAL, NOT ISA. On Windows the agent is qemu-ga from virtio-win, which expects a
+  # virtio-serial port named org.qemu.guest_agent.0 and the vioserial driver underneath it. The
+  # machine is started with exactly that (Shape.qga_transport="virtio", the default).
+  #
+  # THE MSI, NOT THE EXE. qemu-ga.exe needs its DLLs beside it and a service registered by hand;
+  # the MSI does both and uninstalls cleanly. `/qn` is quiet, `/norestart` because a reboot here
+  # would interrupt a stage that is still working.
+  #
+  # THE DOWNLOAD HAPPENS ON THE HOST, so this is a `python:` step and not `script:` - a script
+  # body runs inside the guest.
+  - name: fetch the guest agent on the host
+    python: vm_configure_asset:fetch_guest_agent
+    family: windows
+    python_screen: false
+    timeout: 1200
+
+  - name: copy the guest tools into the guest
+    scp: ["guest-agent/virtio-win-guest-tools.exe", "C:/Users/{{ user }}/virtio-win-guest-tools.exe"]
+    timeout: 600
+
+  # SILENT, NO REBOOT, AND THEN THE SERVICE HAS TO EXIST.
+  #
+  # `-Wait` because the installer spawns and returns otherwise; the exit code is what says whether
+  # it worked, and a stage that carried on after a failed install would look fine and shut down
+  # badly for the rest of its life.
+  - name: install the guest agent
+    ssh: |
+      powershell -NoProfile -ExecutionPolicy Bypass -Command "$p = Start-Process -FilePath 'C:\Users\{{ user }}\virtio-win-guest-tools.exe' -ArgumentList '/S','/v','/qn /norestart' -Wait -PassThru; Write-Output ('installer exit ' + $p.ExitCode); Get-Service QEMU-GA -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Status; Get-Service QEMU-GA -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name"
+    timeout: 900
+
+  - name: prove the guest agent answers
+    ssh: |
+      powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-Service QEMU-GA | Format-List Name,Status,StartType; Get-ChildItem 'C:\Program Files\qemu-ga' -ErrorAction SilentlyContinue | Select-Object -First 3 -ExpandProperty Name"
+    timeout: 120
+
+  # =========================================================================
+  # THE HOST SHARE
+  # =========================================================================
+  #
+  # There is nothing to persist, and that took three runs to accept:
+  #
+  #     net use Z: \\host\share        0, then "The system cannot find the path"
+  #     net use   \\host\share         0, then "user name or password is incorrect"
+  #     cmdkey /add:host ...           "Credentials cannot be saved from this logon session"
+  #
+  # The last one is Microsoft's own limitation, not a setting: CredWriteW answers
+  # ERROR_NO_SUCH_LOGON_SESSION with "Network logon sessions do not have an associated credential
+  # set.", and Win32-OpenSSH hardcodes LOGON32_LOGON_NETWORK_CLEARTEXT with no way to change it.
+  #
+  # So the share is a SESSION, and the step below supplies the credential again in its own command
+  # rather than inheriting this one's - which is also exactly what the logon hook does.
+  - name: mount the host share
+    share_mount: true
+    share_family: windows
+    timeout: 180
+
+  # THE SHARE REALLY IS READABLE AND WRITABLE, WITH THE CREDENTIAL SUPPLIED IN THIS COMMAND.
+  #
+  # Deliberately a SEPARATE ssh session from the mount above, and deliberately passing the
+  # credential again: a session established by one ssh command does not carry over, so if this
+  # passes it is because the credential works, not because a previous command left something
+  # behind. That is the same thing the logon hook has to do, so passing here is the real proof.
+  - name: prove the share is readable and writable
+    ssh: |
+      cmd /c net use \\{{ host }}\shared "" /user:{{ smb_user }} /persistent:no >nul 2>&1 & dir \\{{ host }}\shared & echo written-by-this-session > \\{{ host }}\shared\from-guest.txt & type \\{{ host }}\shared\from-guest.txt
+    timeout: 120
+
+  # =========================================================================
+  # THE LOGON HOOK
+  # =========================================================================
+  #
+  # A Task Scheduler task at ONLOGON, running the launcher through
+  # `powershell.exe -WindowStyle Hidden` so no console flashes on the desktop.
+  - name: install the bootstrap launcher
+    bootstrap_install: true
+    share_family: windows
+    timeout: 300
+
+  # THE TASK HAS TO EXIST AND HAS TO NAME THE LAUNCHER. A registration that failed prints an
+  # error, but a registration that succeeded and named the wrong path prints nothing until the
+  # next logon - which is a whole publish cycle away. `schtasks /Query /V` prints the action.
+  #
+  # THE FILTER IS ONE WORD PER /C ARGUMENT. `findstr /i "a b c"` is parsed by cmd, so the quotes
+  # never reach findstr and it is handed three files to open (run 42750443762).
+  - name: prove the logon task is registered
+    ssh: |
+      cmd /c "schtasks /Query /TN vm-bootstrap /V /FO LIST | findstr /i /C:TaskName /C:Status"
+    timeout: 60

@@ -1,22 +1,35 @@
-"""Share a host directory with the guest, and install the login hook.
+"""Configure the VM after ssh: the guest agent, the host share, and the login hook.
 
-    python3 macos/15/share.py --disk out/macos15-ssh.qcow2 --out out/macos15-share.qcow2
+    python3 macos/15/vm_configure.py --disk out/macos15-ssh.qcow2 --out out/macos15-vm-configure.qcow2
 
-WHY THIS IS A STAGE OF ITS OWN, BEFORE THE TOOLCHAIN
+WHAT CHANGED AND WHY THE NAME CHANGED WITH IT
 
-It needs nothing installed. The share is an SMB mount and the launcher is /bin/sh, so this runs
-on a disk straight out of the ssh stage - and a failure here is about the share rather than about
-a 2.7 GiB Xcode download. Splitting it also means each half can be re-run on its own: a broken
-mount no longer costs an hour of Xcode first, and a broken toolchain no longer costs a share
-mount that was already working.
+This was `share.py`, because an SMB mount was the only thing it did. It now installs three things,
+and the machine is what they have in common:
 
-WHAT IT INSTALLS
+    the qemu guest agent     a shutdown that does not need a dialog answered
+    an SMB share             a directory the person can put files in
+    a login hook             something that runs those files at login
+
+The agent is the reason for the rename. macOS answers an ACPI power button with a dialog and
+waits (run 42762244256), so every stage that wanted a clean shutdown used ssh instead; the agent
+is the supported route, and it has to be installed on a disk that already answers ssh - which is
+exactly where this stage runs.
+
+WHY IT IS STILL BEFORE THE TOOLCHAIN
+
+It needs nothing installed. SMB is native, the launcher is /bin/sh, and the agent is one binary
+copied in. Splitting it out means a failure here is about the machine rather than about a 2.7 GiB
+Xcode download, and the two can be re-run independently.
+
+WHAT IT INSTALLS, AND NOTHING ELSE
 
     an SMB share on the bridge, served by this container (lib/hostshare.py)
-    a LaunchAgent in ~/Library/LaunchAgents that runs ~/shared/bootstrap.sh at login
+    the guest agent, from mav2287/mac-guest-agent
+    a LaunchAgent that runs ~/shared/bootstrap.sh at login
 
-and NOTHING ELSE. No package manager, no compiler, no interpreter - if a step in
-macos/15/steps/share.yaml needs something a stock macOS does not have, it is in the wrong file.
+No package manager, no compiler, no interpreter. If a step in macos/15/steps/vm-configure.yaml
+needs something a stock macOS does not have, it is in the wrong file.
 """
 
 from __future__ import annotations
@@ -62,11 +75,11 @@ SSH_PASSWORD = os.environ.get("MACOS_PASSWORD", "admin")
 # The Homebrew installer is a script fetched over https and run with /bin/bash, which is what
 # its own documentation has said for years. It is idempotent: a second run says "already
 # installed" and exits 0. That property is what lets the step run unconditionally.
-WALK = os.path.join(HERE, "steps", "share.yaml")
+WALK = os.path.join(HERE, "steps", "vm-configure.yaml")
 
 
 def log(message: str) -> None:
-    print(f"[macos-share {time.strftime('%H:%M:%S')}] {message}", flush=True)
+    print(f"[macos-vmconf {time.strftime('%H:%M:%S')}] {message}", flush=True)
 
 
 def wait_for_ssh(port: int, seconds: int = 180) -> bool:
@@ -146,7 +159,7 @@ def main(argv: list[str]) -> int:
     _note_signals()
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--disk", required=True, help="the ssh-stage disk")
-    p.add_argument("--out", default="out/macos15-share.qcow2")
+    p.add_argument("--out", default="out/macos15-vm-configure.qcow2")
     p.add_argument("--overlay", action="store_true",
                    help="treat --disk as a READ-ONLY base and write into a throwaway qcow2 "
                         "overlay; the base is never modified. See lib/overlay.py")
@@ -215,6 +228,16 @@ def main(argv: list[str]) -> int:
     log(f"identity {assets['identity']['serial']} / {assets['identity']['mac']}")
 
     shape = machine.shape(assets, cpus=args.cpus, mem_mb=args.mem)
+    # THE AGENT'S CHANNEL, MADE BEFORE THE MACHINE SO QEMU CAN BIND IT. This stage is what
+    # installs the agent, so it is the stage that has to give it somewhere to answer - and the
+    # step that installs it checks the process, which only exists if the port does.
+    #
+    # ISA SERIAL, because Apple's own virtio agent never loads under QEMU and the third-party one
+    # that does moved to ISA. See lib/vm.py's Shape.qga_transport.
+    shape.qga_socket = os.path.join(work, "qga.sock")
+    shape.qga_transport = "isa"
+    if os.path.exists(shape.qga_socket):
+        os.unlink(shape.qga_socket)
     shape.ssh_port = args.ssh_port
     guest = vm.Guest(
         work,
@@ -304,7 +327,7 @@ def main(argv: list[str]) -> int:
                 run_overlay.flatten(out)
             else:
                 compress.compress(disk, out)
-            log(f"BAKED macos15 share -> {out} ({os.path.getsize(out) >> 20} MiB)")
+            log(f"BAKED macos15 vm-configure -> {out} ({os.path.getsize(out) >> 20} MiB)")
 
 
 def shutil_which(name: str) -> str | None:

@@ -152,9 +152,24 @@ def _discard_overlay(run_overlay, log) -> None:
 
 
 def _start_machine(family: str, disk: str, work: str, ssh_port: int, cpus: int,
-                   mem_mb: int, log, discard: bool = True):
-    """The machine each family boots on - reused from the stage that built the disk."""
+                   mem_mb: int, log, discard: bool = True, qga: bool = True):
+    """The machine each family boots on - reused from the stage that built the disk.
+
+    `qga` GIVES THE GUEST A CHANNEL ITS AGENT CAN ANSWER ON, and that is what makes a graceful
+    shutdown possible at all on macOS. It costs one device and one socket and it is harmless on a
+    disk with no agent installed: the port exists, nothing listens, and the caller falls back.
+    """
     import vm
+
+    # THE AGENT'S SOCKET, MADE BEFORE THE MACHINE SO QEMU CAN BIND IT.
+    #
+    # MACOS GETS ISA SERIAL AND EVERYONE ELSE VIRTIO-SERIAL. That is a property of the guest-side
+    # agent, not of qemu: Apple's own agent never loads under QEMU, and the third-party one that
+    # does moved to ISA in v2.5.0. See lib/vm.py's Shape.qga_transport.
+    qga_socket = os.path.join(work, "qga.sock") if qga else ""
+    if qga_socket and os.path.exists(qga_socket):
+        os.unlink(qga_socket)
+    qga_transport = "isa" if family == "macos" else "virtio"
 
     if family == "macos":
         import machine
@@ -167,6 +182,8 @@ def _start_machine(family: str, disk: str, work: str, ssh_port: int, cpus: int,
         assets = opencore.build("15", work)
         shape = machine.shape(assets, cpus=cpus, mem_mb=mem_mb or 8192)
         shape.ssh_port = ssh_port
+        shape.qga_socket = qga_socket
+        shape.qga_transport = qga_transport
         guest = vm.Guest(
             work,
             extra=[
@@ -217,6 +234,7 @@ def _start_machine(family: str, disk: str, work: str, ssh_port: int, cpus: int,
         cpus=cpus, mem_mb=mem_mb or 6144, machine="q35",
         firmware_code=firmware_code, firmware_vars=firmware_vars,
         tpm_socket="", vga="std", ssh_port=ssh_port,
+        qga_socket=qga_socket, qga_transport=qga_transport,
     )
     guest = vm.Guest(
         work,
@@ -244,18 +262,58 @@ STOP_TIMEOUT = 300
 
 # WHAT EACH FAMILY HAS TO BE TOLD, OVER SSH, TO ACTUALLY SHUT DOWN.
 #
-# macOS DOES NOT SHUT DOWN ON AN ACPI POWER BUTTON. It receives `system_powerdown` and puts up the
-# "Restart / Sleep / Cancel / Shut Down" dialog, then waits - so the request is not a shutdown, it
-# is a request to ASK, and nothing answers a dialog on a headless guest. Measured: five minutes of
-# waiting and then `killing it` (run 42762244256), which is what leaves a journal for the next
-# boot to replay.
+# THE THREE WAYS TO ASK A GUEST TO CLOSE ITS DISKS, IN THE ORDER THEY ARE TRIED.
 #
-# Windows and Linux both honour ACPI, so they need no command.
+#   1. guest agent     a request to a process inside the guest that calls the system's own
+#                      shutdown. Needs no ssh and no network, and works before sshd exists.
+#   2. ssh command     `shutdown -h now` over the connection the stage already has.
+#   3. ACPI            the virtual power button. Windows honours it; macOS answers with a dialog
+#                      and waits (run 42762244256: five minutes, then `killing it`).
+#
+# WHY THE AGENT IS FIRST. It is the same shutdown path as (2) - the guest's own - but it survives
+# the two things that break (2): a guest whose sshd never came up, and a guest whose network is
+# gone. It is also the only one of the three that works during a stage that has not set up ssh yet.
 SHUTDOWN_COMMAND = {
     # ONE LINE: the ssh channel takes a command, not a script, so the newline printf needs is
     # written as an escape inside its format rather than as a line break here.
     "macos": "printf '%s\\n' '{password}' | sudo -S -p '' shutdown -h now",
 }
+
+
+def _shutdown_via_agent(socket_path: str, guest, log=print, timeout: int = 120) -> bool:
+    """Ask the agent to power the guest down and wait for qemu to exit. True if it did.
+
+    THE REPLY IS EXPECTED TO DIE. The guest powers off while its agent is still writing the
+    answer, so the connection dropping here is the success path, not a failure - see lib/qga.py.
+    """
+    import time
+    try:
+        import qga
+    except ImportError as exc:
+        log(f"  no qga module ({exc}); falling back")
+        return False
+    try:
+        agent = qga.Agent(socket_path, connect_timeout=5.0)
+    except qga.AgentError as exc:
+        log(f"  the agent did not answer ({exc}); falling back")
+        return False
+    try:
+        if not agent.wait(timeout=30):
+            log("  the agent socket exists but nothing answers on it; falling back")
+            return False
+        log("  asking the guest agent to power down")
+        agent.shutdown("powerdown")
+    finally:
+        agent.close()
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if guest.proc.poll() is not None:
+            guest.proc.wait()
+            log("  the guest powered off")
+            return True
+        time.sleep(1)
+    log(f"  the guest did not power off within {timeout}s after the agent asked")
+    return False
 
 
 def stop(guest, *, acpi_first: bool = True, family: str = "", password: str = "admin",
@@ -281,11 +339,18 @@ def stop(guest, *, acpi_first: bool = True, family: str = "", password: str = "a
             log("the guest is on an overlay; killing it rather than waiting for a shutdown")
             guest.stop(acpi_first=False)
         else:
-            command = SHUTDOWN_COMMAND.get(family)
             done = False
-            if command:
-                done = guest.shutdown_command(command.format(password=password), STOP_TIMEOUT,
-                                              password=password)
+            # 1. THE AGENT, IF THE MACHINE WAS STARTED WITH ONE.
+            socket_path = getattr(getattr(guest, "shape", None), "qga_socket", "")
+            if socket_path:
+                done = _shutdown_via_agent(socket_path, guest, log)
+            # 2. SSH, WHEN THE GUEST HAS NO AGENT OR IT DID NOT ANSWER.
+            if not done:
+                command = SHUTDOWN_COMMAND.get(family)
+                if command:
+                    done = guest.shutdown_command(command.format(password=password),
+                                                  STOP_TIMEOUT, password=password)
+            # 3. THE POWER BUTTON, WHICH IS THE LAST RESORT AND NOT A GUARANTEE.
             if not done:
                 guest.stop(acpi_first=acpi_first, acpi_timeout=STOP_TIMEOUT)
     except Exception as exc:                                # noqa: BLE001

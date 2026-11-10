@@ -123,6 +123,33 @@ class Shape:
     firmware_code: str = ""      # OVMF_CODE.fd, read-only pflash
     firmware_vars: str = ""      # a WRITABLE copy per guest; boot state accumulates
     tpm_socket: str = ""         # swtpm chardev socket, or "" for no TPM
+    # THE QEMU GUEST AGENT'S CHANNEL, OR "" FOR NONE.
+    #
+    # `qga_socket` MAKES A VIRTIO-SERIAL PORT NAMED org.qemu.guest_agent.0 AND A UNIX SOCKET THE
+    # HOST CAN SPEAK QGA TO. What that buys: `guest-shutdown` is a REAL shutdown request that the
+    # guest's own agent executes - not an ACPI power button, which macOS answers with a dialog.
+    #
+    # THE DEVICE IS VIRTIO-SERIAL ON BOTH FAMILIES, but what runs inside differs:
+    #
+    #     Windows   qemu-ga, from virtio-win. Ships as an MSI, installs as the QEMU-GA service.
+    #     macOS     Apple ships AppleQEMUGuestAgent, and IT DOES NOT WORK UNDER QEMU: its IOKit
+    #               match is AppleVirtIOAgentDevice, which the applevirtio.console driver creates
+    #               only under Apple's own Virtualization.framework. So macOS needs a third-party
+    #               agent (mav2287/mac-guest-agent), which by default speaks ISA SERIAL rather than
+    #               this virtio port, so macOS takes qga_transport="isa" instead.
+    qga_socket: str = ""
+    # WHICH DEVICE CARRIES THE AGENT, AND THAT IS A PROPERTY OF THE GUEST-SIDE AGENT.
+    #
+    #     "virtio"   virtio-serial + virtserialport named org.qemu.guest_agent.0.
+    #                What qemu-ga on Windows expects, and what Linux expects.
+    #     "isa"      isa-serial. What mav2287/mac-guest-agent expects by default, because macOS
+    #                under QEMU has no working virtio agent: Apple's own is gated on a driver that
+    #                only Apple's Virtualization.framework provides, and the third-party one moved
+    #                to ISA in v2.5.0 for exactly that reason.
+    #
+    # `qemu-guest-agent`'s protocol is the same either way - it is a JSON stream over a chardev -
+    # so the host side only has to know which socket to open.
+    qga_transport: str = "virtio"
     vga: str = "std"             # "std" (default), "vmware", "none"
     # A RESOLUTION, IN PIXELS, FOR THE GUEST'S PRIMARY SCREEN.
     #
@@ -250,7 +277,7 @@ class Shape:
     # long note in build_args() for why a guest larger than its tap is the broken case.
     net_mtu: int = 0
     # A host directory to expose over SMB. Empty means no share, and the netdev is
-    # exactly what it was before this field existed - see lib/share.py for why SMB
+    # exactly what it was before this field existed - see lib/hostshare.py for why SMB
     # rather than virtiofs or 9p.
     # HOW THE GUEST's SERIAL PORT IS WIRED.
     #
@@ -411,7 +438,7 @@ def build_args(work: str, extra: list[str] | None = None,
 
     # Networking, with or without a share. A share adds `smb=<dir>` to the same
     # user-mode netdev, which makes qemu fork its own smbd; the guest reaches it at
-    # 10.0.2.4. See lib/share.py.
+    # 10.0.2.4. See lib/hostshare.py.
     # THE ONE NETWORK MODE. lib/net.py creates the bridge, the tap, DHCP, NAT and the port
     # forwards; this only attaches qemu to the interface that already exists.
     #
@@ -481,6 +508,27 @@ def build_args(work: str, extra: list[str] | None = None,
             "-tpmdev", "emulator,id=tpm0,chardev=chrtpm",
             "-device", "tpm-crb,tpmdev=tpm0",
         ]
+
+    # THE QEMU GUEST AGENT'S PORT. `server=on,wait=off` so qemu starts without a client - the
+    # host connects when it wants to ask something, and a guest with no host attached is normal.
+    #
+    # ONE DEVICE, BOTH FAMILIES: virtio-serial is what the guest-side agents expect, and the port
+    # NAME is what they look for (`/dev/virtio-ports/org.qemu.guest_agent.0` on POSIX, a device
+    # interface on Windows). What differs is the agent installed in vm-configure, not the device.
+    if shape.qga_socket:
+        if shape.qga_transport == "isa":
+            # ONE PORT, NO BUS. macOS's agent probes /dev/cu.serial1 first, which is the FIRST
+            # isa-serial device qemu adds - so this must be the only one, and it is.
+            args += [
+                "-chardev", f"socket,id=qga0,path={shape.qga_socket},server=on,wait=off",
+                "-device", "isa-serial,chardev=qga0",
+            ]
+        else:
+            args += [
+                "-chardev", f"socket,id=qga0,path={shape.qga_socket},server=on,wait=off",
+                "-device", "virtio-serial",
+                "-device", "virtserialport,chardev=qga0,name=org.qemu.guest_agent.0",
+            ]
 
     # -vga AND -device ARE EXCLUSIVE, AND vga="none" MEANS THE CALLER BRINGS ITS OWN.
     #

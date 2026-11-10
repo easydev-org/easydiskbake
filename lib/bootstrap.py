@@ -156,7 +156,7 @@ def macos_mount_script(host: str, user: str, share: str, password: str = "",
     """
     return f"""\
 #!/bin/sh
-# Mount the host share. INSTALLED BY macos/15/steps/share.yaml, run by launchd as root at boot.
+# Mount the host share. INSTALLED BY macos/15/steps/vm-configure.yaml, run by launchd as root at boot.
 #
 # ROOT, BECAUSE IT RUNS AT BOOT BEFORE ANYBODY HAS LOGGED IN. There is no user session to mount
 # into and no keychain to unlock, so this is where a mount that has to exist at login belongs.
@@ -222,7 +222,7 @@ def macos_launcher(host: str, user: str, share: str) -> str:
 #!/bin/sh
 # Run ~/shared/bootstrap.sh at login, once, and leave a log beside it.
 #
-# INSTALLED BY macos/15/steps/share.yaml. Editing this file on the disk is fine; the step only
+# INSTALLED BY macos/15/steps/vm-configure.yaml. Editing this file on the disk is fine; the step only
 # writes it when it is missing.
 #
 # NO PYTHON, AND THAT IS THE POINT: this runs on a disk that may not have the developer
@@ -312,7 +312,7 @@ def windows_launcher(host: str, user: str, share: str, password: str = "") -> st
     return f"""\
 # Run the share's bootstrap.ps1 at logon, once, and leave a log beside it.
 #
-# INSTALLED BY windows/11/steps/share.yaml. Started by Task Scheduler through
+# INSTALLED BY windows/11/steps/vm-configure.yaml. Started by Task Scheduler through
 # `powershell.exe -WindowStyle Hidden`, so no console appears.
 #
 # NO PYTHON: the share is installed before the toolchain on this disk.
@@ -421,7 +421,7 @@ def windows_ps1(launcher: str) -> str:
     return f"""\
 # Register the logon task that runs the share's bootstrap once.
 #
-# INSTALLED BY windows/11/steps/share.yaml.
+# INSTALLED BY windows/11/steps/vm-configure.yaml.
 #
 # NO PYTHON: the share is installed before the toolchain on this disk.
 $ErrorActionPreference = 'Stop'

@@ -52,7 +52,7 @@ on:
         description: "Bake Windows from an ISO - ~90 minutes"
         type: boolean
         default: false
-      share_run:
+      vm_configure_run:
         description: "Share a host directory and install the logon hook (no toolchain)"
         type: boolean
         default: true
@@ -84,7 +84,7 @@ on:
       ssh_from:
         description: "ssh: pull this tag instead of the base job's output"
         default: ""
-      share_from:
+      vm_configure_from:
         description: "share: pull this tag instead of the ssh job's output"
         default: ""
       dev_from:
@@ -112,7 +112,7 @@ on:
       ssh_publish_tag:
         description: "ssh: tag to publish under; empty for windows-ssh-<stamp>"
         default: ""
-      share_publish_tag:
+      vm_configure_publish_tag:
         description: "share: tag to publish under; empty for windows-share-<stamp>"
         default: ""
       dev_publish_tag:
@@ -335,11 +335,11 @@ jobs:
   # It needs nothing installed: SMB is native to Windows and the launcher is PowerShell 5.1.
   # Splitting it out means a failure here is about the share rather than about a Visual Studio
   # download, and each half can be re-run on its own.
-  share:
+  vm-configure:
     needs: ssh
     if: |
-      always() && inputs.share_run
-      && (inputs.share_from != '' || needs.ssh.outputs.tag != '')
+      always() && inputs.vm_configure_run
+      && (inputs.vm_configure_from != '' || needs.ssh.outputs.tag != '')
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     container:
@@ -353,7 +353,7 @@ jobs:
       checks: write
       packages: write
     outputs:
-      tag: ${{ inputs.share_from || steps.publish.outputs.tag }}
+      tag: ${{ inputs.vm_configure_from || steps.publish.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -368,7 +368,7 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: share-prepare
+          name: vm-configure-prepare
           interval: "10"
           command: |
             set -euo pipefail
@@ -377,7 +377,7 @@ jobs:
       - name: pull the ssh disk
         uses: easydev-org/easyactions/oci-pull@main
         with:
-          tag: ${{ inputs.share_from || needs.ssh.outputs.tag }}
+          tag: ${{ inputs.vm_configure_from || needs.ssh.outputs.tag }}
           dest: out
           token: ${{ github.token }}
 
@@ -385,14 +385,14 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: share-install
+          name: vm-configure-install
           interval: "20"
           command: |
             set -euo pipefail
             DISK=$(ls out/*.qcow2 | head -1)
-            python3 windows/11/share.py \
+            python3 windows/11/vm_configure.py \
               --ssh "$DISK" \
-              --out out/windows11-share.qcow2 \
+              --out out/windows11-vm-configure.qcow2 \
               --no-clean \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}"
 
@@ -405,9 +405,9 @@ jobs:
           command: |
             set -euo pipefail
             python3 lib/clean_step.py \
-              --disk out/windows11-share.qcow2 \
+              --disk out/windows11-vm-configure.qcow2 \
               --kind windows \
-              --work out/share-work \
+              --work out/vm-configure-work \
               --artifacts out \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
               --mem 6144
@@ -417,13 +417,13 @@ jobs:
         id: publish
         uses: easydev-org/easyactions/oci-push@main
         with:
-          path: out/windows11-share.qcow2
-          kind: windows-share
-          tag: ${{ inputs.share_publish_tag }}
+          path: out/windows11-vm-configure.qcow2
+          kind: windows-vm-configure
+          tag: ${{ inputs.vm_configure_publish_tag }}
           token: ${{ github.token }}
 
   dev:
-    needs: share
+    needs: vm-configure
     if: |
       always() && inputs.dev_run
       && (inputs.dev_from != '' || needs.share.outputs.tag != '')

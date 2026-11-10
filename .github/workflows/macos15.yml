@@ -46,7 +46,7 @@ on:
         description: "Turn on Remote Login"
         type: boolean
         default: true
-      share_run:
+      vm_configure_run:
         description: "Share a host directory and install the login hook (no toolchain)"
         type: boolean
         default: true
@@ -71,7 +71,7 @@ on:
       ssh_from:
         description: "ssh: pull this tag instead of the desktop job's output"
         default: ""
-      share_from:
+      vm_configure_from:
         description: "share: pull this tag instead of the ssh job's output"
         default: ""
       dev_from:
@@ -481,11 +481,11 @@ jobs:
   # runs on a disk straight out of the ssh stage - and a failure here is about the share rather
   # than about a 2.7 GiB Xcode download. That also means the two can be re-run independently: a
   # broken mount no longer costs an hour of Xcode first.
-  share:
+  vm-configure:
     needs: ssh
     if: |
-      always() && inputs.share_run
-      && (inputs.share_from != '' || needs.ssh.outputs.tag != '')
+      always() && inputs.vm_configure_run
+      && (inputs.vm_configure_from != '' || needs.ssh.outputs.tag != '')
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     container:
@@ -499,7 +499,7 @@ jobs:
       checks: write
       packages: write
     outputs:
-      tag: ${{ inputs.share_from || steps.publish.outputs.tag }}
+      tag: ${{ inputs.vm_configure_from || steps.publish.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -514,7 +514,7 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: macos15-share-prepare
+          name: macos15-vm-configure-prepare
           interval: "10"
           command: |
             set -euo pipefail
@@ -523,7 +523,7 @@ jobs:
       - name: pull the ssh disk
         uses: easydev-org/easyactions/oci-pull@main
         with:
-          tag: ${{ inputs.share_from || needs.ssh.outputs.tag }}
+          tag: ${{ inputs.vm_configure_from || needs.ssh.outputs.tag }}
           dest: out
           token: ${{ github.token }}
 
@@ -531,28 +531,28 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: macos15-share
+          name: macos15-vm-configure
           interval: "20"
           command: |
             set -euo pipefail
             DISK=$(ls out/*.qcow2 | head -1)
-            python3 macos/15/share.py \
+            python3 macos/15/vm_configure.py \
               --disk "$DISK" \
-              --out out/macos15-share.qcow2 \
+              --out out/macos15-vm-configure.qcow2 \
               --ssh-port "${{ inputs.ssh_port || '2222' }}"
 
       - name: clean the disk
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: macos15-share-clean
+          name: macos15-vm-configure-clean
           interval: "20"
           command: |
             set -euo pipefail
             python3 lib/clean_step.py \
-              --disk out/macos15-share.qcow2 \
+              --disk out/macos15-vm-configure.qcow2 \
               --kind macos \
-              --work out/macos15-share-clean-work \
+              --work out/macos15-vm-configure-clean-work \
               --artifacts out \
               --boot-timeout "${{ inputs.boot_timeout || '1800' }}" \
               --mem 8192
@@ -561,7 +561,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: macos15-share-last-frame
+          name: macos15-vm-configure-last-frame
           path: out/last-frame.png
           if-no-files-found: warn
           retention-days: 7
@@ -571,13 +571,13 @@ jobs:
         id: publish
         uses: easydev-org/easyactions/oci-push@main
         with:
-          path: out/macos15-share.qcow2
-          kind: macos15-share
-          tag: ${{ inputs.publish_tag || 'macos15-share' }}
+          path: out/macos15-vm-configure.qcow2
+          kind: macos15-vm-configure
+          tag: ${{ inputs.publish_tag || 'macos15-vm-configure' }}
           token: ${{ github.token }}
 
   dev:
-    needs: share
+    needs: vm-configure
     if: |
       always() && inputs.dev_run
       && (inputs.dev_from != '' || needs.share.outputs.tag != '')
