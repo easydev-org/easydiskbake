@@ -465,8 +465,12 @@ def main() -> int:
         # without checking one.
         # THE COMMAND IS RENDERED, so this checks what it will actually say: the mapped name,
         # and NOT the authenticated account's password.
-        check("the macos mount presents the mapped guest name", "lib/hostshare.py",
-              f"//{hostshare.MACOS_GUEST_USER}@" in mac)
+        # THE COLON BEFORE THE @ IS LOAD-BEARING. `//user@host` means "ask for a password", and
+        # with no tty that gives up before any session setup: run 42750412479 selected SMB3_11 and
+        # reset the connection, and the server log had no GUEST line at all. The man page's own
+        # passwordless example is `//guest:@myserver/PUBLIC`.
+        check("the macos mount presents the mapped guest name with an empty password",
+              "lib/hostshare.py", f"//{hostshare.MACOS_GUEST_USER}:@" in mac)
         check("the macos mount carries no password", "lib/hostshare.py",
               hostshare.SMB_PASSWORD not in mac)
         check("the macos client name is not the authenticated account", "lib/hostshare.py",

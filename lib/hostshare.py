@@ -455,7 +455,12 @@ def mount_commands(host: str = "", user: str = "docker",
         # no credential does not need root, and the daemon that runs this at boot is root anyway.
         "macos": (
             f"mkdir -p ~/shared && "
-            f"mount_smbfs -f 0666 -d 0777 //{MACOS_GUEST_USER}@{host}/{SHARE_NAME} ~/shared"
+            # THE COLON IS NOT DECORATION. `//user@host` means "ask for a password" and, with no
+            # tty, mounts nothing at all - run 42750412479 negotiated SMB3_11 and aborted before
+            # any session setup, which is why the server log had no GUEST line in it. The man
+            # page's own example for a passwordless session is `//guest:@myserver/PUBLIC`: user,
+            # colon, empty password.
+            f"mount_smbfs -f 0666 -d 0777 //{MACOS_GUEST_USER}:@{host}/{SHARE_NAME} ~/shared"
         ),
         # WINDOWS: THE CREDENTIAL IS SUPPLIED PER SESSION, WHICH IS THE ONLY THING THAT WORKS.
         #

@@ -92,7 +92,15 @@ steps:
   # THE TASK HAS TO EXIST AND HAS TO NAME THE LAUNCHER. A registration that failed prints an
   # error, but a registration that succeeded and named the wrong path prints nothing until the
   # next logon - which is a whole publish cycle away. `schtasks /Query /V` prints the action.
+  #
+  # THE FILTER IS ONE WORD PER /C ARGUMENT. `findstr /i "a b c"` is parsed by cmd, so the quotes
+  # never reach findstr and it is handed three files to open - run 42750443762 answered
+  #
+  #     FINDSTR: Cannot open Task_To_Run
+  #     FINDSTR: Cannot open Status"
+  #
+  # /C: takes the whole phrase as one pattern and needs no surrounding quotes to survive cmd.
   - name: prove the logon task is registered
     ssh: |
-      cmd /c "schtasks /Query /TN easydiskbake-bootstrap /V /FO LIST | findstr /i \"TaskName Task_To_Run Status\""
+      cmd /c "schtasks /Query /TN easydiskbake-bootstrap /V /FO LIST | findstr /i /C:TaskName /C:Status"
     timeout: 60

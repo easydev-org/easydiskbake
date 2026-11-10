@@ -177,7 +177,10 @@ fi
 i=0
 while [ "$i" -lt 30 ]; do
     i=$((i + 1))
-    if mount_smbfs -f 0666 -d 0777 "//$USER@$SERVER/$SHARE" "$MOUNT" 2>&1; then
+    # THE COLON SEPARATES USER FROM AN EMPTY PASSWORD. `//user@host` asks for one instead, and
+    # with no tty it gives up before any session setup - run 42750412479 selected SMB3_11 and
+    # then reset the connection.
+    if mount_smbfs -f 0666 -d 0777 "//$USER:@$SERVER/$SHARE" "$MOUNT" 2>&1; then
         echo "mounted $SERVER/$SHARE on $MOUNT"
         exit 0
     fi
