@@ -69,6 +69,46 @@ vars:
     default: admin
 
 steps:
+  # --- 0. THE MACHINE, IN THE FILE -------------------------------------------------------
+  #
+  # THIS STAGE USED TO START QEMU ITSELF, and so did the other three, and only one of the four
+  # knew what a disk expects. That is why `clean` once booted a machine whose daemon mounted a
+  # server nobody was running. The lifecycle is a step now.
+  #
+  # BOOT IS OVER WHEN QEMU IS RUNNING - it does not wait for sshd. The disk this stage is given
+  # has never been logged into, so there is no sshd until this file turns it on.
+  - name: boot the disk
+    boot: true
+    family: macos
+    requires: [overlay]
+    timeout: 900
+
+  # THE ACCOUNT'S PASSWORD, INTO THE LOGIN WINDOW.
+  #
+  # desktop.py stops the guest after the Setup Assistant without logging in, so this disk boots
+  # to a login window: wallpaper, clock, account tile, password field. Nothing is wrong with it
+  # and nothing can be done on it - Spotlight, Terminal and `systemsetup` all need a session.
+  #
+  # THE ESCAPE COMES FIRST because a wake hint or a notification banner swallows the next
+  # keystroke, and it also takes focus off the field. The click afterwards is the one place this
+  # file uses a coordinate that is not a decision about what is on screen: (965, 981) is the
+  # centre of the "Enter Password" pill, which spans x=880..1210 at y=960..1000 on every boot.
+  - name: dismiss anything over the login window
+    key: esc
+    settle: 2
+
+  - name: click the password field
+    at: [965, 981]
+    settle: 1
+
+  - name: type the password
+    type: "{{ password }}"
+    settle: 1
+
+  - name: press return
+    key: ret
+    settle: 20
+
   # --- 1. THE GUI, WHICH IS THE ONLY WAY TO TURN THIS ON --------------------------------
   #
   # `systemsetup -setremotelogin on` is refused by TCC and launchctl does not expose

@@ -66,7 +66,8 @@ def log_to(prefix: str = "vm"):
 def start(family: str, disk: str, work: str, *, ssh_port: int = 2222,
           boot_timeout: int = 900, wait_for_ssh: bool = True, copy: bool = True,
           share: str | None = None,
-          cpus: int = 4, mem_mb: int = 0, discard: bool = True, log=print):
+          cpus: int = 4, mem_mb: int = 0, discard: bool = True,
+          boot_options: dict | None = None, log=print):
     """Serve the share, boot `disk`, and - IF ASKED - wait for sshd.
 
     `wait_for_ssh=False` IS FOR A WALKTHROUGH THAT DRIVES THE SCREEN. A stage that installs an OS
@@ -147,7 +148,7 @@ def start(family: str, disk: str, work: str, *, ssh_port: int = 2222,
             return None, None, None
 
     guest = _start_machine(family, running, work, ssh_port, cpus, mem_mb, log,
-                           discard=discard)
+                           discard=discard, boot_options=boot_options)
     if guest is None:
         _discard_overlay(run_overlay, log)
         hostshare.stop()
@@ -267,6 +268,31 @@ def _android_x86(disk: str, work: str, ssh_port: int, cpus: int, mem_mb: int, lo
     return guest
 
 
+def start_on(disk: str, work: str, *, family: str, assets: dict, ssh_port: int = 2222,
+             cpus: int = 4, mem_mb: int = 0, log=print):
+    """Start a macOS guest on a disk that already exists - an overlay a stage made.
+
+    WHY THIS IS SEPARATE FROM start(). `start()` decides whether to make an overlay; a stage that
+    has already made one (macos/15/ssh.py, because it chooses between an overlay and a working
+    copy before the walkthrough runs) must not have a second one made on top. It also already
+    has the OpenCore assets, and rebuilding them would fetch the recovery image again.
+
+    Returns `(guest, reached)`, and NOT an overlay: the caller owns that one and closes it.
+    """
+    import session
+
+    guest = _start_machine(family, disk, work, ssh_port, cpus, mem_mb, log,
+                           discard=True, boot_options={"assets": assets})
+    if guest is None:
+        return None, None
+    log(f"started on the caller's overlay; qmp is {guest.paths.drive}")
+    if not session.wait_for_ssh(ssh_port, 1, log, probe="echo ok"):
+        # ONE SECOND, NOT A TIMEOUT: the caller runs `require_ssh:` itself when it wants a shell,
+        # and this disk has no sshd until its own walkthrough turns Remote Login on.
+        log("  (no sshd yet - the walkthrough turns it on)")
+    return guest, True
+
+
 def _start_machine(family: str, disk: str, work: str, ssh_port: int, cpus: int,
                    mem_mb: int, log, discard: bool = True, qga: bool = True):
     """The machine each family boots on - reused from the stage that built the disk.
@@ -295,13 +321,19 @@ def _start_machine(family: str, disk: str, work: str, ssh_port: int, cpus: int,
 
     if family == "macos":
         import machine
-        import opencore
-        import macos_recovery
 
-        log("=== recovery image ===")
-        macos_recovery.fetch_published("15", work)
-        log("=== OpenCore, firmware, APFS driver ===")
-        assets = opencore.build("15", work)
+        # THE OPENCORE ASSETS MAY ARRIVE FROM THE CALLER. A stage that already built them (the
+        # ssh stage does, because it needs the identity and the boot drive for the overlay it
+        # decides about) should not make the walkthrough fetch and rebuild the same thing.
+        assets = (boot_options or {}).get("assets")
+        if not assets:
+            import opencore
+            import macos_recovery
+
+            log("=== recovery image ===")
+            macos_recovery.fetch_published("15", work)
+            log("=== OpenCore, firmware, APFS driver ===")
+            assets = opencore.build("15", work)
         shape = machine.shape(assets, cpus=cpus, mem_mb=mem_mb or 8192)
         shape.ssh_port = ssh_port
         shape.qga_socket = qga_socket

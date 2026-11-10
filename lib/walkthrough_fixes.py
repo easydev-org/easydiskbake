@@ -467,6 +467,19 @@ def main() -> int:
     except Exception as exc:                          # noqa: BLE001
         check(f"capabilities imports ({exc})", "lib/capabilities.py", False)
 
+    # AND `requires:` RUNS BEFORE `boot:`, WHICH IS ONE OF THE STEPS THAT CAN CARRY IT.
+    #
+    # The first version sat after the block that defines `login`, so `boot: requires: [overlay]`
+    # was never checked AND the check raised UnboundLocalError on the steps that were reached -
+    # run 42804130212 died on its second step. The check reads the account from the driver now,
+    # which is available before anything else.
+    steps_src_early = read("lib/steps.py")
+    check("requires is checked before the lifecycle steps", "lib/steps.py",
+          steps_src_early.index("requires:` IS CHECKED") <
+          steps_src_early.index('if step["boot"]:'))
+    check("the capability check does not depend on a later local", "lib/steps.py",
+          'user=values.get("ssh_user") or "docker"' in steps_src_early)
+
     # AND `shutdown:` TAKES A METHOD, NOT A BOOLEAN, WITH NO SILENT CHAIN BEHIND IT.
     steps_src = read("lib/steps.py")
     check("shutdown names a method", "lib/steps.py",

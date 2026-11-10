@@ -788,13 +788,23 @@ class MachineSession:
     """
 
     def __init__(self, family: str, disk: str, work: str, *, share=None,
-                 mem_mb: int = 0, cpus: int = 4) -> None:
+                 mem_mb: int = 0, cpus: int = 4, overlay=None, ssh_port: int = 2222,
+                 boot_options: dict | None = None) -> None:
         self.family = family
         self.disk = disk
         self.work = work
         self.share = share
         self.mem_mb = mem_mb
         self.cpus = cpus
+        # THE OVERLAY MAY ALREADY EXIST, when a stage made it (macos/15/ssh.py does: it decides
+        # between an overlay and a working copy before the file runs). Otherwise `boot:` makes
+        # one, and either way `stop()` closes it - which is what proves the base was not written.
+        self.overlay = overlay
+        self.ssh_port = ssh_port
+        # WHAT THE STAGE KNOWS THAT THE FILE CANNOT. `assets` is the OpenCore build (a dict of
+        # paths and an identity); a stage that made one passes it here rather than making the
+        # walkthrough fetch it a second time. Everything else a stage passes is a disk fact.
+        self.boot_options = dict(boot_options or {})
         self.guest = None
         self.overlay = None
         self.qmp_path = ""
@@ -820,6 +830,7 @@ class MachineSession:
         # client in its own initrd - so serving one would start an smbd nothing connects to.
         # `share=""` is the documented value for "do not serve one"; None means ~/shared.
         android = (family or self.family) == "android"
+        assets = self.boot_options.get("assets")
         share = self.share
         if android:
             if share not in (None, ""):
@@ -838,6 +849,20 @@ class MachineSession:
             raise StepError(
                 f"the machine started but never answered on ssh port {ssh_port}; "
                 f"the console is in {self.work}/console.log")
+
+    def _boot_on_existing_overlay(self, assets, ssh_port: int, log):
+        """Start on the overlay the CALLER made. See vm_session.start_on."""
+        import vm_session
+        if assets is None:
+            raise StepError(
+                "this session was given an overlay and no `assets`; an overlay boot needs the "
+                "OpenCore build the stage made. Pass boot_options={'assets': assets}.")
+        guest, reached = vm_session.start_on(
+            self.disk, self.work, family=self.family, assets=assets,
+            ssh_port=ssh_port, cpus=self.cpus, mem_mb=self.mem_mb, log=log)
+        if guest is None:
+            raise StepError("the machine could not be started on the overlay")
+        return guest, reached
 
     def wait_for_ssh(self, ssh_port: int, seconds: int) -> None:
         import session as sessmod
@@ -1172,16 +1197,23 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
     #       shutdown: guest_agent
     #       requires: [qga]
     #
+    # THE ACCOUNT COMES FROM THE DRIVER, not from `login`, because this runs BEFORE the steps
+    # that read it - `boot:` is one of them and cannot wait for a variable a later block sets.
+    #
     # A missing capability raises and the run stops. See lib/capabilities.py.
     if step["requires"]:
         import capabilities
+        values = getattr(driver, "values", {}) or {}
         try:
             capabilities.require(
                 step["requires"],
                 guest=getattr(session, "guest", None) if session is not None else None,
-                port=ssh_port, user=login or "docker", password=password or "admin")
+                port=ssh_port,
+                user=values.get("ssh_user") or "docker",
+                password=password or "admin")
         except capabilities.Broken as exc:
             raise StepError(f"{step.name}: {exc}") from exc
+
 
     # --- THE MACHINE'S OWN LIFECYCLE -------------------------------------------------------
     #

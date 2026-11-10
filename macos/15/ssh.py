@@ -42,6 +42,11 @@ RELEASE = os.environ.get("MACOS_RELEASE", "15")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
+
+# THE SEQUENCE IS A FILE NOW: boot, log in, System Settings, the ssh assertions, the shutdown.
+# Everything this stage keeps is what a step cannot be - the disk, the overlay, the OpenCore
+# assets and the recording.
+WALK = os.path.join(HERE, "steps", "ssh.yaml")
 sys.path.insert(0, REPO)
 
 # lib/ ON THE PATH AS WELL, for the same reason linux/dev.py does it: clean_disk is a module
@@ -168,23 +173,23 @@ def main(argv: list[str]) -> int:
     assets = opencore.build(RELEASE, work)
     log(f"identity {assets['identity']['serial']} / {assets['identity']['mac']}")
 
-    shape = machine.shape(assets, cpus=args.cpus, mem_mb=args.mem)
-    # THE FORWARD, ON THE GUEST'S OWN SSHD. macOS listens on 22 and moving it would mean
-    # editing system sshd_config; the host side is what a caller needs to choose.
-    shape.ssh_port = args.ssh_port
-
-    guest = vm.Guest(
-        work,
-        extra=[
-            "-drive", f"file={assets['boot']},format=raw,if=none,id=oc",
-            "-device", "virtio-blk-pci,drive=oc,bootindex=0",
-            "-drive", machine.TARGET_DRIVE.format(disk=disk),
-            "-device", "virtio-blk-pci,drive=target,bootindex=1",
-            "-device", f"isa-applesmc,osk={machine.OSK_PLAIN}",
-        ],
-        shape=shape,
-        stdout=os.path.join(work, "console.log"),
-    ).start()
+    # THE MACHINE IS STARTED BY THE FILE'S `boot:` STEP, NOT HERE.
+    #
+    # What this stage prepares is everything a step cannot be: the writable disk (or its
+    # overlay), the recovery image opencore needs, and the OpenCore assets. The boot, the login,
+    # the System Settings sequence, the ssh assertions and the shutdown are all in
+    # macos/15/steps/ssh.yaml, so the file that describes the sequence is the file that runs it.
+    #
+    # `boot_options` carries what the file cannot know without parsing this stage's arguments:
+    # which disk, which overlay. run_file owns the guest from then on.
+    boot_options = {
+        "disk": disk,
+        "overlay": run_overlay,
+        "assets": assets,
+        "cpus": args.cpus,
+        "mem_mb": args.mem,
+        "ssh_port": args.ssh_port,
+    }
 
     frames = os.path.join(work, "frames")
     os.makedirs(frames, exist_ok=True)
@@ -303,60 +308,33 @@ def main(argv: list[str]) -> int:
             log("  recording - the login window shakes its field when the password is wrong")
             return 1
 
-        log("=== turning Remote Login on ===")
-        # THE TOGGLE HAS TO BE READ BEFORE EITHER PATH PRESSES IT, AND THAT INCLUDES THE
-        # WALKTHROUGH PATH.
+        # THE WALKTHROUGH OWNS EVERYTHING FROM HERE: THE GUI SEQUENCE, THE SSH ASSERTIONS, AND
+        # THE SHUTDOWN. It also owns the login and the boot, because `boot:` is a step.
         #
-        # This guard used to live inside enable_remote_login(), so it only protected the
-        # Python branch. The YAML branch called run_file() straight away, which presses the
-        # switch unconditionally - and the switch is a TOGGLE. Measured on the local guest,
-        # second run of this stage: the disk came up with sshd already listening, the
-        # walkthrough pressed the switch, and the stage that exists to turn Remote Login ON
-        # turned it OFF, then failed at wait_for_ssh with a message about sshd never starting.
+        # THE TOGGLE PROBLEM IS NOW IN THE FILE, WHERE IT CAN BE READ. `turn remote login on`
+        # carries an `unless: [log, in, to, this, computer]`, so a disk that already has the
+        # daemon on does not get it pressed - and pressing it would turn it OFF, which is what
+        # this stage used to do on a re-run.
         #
-        # The check is host-side and the walkthrough cannot make it: it is a TCP connection to
-        # the forward, and `require_ssh` in the YAML can only report that sshd already answers
-        # - which is exactly the fact that should have stopped the clicks.
-        already = _remote_login_listening(
-            guest, getattr(getattr(guest, "shape", None), "ssh_port", args.ssh_port))
-        if already:
-            log("=== Remote Login is ALREADY on; nothing to press ===")
-            log("  (the GUI sequence is skipped: the switch is a toggle and pressing it now "
-                "would turn sshd off. The ssh: steps below still run, because a daemon that "
-                "is listening is not the same fact as an account that may log in.)")
-        if not already and args.steps:
-            import steps as stepslib
-            ok, ran = stepslib.run_file(
-                args.steps, guest.paths.drive, work=os.path.dirname(frames) or ".",
-                # THE ACCOUNT COMES FROM THE MODULE, which is where this stage already keeps
-                # it - there is no --user here because the stage is about the disk's existing
-                # account, not about creating one.
-                user=GUEST_USER, password=os.environ.get("MACOS_PASSWORD", "admin"),
-                ssh_port=args.ssh_port, release="15",
-                frames=frames,
-            )
-            log(f"{len(ran)} step(s) answered" if ok
-                else f"the walkthrough failed after {len(ran)} step(s)")
-            if not ok:
-                return 1
-        elif not already:
-            enable_remote_login(guest)
-        else:
-            # THE HALF OF THE WALKTHROUGH THAT IS STILL WORTH RUNNING. The GUI steps exist to
-            # turn the daemon on; it is on. The `ssh:` steps are the proof the next stage's
-            # disk is usable, and skipping them because of a GUI precondition nobody needed
-            # would throw away the only assertions this stage has.
-            import steps as stepslib
-            ok, ran = stepslib.run_file(
-                args.steps, guest.paths.drive, work=os.path.dirname(frames) or ".",
-                user=GUEST_USER, password=os.environ.get("MACOS_PASSWORD", "admin"),
-                ssh_port=args.ssh_port, release="15", frames=frames,
-                start_at="wait for sshd",
-            )
-            log(f"{len(ran)} step(s) answered (no GUI: it was already on)" if ok
-                else f"the walkthrough failed after {len(ran)} step(s)")
-            if not ok:
-                return 1
+        # The host-side socket check that used to guard it is gone with it: `unless:` reads the
+        # pane, which is the same fact the switch itself shows, rather than a second opinion from
+        # a different layer.
+        import steps as stepslib
+        session = stepslib.MachineSession(
+            "macos", disk, work,
+            overlay=run_overlay, ssh_port=args.ssh_port,
+            cpus=args.cpus, mem_mb=args.mem,
+            boot_options={"assets": assets, "disk": disk, "overlay": run_overlay})
+        ok, ran = stepslib.run_file(
+            WALK, "", work=work,
+            user=GUEST_USER, password=os.environ.get("MACOS_PASSWORD", "admin"),
+            ssh_port=args.ssh_port, release="15", frames=frames,
+            session=session,
+        )
+        log(f"{len(ran)} step(s) answered" if ok
+            else f"the walkthrough failed after {len(ran)} step(s)")
+        if not ok:
+            return 1
 
         log(f"checking that the guest's sshd answers on the host's port {args.ssh_port}")
         if not wait_for_ssh(args.ssh_port, timeout=180):
@@ -390,21 +368,16 @@ def main(argv: list[str]) -> int:
         # may want it. Nothing in this stage calls it now.
         return 0
     finally:
-        # TWO MODES, AND WHICH ONE APPLIES IS DECIDED BY WHERE THE WRITES GO.
+        # THE WALKTHROUGH TURNED THE MACHINE OFF, AND THAT IS THE ONLY STOP HERE.
         #
-        # WITH --overlay the guest writes to a throwaway child of a read-only parent, so it is
-        # KILLED: a power-off destroys nothing anybody keeps, and both polite paths have failure
-        # modes here (macOS ignores an ACPI power button; `shutdown -h now` can simply not finish
-        # inside any timeout). The overlay is then flattened into the artifact, which is the only
-        # thing that has to survive.
+        # `shutdown:` in macos/15/steps/ssh.yaml is the last step and it names its method:
+        # `kill` when this stage runs on an overlay (nothing written is kept; the flatten is the
+        # artifact), `ssh` when it owns the real disk. `run_file` stops the guest itself if the
+        # file forgets, so a failure in the middle does not leave a qemu holding /dev/kvm.
         #
-        # WITHOUT it the guest owns the real disk, and every write has to reach it cleanly - so
-        # ACPI first, so the disk is CLOSED rather than killed. That is what the publish step
-        # compresses.
-        if run_overlay is not None:
-            guest.stop(acpi_first=False)
-        else:
-            guest.stop(acpi_first=ok)
+        # WHAT THIS STAGE STILL OWNS at the end is the recording and the artifact. The snapshot
+        # sampler and the encoder are not steps: they run for the whole stage, which is not
+        # something a step can be.
         snap.terminate()
         try:
             snap.wait(timeout=5)
