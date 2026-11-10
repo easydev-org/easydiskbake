@@ -1102,11 +1102,24 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
                 "chmod +x ~/bootstrap-launcher.py\n"
                 f"sed \"s|__LAUNCHER__|$HOME/bootstrap-launcher.py|\" "
                 f"/tmp/bootstrap.plist > {target}\n"
-                # UNLOAD FIRST, so a rerun replaces the agent instead of failing on a duplicate.
-                f"launchctl unload {target} 2>/dev/null || true\n"
-                f"launchctl load {target}\n"
-                f"launchctl list | grep {bootstrap.MACOS_LABEL} || "
-                f"{{ echo '=== THE AGENT DID NOT LOAD ==='; exit 1; }}\n"
+                # `launchctl load` OVER SSH TARGETS THE WRONG DOMAIN, AND ABORTS.
+                #
+                # The account's LaunchAgents live in gui/<uid>. An ssh session is not in a GUI
+                # domain, so the old `launchctl load -w file` form has nothing to load into - on
+                # this macOS it aborted, and the step reported 134 (SIGABRT) with no message.
+                #
+                # `bootstrap gui/$UID <file>` names the domain explicitly, which is the modern
+                # spelling and the one that works from a remote shell. `bootout` is its
+                # counterpart and is allowed to fail, because a first run has nothing to remove.
+                "# THE UID IS THE ONE THE DISK'S ACCOUNT HAS, which is the account ssh logged in as.\n"
+                "uid=$(id -u)\n"
+                f"launchctl bootout gui/$uid/{bootstrap.MACOS_LABEL} 2>/dev/null || true\n"
+                f"launchctl bootstrap gui/$uid {target} 2>&1 | tail -3\n"
+                "# AND THE RESULT IS READ BACK, because `bootstrap` exits 0 when the domain is\n"
+                "# right and the file is bad.\n"
+                f"launchctl print gui/$uid/{bootstrap.MACOS_LABEL} > /tmp/agent.txt 2>&1 || "
+                f"{{ echo '=== THE AGENT DID NOT LOAD ==='; cat /tmp/agent.txt | head -5; exit 1; }}\n"
+                "grep -E 'state|program|path' /tmp/agent.txt | head -4\n"
             )
         else:
             ps1 = bootstrap.windows_ps1("C:\\Users\\%s\\bootstrap-launcher.py"
