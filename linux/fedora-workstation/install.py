@@ -37,6 +37,12 @@ BAKE = livebake.Bakery(
     # hand-written cmdline. See lib/livebake.py `_boot_args` for why the extracted-kernel path
     # still exists.
     desktop=livebake.DesktopWhen(any_of=('type to search', 'activities', 'install fedora',)),
+    # ANACONDA INSTALLS NO USER, SO THE DISK IS BOOTED A SECOND TIME.
+    #
+    # GNOME's first-boot wizard is what creates the account, and it only runs on the installed
+    # disk with no medium attached - so `first boot` is the second walk, not a step in the
+    # first one. See `livebake._second_boot` for the whole reason.
+    second_boot="first boot",
     mem_mb=4096,
 )
 

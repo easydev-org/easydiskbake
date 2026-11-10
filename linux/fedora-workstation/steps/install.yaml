@@ -198,6 +198,12 @@ steps:
   # this disk, or gdm logged straight in, and both mean the install is fine. The desktop's own
   # search box is that state, and the step below treats it as the end rather than waiting for
   # a wizard that is not coming.
+  # THE WIZARD IS THE WHOLE POINT OF THIS STAGE, AND IT RUNS ON A SECOND BOOT OF THE DISK.
+  #
+  # See lib/livebake.py `_second_boot`: the bake starts the finished disk with no medium, and
+  # this step is where that walk begins. The markers are the wizard's own; the desktop states
+  # (`type to search`, a clock) are listed because a disk whose wizard was already answered on
+  # an earlier run lands there, and that is a pass too.
   - name: first boot
     until_any:
       - [welcome]

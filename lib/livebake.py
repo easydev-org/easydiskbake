@@ -157,6 +157,11 @@ class Bakery:
     # measured - see `_boot_args`.
     grub_key: str | None = None
     grub_delay: float = 25.0
+    # A SECOND WALK ON A SECOND BOOT OF THE DISK. Fedora is the only distribution that needs
+    # one, and it needs it for a structural reason: Anaconda does not create a user, so the
+    # account arrives from GNOME's first-boot wizard - which only runs when the DISK is booted
+    # with no medium attached. `second_boot` names the step that walk starts at.
+    second_boot: str | None = None
 
     def __post_init__(self) -> None:
         if (self.after is None) == (self.desktop is None):
@@ -285,6 +290,78 @@ def _wait_for_desktop(drv, bakery: Bakery, seconds: int) -> bool:
     return False
 
 
+def _second_boot(bakery: Bakery, args, work: str, disk: str, walk_path: str) -> bool:
+    """Boot the finished disk alone and run the walk from `bakery.second_boot`.
+
+    THIS IS FEDORA'S SHAPE AND IT IS NOT COSMETIC. Anaconda installs a system with NO USER, by
+    design - the account comes from GNOME's first-boot wizard, which runs on the installed
+    disk and never on the live medium. So the bake has to start the disk a second time, with
+    no ISO attached, for the account every ssh stage logs in as to exist at all.
+
+    ITS OWN FIRMWARE VARIABLES, because the installer's NVRAM holds the live medium's boot
+    entry rather than this disk's. Booting with the installer's vars finds the CD-ROM that is
+    no longer attached.
+
+    The old driver did this inline and the fold into livebake dropped it, which turned
+    `first boot` into a step that waited 900 s on the live desktop for a wizard that was never
+    going to appear there (run 8ffbb31).
+    """
+    import qmp as _qmp
+
+    log(bakery.name, "=== booting the finished disk on its own ===")
+    disk_work = work
+    disk_guest = vm.Guest(
+        disk_work,
+        extra=["-drive", f"file={disk},if=virtio,format=qcow2,discard=unmap"],
+        # UEFI WITH ITS OWN NVRAM, for the reason above.
+        shape=uefi.shape_with_uefi(
+            vm.Shape(
+                cpus=args.cpus, mem_mb=args.mem, machine="q35", vga="std",
+                vnc_bind=os.environ.get("VNC_BIND", "127.0.0.1"),
+            ),
+            disk_work, f"{bakery.name}-disk",
+        ),
+        stdout=os.path.join(disk_work, "console-disk.log"),
+    )
+    disk_guest.start()
+    log(bakery.name, f"disk guest qemu pid {disk_guest.pid}")
+
+    frames = os.path.join(work, "frames-disk")
+    os.makedirs(frames, exist_ok=True)
+    snap = subprocess.Popen(
+        [sys.executable, os.path.join(REPO, "lib", "snapshots.py"),
+         disk_guest.paths.record, frames, os.environ.get("SNAPSHOT_INTERVAL", "2")],
+        stdout=open(os.path.join(frames, "snapshots.log"), "wb"),
+        stderr=subprocess.STDOUT,
+    )
+    try:
+        log(bakery.name,
+            f"=== the walk (second boot, from {bakery.second_boot!r}): "
+            f"{os.path.basename(walk_path)} ===")
+        good, ran = steps.run_file(
+            walk_path, disk_guest.paths.drive, work=work,
+            user=args.user, password=args.password,
+            start_at=bakery.second_boot,
+        )
+        log(bakery.name,
+            f"{len(ran)} second-boot step(s) ran" if good
+            else "=== THE INSTALLED SYSTEM DID NOT COME UP ===")
+        return good
+    finally:
+        try:
+            ppm = os.path.join(work, "last-frame-disk.ppm")
+            c = _qmp.QMP(disk_guest.paths.drive)
+            try:
+                c.execute("screendump", filename=ppm)
+            finally:
+                c.close()
+            lastframe.convert(ppm, os.path.join(work, "last-frame-disk.png"))
+        except Exception:                              # noqa: BLE001
+            pass
+        disk_guest.stop(acpi_first=False)
+        snap.terminate()
+
+
 def run_bake(bakery: Bakery, args) -> int:
     """One bake, start to finish. This is the whole of what the twelve files repeated."""
     import qmp as Q
@@ -386,6 +463,12 @@ def run_bake(bakery: Bakery, args) -> int:
             log(bakery.name,
                 f"{len(ran)} step(s) ran" if ok
                 else f"the walkthrough failed after {len(ran)} step(s)")
+
+            # THE SECOND BOOT, WHEN THIS DISTRIBUTION HAS ONE. See `Bakery.second_boot`: the
+            # disk is started on its own, with no medium, because what is being tested is that
+            # the firmware finds the system the installer wrote.
+            if ok and bakery.second_boot:
+                ok = _second_boot(bakery, args, work, disk, walk_path)
     finally:
         # THE POST-MORTEM FRAME, EVEN WHEN THE WALK RAISED. A failed run's most useful
         # artifact is the last thing the screen showed, and the `finally` is the only place
