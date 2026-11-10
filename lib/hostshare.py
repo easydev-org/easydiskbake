@@ -72,6 +72,16 @@ SHARE_NAME = "shared"
 # THE DEFAULT HOST DIRECTORY, which is the one the user named.
 DEFAULT_DIR = os.path.expanduser("~/shared")
 
+# THE SHARE HAS ONE ACCOUNT, AND THE GUEST ALREADY KNOWS ITS PASSWORD.
+#
+# The disk's answer file creates `docker`/`admin`; the mount command uses the same pair. This
+# account exists only in samba's own tdb, in a private directory under /tmp, because a container
+# has no /var/lib/samba and telling smbd to create one it cannot write is a start failure that
+# reads like a config error.
+SMB_USER = os.environ.get("HOSTSHARE_USER", "guest")
+SMB_PASSWORD = os.environ.get("HOSTSHARE_PASSWORD", "admin")
+PRIVATE_DIR = "/tmp/easydiskbake-samba-private"
+
 CONF_PATH = "/tmp/easydiskbake-smb.conf"
 PID_PATH = "/tmp/easydiskbake-smbd.pid"
 LOG_PATH = "/tmp/easydiskbake-smbd.log"
@@ -101,37 +111,43 @@ def config_text(directory: str) -> str:
     return f"""[global]
    workgroup = WORKGROUP
    server string = easydiskbake shared
-   # `security = user` REQUIRES AN AUTHENTICATION EXCHANGE, AND WINDOWS 11 REFUSES THAT ONE.
+   # A REAL SMB ACCOUNT, BECAUSE WINDOWS 11 REFUSES EVERYTHING ELSE.
    #
-   # A Windows 11 client answers a downgrade to NTLM with
+   # Three client-side policies now block what this share used to do, all measured on run
+   # 9666f4f after the server had been made as permissive as samba allows:
    #
-   #     System error 1937
-   #     Authentication failed because NTLM authentication has been disabled.
+   #     System error 1937   Authentication failed because NTLM authentication has been
+   #                         disabled.
    #
-   # measured on run 42646650984. Current Windows disables inbound NTLM by default, and asking
-   # it to authenticate as a local account against a server with no domain is exactly that
-   # downgrade. The share has no secret to protect - it is one directory, on a bridge with two
-   # ends, both owned by the process running this - so the answer is to stop asking.
+   # and behind it, documented by Microsoft:
    #
-   # `security = user` WITH `map to guest` WAS NOT ENOUGH, AND THAT IS WORTH WRITING DOWN: the
-   # mapping happens AFTER a credential exchange the client never completes.
+   #     Windows 11 24H2+     inbound NTLM blocked; SMB signing required
+   #     Windows 10 1709+     "insecure guest logons" off by default
+   #
+   # `map to guest`, `restrict anonymous` and `ntlm auth = yes` all act INSIDE a session setup
+   # that the client has already decided not to make. `security = share` was removed in samba 4
+   # and would not start. There is no server-side setting that makes an anonymous share work
+   # with a current Windows client - the switch is on the client, and this stage owns the client
+   # too, so the honest fix is a credential both ends can use.
+   #
+   # SO THERE IS ONE ACCOUNT, named after the share, with a password the guest already knows
+   # from the answer file. It is created in start() before smbd is launched.
    security = user
-   # ANONYMOUS FIRST. `restrict anonymous = 0` lets a client that sends no credentials
-   # straight through, which is what `net use ... "" /user:""` and mount_smbfs's `guest@` both
-   # are. `map to guest = Bad User` stays for the client that sends a name anyway.
-   restrict anonymous = 0
-   map to guest = Bad User
+   passdb backend = tdbsam
+   # smbpasswd needs this to find its tdb files in a container with no /var/lib/samba.
+   private dir = {PRIVATE_DIR}
+   map to guest = Never
    guest account = root
-   # AND THE GUEST'S OWN AUTHENTICATION, allowed explicitly rather than hoped for.
-   #
-   # `ntlm auth` off would refuse the SMB2 session setup even for the mapping above, and this
-   # samba defaults it on - but a distro's build can differ, and the failure is the same
-   # 1937 either way.
-   ntlm auth = yes
-   lanman auth = no
+   # NTLMv2 only: the client blocks NTLMv1, and this server has no reason to offer it.
+   ntlm auth = ntlmv2-only
+   server min protocol = SMB2_10
+   # SIGNING IS LEFT AT ITS DEFAULT, NOT TURNED OFF.
+   # Windows 11 24H2 requires signing by default and refuses a server that cannot; turning the
+   # requirement off is a client policy, but a server that offers signing is fine - so this
+   # simply does not forbid it.
+   server signing = auto
    log file = {LOG_PATH}
    log level = 1
-   server min protocol = SMB2_02
    # NO PRINTING. smbd would otherwise try to manage a spool directory it does not have.
    load printers = no
    printing = bsd
@@ -143,7 +159,9 @@ def config_text(directory: str) -> str:
    path = {directory}
    browseable = yes
    writable = yes
-   guest ok = yes
+   # NOT `guest ok`: the account above is what admits a client now, and leaving this on would
+   # let a client that bypassed the account land as root.
+   guest ok = no
    force user = root
    create mask = 0666
    directory mask = 0777
@@ -183,7 +201,12 @@ def start(directory: str = DEFAULT_DIR, *, wait: float = 10.0) -> bool:
 
     directory = os.path.abspath(os.path.expanduser(directory))
     os.makedirs(directory, exist_ok=True)
-    log(f"share {SHARE_NAME!r} -> {directory} (read-write, guest access)")
+    log(f"share {SHARE_NAME!r} -> {directory} (read-write, account {SMB_USER!r})")
+
+    os.makedirs(PRIVATE_DIR, exist_ok=True)
+    os.chmod(PRIVATE_DIR, 0o700)
+    if not _ensure_account():
+        return False
 
     with open(CONF_PATH, "w") as fh:
         fh.write(config_text(directory))
@@ -217,6 +240,40 @@ def start(directory: str = DEFAULT_DIR, *, wait: float = 10.0) -> bool:
     return False
 
 
+def _ensure_account() -> bool:
+    """Create the share's samba account, idempotently.
+
+    THE ACCOUNT IS A UNIX USER FIRST. samba's `smbpasswd -a` refuses a name the system does not
+    know, and a container's /etc/passwd has no `guest` - so `useradd` (or `adduser -D` on busybox)
+    runs first, with no shell and no home, because nothing logs in as it.
+
+    `-s` SETS THE SMB PASSWORD NON-INTERACTIVELY, twice because smbpasswd asks twice.
+    """
+    import subprocess
+
+    existing = subprocess.run(["getent", "passwd", SMB_USER], capture_output=True, text=True)
+    if existing.returncode != 0:
+        added = subprocess.run(
+            ["useradd", "--system", "--no-create-home", "--shell", "/usr/sbin/nologin", SMB_USER],
+            capture_output=True, text=True)
+        if added.returncode != 0:
+            log(f"=== COULD NOT CREATE THE {SMB_USER!r} UNIX USER ===")
+            for line in (added.stderr or added.stdout or "").splitlines()[:4]:
+                log(f"    {line[:150]}")
+            return False
+
+    created = subprocess.run(
+        ["smbpasswd", "-a", "-s", "-c", CONF_PATH, SMB_USER],
+        input=f"{SMB_PASSWORD}\n{SMB_PASSWORD}\n", capture_output=True, text=True)
+    if created.returncode != 0:
+        log(f"=== smbpasswd COULD NOT SET THE {SMB_USER!r} PASSWORD ===")
+        for line in ((created.stderr or "") + (created.stdout or "")).splitlines()[:6]:
+            log(f"    {line[:150]}")
+        return False
+    log(f"  the share account {SMB_USER!r} exists")
+    return True
+
+
 def stop() -> None:
     """Stop the smbd this module started, and only that one."""
     result = subprocess.run(["pkill", "-f", f"smbd.*-s {CONF_PATH}"], capture_output=True)
@@ -226,37 +283,30 @@ def stop() -> None:
 def mount_commands(host: str = "", user: str = "docker") -> dict[str, str]:
     """What a guest types to mount this share, per family.
 
-    THE PATH IS THE SAME ON BOTH GUESTS (`~/shared`), which is what was asked for and what
-    makes a bootstrap script portable between the two disks. What differs is the client:
+    THE PATH IS THE SAME ON BOTH GUESTS (`~/shared`), and so is the credential: the share's own
+    account, which start() creates. Windows 11 cannot mount an anonymous share at all - see the
+    note above `security = user` - so a username and password are not optional here.
 
         macOS      mount_smbfs, into a directory the account owns. A network mount cannot be
                    put at a path that does not exist, so the command makes it first.
         Windows    `net use` maps a UNC path to a DRIVE LETTER, and there is no `~` in cmd, so
                    the local directory is spelled out and the share lands on Z:.
 
-    `guest ok = yes` means no password, so neither command carries one.
-
     LINUX IS DELIBERATELY ABSENT. It would use qemu's virtio-9p instead - the kernel's own
     client, no daemon - but that is a different device with a different mount, and mixing the
-    two behind one name would be a step that silently did nothing on one of the three. Linux
-    gets its own step when it is wanted; nothing here pretends to cover it.
+    two behind one name would be a step that silently did nothing on one of the three.
+
+    THE PASSWORD IS ON THE COMMAND LINE, which is acceptable here and nowhere else: the guest is
+    a throwaway VM on a private bridge, the credential is `admin`, and the alternative - a
+    credential file - is one more thing to copy in before the mount can be attempted.
     """
     host = host or net.BRIDGE_IP
     return {
         "macos": (f"mkdir -p ~/shared && "
-                  f"mount_smbfs //guest@{host}/{SHARE_NAME} ~/shared"),
-        # WINDOWS SENDS ITS OWN ACCOUNT NAME UNLESS TOLD OTHERWISE, AND THAT IS WHAT FAILED.
-        #
-        # `net use Z: \\host\share` logs in as the current user (`docker`) with the current
-        # password. This server has no such SMB account, and samba answered
-        #
-   #     The password is invalid for the share on the bridge address.
-        #
-        # run 42640504001. Naming an empty user and password is how a Windows client asks for
-        # the guest share: `"" /user:""` is the documented spelling, and `map to guest = Bad
-        # User` on the server turns that into the guest account.
+                  f"mount_smbfs //{SMB_USER}:{SMB_PASSWORD}@{host}/{SHARE_NAME} ~/shared"),
         "windows": (f'if not exist "C:\\Users\\{user}\\shared" mkdir "C:\\Users\\{user}\\shared"'
-                    f' & net use Z: \\\\{host}\\{SHARE_NAME} "" /user:"" /persistent:no'),
+                    f' & net use Z: \\\\{host}\\{SHARE_NAME} {SMB_PASSWORD}'
+                    f' /user:{SMB_USER} /persistent:no'),
     }
 
 
