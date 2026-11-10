@@ -352,9 +352,23 @@ def main() -> int:
               "SIGNALLED:" in read("macos/15/vm_configure.py"))
         # AND EVERY STAGE THAT OWNS A GUEST GOES THROUGH THE ONE STOP, so a new stage cannot
         # inherit the sixty-second kill.
-        for path in ("macos/15/vm_configure.py", "macos/15/dev.py", "lib/clean_step.py"):
+        #
+        # macos/15/dev.py IS NOT IN THIS LIST ANY MORE and that is the change, not an omission:
+        # its machine is started and stopped by `boot:`/`shutdown:` in dev.yaml, and the stage
+        # that kept a stop() of its own would have been the fourth place that had to know how a
+        # guest ends. `shutdown:` reaches vm_session.stop through lib/steps.py's MachineSession.
+        for path in ("macos/15/vm_configure.py", "lib/clean_step.py"):
             check(f"{path} stops through vm_session", path,
                   "vm_session.stop(" in read(path))
+        # AND THE SSH STAGE'S MACHINE IS THE FILE'S, TOO - asserted by what is ABSENT, because a
+        # stop() that reappears is the regression and a grep for the step cannot see one.
+        for path in ("macos/15/ssh.py", "macos/15/dev.py"):
+            body = read(path)
+            check(f"{path} leaves the machine to its file", path,
+                  "vm_session.stop(" not in body and "guest.stop(" not in body)
+            check(f"{path} boots through its file", path,
+                  "boot: true" in read(os.path.join(os.path.dirname(path), "steps",
+                                                    "ssh.yaml" if "ssh.py" in path else "dev.yaml")))
     except Exception as exc:                          # noqa: BLE001
         check(f"vm_session imports ({exc})", "lib/vm_session.py", False)
 
@@ -502,6 +516,20 @@ def main() -> int:
               "qga" in raised and "teleport" in raised)
     except Exception as exc:                          # noqa: BLE001
         check(f"capabilities imports ({exc})", "lib/capabilities.py", False)
+
+    # AND THE SHARE STARTS AFTER THE BRIDGE IT BINDS TO. smbd's `interfaces` line names
+    # net.BRIDGE_IP, and net.up() is what creates that address - so a share started first
+    # listens on nothing and reports "smbd DID NOT BIND 172.30.0.1:445 IN 10s" while samba's own
+    # log says "waiting for connections". Run 42813552966 lost a macOS ssh stage to it before
+    # its first step. The order is asserted, because it is one line of setup either way round.
+    vs_src = read("lib/vm_session.py")
+    check("the bridge is up before the share binds", "lib/vm_session.py",
+          vs_src.index("netmod.up(") < vs_src.index("hostshare.start(served)"))
+    # AND THE SSH STAGE DOES NOT ASK FOR A SHARE AT ALL: its disk predates vm-configure, so no
+    # launchd job mounts one. Serving it unasked turns an smbd problem into a boot failure for a
+    # guest that never wanted a share.
+    check("the ssh stage does not serve a share it has no job for", "macos/15/ssh.py",
+          'share="",' in read("macos/15/ssh.py"))
 
     # AND `requires:` RUNS BEFORE `boot:`, WHICH IS ONE OF THE STEPS THAT CAN CARRY IT.
     #

@@ -60,7 +60,7 @@ sys.path.insert(0, REPO)
 # run 42624293500.
 sys.path.insert(0, HERE)
 
-from lib import compress, net, smoke  # noqa: E402
+from lib import compress, smoke  # noqa: E402
 
 SSH_USER = os.environ.get("MACOS_USER", "docker")
 SSH_PASSWORD = os.environ.get("MACOS_PASSWORD", "admin")
@@ -79,47 +79,16 @@ def log(message: str) -> None:
     print(f"[macos-dev {time.strftime('%H:%M:%S')}] {message}", flush=True)
 
 
-def wait_for_ssh(port: int, seconds: int = 180) -> bool:
-    """Wait until the port answers AND the account can actually log in.
-
-    A BANNER IS NOT A LOGIN. sshd answers before the account is usable in some
-    conditions - a locked account, a shell that is not yet registered - and finding that
-    out from the first real command instead of here makes the failure look like a
-    package problem.
-    """
-    import socket
-
-    import session
-
-    deadline = time.time() + seconds
-    while time.time() < deadline:
-        try:
-            with socket.create_connection((net.FORWARD_HOST, port), timeout=10) as sock:
-                sock.settimeout(10)
-                if not sock.recv(256).startswith(b"SSH-2.0"):
-                    time.sleep(10)
-                    continue
-        except OSError:
-            time.sleep(10)
-            continue
-        # session.ssh, NOT A LOCAL `run()` HELPER. This file had one - sshpass and four options,
-        # rebuilt here - and it was deleted with the rest of the brew code, which left
-        # `wait_for_ssh` calling a name that no longer existed:
-        #
-        #     NameError: name 'run' is not defined
-        #
-        # raised after the recovery image and OpenCore had both been fetched, so the stage spent
-        # its first minute on work that could not finish. lib/session.py is the shared client and
-        # takes the password explicitly, which is what the WINDOWS_ADMIN_PASSWORD/MACOS_PASSWORD
-        # difference needs anyway.
-        status, output = session.ssh(port, "echo DEV_SSH_OK", timeout=60,
-                                     user=SSH_USER, password=SSH_PASSWORD)
-        if status == 0 and "DEV_SSH_OK" in (output or ""):
-            log("the account logs in")
-            return True
-        log(f"  sshd is up but the login failed: {(output or '').strip()[:160]}")
-        time.sleep(10)
-    return False
+# `wait_for_ssh` USED TO LIVE HERE AND IS GONE WITH THE BOOT.
+#
+# It was a socket-and-login loop spelled out in this file, and macos/15/steps/dev.yaml's
+# `require_ssh:` step does the same thing through lib/session.py - one implementation, with its
+# own timeout in the file where a reader can see it. Keeping a second copy here would have made
+# "the disk answers ssh" a fact with two sources, and the one nothing called would have been the
+# one that rotted.
+#
+# The `net` import below went with it; `smoke` stays, because checking the disk after the
+# machine has stopped is the artifact's own verification and not a step.
 
 
 def main(argv: list[str]) -> int:
@@ -178,8 +147,6 @@ def main(argv: list[str]) -> int:
 
     import opencore
     import macos_recovery
-    import machine                     # macos/15/machine.py, via the path above
-    from lib import vm
 
     # THE RECOVERY IMAGE IS AN INPUT EVEN THOUGH THIS STAGE DOES NOT BOOT FROM IT. See
     # the longer note in ssh.py: opencore.build() extracts Apple's APFS driver out of it,
@@ -193,47 +160,43 @@ def main(argv: list[str]) -> int:
     assets = opencore.build(RELEASE, work)
     log(f"identity {assets['identity']['serial']} / {assets['identity']['mac']}")
 
-    shape = machine.shape(assets, cpus=args.cpus, mem_mb=args.mem)
-    shape.ssh_port = args.ssh_port
-    guest = vm.Guest(
-        work,
-        extra=[
-            "-drive", f"file={assets['boot']},format=raw,if=none,id=oc",
-            "-device", "virtio-blk-pci,drive=oc,bootindex=0",
-            "-drive", machine.TARGET_DRIVE.format(disk=disk),
-            "-device", "virtio-blk-pci,drive=target,bootindex=1",
-            "-device", f"isa-applesmc,osk={machine.OSK_PLAIN}",
-        ],
-        shape=shape,
-        stdout=os.path.join(work, "console.log"),
-    ).start()
+    # THE MACHINE IS STARTED BY THE FILE'S `boot:` STEP, NOT HERE.
+    #
+    # What this stage keeps is what a step cannot be: the writable disk (or its overlay), the
+    # recovery image OpenCore needs, the OpenCore assets, and the artifact. The boot, the ssh
+    # wait, the toolchain and the shutdown are in macos/15/steps/dev.yaml.
+    #
+    # THE DRIVE LAYOUT USED TO BE SPELLED OUT HERE, by hand, and it was the fourth copy of
+    # "what a macOS guest is" - lib/vm_session.py's _start_machine is the one that also carries
+    # the qga device and the discard rule (TARGET_DRIVE vs TARGET_DRIVE_PLAIN, which is the
+    # difference between a guest that boots a compressed disk and one that dies at HANDOFF TO
+    # XNU). One description, and the stage says which disk.
 
     ok = False
     try:
-        log(f"waiting up to {args.boot_timeout}s for sshd")
-        if not wait_for_ssh(args.ssh_port, args.boot_timeout):
-            log("=== THE DISK DID NOT ANSWER ON SSH ===")
-            log("  this stage needs the ssh-stage disk, not the desktop one")
-            return 1
-
-        # THE TOOLCHAIN IS A FILE NOW: macos/15/steps/dev.yaml.
-        #
-        # What stood here - install Homebrew, walk PACKAGES, brew install each, verify each -
-        # was a sequence of measurements and no decision. The measurements belong beside the
-        # numbers they produced; the decision ("does this stage pass?") stays here.
-        #
-        # THE WALK RUNS OVER SSH, so it takes the headless driver lib/steps.py builds when a
-        # file has no GUI steps. This stage never touches the screen: the disk arrived with a
-        # working sshd.
+        # THE WALKTHROUGH OWNS THE MACHINE: the boot, the ssh wait, the toolchain and the stop.
         #
         # `disk_path` IS PASSED SO A `python:` STEP CAN SEE IT, and `work` is the stage's own
         # directory because the Xcode .xip is kept there between the fetch and the copy.
-        log(f"=== the walkthrough: {os.path.relpath(WALK, REPO)} ===")
+        #
+        # THE SHUTDOWN METHOD IS A FACT ABOUT THIS RUN and arrives as a var: an overlay is killed
+        # (nothing it wrote is kept; the flatten is the artifact) and a real disk is closed with
+        # `shutdown -h now`. See the two comments in dev.yaml.
         import steps as stepslib
+
+        log(f"=== the walkthrough: {os.path.relpath(WALK, REPO)} ===")
+        session = stepslib.MachineSession(
+            "macos", disk, work,
+            overlay=run_overlay, ssh_port=args.ssh_port,
+            cpus=args.cpus, mem_mb=args.mem,
+            # `copy: False` WHEN THERE IS NO OVERLAY: the disk is then a working copy this stage
+            # already moved into `work`, and it is the file the artifact is made from.
+            boot_options={"assets": assets, "copy": run_overlay is None})
         ok_walk, ran = stepslib.run_file(
             WALK, qmp_path="", work=work, ssh_port=args.ssh_port,
             user=SSH_USER, password=SSH_PASSWORD, release=RELEASE,
-            disk_path=disk,
+            disk_path=disk, session=session,
+            extra_vars={"args.shutdown": "kill" if run_overlay is not None else "ssh"},
         )
         log(f"{len(ran)} step(s) answered" if ok_walk
             else f"the walkthrough failed after {len(ran)} step(s)")
@@ -243,18 +206,11 @@ def main(argv: list[str]) -> int:
         ok = True
         return 0
     finally:
-        # TWO MODES, DECIDED BY WHERE THE WRITES GO - see the longer note in macos/15/ssh.py.
+        # THE WALKTHROUGH STOPPED THE MACHINE, AND THAT IS THE ONLY STOP HERE.
         #
-        # An overlay guest is killed (nothing it wrote is kept; the flatten is the artifact). A
-        # guest on the real disk gets the careful path: ssh `shutdown -h now`, because macOS
-        # ignores an ACPI power button and shows a dialog instead.
-        import vm_session
-        # THE METHOD IS NAMED. On an overlay the guest is killed (nothing it wrote is kept and
-        # the flatten is the artifact); on the real disk it is asked over ssh, because macOS
-        # answers an ACPI power button with a dialog and waits for a click.
-        vm_session.stop(guest, family="macos", password=SSH_PASSWORD, overlay=run_overlay,
-                        method=("kill" if run_overlay is not None else "ssh"),
-                        log=log)
+        # `shutdown: "{{ shutdown }}"` is the file's last step and names its method; run_file
+        # stops the guest itself if the file fails before reaching it, so a crash does not leave
+        # a qemu holding /dev/kvm. What this stage still owns is the artifact.
         if ok:
             if not smoke.check_disk(disk, root_fs="apfs"):
                 log("=== THE DISK FAILED ITS CHECKS ===")
@@ -262,6 +218,10 @@ def main(argv: list[str]) -> int:
             log("compressing")
             if run_overlay is not None:
                 run_overlay.flatten(out)
+                # AND THEN IT IS RELEASED, WHICH IS ALSO THE CHECK: close() deletes the diff and
+                # compares the base's size and mtime against what it recorded before qemu started.
+                # After the flatten, because the flatten reads it.
+                run_overlay.close()
             else:
                 compress.compress(disk, out)
             log(f"BAKED macos15 dev -> {out} ({os.path.getsize(out) >> 20} MiB)")

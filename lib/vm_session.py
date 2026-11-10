@@ -140,6 +140,23 @@ def start(family: str, disk: str, work: str, *, ssh_port: int = 2222,
     if share != "":
         served = os.path.expanduser(share or hostshare.DEFAULT_DIR)
         os.makedirs(served, exist_ok=True)
+        # THE BRIDGE FIRST, BECAUSE smbd BINDS TO ITS ADDRESS.
+        #
+        # `net.up()` is what creates 172.30.0.1 on the tap, and smbd's `interfaces` line names
+        # that address. Starting smbd before the address exists makes it listen on nothing, and
+        # the wait then reports
+        #
+        #     === smbd DID NOT BIND 172.30.0.1:445 IN 10s ===
+        #
+        # with "waiting for connections" in samba's own log - a share that started perfectly and
+        # bound to no interface. Run 42813552966 is that failure, and it cost a macOS ssh stage
+        # its whole run before the first step.
+        #
+        # `net.up()` is idempotent (vm.Guest.start calls it too), so this is not a second setup -
+        # it is the same call moved to before the thing that depends on it.
+        import net as netmod
+
+        netmod.up(ssh_port=ssh_port)
         if not hostshare.start(served):
             log(f"=== THE HOST COULD NOT SERVE {served} ===")
             log("  the disk carries a job that mounts it at boot; without it that job fails and")
@@ -289,6 +306,11 @@ def start_on(disk: str, work: str, *, family: str, assets: dict, ssh_port: int =
     if share != "":
         served = os.path.expanduser(share or hostshare.DEFAULT_DIR)
         os.makedirs(served, exist_ok=True)
+        # THE BRIDGE FIRST, for the same reason as start(): smbd binds to net.BRIDGE_IP and
+        # fails with "waiting for connections" against an address that does not exist yet.
+        import net as netmod
+
+        netmod.up(ssh_port=ssh_port)
         if not hostshare.start(served):
             log(f"=== THE HOST COULD NOT SERVE {served} ===")
             return None, None

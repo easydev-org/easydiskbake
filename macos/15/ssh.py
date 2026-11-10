@@ -229,11 +229,19 @@ def main(argv: list[str]) -> int:
 
         session = stepslib.MachineSession(
             "macos", disk, work,
+            # NO HOST SHARE, AND THIS STAGE IS THE ONE THAT PROVES WHY THE DEFAULT CANNOT BE
+            # "ALWAYS SERVE ONE". The disk it is given is the DESKTOP disk - vm-configure has not
+            # run yet, so there is no launchd job that mounts anything. Booting with a share the
+            # guest never asked for made this stage fail before its first step with
+            #
+            #     === THE HOST COULD NOT SERVE /github/home/shared ===
+            #
+            # (run 42813552966), which is an smbd problem for a disk that shows no sign of wanting
+            # one. `""` is vm_session's documented "do not serve", and the stage that needs the
+            # share is macos15-vm-configure, which asks for it by name.
+            share="",
             overlay=run_overlay, ssh_port=args.ssh_port,
             cpus=args.cpus, mem_mb=args.mem,
-            # `copy: False` WHEN THERE IS NO OVERLAY. The disk is then a working copy this stage
-            # already moved into `work`, and it is the file the artifact is made from - wrapping
-            # it in a second overlay would send every write somewhere that is never published.
             boot_options={"assets": assets, "copy": run_overlay is None})
         ok, ran = stepslib.run_file(
             WALK, "", work=work,

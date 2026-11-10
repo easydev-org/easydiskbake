@@ -71,11 +71,32 @@ vars:
   password:
     from: args.password
     default: admin
+  # THE SHUTDOWN METHOD IS A FACT ABOUT THE RUN, NOT ABOUT THE SCREEN. `kill` when the stage
+  # handed this file a throwaway overlay (nothing it wrote survives), `ssh` when the guest owns
+  # the real disk (its filesystem is what gets published, and macOS answers the power button
+  # with a dialog). Same var, same reasoning as macos/15/steps/ssh.yaml.
+  shutdown:
+    from: args.shutdown
+    default: ssh
 
 ssh_user: docker
 ssh_port: 2222
 
 steps:
+  # --- 0. THE MACHINE, IN THE FILE -------------------------------------------------------
+  #
+  # THIS STAGE STARTED QEMU ITSELF, like the other three, and the drive layout it spelled out by
+  # hand was the fourth copy of "what a macOS guest is" - see lib/vm_session.py's _start_machine,
+  # which is the one that also carries the qga device and the discard rule. The boot is a step.
+  #
+  # BOOT IS OVER WHEN QEMU IS RUNNING. The disk this stage is given answers ssh already, but
+  # asking the machine for it is `require_ssh:` below, which is a different fact with its own
+  # timeout.
+  - name: boot the disk
+    boot: true
+    family: macos
+    timeout: 900
+
   # --- 1. THE DISK HAS TO ANSWER BEFORE ANY OF THIS IS WORTH DOING ---------------------
   #
   # A banner is not a login: session.wait_for_ssh runs a command, because a socket that
@@ -300,4 +321,16 @@ steps:
 
   - name: note what is present
     ssh: export PATH=/usr/local/bin:$PATH; echo "node=$(node --version)"; echo "python=$(python3 --version)"; echo "git=$(git --version)"; echo "swift=$(swift --version 2>&1 | head -1)"; echo "xcode=$(xcodebuild -version | head -1)"
+    timeout: 300
+
+  # --- 3. THE MACHINE IS STOPPED BY THE FILE THAT STARTED IT -----------------------------
+  #
+  # Same two modes as the ssh stage, for the same reason: an overlay is killed because nothing
+  # it wrote survives (the artifact is the flatten), and a real disk is closed with
+  # `shutdown -h now` because its filesystem is what gets published.
+  #
+  # THE METHOD ARRIVES AS A VAR because it is a fact about how the stage was started, not about
+  # the screen - see `vars:` at the top of this file.
+  - name: stop the machine
+    shutdown: "{{ shutdown }}"
     timeout: 300
