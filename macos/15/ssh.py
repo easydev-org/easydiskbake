@@ -74,6 +74,17 @@ GUEST_USER = os.environ.get("MACOS_USER", "vmuser")
 GUEST_PASSWORD = os.environ.get("MACOS_PASSWORD", "admin")
 
 
+def _sha256(path: str) -> str:
+    """The file's digest, streamed so a 28 GiB disk never has to fit in memory."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def log(message: str) -> None:
     print(f"[macos-ssh {time.strftime('%H:%M:%S')}] {message}", flush=True)
 
@@ -123,6 +134,15 @@ def main(argv: list[str]) -> int:
     # WITHOUT IT the old behaviour stands: `working_copy` moves the disk (the default, since
     # the disk normally came from ghcr and the registry still holds it) or copies it when
     # --copy is given.
+    # THE INPUT'S DIGEST, TAKEN BEFORE ANYTHING MOVES IT. See macos/15/desktop.py for why:
+    # `working_copy` MOVES the disk, this stage is supposed to change it, and the publication
+    # has to be able to prove it did. The push runs after this process has exited, so the number
+    # goes to a file.
+    input_digest = _sha256(args.disk)
+    log(f"input  sha256 {input_digest[:16]}  ({args.disk})")
+    with open(os.path.join(work, "input.sha256"), "w", encoding="utf-8") as fh:
+        fh.write(input_digest + "\n")
+
     run_overlay = None
     if args.overlay:
         import overlay as overlaymod

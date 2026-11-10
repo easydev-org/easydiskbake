@@ -134,10 +134,15 @@ steps:
     at: [516, 413]
     type: "{{ user }}"
     settle: 2
-  - name: users - host name
-    at: [516, 478]
-    type: "{{ user }}"
-    settle: 2
+  # THE HOST NAME IS LEFT AT THE INSTALLER'S DEFAULT, AND THIS STEP USED TO SET IT.
+  #
+  # It typed the account's name here, which made the machine's name a second copy of the login
+  # and had to be kept in step with it by hand - and after the account was renamed it was the one
+  # place a stale name could hide. The name is now set ONCE, after ssh works, by
+  # `steps/vm-configure.yaml`, which is also the only place that knows the disk is finished.
+  #
+  # WHAT THE INSTALLER PUTS HERE IS ITS OWN DEFAULT (`cachyos`, the live medium's name, or the
+  # machine model). It is replaced a stage later, so nothing reads it.
   - name: users - password
     at: [516, 546]
     type: "{{ password }}"

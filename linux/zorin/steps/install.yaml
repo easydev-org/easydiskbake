@@ -155,10 +155,9 @@ steps:
     at: [975, 386]
     type: "{{ user }}"
     settle: 2
-  - name: who are you - computer name
-    at: [857, 422]
-    type: "{{ user }}"
-    settle: 2
+  # THE COMPUTER-NAME FIELD IS LEFT AT THE INSTALLER'S DEFAULT. It used to be the account's
+  # name - a second copy of the login that had to be kept in step by hand. The machine is named
+  # once, after ssh works, by steps/vm-configure.yaml.
   - name: who are you - username
     at: [859, 477]
     type: "{{ user }}"

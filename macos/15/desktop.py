@@ -81,6 +81,17 @@ def _wallpaper_test():
     return module
 
 
+def _sha256(path: str) -> str:
+    """The file's digest, streamed so a 28 GiB disk never has to fit in memory."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def log(message: str) -> None:
     print(f"[macos-desktop {time.strftime('%H:%M:%S')}] {message}", flush=True)
 
@@ -134,6 +145,29 @@ def main(argv: list[str]) -> int:
     # to duplicate a file that is already somewhere else. --copy keeps the old behaviour for the
     # case where this disk really is the only copy.
     import working_copy as wc
+
+    # THE INPUT'S DIGEST, TAKEN BEFORE ANYTHING MOVES IT.
+    #
+    # `working_copy` MOVES the disk by default - the published one is still in the registry, so
+    # copying 28 GiB is a real cost for nothing - which means the file named by --disk does not
+    # exist by the time this stage finishes. And THIS STAGE IS SUPPOSED TO CHANGE IT, so the
+    # publication has to be able to say "different from what I started with".
+    #
+    # That check lives in easyactions' oci-push (`distinct-from`), and it needs a path that
+    # still exists. So the digest is recorded here, under a name the workflow passes back, and
+    # the push compares against it.
+    #
+    # WHY IT MATTERS AT ALL: run 42831281414 published a `macos15-desktop` whose content digest
+    # was IDENTICAL to `macos15-setup` - eight minutes of video of a Setup Assistant nobody had
+    # driven - because `copy` put every write into a second overlay that was then deleted. A
+    # stage can report sixteen answered steps and publish its own input.
+    input_digest = _sha256(args.disk)
+    log(f"input  sha256 {input_digest[:16]}  ({args.disk})")
+    # WRITTEN WHERE THE WORKFLOW CAN READ IT. The push runs as a separate step, after this
+    # process has exited and after the input file no longer exists, so a file is the only thing
+    # that can carry the number across.
+    with open(os.path.join(work, "input.sha256"), "w", encoding="utf-8") as fh:
+        fh.write(input_digest + "\n")
 
     run_overlay = None
     if getattr(args, "overlay", False):

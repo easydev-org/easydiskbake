@@ -54,10 +54,10 @@ def log(message: str) -> None:
 
 def _family(step) -> str:
     family = str(getattr(step, "get", lambda k, d=None: d)("family") or "")
-    if family not in ("macos", "windows"):
+    if family not in ("macos", "windows", "linux"):
         raise SystemExit(
-            f"{getattr(step, 'name', 'this step')}: needs `family: macos` or `family: windows`, "
-            f"got {family!r}")
+            f"{getattr(step, 'name', 'this step')}: needs `family: macos`, `family: windows` or "
+            f"`family: linux`, got {family!r}")
     return family
 
 
@@ -81,7 +81,7 @@ def _write(work: str, name: str, body: str) -> str:
 # share's own account because that is what it mounts with. Reading them from the modules that
 # create them is what keeps one disk's launcher from naming another disk's server.
 def launcher(driver, step, **_kwargs) -> bool:
-    """Write the login launcher. macOS gets .sh, Windows .ps1, by the same rule as before."""
+    """Write the login launcher. macOS and Linux get .sh, Windows .ps1, by the same rule."""
     import bootstrap
     import hostshare
     import net

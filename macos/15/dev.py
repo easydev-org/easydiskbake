@@ -75,6 +75,17 @@ SSH_PASSWORD = os.environ.get("MACOS_PASSWORD", "admin")
 WALK = os.path.join(HERE, "steps", "dev.yaml")
 
 
+def _sha256(path: str) -> str:
+    """The file's digest, streamed so a 28 GiB disk never has to fit in memory."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def log(message: str) -> None:
     print(f"[macos-dev {time.strftime('%H:%M:%S')}] {message}", flush=True)
 
@@ -134,6 +145,12 @@ def main(argv: list[str]) -> int:
     log(f"disk={args.disk} out={out}")
     # MOVED, NOT COPIED - the ssh disk came from ghcr, so the registry still holds it.
     import working_copy as wc
+
+    # THE INPUT'S DIGEST, TAKEN BEFORE ANYTHING MOVES IT - see macos/15/desktop.py.
+    input_digest = _sha256(args.disk)
+    log(f"input  sha256 {input_digest[:16]}  ({args.disk})")
+    with open(os.path.join(work, "input.sha256"), "w", encoding="utf-8") as fh:
+        fh.write(input_digest + "\n")
 
     run_overlay = None
     if getattr(args, "overlay", False):

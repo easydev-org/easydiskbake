@@ -205,49 +205,20 @@ steps:
     at: [965, 347]
     type: "{{ display_name }}"
     settle: 2
-  # THE COMPUTER NAME FIELD IS ALREADY FILLED BY UBUNTU, AND APPENDING TO IT CORRUPTS IT.
+  # THE COMPUTER NAME IS LEFT ALONE, AND THAT IS A CHANGE OF POLICY RATHER THAN A SIMPLIFICATION.
   #
-  # Measured on this image in a local run on 2026-11-09. When the pane opens, Ubiquity has
-  # already put `docker-Standard-PC-Q35-ICH9-2009` in `Your computer's name`. The walk then
-  # clicked it once and typed `docker`, and the field read
+  # It used to be cleared and replaced with the account's name, in four steps, because a
+  # one-step `type:` had once INSERTED the name into Ubiquity's own default and produced
   #
   #     docker-Standockerdard-F
   #
-  # - `docker` INSERTED INTO the middle of the existing text, not appended and not replacing
-  # it. `type_into` does ctrl+a and 24 backspaces before typing, so the select-all did not
-  # take on this field; what did happen is the insertion point landing inside the string.
+  # Every part of that work existed to put OUR name in the field. The machine is now named once,
+  # after ssh works, by steps/vm-configure.yaml - which is a stage that knows the disk is
+  # finished, can see whether its command worked, and cannot corrupt a field it never types in.
   #
-  # A CORRUPTED COMPUTER NAME IS NOT COSMETIC. Ubiquity derives the login name from the name
-  # fields, and the disk that ships from here is the one whose LightDM shows `VMUSER` and
-  # rejects `admin`. This is the leading explanation for mint's ssh stage failing on a disk
-  # whose password this walk had set.
-  #
-  # SO THE FIELD IS CLEARED PROPERLY FIRST: click, select all, and DELETE, as separate steps
-  # with a settle after each, then type. That is three steps instead of one because the
-  # one-step form is what produced the corruption.
-  - name: who are you - host name, select all
-    at: [877, 375]
-    settle: 2
-
-  - name: who are you - host name, clear it
-    key: ctrl+a
-    settle: 2
-
-  - name: who are you - host name, delete the selection
-    key: backspace
-    settle: 2
-
-  - name: who are you - host name
-    type: "{{ user }}"
-    settle: 2
-  # NO `expect:` ON THIS PANE, AND IT WAS TRIED. Ubiquity's form fields are not in the text
-  # layer the walk reads - run 8b763bd's own log shows this pane OCRing as
-  #
-  #     Install | Linux | Mint | Installation | type
-  #
-  # which is the window title and the left sidebar, not the four inputs. A check here could
-  # not fail for the right reason, so the account is verified where it can be: the ssh stage
-  # logs in and asks `id -un`.
+  # THE DEFAULT UBIQUITY PUTS THERE IS A VALID HOST NAME (`mint-Standard-PC-Q35-ICH9-2009`, from
+  # the machine model), and nothing in this repository reads it before vm-configure replaces it.
+  # Leaving it alone also removes the last thing on this pane that could be typed into wrongly.
   - name: who are you - password
     at: [877, 458]
     type: "{{ password }}"

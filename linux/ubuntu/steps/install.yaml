@@ -86,15 +86,13 @@ steps:
   # THE ACCOUNT. FIVE FIELDS AND ONE TICK.
   # =======================================================================================
   #
-  # THE HOSTNAME IS `ubuntu` AND NOT THE USER NAME. It is the one field this driver fills with
-  # a literal: every other Linux bake derives it from the account, and here it is the disk's
-  # identity rather than a login, which is what the original fill_account() did.
+  # THE HOSTNAME FIELD IS LEFT AT THE INSTALLER'S DEFAULT, AND THIS WALK USED TO FILL IT.
+  #
+  # It typed the account's name, which made the machine's name a second copy of the login. After
+  # the account was renamed that copy was the one place a stale name could hide, and it is not a
+  # name anything needs: the machine is named once, after ssh works, by steps/vm-configure.yaml.
   - name: create your account - full name
     at: [1139, 393]
-    type: "{{ user }}"
-    settle: 2
-  - name: create your account - hostname
-    at: [1139, 447]
     type: "{{ user }}"
     settle: 2
   - name: create your account - username

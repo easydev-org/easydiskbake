@@ -154,6 +154,16 @@ def main(argv: list[str]) -> int:
     p.add_argument("--resolution", default="1920x1080")
     p.add_argument("--no-clean", action="store_true",
                    help="accepted and ignored: this stage does not clean, it installs")
+    # THE DISK THIS STAGE PRODUCED, WHEN SOMEBODY WANTS IT. The stage edits the disk in place and
+    # used to keep nothing: the artifact was uploaded for the post-mortem and the disk itself was
+    # thrown away with the container. `--publish-out` copies it to that path on PASS, which is what
+    # lets the next stage (vm-configure) start from the disk that has sshd on it rather than
+    # reinstalling one.
+    #
+    # THE COPY HAPPENS AFTER QEMU IS GONE and only on success - see `finish()` below, where the
+    # same rule as the bake's own publish applies: a disk from a failed stage is not published.
+    p.add_argument("--publish-out", default=None,
+                   help="copy the configured disk here when the verdict is PASS")
     args = p.parse_args(argv)
 
     # 0 MEANS "THE BOOT BUDGET", which is how the flag is documented and what every workflow
@@ -181,6 +191,22 @@ def main(argv: list[str]) -> int:
     def finish(code: int) -> int:
         note(f"VERDICT {'PASS' if code == 0 else 'FAIL'} kind={args.kind} "
              f"tag={args.tag or args.disk}")
+        # THE DISK LEAVES WITH THE VERDICT, AND ONLY WITH A PASS.
+        #
+        # A disk from a failed stage is not published - that is the rule every other stage here
+        # already follows, and the reason is the same: whatever is wrong with it would be discovered
+        # by the next stage, a long way from the failure that caused it.
+        if code == 0 and args.publish_out:
+            try:
+                import shutil
+                os.makedirs(os.path.dirname(os.path.abspath(args.publish_out)) or ".",
+                            exist_ok=True)
+                note(f"copying the configured disk -> {args.publish_out}")
+                shutil.copyfile(disk, args.publish_out)
+                note(f"{args.publish_out}: {os.path.getsize(args.publish_out) >> 20} MiB")
+            except Exception as exc:                   # noqa: BLE001
+                note(f"=== COULD NOT WRITE {args.publish_out}: {exc} ===")
+                return 1
         return code
 
     def shot(q, name: str) -> str:

@@ -26,9 +26,13 @@ driver, and SMB is the only one they share:
                virtiofsd.
 
 SMB is what both Windows and macOS speak natively, read and write, with no driver and no
-extra process. Linux is not covered by this module: it would use qemu's virtio-9p, which is
-a different device with a different mount, and a step that claimed to do "the share" on all
-three would have silently done nothing on one of them. `smbd` is already in this image (Containerfile installs samba), which is why
+extra process.
+
+LINUX USES THE SAME SERVER, THROUGH ITS OWN KERNEL CLIENT. An earlier version of this file left
+Linux out on the grounds that it "would use qemu's virtio-9p" - true of the design that put
+`smb=` on qemu's user-mode netdev, which this repository no longer has. `share_serve:` runs a
+real smbd on the bridge address, so a Linux guest mounts it with `mount.cifs` (cifs-utils is
+not on a stock desktop, so that step installs it first) and nothing new is exposed. `smbd` is already in this image (Containerfile installs samba), which is why
 this is a config file and a process rather than a new dependency.
 
 WHAT CHANGED SINCE THE LAST SMB CODE IN THIS REPOSITORY
@@ -567,7 +571,31 @@ def mount_commands(host: str = "", user: str = "vmuser",
         # NO DRIVE LETTER: a mapping belongs to the logon session that created it, which is run
         # 42737785611 - `net use Z:` answered 0 and the next command could not find the path.
         # The share is addressed by UNC path while the session lives.
-        "windows": (f'net use \\\\{host}\\{SHARE_NAME} "" /user:{SMB_USER} /persistent:no'),
+        "windows": (f'net use \\\\{host}\\{SHARE_NAME} "" /user:{SMB_USER} /persistent=no'),
+        # LINUX: THE KERNEL'S OWN CIFS CLIENT, AND IT IS THE SAME SERVER THE OTHER TWO USE.
+        #
+        # The module's header used to say Linux was "deliberately absent" because it would use
+        # virtio-9p. That was true of the design it described - qemu's user-mode `smb=` on the
+        # slirp link - and the repository no longer has that: `share_serve:` starts a real smbd
+        # on the bridge address (see `start()`), which Linux reaches as an ordinary SMB server.
+        #
+        # So 9p is not needed and is not used. `mount.cifs` is the kernel's client, present in
+        # `cifs-utils` - which is NOT installed on a stock desktop, so the step that runs this
+        # installs it first. The mount is the same shape as macOS': a directory the account
+        # owns, and root for the mount itself.
+        #
+        # `vers=3.0` IS PINNED. A client and a server that negotiate their own can land on SMB1
+        # (which current smbd disables) or on a dialect whose `null passwords` handling differs;
+        # 3.0 is what this smbd offers and what the account's empty password was tested against.
+        #
+        # `password=` IS EMPTY AND THAT IS THE CREDENTIAL, exactly as on macOS: `_ensure_account`
+        # creates the account with no password and the config sets `null passwords = yes`.
+        "linux": (
+            f"mkdir -p ~/shared && "
+            f"printf '%s\\n' {shlex.quote(login_password)} | sudo -S -p '' "
+            f"mount -t cifs //{host}/{SHARE_NAME} ~/shared "
+            f"-o vers=3.0,user={SMB_USER},password=,uid=$(id -u),gid=$(id -g),forceuid,forcegid"
+        ),
     }
 
 

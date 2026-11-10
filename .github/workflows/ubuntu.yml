@@ -63,6 +63,19 @@ on:
       ssh_port:
         description: "stage 3: the host port forwarded to the guest's 22"
         default: "2222"
+      vm_configure_run:
+        description: "stage 4: name the machine, mount the share, install the guest agent"
+        type: boolean
+        default: true
+      vm_configure_from:
+        description: "stage 4: a published tag to configure instead of the ssh stage's output"
+        default: ""
+      vm_configure_tag:
+        description: "stage 4: tag to publish under; empty for TAG-vm"
+        default: ""
+      hostname:
+        description: "stage 4: the machine's name; empty for easyvm-<8 random characters>"
+        default: ""
       launch_run:
         description: "stage 2: boot the finished disk and check the desktop comes up"
         type: boolean
@@ -309,8 +322,21 @@ jobs:
               --tag "${{ inputs.ssh_from || needs.bake.outputs.tag || 'linux-ubuntu' }}" \
               --kind ubuntu \
               --artifacts out/ubuntu-ssh \
+              --work out/ubuntu-ssh/work \
               --ssh-port "${{ inputs.ssh_port || '2222' }}" \
-              --boot-timeout "${{ inputs.boot_timeout || '900' }}"
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --publish-out out/ubuntu-vm.qcow2
+
+      # THE DISK THIS STAGE MADE IS THE NEXT STAGE'S INPUT, so it is published rather than only
+      # archived. The artifact below is the post-mortem; this is the product.
+      - name: push the ssh disk
+        if: success()
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/ubuntu-vm.qcow2
+          kind: ubuntu-ssh
+          tag: ${{ inputs.publish_tag || 'linux-ubuntu' }}-ssh
+          token: ${{ github.token }}
 
       - name: keep the verdict
         if: always()
@@ -325,3 +351,128 @@ jobs:
             out/ubuntu-ssh/steps/*.png
           if-no-files-found: warn
           retention-days: 14
+
+  # =========================================================================================
+  # STAGE FOUR. macOS' vm-configure, for the Linux family.
+  # =========================================================================================
+  #
+  # It runs on the disk the ssh stage published, and it does the three things a finished Linux
+  # disk needs before anything is installed on it:
+  #
+  #     the machine's name        easyvm-<8 random characters>, set with hostnamectl
+  #     the host share            ~/shared, mounted from this stage's own smbd
+  #     the qemu guest agent      a shutdown that is a request, not a power button
+  #
+  # It also installs the login launcher, which is what runs ~/shared/bootstrap.sh at the next
+  # login - the same contract macOS' stage four installs, through a systemd user unit rather than
+  # a LaunchAgent.
+  #
+  # WHY IT IS A JOB OF ITS OWN AND NOT MORE STEPS ON THE ssh JOB
+  #
+  # Because it is useful against a disk that already exists. `vm_configure_from` names a tag, so
+  # this stage can be re-run without re-running the two-hour install behind it - which is exactly
+  # what was needed to write it.
+  vm-configure:
+    needs: [ssh]
+    if: |
+      always() && inputs.vm_configure_run
+      && (inputs.vm_configure_from != ''
+          || (inputs.ssh_run && needs.ssh.result == 'success'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      # THE SHARE IS ON THE BRIDGE and the forwarded port needs a DNAT rule, so this job has the
+      # same three privileges every guest job has.
+      options: --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+    outputs:
+      tag: ${{ inputs.vm_configure_tag || 'linux-ubuntu-vm' }}
+      hostname: ${{ steps.name.outputs.hostname }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          # THE DISK TWICE PLUS A COPY: vm_configure writes out/<kind>-vm.qcow2 beside the pulled
+          # one, and the stage's own work directory holds the console log and frames.
+          disk-gb: '80'
+          token: ${{ github.token }}
+
+      - name: prepare
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: ubuntu-vm-configure-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py tags --prefix linux-
+
+      - name: pull the ssh disk
+        uses: easydev-org/easyactions/oci-pull@main
+        with:
+          tag: ${{ inputs.vm_configure_from || format('{0}-ssh', inputs.publish_tag || 'linux-ubuntu') }}
+          dest: out
+          token: ${{ github.token }}
+
+      - name: configure the vm (name, share, guest agent)
+        id: configure
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: ubuntu-vm-configure
+          interval: "20"
+          command: |
+            set -euo pipefail
+            DISK=$(ls out/*.qcow2 | head -1)
+            python3 linux/ubuntu/vm_configure.py \
+              --disk "$DISK" \
+              --out out/ubuntu-vm-configure.qcow2 \
+              --walk linux/ubuntu/steps/vm-configure.yaml \
+              --ssh-port "${{ inputs.ssh_port || '2222' }}" \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --hostname "${{ inputs.hostname }}" \
+              | tee out/hostname.txt
+
+      # A PLAIN `run:` STEP, BECAUSE THIS IS WHERE THE NEXT JOB'S NAME COMES FROM. GITHUB_OUTPUT
+      # is the runner's own mechanism; routing it through a third-party action would make the
+      # chain depend on how that action treats the variable - the same note macos15.yml carries
+      # above its own publish step.
+      - name: record the machine's name
+        id: name
+        run: |
+          set -euo pipefail
+          NAME=$(grep -o "this machine will be named '[^']*'" out/hostname.txt \
+                 | sed "s/.*named '//; s/'//")
+          test -n "$NAME"
+          echo "hostname=$NAME" >> "$GITHUB_OUTPUT"
+          echo "the machine is $NAME"
+
+      - name: keep the last frame
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-vm-configure-last-frame
+          path: |
+            out/last-frame.png
+            out/hostname.txt
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: push the disk
+        if: success()
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/ubuntu-vm-configure.qcow2
+          kind: ubuntu-vm-configure
+          tag: ${{ inputs.vm_configure_tag || 'linux-ubuntu-vm' }}
+          token: ${{ github.token }}

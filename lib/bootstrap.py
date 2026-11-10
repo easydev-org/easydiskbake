@@ -41,7 +41,10 @@ import os
 import sys
 
 # THE NAME THE PERSON USES IS THE LANGUAGE THE DISK SPEAKS.
-SCRIPT = {"macos": "bootstrap.sh", "windows": "bootstrap.ps1"}
+# LINUX SPEAKS THE SAME SHELL SCRIPT macOS DOES, so it is the same file name. A person writing
+# a bootstrap for these disks writes one shell script and it works on both families - which is
+# the point of choosing `/bin/sh` over a language the disk might not have yet.
+SCRIPT = {"macos": "bootstrap.sh", "windows": "bootstrap.ps1", "linux": "bootstrap.sh"}
 LOG = "bootstrap.log"
 MARKER = "bootstrap.done"
 
@@ -283,6 +286,103 @@ fi
 """
 
 
+def linux_launcher(host: str, user: str, share: str) -> str:
+    """The Linux launcher: the same contract as macOS', through the kernel's own CIFS client.
+
+    WHAT IS THE SAME AS macOS' LAUNCHER, AND WHY IT HAS TO BE
+
+    It mounts the share itself before looking for the script. A network mount does not survive a
+    reboot, so at the next boot `~/shared` is an empty directory in the home folder -
+    the mount point the mount command made before trying. A launcher that only waited for
+    `~/shared` to appear would wait a minute, find an empty directory, and exit 0, which reads as
+    "the bootstrap ran and did nothing".
+
+    It writes its log and its marker under `$HOME`, never in `$SHARED`: when the share is not
+    mounted, `$SHARED` is a local directory on the disk, and the disk is what gets published.
+
+    WHAT IS DIFFERENT: THE MOUNT AND THE CREDENTIAL
+
+    `mount_smbfs` and `mount.cifs` disagree about almost everything, and the two facts that matter
+    here are that cifs wants `-t cifs` with `vers=` pinned, and that it takes its account and
+    password as mount options rather than from a URL. The account still has no password - that is
+    what `null passwords = yes` on the server expects - so `password=` is present and empty, which
+    is the option's own spelling for "supply nothing".
+
+    `uid=`/`gid=`/`forceuid`/`forcegid` ARE THE DIFFERENCE A PERSON WOULD NOTICE. CIFS mounts
+    report the SERVER's ownership, so without these a file written on the host arrives as `root`
+    and the account cannot rewrite it. Forcing the mapping to the mounting account is what makes
+    the share behave like the one macOS gets.
+    """
+    return f"""\
+#!/bin/sh
+# Run ~/shared/bootstrap.sh at login, once, and leave a log beside it.
+#
+# INSTALLED BY linux/*/steps/vm-configure.yaml, run by the org.vm.bootstrap systemd user unit.
+#
+# NO PYTHON, AND THAT IS THE POINT: this runs on a disk that may not have the developer
+# toolchain yet, because the share is installed before it.
+set -u
+
+SERVER="{host}"
+SHARE="{share}"
+SHARED="$HOME/shared"
+
+LOG="$HOME/{LOG}"
+MARKER="$HOME/{MARKER}"
+SCRIPT="$SHARED/{SCRIPT['linux']}"
+
+say() {{
+    echo "$@" >> "$LOG" 2>/dev/null || echo "$@"
+}}
+
+# MOUNT FIRST, BECAUSE A NETWORK MOUNT DOES NOT SURVIVE A REBOOT.
+#
+# Already mounted is success - a second `mount` would answer "already mounted or busy", and a
+# launcher that failed over that would never run the script.
+if ! mount | grep -q " on $SHARED "; then
+    mkdir -p "$SHARED"
+    # THE PASSWORD IS EMPTY AND THAT IS THE CREDENTIAL. See lib/hostshare.py: the share's account
+    # has no password and the server accepts one, so there is no secret in this file.
+    if ! mount -t cifs "//$SERVER/$SHARE" "$SHARED" \
+            -o "vers=3.0,user={user},password=,uid=$(id -u),gid=$(id -g),forceuid,forcegid" \
+            2>>"$LOG"; then
+        say "[$(date)] could not mount //$SERVER/$SHARE; nothing to run"
+        exit 0
+    fi
+    say "[$(date)] mounted //$SERVER/$SHARE"
+fi
+
+# WAIT FOR THE TOP OF THE SHARE, NOT FOR THE DIRECTORY. The mount is synchronous here, so a
+# mount that returned 0 is a mount that exists - but a host whose smbd is reachable and empty
+# still takes a moment to answer a listing.
+i=0
+while [ ! -f "$SCRIPT" ] && [ "$i" -lt 30 ]; do
+    i=$((i + 1))
+    sleep 1
+done
+
+# THE FALLBACK: NO SCRIPT, NO RUN.
+#
+# A disk is published with this launcher installed and nothing else. If the share is up but the
+# person has not put a bootstrap there, this exits 0 and says so. A login hook that does nothing
+# is the correct behaviour for a machine nobody has configured yet.
+[ -f "$MARKER" ] && exit 0
+if [ ! -f "$SCRIPT" ]; then
+    say "[$(date)] no $SCRIPT on the share; nothing to run"
+    exit 0
+fi
+
+say "[$(date)] running $SCRIPT"
+if /bin/sh "$SCRIPT" >> "$LOG" 2>&1; then
+    # THE MARKER IS WRITTEN ONLY ON SUCCESS, so a failing bootstrap tries again next login.
+    date > "$MARKER"
+    say "[$(date)] ok"
+else
+    say "[$(date)] FAILED; it will run again at the next login"
+fi
+"""
+
+
 def windows_launcher(host: str, user: str, share: str, password: str = "") -> str:
     """The Windows launcher, connecting with explicit credentials in its own session.
 
@@ -405,7 +505,9 @@ def launcher_body(family: str, host: str = "", user: str = "", share: str = "",
         return macos_launcher(host, user, share)
     if family == "windows":
         return windows_launcher(host, user, share, password)
-    raise SystemExit(f"no bootstrap launcher for {family!r}; known: macos, windows")
+    if family == "linux":
+        return linux_launcher(host, user, share)
+    raise SystemExit(f"no bootstrap launcher for {family!r}; known: macos, windows, linux")
 
 
 def windows_ps1(launcher: str) -> str:
@@ -440,8 +542,8 @@ Write-Output "BOOTSTRAP_TASK_REGISTERED"
 
 
 def launcher_name(family: str) -> str:
-    """The launcher's file name: `.sh` on macOS, `.ps1` on Windows."""
-    return f"{LAUNCHER}.sh" if family == "macos" else f"{LAUNCHER}.ps1"
+    """The launcher's file name: `.sh` on macOS and Linux, `.ps1` on Windows."""
+    return f"{LAUNCHER}.sh" if family in ("macos", "linux") else f"{LAUNCHER}.ps1"
 
 
 def write_launcher(where: str, family: str, host: str = "", user: str = "",

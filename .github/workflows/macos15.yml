@@ -354,6 +354,27 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      # THE STAGE'S RECORDED INPUT DIGEST, AS A STEP OUTPUT.
+      #
+      # `${{ steps.x.outputs.y }}` cannot read a file, and the push action takes an input rather
+      # than a path, so one step bridges the two. An empty file is reported rather than ignored:
+      # it means the stage did not record what it started from, and the push would then have no
+      # baseline at all.
+      - name: what the disk started as
+        id: input_digest
+        run: |
+          set -euo pipefail
+          if [ -s out/input.sha256 ]; then
+            SHA=$(tr -d '[:space:]' < out/input.sha256)
+            echo "input sha256: $SHA"
+            echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+          else
+            echo "=== out/input.sha256 IS MISSING OR EMPTY ==="
+            echo "  desktop.py records the input's digest before it moves the disk; without it"
+            echo "  the push cannot tell whether this stage produced anything."
+            exit 1
+          fi
+
       - name: push the disk
         if: success()
         id: publish
@@ -373,7 +394,17 @@ jobs:
           # The tag this stage was given is the file oci-pull wrote into `out/`, and each
           # stage writes its output under a different name - so the input can be named here
           # without guessing.
-          distinct-from: out/${{ inputs.desktop_from || needs.setup.outputs.tag }}.qcow2
+          # THE INPUT'S DIGEST, RECORDED BY THE STAGE BEFORE IT MOVED THE DISK.
+          #
+          # `distinct-from` wanted a path, and the path is gone by now: desktop.py MOVES the disk
+          # it is given (the published copy is still in the registry, so copying 28 GiB buys
+          # nothing). Its first attempt failed exactly there -
+          #
+          #     FAILED: distinct-from names out/macos15-setup.qcow2, which does not exist
+          #
+          # - which is the check working, on a path that cannot be relied on. The stage hashes
+          # the input before it touches it and writes out/input.sha256; this reads that.
+          distinct-digest: ${{ steps.input_digest.outputs.sha256 }}
           token: ${{ github.token }}
   ssh:
     needs: desktop
@@ -474,6 +505,22 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      # THE STAGE'S RECORDED INPUT DIGEST, AS A STEP OUTPUT - see the desktop job.
+      - name: what the disk started as
+        id: input_digest
+        run: |
+          set -euo pipefail
+          if [ -s out/input.sha256 ]; then
+            SHA=$(tr -d '[:space:]' < out/input.sha256)
+            echo "input sha256: $SHA"
+            echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+          else
+            echo "=== out/input.sha256 IS MISSING OR EMPTY ==="
+            echo "  the stage records its input's digest before it moves the disk; without it"
+            echo "  the push cannot tell whether this stage produced anything."
+            exit 1
+          fi
+
       - name: push the disk
         if: success()
         id: publish
@@ -485,7 +532,7 @@ jobs:
           # TURNING REMOTE LOGIN ON WRITES TO THE DISK - the launchd job, the sshd config, the
           # account's access table - so an output identical to the input is a stage that did
           # nothing and published anyway. See the longer note on the desktop push.
-          distinct-from: out/${{ inputs.ssh_from || needs.desktop.outputs.tag }}.qcow2
+          distinct-digest: ${{ steps.input_digest.outputs.sha256 }}
           token: ${{ github.token }}
   # ===========================================================================
   # SHARE - the host directory and the login hook, BEFORE any toolchain.
@@ -702,6 +749,22 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      # THE STAGE'S RECORDED INPUT DIGEST, AS A STEP OUTPUT - see the desktop job.
+      - name: what the disk started as
+        id: input_digest
+        run: |
+          set -euo pipefail
+          if [ -s out/input.sha256 ]; then
+            SHA=$(tr -d '[:space:]' < out/input.sha256)
+            echo "input sha256: $SHA"
+            echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+          else
+            echo "=== out/input.sha256 IS MISSING OR EMPTY ==="
+            echo "  the stage records its input's digest before it moves the disk; without it"
+            echo "  the push cannot tell whether this stage produced anything."
+            exit 1
+          fi
+
       - name: push the disk
         if: success()
         id: publish
@@ -712,7 +775,7 @@ jobs:
           tag: ${{ inputs.publish_tag || 'macos15-dev' }}
           # XCODE, NODE AND PYTHON ARE GIGABYTES ON THIS DISK; a dev disk identical to the ssh
           # disk it came from is a toolchain stage that installed nothing.
-          distinct-from: out/${{ inputs.dev_from || needs.ssh.outputs.tag }}.qcow2
+          distinct-digest: ${{ steps.input_digest.outputs.sha256 }}
           token: ${{ github.token }}
 
   # ===========================================================================

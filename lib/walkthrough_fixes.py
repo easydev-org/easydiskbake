@@ -665,6 +665,30 @@ def main() -> int:
     check("the client no longer argues the wait is unavoidable", "lib/qmp.py",
           "no version of this that avoids the wait" not in qmp_src)
 
+    # AND EACH STAGE RECORDS ITS INPUT'S DIGEST BEFORE IT MOVES THE DISK, so the push can tell
+    # whether the stage produced anything.
+    #
+    # `distinct-from` wanted a PATH, and the path is gone by push time: `working_copy` MOVES the
+    # disk (the published copy is still in the registry, so copying 28 GiB buys nothing). The
+    # first attempt failed exactly there -
+    #
+    #     FAILED: distinct-from names out/macos15-setup.qcow2, which does not exist
+    #
+    # which is the check working, against a path that cannot be relied on.
+    for path in ("macos/15/desktop.py", "macos/15/ssh.py", "macos/15/dev.py"):
+        body = read(path)
+        check(f"{path} records its input digest", path,
+              'os.path.join(work, "input.sha256")' in body and "_sha256(args.disk)" in body)
+        # AND BEFORE THE MOVE, not after: hashing a file the next line consumes is the only
+        # order where the number exists.
+        check(f"{path} hashes before it moves", path,
+              body.index("_sha256(args.disk)") < body.index("working_copy("))
+    mac_wf = read(".github/workflows/macos15.yml")
+    for kind in ("macos15-desktop", "macos15-ssh", "macos15-dev"):
+        check(f"the {kind} push compares against that digest", ".github/workflows/macos15.yml",
+              f"path: out/{kind}.qcow2" in mac_wf
+              and "${{ steps.input_digest.outputs.sha256 }}" in mac_wf)
+
     # AND `copy` IS NEVER DERIVED FROM `run_overlay`, BECAUSE THEY ARE THE SAME THING TWICE.
     #
     # `copy=True` asks vm_session for a PROTECTIVE overlay over the disk it was handed. A stage
