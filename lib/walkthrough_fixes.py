@@ -333,6 +333,14 @@ def main() -> int:
         # THE KILL RUNS IN A CHILD, so a wrong pid cannot take this process with it.
         check("the signal is sent by a subprocess", "lib/hostshare.py",
               'subprocess.run(["kill"' in hostshare_src)
+        # AND A STAGE THAT IS ABOUT TO EXIT DOES NOT STOP THE SHARE AT ALL.
+        #
+        # The container ends with the step, so the daemon goes with it. Stopping it explicitly
+        # bought nothing and cost five runs: the SIGTERM arrived inside hostshare.stop(), one
+        # line after `kill` returned, and seven experiments found no sender inside this process.
+        # macos/15/ssh.py never calls it and never had the problem.
+        check("a stage that exits leaves the share to the container", "macos/15/share.py",
+              "share=False" in read("macos/15/share.py"))
         # AND THE SIGNAL NAMES ITSELF, so the next occurrence is not a decode exercise.
         check("a signal is reported by name", "macos/15/share.py",
               "SIGNALLED:" in read("macos/15/share.py"))

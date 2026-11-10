@@ -272,7 +272,20 @@ def main(argv: list[str]) -> int:
         # the next boot to replay. lib/vm_session.py's stop() sends `shutdown -h now` over ssh and
         # keeps ACPI as the fallback.
         import vm_session
-        vm_session.stop(guest, acpi_first=ok, family="macos", password=SSH_PASSWORD)
+        # `share=False`: THE STAGE IS ABOUT TO EXIT, SO THERE IS NOTHING TO CLEAN UP AFTER.
+        #
+        # The container ends with the step and smbd goes with it. Stopping it explicitly bought
+        # nothing and cost this stage five runs: the SIGTERM that killed it arrived inside
+        # hostshare.stop(), one line after `kill` returned (stack from run 42770251964), and
+        # seven experiments - killpg, process groups, stale pids, subprocess vs os.kill, a
+        # daemonised leader - found no sender inside this process. macos/15/ssh.py calls the same
+        # stop() without a share and never had the problem.
+        #
+        # If a later stage in the SAME container needs 445, it starts its own smbd and start()
+        # stops the previous one first. That is the case this cleanup was written for, and it is
+        # not this one.
+        vm_session.stop(guest, acpi_first=ok, family="macos", password=SSH_PASSWORD,
+                        share=False)
         if ok:
             # SAY SO BEFORE AND AFTER, BECAUSE THIS IS WHERE THE PROCESS KEPT DISAPPEARING.
             #

@@ -215,7 +215,7 @@ SHUTDOWN_COMMAND = {
 
 
 def stop(guest, *, acpi_first: bool = True, family: str = "", password: str = "admin",
-         log=print) -> None:
+         share: bool = True, log=print) -> None:
     """Stop the guest and the share it was using. Both, because a leftover smbd holds the port.
 
     THE SHUTDOWN COMMAND IS TRIED FIRST, AND ACPI IS THE FALLBACK. A failed ssh (a guest whose
@@ -233,7 +233,8 @@ def stop(guest, *, acpi_first: bool = True, family: str = "", password: str = "a
     except Exception as exc:                                # noqa: BLE001
         log(f"stop: {exc}")
     finally:
-        hostshare.stop()
+        if share:
+            hostshare.stop()
 
 
 @contextlib.contextmanager
