@@ -180,7 +180,7 @@ jobs:
     outputs:
       # ONE EXPRESSION SERVES BOTH PATHS. Given a tag, this job publishes nothing and the
       # outputs are what it was given; baked here, they are what it produced.
-      tag: ${{ inputs.base_from || steps.publish.outputs.tag }}
+      tag: ${{ inputs.base_publish_tag || 'windows11' }}
       ran: ${{ steps.publish.outcome == 'success' }}
     steps:
       - uses: actions/checkout@v4
@@ -285,7 +285,7 @@ jobs:
         with:
           path: out/windows11.qcow2
           kind: windows-base
-          tag: ${{ inputs.base_publish_tag }}
+          tag: ${{ inputs.base_publish_tag || 'windows11' }}
           token: ${{ github.token }}
   ssh:
     needs: base
@@ -308,7 +308,7 @@ jobs:
       checks: write
       packages: write
     outputs:
-      tag: ${{ inputs.ssh_from || steps.publish.outputs.tag }}
+      tag: ${{ inputs.ssh_publish_tag || 'windows11-ssh' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -372,7 +372,7 @@ jobs:
         with:
           path: out/windows11-ssh.qcow2
           kind: windows-ssh
-          tag: ${{ inputs.ssh_publish_tag }}
+          tag: ${{ inputs.ssh_publish_tag || 'windows11-ssh' }}
           token: ${{ github.token }}
   # ===========================================================================
   # SHARE - the host directory and the logon hook, BEFORE any toolchain.
@@ -399,7 +399,7 @@ jobs:
       checks: write
       packages: write
     outputs:
-      tag: ${{ inputs.vm_configure_from || steps.publish.outputs.tag }}
+      tag: ${{ inputs.vm_configure_publish_tag || 'windows11-vm-configure' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -465,7 +465,7 @@ jobs:
         with:
           path: out/windows11-vm-configure.qcow2
           kind: windows-vm-configure
-          tag: ${{ inputs.vm_configure_publish_tag }}
+          tag: ${{ inputs.vm_configure_publish_tag || 'windows11-vm-configure' }}
           token: ${{ github.token }}
 
   dev:
@@ -486,7 +486,7 @@ jobs:
       checks: write
       packages: write
     outputs:
-      tag: ${{ inputs.dev_from || steps.publish.outputs.tag }}
+      tag: ${{ inputs.dev_publish_tag || 'windows11-dev' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -553,7 +553,7 @@ jobs:
         with:
           path: out/windows11-dev.qcow2
           kind: windows-dev
-          tag: ${{ inputs.dev_publish_tag }}
+          tag: ${{ inputs.dev_publish_tag || 'windows11-dev' }}
           token: ${{ github.token }}
   launch_ssh:
     needs: ssh

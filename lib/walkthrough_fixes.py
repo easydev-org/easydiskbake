@@ -696,6 +696,25 @@ def main() -> int:
         declared = (macos_workflow["jobs"][job].get("outputs") or {}).get("tag")
         check(f"the {job} job outputs what it published", ".github/workflows/macos15.yml",
               declared is not None and built in declared)
+    # AND THE WINDOWS CHAIN HAS THE SAME RULE, because it had the same bug.
+    #
+    # Its `tag:` was `${{ inputs.base_publish_tag }}`, which is EMPTY unless a caller sets it -
+    # so oci-push fell back to `kind` plus a timestamp and published `windows-base-20261110-...`
+    # while the job told the next one to pull `windows11`. That is unverifiable from inside the
+    # run: the push says "published", the pull of a different name says "no manifest", and
+    # neither mentions the other. `windows11`, `windows11-ssh` and `windows11-vm-configure`
+    # were all absent from the registry after a run whose every step said completed.
+    win_wf = load_yaml(".github/workflows/windows-11.yml")
+    for job, built in (("base", "windows11"), ("ssh", "windows11-ssh"),
+                       ("vm-configure", "windows11-vm-configure"), ("dev", "windows11-dev")):
+        cfg = win_wf["jobs"][job]
+        declared = (cfg.get("outputs") or {}).get("tag")
+        push = [st for st in cfg.get("steps", []) if st.get("id") == "publish"]
+        pushed = push[0]["with"]["tag"] if push else None
+        check(f"the windows {job} job outputs what it published",
+              ".github/workflows/windows-11.yml",
+              declared is not None and built in declared and declared == pushed)
+
     # AND NOTHING POINTS AT THE OLD NAME. `share` became `vm-configure`, and the dev job's
     # condition kept saying `needs.share.outputs.tag` - a reference to a job that does not
     # exist, which quietly made the condition true only when `dev_from` was passed by hand.
