@@ -83,6 +83,92 @@ def fetch_xcode(driver, step) -> bool:
     return True
 
 
+# THE TWO PACKAGES THAT REPLACE `brew install node python` ON AN INTEL DISK.
+#
+# Homebrew's installer refuses a non-arm64 macOS outright (install.sh: `if [[ "${UNAME_MACHINE}"
+# != "arm64" ]]; then abort`), so each tool comes from the publisher that still ships an Intel
+# build. A .pkg is what both of them ship for macOS; `installer -pkg ... -target /` is the
+# system's own non-interactive installer and needs no GUI.
+#
+# (family, version, url, sha256, filename in the guest)
+PACKAGES = {
+    "node": {
+        "version": "26.13.0",
+        "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0.pkg",
+        "sha256": "",  # filled by --check, see below
+        "file": "/tmp/node.pkg",
+        "what": "Node.js, official x64 .pkg - links node/npm/npx into /usr/local/bin",
+    },
+    "python": {
+        "version": "3.13.9",
+        "url": "https://www.python.org/ftp/python/3.13.9/python-3.13.9-macos11.pkg",
+        "sha256": "",
+        "file": "/tmp/python.pkg",
+        "what": "Python, python.org macos11 .pkg - the Intel-capable build",
+    },
+}
+
+
+def fetch_packages(driver, step) -> bool:
+    """Download node and python on the HOST, into the stage's work directory.
+
+    THE GUEST CANNOT REACH THEM. Its internet is this container's NAT, and this container's
+    outbound HTTPS is what already works - so the download happens here and the next step
+    copies the files in, exactly as the Xcode archive does.
+
+    NO HASH IS PINNED, AND THAT IS A DELIBERATE DIFFERENCE FROM XCODE. These come from the
+    publishers over https, at URLs that name an exact version - nodejs.org/dist/v26.13.0/ does
+    not change its bytes and neither does python.org/ftp/python/3.13.9/. Xcode needed a pin
+    because it came from an ARCHIVE (archive.org), where the file could be replaced; a
+    publisher's own versioned URL is the identity. `--check` below prints the hashes so a pin
+    can be added if that ever stops being true.
+    """
+    import iso
+
+    work = _work(driver)
+    for name, pin in PACKAGES.items():
+        dest = os.path.join(work, f"{name}.pkg")
+        log(f"{name} {pin['version']}: {pin['what']}")
+        try:
+            iso.fetch_url(pin["url"], dest, size=None)
+        except Exception as exc:                        # noqa: BLE001
+            log(f"=== COULD NOT FETCH {name}: {exc} ===")
+            return False
+        log(f"  {dest} ({os.path.getsize(dest) >> 20} MiB)")
+    return True
+
+
+def copy_packages(driver, step) -> bool:
+    """Push both .pkg files into the guest, checking the size on the far side."""
+    import session
+
+    values = getattr(driver, "values", {}) or {}
+    port = int(getattr(driver, "ssh_port", 0) or values.get("ssh_port") or 2222)
+    user = str(values.get("user") or "docker")
+    password = str(getattr(driver, "password", "") or values.get("password") or "admin")
+
+    work = _work(driver)
+    for name, pin in PACKAGES.items():
+        local = os.path.join(work, f"{name}.pkg")
+        if not os.path.isfile(local):
+            log(f"=== NO PACKAGE AT {local} ===")
+            return False
+        expected = os.path.getsize(local)
+        log(f"copying {name}.pkg ({expected >> 20} MiB) -> {pin['file']}")
+        status, out = session.scp(local, pin["file"], port=port, timeout=1800,
+                                  user=user, password=password)
+        if status != 0:
+            log(f"=== THE {name.upper()} COPY FAILED (exit {status}) ===")
+            for line in (out or "").splitlines()[:6]:
+                log(f"    {line}")
+            return False
+        got = _remote_size(port, user, password, pin["file"])
+        if got != expected:
+            log(f"=== {name}: {got} of {expected} bytes arrived ===")
+            return False
+    return True
+
+
 def copy_xcode(driver, step) -> bool:
     """Push the .xip and the installer script into the guest.
 

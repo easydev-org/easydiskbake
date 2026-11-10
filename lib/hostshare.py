@@ -101,21 +101,34 @@ def config_text(directory: str) -> str:
     return f"""[global]
    workgroup = WORKGROUP
    server string = easydiskbake shared
+   # `security = user` REQUIRES AN AUTHENTICATION EXCHANGE, AND WINDOWS 11 REFUSES THAT ONE.
+   #
+   # A Windows 11 client answers a downgrade to NTLM with
+   #
+   #     System error 1937
+   #     Authentication failed because NTLM authentication has been disabled.
+   #
+   # measured on run 42646650984. Current Windows disables inbound NTLM by default, and asking
+   # it to authenticate as a local account against a server with no domain is exactly that
+   # downgrade. The share has no secret to protect - it is one directory, on a bridge with two
+   # ends, both owned by the process running this - so the answer is to stop asking.
+   #
+   # `security = user` WITH `map to guest` WAS NOT ENOUGH, AND THAT IS WORTH WRITING DOWN: the
+   # mapping happens AFTER a credential exchange the client never completes.
    security = user
-   # THREE WAYS A CLIENT CAN ARRIVE, AND ALL THREE MUST BECOME THE GUEST.
-   #
-   # `Bad User` maps a name that is not an account. `Bad Password` maps a real name with a wrong
-   # password. `Never` would refuse an anonymous logon outright. samba's default of allowing
-   # anonymous only when guest ok is set is not enough: macOS's mount_smbfs sends `guest` with
-   # no password, Windows sends `""` with `""`, and a client that sends its own local name has
-   # to be turned into the guest rather than rejected:
-   #
-   #     The password is invalid for the share on the bridge address.
-   #
-   # is what a Windows client got from `map to guest = Bad User` alone, because `docker` is a
-   # well-formed name that simply has no SMB account here.
+   # ANONYMOUS FIRST. `restrict anonymous = 0` lets a client that sends no credentials
+   # straight through, which is what `net use ... "" /user:""` and mount_smbfs's `guest@` both
+   # are. `map to guest = Bad User` stays for the client that sends a name anyway.
+   restrict anonymous = 0
    map to guest = Bad User
    guest account = root
+   # AND THE GUEST'S OWN AUTHENTICATION, allowed explicitly rather than hoped for.
+   #
+   # `ntlm auth` off would refuse the SMB2 session setup even for the mapping above, and this
+   # samba defaults it on - but a distro's build can differ, and the failure is the same
+   # 1937 either way.
+   ntlm auth = yes
+   lanman auth = no
    log file = {LOG_PATH}
    log level = 1
    server min protocol = SMB2_02

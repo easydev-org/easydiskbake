@@ -306,19 +306,28 @@ def main() -> int:
     check("the dev stage compiles something with swift", "macos/15/steps/dev.yaml",
           "prove swift compiles" in names)
 
-    # XCODE IS INSTALLED BEFORE HOMEBREW, AND THAT ORDER IS THE WHOLE REASON THE STAGE RUNS.
+    # XCODE IS FIRST BECAUSE EVERYTHING ELSE IS BUILT ON WHAT IT INSTALLS.
     #
-    # Homebrew's installer checks for a compiler and, finding none, runs
+    # The command line tools - git, clang, swift, make - are the ones the .pkg installers below
+    # expect to find, and `xcodebuild -runFirstLaunch` is what installs them.
     #
-    #     sudo xcode-select --install
+    # AND HOMEBREW IS GONE ENTIRELY, WHICH IS THE LARGER POINT: this disk is x86_64 and
+    # Homebrew's installer refuses that -
     #
-    # which is a GUI prompt. Over ssh there is nobody to click it, so the install script waits
-    # and the stage times out with no clue why. Xcode ships the same tools, so putting it
-    # first means `xcode-select -p` already answers when Homebrew looks.
-    order = [n for n in names if n in ("expand and select xcode", "install homebrew")]
-    check("xcode is installed before homebrew looks for a compiler",
+    #     Homebrew on macOS is only supported on Apple Silicon processors!
+    #
+    # (install.sh lines 170-173). Run 42644304192 reached it after Xcode had expanded. So the
+    # stage installs from the publishers' own Intel packages, and an assertion checks that no
+    # `brew install` survives in it.
+    order = [n for n in names if n in ("expand and select xcode", "install node",
+                                       "install python")]
+    check("xcode is installed before the packages that need its tools",
           "macos/15/steps/dev.yaml",
-          order == ["expand and select xcode", "install homebrew"])
+          order[:1] == ["expand and select xcode"])
+    check("the macos dev stage does not use homebrew", "macos/15/steps/dev.yaml",
+          "brew install" not in "".join(
+              line for line in read("macos/15/steps/dev.yaml").splitlines()
+              if not line.lstrip().startswith("#")))
 
     # SUDO OVER SSH HAS NO TTY, SO EVERY PRIVILEGED CALL HAS TO BE HANDED THE PASSWORD.
     #
@@ -346,9 +355,13 @@ def main() -> int:
     toolchain = next((s for s in (mac_dev_walk.get("steps") or [])
                       if s.get("name") == "prove the toolchain"), {})
     body = str(toolchain.get("script") or "")
+    # THE EXPECTED PREFIX IS /usr/local NOW, because that is where nodejs.org's and
+    # python.org's .pkg installers put things. /usr/bin/python3 still exists on the disk and
+    # still answers --version - it is Xcode's, and its pip refuses to write - so the check has
+    # to name the prefix rather than accept any answer.
     check("the toolchain proof checks the path, not the version",
           "macos/15/steps/dev.yaml",
-          "command -v" in body and "/opt/homebrew/*" in body)
+          "command -v" in body and "/usr/local/*" in body)
 
     # --- the bootstrap launcher: one script, two disks --------------------------------
     #
