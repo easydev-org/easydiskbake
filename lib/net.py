@@ -184,56 +184,32 @@ def up(*, ssh_port: int = 2222, rdp_port: int = 3389,
     # DHCP AND DNS, from one dnsmasq bound to the bridge. `--dhcp-range=A,A` is a single
     # address: this is not a shared LAN, it is one guest, and a range would hand the same
     # address to anything else that asked.
-    # ONLY WHEN IT IS NOT ALREADY OURS. `pkill -x dnsmasq` on every call is what made this
-    # function NOT idempotent in the one way that matters, and it cost two macOS clean runs.
+    # A DHCP SERVER THAT IS ALREADY SERVING IS LEFT COMPLETELY ALONE.
     #
-    # `up()` says "Idempotent: a second call reuses what is there", and for the link, the tap and
-    # the rules that is true. DHCP is not: killing dnsmasq drops every lease it handed out, and a
-    # guest that has already booted has no way to ask again until its next renew - by which time
-    # the wait for sshd has given up with
+    # `up()` says "idempotent: a second call reuses what is there", and for the link, the tap
+    # and the rules that is true. DHCP was the exception, and it cost two macOS clean runs:
+    # every call ran `pkill -x dnsmasq` and started a new one, so every lease it had handed out
+    # was gone. A guest that has already booted cannot ask again until its next renew, and the
+    # stage waiting for it gives up with
     #
     #     ssh: connect to host 172.30.0.1 port 2222: No route to host
     #
-    # which is the HOST's routing refusing because the guest holds no address on the tap.
+    # which is the HOST's routing refusing because the guest holds no address on the tap - about
+    # a machine that is sitting at its own login window. Run 42890005370 shows it: `up()` ran at
+    # 20:03:55 (clean_step's own call) and again at 20:04:03 (vm_session.start's), eight seconds
+    # apart, and the guest never appeared. It is called three times per boot, not two.
     #
-    # Run 42890005370 shows it happening: `net.up()` ran at 20:03:55 (clean_step's own call) and
-    # again at 20:04:03 (vm_session.start's), eight seconds apart, and the guest never appeared.
-    # Its own screenshot is a fully booted login window - vmuser, the clock, the menu bar, a WiFi
-    # icon - on a machine whose network had just been taken away.
-    #
-    # SO: if a dnsmasq of ours is already running against this bridge, leave it alone. The config
-    # below is written every time either way, so a changed MTU or range still takes effect on the
-    # next real restart.
-    # A DHCP SERVER THAT IS ALREADY SERVING IS LEFT COMPLETELY ALONE.
-    #
-    # The point is not to avoid a `pkill`, it is to avoid what a restart does: every lease it
-    # handed out is gone, and a guest that has already booted cannot ask again until its next
-    # renew - which is why a macOS clean sat at its own login window for 900 seconds reporting
-    # `No route to host` (run 42890005370).
-    #
-    # AND IT HAS TO SKIP THE `dnsmasq` LINE TOO. A first version of this fix skipped only the
-    # kill and then started a second one, which cannot bind while the first holds 172.30.0.1:
+    # AND THE GUARD HAS TO COVER THE `dnsmasq` LINE, NOT ONLY THE KILL. A first version of this
+    # skipped `pkill` and then started a second dnsmasq anyway, which cannot bind while the first
+    # holds 172.30.0.1:
     #
     #     === dnsmasq DID NOT START ===
     #       dnsmasq: failed to create listening socket for 172.30.0.1: Address already in use
     #
     # - and that took a whole stage down (run 42895632528). So the config and the start are one
-    # unit, and a running instance makes the whole unit a no-op.
-    # A DHCP SERVER THAT IS ALREADY SERVING IS LEFT COMPLETELY ALONE.
-    #
-    # The point is not to avoid a `pkill`, it is to avoid what a restart does: every lease it
-    # handed out is gone, and a guest that has already booted cannot ask again until its next
-    # renew - which is why a macOS clean sat at its own login window for 900 seconds reporting
-    # `No route to host` (run 42890005370).
-    #
-    # AND IT HAS TO SKIP THE `dnsmasq` LINE TOO. A first version of this fix skipped only the
-    # kill and then started a second one, which cannot bind while the first holds 172.30.0.1:
-    #
-    #     === dnsmasq DID NOT START ===
-    #       dnsmasq: failed to create listening socket for 172.30.0.1: Address already in use
-    #
-    # - and that took a whole stage down (run 42895632528). So the config and the start are one
-    # unit, and a running instance makes the whole unit a no-op.
+    # unit, and a running instance makes the whole unit a no-op. Everything after it - the
+    # MASQUERADE rules, the DNAT, the MSS clamping - still runs on every call, which is what
+    # makes a second `up()` safe for the network and only a no-op for DHCP.
     if _sh("pgrep -x dnsmasq").returncode == 0:
         log("dnsmasq is already running; leaving its leases and its socket alone")
     else:

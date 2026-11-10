@@ -793,6 +793,29 @@ def main() -> int:
           "boot_options: dict | None = None):" in vm_src_sig
           and "boot_options=boot_options)" in vm_src_sig)
 
+    # AND A SHUTDOWN THAT TIMED OUT STILL KILLS QEMU, BECAUSE THE NEXT STEP READS THE DISK.
+    #
+    # `vm_session.stop()` caught the "did not stop in time" error, logged one line, and fell
+    # through to a `finally` that closes the overlay and the share and never touches qemu. The
+    # process kept its write lock and the disk check that follows failed on a disk that was
+    # perfectly fine:
+    #
+    #     20:46:17  [vm]  Connection to 172.30.0.1 closed by remote host.
+    #     20:51:17  [vm]  the guest did not shut down within 300s
+    #     20:51:17  [disk] qemu-io: can't open device out/dev.qcow2: Failed to get "write" lock
+    #     20:51:17  === THE DISK WILL NOT BOOT ===
+    #
+    # Run 42897536838: twenty walkthrough steps answered, and then the stage reported that its
+    # own output would not boot. The run before it had the same shutdown succeed in SIX seconds,
+    # so the lock is the whole difference.
+    vs_src = read("lib/vm_session.py")
+    stop_body = vs_src[vs_src.index("def stop(guest,"):]
+    stop_body = stop_body[:stop_body.index("\n@contextlib.contextmanager")]
+    fail_path = stop_body[stop_body.index("except Exception as exc:"):]
+    fail_path = fail_path[:fail_path.index("finally:")]
+    check("a timed-out shutdown still kills the guest", "lib/vm_session.py",
+          "guest.stop(acpi_first=False)" in fail_path)
+
     # AND `net.up()` DOES NOT KILL A DHCP SERVER THAT IS ALREADY SERVING.
     #
     # It said "idempotent" and was not, in the one way that costs a guest its address: every call

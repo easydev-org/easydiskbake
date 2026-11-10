@@ -204,7 +204,8 @@ def _discard_overlay(run_overlay, log) -> None:
         log(f"  {exc}")
 
 
-def _android_x86(disk: str, work: str, ssh_port: int, cpus: int, mem_mb: int, log):
+def _android_x86(disk: str, work: str, ssh_port: int, cpus: int, mem_mb: int, log,
+                 options: dict | None = None):
     """Start an Android-x86 guest: -kernel, -initrd, and two disks.
 
     WHY THIS IS NOT A `-drive` BOOT LIKE THE OTHERS
@@ -233,18 +234,99 @@ def _android_x86(disk: str, work: str, ssh_port: int, cpus: int, mem_mb: int, lo
     THERE IS NO sshd AND THIS DOES NOT WAIT FOR ONE. Android's remote access is adb on
     5555; the desktop is the verdict. `wait_for_ssh` is therefore False for this family in
     vm_session.start() - see the caller.
+
+    TWO CALLERS, TWO SHAPES, AND `options` IS THE DIFFERENCE.
+
+    Without options this is the LIVE boot: three extracted files and a scratch /data, which is
+    what android/blissos16/launch.py photographs. With `options["iso"]` and `options["disk"]`
+    it is the INSTALLER: the same kernel and initrd, plus the ISO as a cdrom and a blank qcow2
+    as the target, and the walkthrough in steps/install.yaml answers the TUI.
+
+    THE ISO IS AN OPTION RATHER THAN A FOURTH MEMBER because it is not unpacked - the installer
+    reads /src/install.img out of it at run time, and init refuses to install unless the
+    mounted source holds isolinux/ and install.img.
     """
     import os
     import subprocess
 
     import vm
 
-    for name in ("kernel", "initrd.img", "system.efs"):
+    opts = dict(options or {})
+    iso = opts.get("iso") or ""
+    target = opts.get("disk") or ""
+
+    # THE INSTALLER SHAPE NEEDS ONLY THE KERNEL AND THE INITRD: system.efs stays inside the
+    # ISO, and there is no /data to create because the target disk is partitioned by the
+    # walkthrough itself.
+    needed = ("kernel", "initrd.img") if (iso and target) else ("kernel", "initrd.img", "system.efs")
+    for name in needed:
         path = os.path.join(disk, name)
         if not os.path.isfile(path):
             log(f"=== {path} IS MISSING ===")
-            log("  android/blissos16/fetch_iso.py unpacks these three from the ISO")
+            log("  android/blissos16/fetch_iso.py unpacks these from the ISO")
             return None
+
+    if iso and target:
+        log(f"installer: {os.path.basename(iso)} -> {os.path.basename(target)}")
+        shape = vm.Shape(
+            cpus=cpus, mem_mb=mem_mb or 4096, machine="q35", vga="std",
+            ssh_port=ssh_port,
+            # THE PANEL SIZE THE WALKTHROUGH WAS MEASURED AT. Every `region` in
+            # steps/install.yaml is in these pixels, and a frame of any other size puts the
+            # OCR crop somewhere else on the dialog - measured: a 1920x1080 frame read as
+            # 1280x800 found the title bar and nothing else, and the walk was declared stuck
+            # on a screen that was showing the menu.
+            resolution=opts.get("resolution") or (1280, 800),
+            # UEFI, BECAUSE THE INSTALLER BRANCHES ON IT. init reads
+            # /sys/firmware/efi/fw_platform_size and that is what makes it write a GPT with an
+            # ESP instead of an MBR; installed under SeaBIOS the disk it leaves behind is a
+            # different disk, and not the one this repository tests.
+            firmware_code=opts["firmware_code"],
+            firmware_vars=opts["firmware_vars"],
+            # NO `console=ttyS0`. With it the TUI moves to the serial line and the keys the
+            # walkthrough sends go to a console nobody is drawing on - measured, four runs.
+            # `auto_install` IS THE CALLER'S CHOICE, AND IT IS A REAL ONE.
+            #
+            # Without it the installer asks which partition is the ESP and which holds the
+            # system, pane by pane. WITH it, `install_hd` sets `answer=Create` and
+            # `auto_partition` runs straight away - which is only correct when the disk
+            # ALREADY has the table this repository wrote, because then `auto_partition`'s
+            # `sgdisk --zap-all` is not what runs; `set_answer_if_auto Create` routes to the
+            # same path and `partition_drive` returns without touching the disk.
+            #
+            # Either way `console=ttyS0` stays OUT: with it the TUI moves to the serial line.
+            kernel_append=(
+                "root=/dev/ram0 INSTALL=1 "
+                # AUTO_UPDATE IS NOT A MISTAKE AND IT IS NOT AN UPDATE. It is the SECOND half
+                # of a condition in the installer that decides whether the ESP is looked for:
+                #
+                #     [ -z "$AUTO_INSTALL" -o -n "$AUTO_UPDATE" ] && for i in `list_disks`; do
+                #         esp=`sgdisk --print /dev/$disk | grep EF00 | ...`
+                #
+                # AUTO_INSTALL alone makes that test FALSE, the loop never runs, `esp` stays
+                # empty, "Choose EFI Boot" never appears, and Grub2 is never written into the
+                # ESP. Measured on a manual walkthrough of the AUTO_INSTALL path: the disk came
+                # out with a FAT32 ESP labelled EFI containing no BOOTX64.EFI at all.
+                #
+                # Setting AUTO_UPDATE as well makes the test TRUE, so the search runs and finds
+                # the EF00 partition this stage wrote. `install_hd`'s own update branch keys on
+                # `AUTO_INSTALL` starting with U, and `force` does not - so this does not turn
+                # the run into an update.
+                + ("AUTO_INSTALL=force AUTO_UPDATE=1 " if opts.get("auto_install") else "")
+                + "HWC=drm_minigbm GRALLOC=minigbm_arcvm"
+            ),
+        )
+        return vm.Guest(
+            work,
+            extra=[
+                "-kernel", os.path.join(disk, "kernel"),
+                "-initrd", os.path.join(disk, "initrd.img"),
+                "-drive", f"file={iso},media=cdrom,readonly=on",
+                "-drive", f"file={target},if=virtio,format=qcow2",
+            ],
+            shape=shape,
+            stdout=os.path.join(work, "console.log"),
+        ).start()
 
     data = os.path.join(work, "data.img")
     if not os.path.exists(data) or os.path.getsize(data) == 0:
@@ -344,7 +426,8 @@ def _start_machine(family: str, disk: str, work: str, ssh_port: int, cpus: int,
     # the initrd assembles the root itself. See _android_x86() for why that is the only way
     # this guest can start at all.
     if family == "android":
-        return _android_x86(disk, work, ssh_port, cpus, mem_mb, log)
+        return _android_x86(disk, work, ssh_port, cpus, mem_mb, log,
+                            options=boot_options)
 
     # THE AGENT'S SOCKET, MADE BEFORE THE MACHINE SO QEMU CAN BIND IT.
     #
@@ -587,6 +670,27 @@ def stop(guest, *, acpi_first: bool = True, family: str = "", password: str = "a
                 guest.stop(acpi_first=acpi_first, acpi_timeout=STOP_TIMEOUT)
     except Exception as exc:                                # noqa: BLE001
         log(f"stop: {exc}")
+        # AND THEN ACTUALLY STOP IT. THIS `except` USED TO LOG AND FALL THROUGH TO `finally`,
+        # which closes the overlay and the share and NEVER TOUCHES QEMU - so a shutdown that
+        # timed out left the process running, holding a write lock on the disk the NEXT STEP was
+        # about to read. Run 42897536838 is that, exactly:
+        #
+        #     20:46:17  [vm]  Connection to 172.30.0.1 closed by remote host.
+        #     20:51:17  [vm]  the guest did not shut down within 300s
+        #     20:51:17  [macos-vmconf] stop: `shutdown -h now` did not stop the guest in time
+        #     20:51:17  [disk] qemu-io: can't open device out/dev.qcow2:
+        #                      Failed to get "write" lock
+        #     20:51:17  === THE DISK WILL NOT BOOT ===
+        #
+        # The disk was fine. The lock was qemu's, and the 20 walkthrough steps before this had
+        # all passed. `guest.stop()` is idempotent - it collects a process that exited on its own
+        # and SIGTERMs/SIGKILLs one that did not - so the failure path gets the same call as the
+        # success path rather than a reason to skip it.
+        if overlay is None:
+            try:
+                guest.stop(acpi_first=False)
+            except Exception as kill_exc:                   # noqa: BLE001
+                log(f"stop: could not kill the guest either ({kill_exc})")
     finally:
         if overlay is not None:
             # close() DELETES THE OVERLAY AND CHECKS THE BASE. A base that changed is a hard
