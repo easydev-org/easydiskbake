@@ -7,9 +7,10 @@ name: nixos-gui
 #
 # WHY THERE IS A GRAPHICAL NIXOS AT ALL
 #
-# linux/nixos/ installs the MINIMAL image by typing `nixos-install` at a serial console. That
-# is the right shape for a base system - and it is why the minimal image was chosen for it:
-# the smaller medium has no graphical session.
+# A minimal NixOS needs `nixos-install` typed at a serial console, because the smaller medium
+# has no graphical session - that is the right shape for a base system and the wrong shape for
+# this repository's idea of a bake, which drives a desktop. So there is no non-graphical NixOS
+# workflow: this one is the whole of it, and it drives the wizard the graphical ISO carries.
 #
 # THE GRAPHICAL IMAGE IS A DIFFERENT INSTALLER. It carries `calamares` and
 # `calamares-nixos-extensions`, whose settings.conf is a seven-pane wizard with a footer -

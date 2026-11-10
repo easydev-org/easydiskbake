@@ -6,47 +6,54 @@ prove the disk it produced starts.
 
 ```
 linux/
-  mx/          MX Linux 25.3 (Xfce) - GUI driven, no working unattended mode
-  nixos/       NixOS - typed at a serial console, the one exception below
-  debian/      (not yet) preseed
-  ubuntu/      (not yet) autoinstall (subiquity)
-  fedora/      (not yet) kickstart
-  arch/        (not yet) pacstrap
-  ...
+  cachyos-gui/    CachyOS + KDE         - Calamares
+  endeavour-gui/  EndeavourOS + KDE     - Calamares
+  fedora-gui/     Fedora + GNOME        - Anaconda
+  kubuntu-gui/    Kubuntu + KDE         - Ubiquity
+  manjaro-gui/    Manjaro + KDE         - Calamares
+  mint-gui/       Linux Mint + Cinnamon - Ubiquity
+  mx-gui/         MX Linux + Xfce       - minstall
+  nixos-gui/      NixOS + GNOME         - Calamares (the graphical ISO)
+  opensuse-gui/   openSUSE + KDE        - YaST
+  popos-gui/      Pop!_OS + COSMIC      - the Pop installer
+  ubuntu-gui/     Ubuntu + GNOME        - Ubiquity
+  zorin-gui/      Zorin + GNOME         - Ubiquity
 ```
 
-## Two ways to answer an installer, and why only one distribution takes the second
+EVERY DIRECTORY HERE IS A `-gui` BAKE: a live desktop is booted, its graphical installer is
+driven, and the disk it wrote is then started and checked. There are no unattended
+answer-file bakes left.
+
+## How an installer is answered
 
 | how | which | why |
 |---|---|---|
-| an answer file, or a GUI driver | everything except NixOS | the installer has a wizard, with or without an unattended mode |
-| commands typed at a serial console | **NixOS only** | `nixos-install` is run by hand at a root shell; there is no wizard to answer |
+| a GUI driver, by measured coordinates | every distribution above | the installer has a wizard, and clicking it is the only way through |
 
-NixOS is the exception and is likely to stay the only one. Its installer is
-`nixos-install`, which partitions nothing and asks nothing - the documented way to install
-from a live medium is to partition the disk yourself and run it. So `linux/nixos/bake.py`
-writes the commands to the guest's serial console, exactly as easysandbox-vm's
-`bake-nixos-minimal.sh` does, and judges the result from the exit status the guest prints.
+Nothing is typed at a serial console and nothing reads an answer file. That was the old
+shape: a separate `nixos/` wrote `nixos-install` commands to a serial console, and the
+preseed / kickstart / autoinstall / autoyast route drove an unattended document. Both are
+gone with their workflows, because the point of these images is the desktop a GUI install
+produces - and a text-console install cannot produce one.
 
-**MX and Mint stay on the GUI path.** `minstall` and `ubiquity` are wizards; MX's
-unattended modes were measured and all three stop (`mx/minstall.conf` records them), so
-`mx/drive-mx.py` clicks measured coordinates. Nothing about the NixOS work changes that,
-and `lib/vm.py` keeps `-serial mon:stdio` as the default so every other bake is untouched.
+The GUI-less predecessors of four of the directories above - `mx/`, `nixos/`, `ubuntu/` and
+`kubuntu/` - are still on disk. Their workflows are deleted, so nothing runs them; they are
+kept as the record of how each installer behaves when it is not clicked, and because
+`lib/images.py` and their own docstrings still describe them.
 
-## NixOS is two steps
+## Every -gui image is proved the same way
 
 ```
-bake.py     ISO -> plain NixOS. No desktop. ~5 minutes. -> nixos-base.qcow2
-derive.py   boot the base, nixos-rebuild boot, nix-collect-garbage -d
-            -> one disk per desktop (labwc, gnome, kde, cosmic, hyprland, miracle)
+bake.py     boot the live ISO -> drive the installer's panes -> the disk holds still
+launch.py   boot that disk alone, UEFI, and photograph the desktop
+ssh.yaml    open the session's own terminal and install sshd, then answer on 2222
 ```
 
-`nixos-install` pays the partition-format-unpack cost every time; `nixos-rebuild` on an
-already-installed system only adds the desktop. They also differ in what they need:
-`nixos-install` reads the ISO's own store and needs no network, while `nixos-rebuild`
-downloads the desktop closure from cache.nixos.org - so a bake that cannot reach the
-cache fails in the derive and not in the base.
-
+The third stage is per distribution and is deliberately not one shared file: the terminal is
+reached differently on every desktop (GNOME has no ctrl+alt+t, MATE's menu ignores the
+mouse), the privilege escalation differs (`sudo -S` on most, `su` rules it out on FreeBSD,
+`nixos-rebuild` on NixOS), and the firewall differs (ufw is installed on some images and
+drops 22). Each `steps/ssh.yaml` records the frames its numbers were measured from.
 
 ## What a distribution directory has to provide
 
@@ -66,18 +73,15 @@ for every Linux.
 
 ## The one thing that is not shared per-distro
 
-Whether the installer takes an answer file at all. That decision is not a
-configuration value - it is the reason a distribution needs its own driver:
+The coordinates, and nothing else. Every `-gui` directory drives its own installer's panes,
+so each one carries its own `steps/install.yaml`:
+```
+  steps/install.yaml   the panes, in the order that installer draws them
+  steps/ssh.yaml       that desktop's terminal, its escalation, its firewall
+```
 
-| installer | how it is answered | driver needed |
-|---|---|---|
-| preseed, kickstart, autoinstall, autoyast | a file on a second ISO or on the kernel command line | none |
-| Windows (see `../windows/`) | `Autounattend.xml` in a rebuilt ISO | none |
-| macOS (see `../macos/`) | nothing exists; Setup Assistant is driven | OCR then coordinates |
-| MX | the GUI, because every unattended mode stops | `mx/drive-mx.py` |
-
-So a distribution gets a driver only when it has no unattended format, and the
-driver is the smallest part of the directory.
+Windows and macOS keep their own shapes and are not part of this file - see `../windows/`
+and `../macos/`.
 
 ## mx/ - the worked example
 

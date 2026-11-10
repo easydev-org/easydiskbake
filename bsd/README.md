@@ -1,11 +1,17 @@
 # bsd/
 
-Two BSDs, and they are installed in completely different ways.
+Two BSDs, installed in completely different ways - and only one of them still has a workflow.
 
-| directory | installer | driven by |
-|---|---|---|
-| `freebsd/` | `bsdinstall` | an installerconfig script on the media, no screen read |
-| `ghostbsd/` | `gbi` (GTK) | measured coordinates, like the Linux GUI installers |
+| directory | installer | driven by | workflow |
+|---|---|---|---|
+| `freebsd/` | `bsdinstall` | an installerconfig script on the media, no screen read | **none** - retired |
+| `ghostbsd/` | `gbi` (GTK) | measured coordinates, like the Linux GUI installers | `ghostbsd-mate.yml` |
+
+FREEBSD HAS NO WORKFLOW ANY MORE. `bsdinstall` draws `dialog(1)` menus on a text console, so
+there is no desktop to drive and nothing for this repository's GUI bake to do. Its workflow
+was deleted with the rest of the non-GUI Linux ones; `freebsd/` stays on disk as the record of
+the scripted path. GhostBSD is the BSD-family entry with a graphical installer, so it is the
+one that is baked.
 
 ## GhostBSD, and the loader variable it needs
 
@@ -54,18 +60,15 @@ smoke test does nothing for BSD. The boot half works unchanged.
 
 These do not share an installer:
 
-| system | installer | unattended? |
-|---|---|---|
-| FreeBSD | `bsdinstall` | scripted via `bsdinstall script` - what `freebsd/` does |
-| GhostBSD | `gbi` (GTK) | no answer file; driven by position - what `ghostbsd/` does |
+| system | installer | unattended? | baked? |
+|---|---|---|---|
+| FreeBSD | `bsdinstall` | scripted via `bsdinstall script` | no - no GUI to drive |
+| GhostBSD | `gbi` (GTK) | no answer file; driven by position | `ghostbsd-mate.yml` |
 
-FreeBSD's scripted install is the closest to the Linux answer-file model, so that is the
-one to reach for when a BSD has to install with no screen at all. GhostBSD's `gbi` has no
-scripted mode on the interactive path, which is why it is a coordinate driver instead.
-
-There is no graphical FreeBSD installer to drive: `bsdinstall` draws `dialog(1)` menus on a
-text console, and `bsd/freebsd/installerconfig` already calls the same path as the wizard
-with the prompts skipped.
+FreeBSD's scripted install is the closest to the Linux answer-file model, and `freebsd/`
+still holds it - but an answer-file install produces no desktop, so it is not what this
+repository bakes. GhostBSD's `gbi` has no scripted mode on the interactive path, which is
+why it is a coordinate driver instead, and why it is the BSD that has a workflow.
 
 ## What a bake would produce
 

@@ -5,9 +5,10 @@ name: ghostbsd-mate
 # WHY GHOSTBSD AND NOT FREEBBSD
 #
 # FreeBSD has no graphical installer. bsdinstall draws dialog(1) menus on a text console, and
-# freebsd.yml already installs through its `script` target - which bsd/freebsd/installerconfig
-# calls the same path as the menu wizard with the prompts skipped. There is no GUI to drive
-# there, so freebsd.yml is unchanged.
+# `bsd/freebsd/` installs through its `script` target - which bsd/freebsd/installerconfig calls
+# the same path as the menu wizard with the prompts skipped. There is no GUI to drive there at
+# all, which is why FreeBSD has no `-gui` workflow: its bake was retired rather than converted,
+# because there was nothing to convert.
 #
 # GhostBSD is FreeBSD with a desktop and its own GTK installer. It is the BSD-family entry that
 # actually has a graphical install path, which makes it the one worth having a GUI workflow for.

@@ -64,12 +64,6 @@ def log(message: str) -> None:
 # A job that is not listed is not checked: launchers (launch_*), publishers, selftest and the
 # image build do not produce a disk.
 EXPECTED = {
-    # sshd is installed by the installer itself, so the very first job can clean.
-    "ubuntu.yml":      {"bake": True,  "dev": True},
-    "kubuntu.yml":     {"bake": True,  "dev": True},
-    "freebsd.yml":     {"bake": True,  "dev": True},
-    # services.openssh is in configuration-minimal.nix.
-    "nixos.yml":       {"base": True,  "derive": True, "dev": True},
     # NO SSH UNTIL windows/11/ssh.py HAS RUN. `base` is a full Windows install with no sshd,
     # which is what makes the next job's `install ssh` necessary in the first place.
     "windows-11.yml":  {"base": None,  "ssh": True, "dev": True},
