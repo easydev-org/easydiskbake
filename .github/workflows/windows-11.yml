@@ -365,6 +365,24 @@ jobs:
               --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
               --mem 6144
 
+      # THE SCREEN THE SSH STAGE STOPPED ON, BECAUSE THE FAILURE NAMES NOTHING.
+      #
+      # `sshd did not answer in 600s` is what run 42916715755 reported, and the ten minutes before
+      # it are a black box: the PowerShell window that ran `configure sshd` had the answer on it
+      # - Start-Service's error, or a bare prompt if winget never installed anything - and nothing
+      # uploaded it. `lib/steps.py` writes out/ssh-work/steps/failed-wait-for-sshd.png when a step
+      # fails; this is the step that collects it.
+      - name: keep the screen ssh stopped on
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows11-ssh-failed-screen
+          path: |
+            out/ssh-work/steps/failed-*.png
+            out/ssh-work/console.log
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: publish
         if: success()
         id: publish

@@ -118,8 +118,21 @@ steps:
   #
   # Each statement is typed, so each is one line. `;` joins them into one command line, which
   # is what PowerShell expects and what the keyboard can produce.
+  # EACH HALF SAYS WHETHER IT WORKED, ON THE SCREEN THAT IS THE ONLY THING A FAILURE LEAVES.
+  #
+  # The previous version was ONE line that ended in a bare
+  #
+  #     Get-NetTCPConnection ... | Select-Object -First 1 LocalPort
+  #
+  # so the window showed `22` on success and NOTHING on failure, and the stage could not tell
+  # "the service started" from "the package was never installed". Run 42916715755 waited its full
+  # 600 seconds for `sshd` and the failure read `sshd did not answer in 600s`, which names no
+  # cause at all.
+  #
+  # THE THREE MARKS ARE THE DIAGNOSIS. `STEP1`, `STEP2` and `STEP3` each print with an explicit
+  # try/catch, so the post-mortem frame says which one threw rather than leaving a prompt.
   - name: configure sshd
-    type: Set-Service sshd -StartupType Automatic; (Get-Content 'C:\ProgramData\ssh\sshd_config') -replace '^#?\s*PasswordAuthentication\s+.*', 'PasswordAuthentication yes' | Set-Content 'C:\ProgramData\ssh\sshd_config'; (Get-Content 'C:\ProgramData\ssh\sshd_config') -replace '^#?\s*Port\s+.*', 'Port 22' | Set-Content 'C:\ProgramData\ssh\sshd_config'; Start-Service sshd; New-NetFirewallRule -Name sshd-22 -DisplayName 'OpenSSH 22' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 -ErrorAction SilentlyContinue | Out-Null; Get-NetTCPConnection -State Listen -LocalPort 22 -ErrorAction SilentlyContinue | Select-Object -First 1 LocalPort
+    type: 'try { Set-Service sshd -StartupType Automatic -ErrorAction Stop; ''STEP1=ok'' } catch { ''STEP1=FAILED: '' + $_.Exception.Message }; try { $c = ''C:\ProgramData\ssh\sshd_config''; if (Test-Path $c) { (Get-Content $c) -replace ''^#?\s*PasswordAuthentication\s+.*'', ''PasswordAuthentication yes'' -replace ''^#?\s*Port\s+.*'', ''Port 22'' | Set-Content $c; ''STEP2=ok'' } else { ''STEP2=FAILED: no sshd_config'' } } catch { ''STEP2=FAILED: '' + $_.Exception.Message }; try { Start-Service sshd -ErrorAction Stop; ''STEP3=ok'' } catch { ''STEP3=FAILED: '' + $_.Exception.Message }; Get-NetTCPConnection -State Listen -LocalPort 22 -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty LocalPort'
     type_gap: 0.15
     settle: 2
   - name: run the sshd configuration
