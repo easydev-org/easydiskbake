@@ -177,6 +177,15 @@ steps:
     region: [0, 0, 1920, 1080]
     region_at: [1920, 1080]
     scale: 1
-    timeout: 3000
+    # 5400, NOT 3000, AND THE LAST FRAME OF RUN 38bb031 IS WHY.
+    #
+    # At the 3000-second timeout this step gave up while the installer was still working: the
+    # final frame reads `Setting up the system...` with FOUR OF FIVE progress segments filled.
+    # Ubuntu 26.04 copies its packages as snaps and that is slower than any other image here -
+    # kubuntu (the same Ubiquity, the same ISOs' maker) already allows 5400, and cachyos 3600.
+    #
+    # A timeout that expires during a healthy install is worse than a long one: the disk is
+    # then discarded and the next run starts from zero.
+    timeout: 5400
     poll: 20
     keep_alive: true
