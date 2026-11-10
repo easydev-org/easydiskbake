@@ -387,7 +387,19 @@ def _press_until_prompt(drv: Driver, seconds: float = 90.0) -> bool:
         # is running (or paused) and "3" is the right key. If they are not, the boot has
         # either not reached the menu yet or has already started - so the key is held back
         # until the menu is actually there.
-        if "multi user" in joined and "escape to loader" in joined:
+        # THE MENU SAYS `Boot Multi user` AND A BARE `Escape`, NOT `escape to loader`.
+        #
+        # MEASURED ON RUN 6eeff43, which failed the loader step twice in a row with both rounds
+        # exhausting their 90 seconds while the menu was plainly on screen:
+        #
+        #     13:18:37  boot: Welcome | to | GhostBSD | Boot | Multi | user | [Enter] |
+        #                     Boot | Single | user | Escape
+        #
+        # The test was `"multi user" in joined and "escape to loader" in joined`, and the menu
+        # carries no `loader` word at all - so the hotkey was never pressed, the countdown ran
+        # out, and the guest booted straight past the prompt. `multi user` IS there, and
+        # `escape` alone is the other half.
+        if "multi user" in joined and "escape" in joined:
             Q.key(drv.q, LOADER_PROMPT_KEY)
             time.sleep(1.2)
         else:
