@@ -183,7 +183,16 @@ def config_text(directory: str) -> str:
    # simply does not forbid it.
    server signing = auto
    log file = {LOG_PATH}
-   log level = 1
+   # LOG LEVEL 3, BECAUSE THE FAILURE IS AUTHENTICATION AND LEVEL 1 SAYS NOTHING ABOUT IT.
+   #
+   # Two runs were spent on `mount_smbfs: server rejected the connection: Authentication error`
+   # with the share demonstrably serving (`the share account 'guest' exists`, `smbd is listening
+   # on 172.30.0.1:445`). At level 1 the server logs startup and nothing else, so the question
+   # "which side refused, and why" could not be asked of the evidence.
+   #
+   # Level 3 adds the session setup: the dialect, the auth type offered, and the nt status. It is
+   # also required to see whether `ntlm auth` had any effect at all.
+   log level = 3
    # NO PRINTING. smbd would otherwise try to manage a spool directory it does not have.
    load printers = no
    printing = bsd
