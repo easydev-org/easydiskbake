@@ -140,15 +140,39 @@ def main(argv: list[str]) -> int:
 
     ok = False
     try:
+        # THE SHARE FIRST, AND THE LOGIN SECOND, BECAUSE THAT IS THE ORDER THE LAUNCHER SEES.
+        #
+        # A LaunchAgent runs when the user's session starts - which is the unlock below - and it
+        # waits up to a minute for ~/shared to appear. Mounting AFTER the login meant the
+        # launcher spent that minute looking at an empty mount point and gave up, so the test
+        # would report "the launcher did not run" for a launcher that worked.
+        #
+        # Mounting needs sshd, which is up before any login: that is what the ssh stage left
+        # behind.
+        log("mounting the share in the guest, before the session that will look for it")
+        if not boot_machine.mount(args.family, guest, args.user, args.password, log=log):
+            log("=== THE SHARE DID NOT MOUNT; THE LAUNCHER WILL FIND NO bootstrap.py ===")
+            return 1
+
         # THE LOGIN, BECAUSE A LAUNCHAGENT NEEDS A SESSION. The ssh stage's own unlock is
         # reused rather than reimplemented - it knows the password field's rectangle.
         log("logging in, so the login trigger has something to fire in")
         boot_machine.login(args.family, guest, args.user, args.password, log=log)
 
-        log("mounting the share in the guest")
-        if not boot_machine.mount(args.family, guest, args.user, args.password, log=log):
-            log("=== THE SHARE DID NOT MOUNT; THE LAUNCHER WILL FIND NO bootstrap.py ===")
-            return 1
+        # AND ASK WHETHER THE AGENT IS LOADED, SO A FAILURE NAMES WHICH HALF BROKE.
+        #
+        # "No hello.txt" has two causes that look identical: the agent never loaded, or it
+        # loaded and the script failed. `launchctl print` answers the first, and the share's
+        # bootstrap.log answers the second - and reporting which one it is costs one command.
+        if args.family == "macos":
+            import session as _session
+            status, out = _session.ssh(
+                args.ssh_port,
+                "launchctl print gui/$(id -u)/org.easydiskbake.bootstrap 2>&1 | head -6",
+                timeout=60, user=args.user, password=args.password)
+            log(f"  the agent: launchctl print -> {status}")
+            for line in (out or "").splitlines()[:6]:
+                log(f"    {line[:140]}")
 
         log(f"waiting up to {args.login_timeout}s for the launcher to run it")
         deadline = time.time() + args.login_timeout

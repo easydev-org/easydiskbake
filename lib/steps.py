@@ -1102,24 +1102,33 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
                 "chmod +x ~/bootstrap-launcher.py\n"
                 f"sed \"s|__LAUNCHER__|$HOME/bootstrap-launcher.py|\" "
                 f"/tmp/bootstrap.plist > {target}\n"
-                # `launchctl load` OVER SSH TARGETS THE WRONG DOMAIN, AND ABORTS.
+                # THE PLIST IS INSTALLED, NOT LOADED, AND THAT IS THE WHOLE POINT.
                 #
-                # The account's LaunchAgents live in gui/<uid>. An ssh session is not in a GUI
-                # domain, so the old `launchctl load -w file` form has nothing to load into - on
-                # this macOS it aborted, and the step reported 134 (SIGABRT) with no message.
+                # `launchctl bootstrap gui/$uid` answers
                 #
-                # `bootstrap gui/$UID <file>` names the domain explicitly, which is the modern
-                # spelling and the one that works from a remote shell. `bootout` is its
-                # counterpart and is allowed to fail, because a first run has nothing to remove.
-                "# THE UID IS THE ONE THE DISK'S ACCOUNT HAS, which is the account ssh logged in as.\n"
-                "uid=$(id -u)\n"
-                f"launchctl bootout gui/$uid/{bootstrap.MACOS_LABEL} 2>/dev/null || true\n"
-                f"launchctl bootstrap gui/$uid {target} 2>&1 | tail -3\n"
-                "# AND THE RESULT IS READ BACK, because `bootstrap` exits 0 when the domain is\n"
-                "# right and the file is bad.\n"
-                f"launchctl print gui/$uid/{bootstrap.MACOS_LABEL} > /tmp/agent.txt 2>&1 || "
-                f"{{ echo '=== THE AGENT DID NOT LOAD ==='; cat /tmp/agent.txt | head -5; exit 1; }}\n"
-                "grep -E 'state|program|path' /tmp/agent.txt | head -4\n"
+                #     Bootstrap failed: 125: Domain does not support specified action
+                #
+                # over ssh, because there IS no gui domain for this account: a gui domain is
+                # created by the window server when a person logs in at the screen, and an ssh
+                # session never makes one. Every form of `launchctl` that targets a user domain
+                # fails the same way from here.
+                #
+                # THAT IS NOT A PROBLEM TO WORK AROUND. A LaunchAgent in ~/Library/LaunchAgents
+                # is loaded at the NEXT GRAPHICAL LOGIN by launchd itself - which is exactly
+                # when this is supposed to run, and exactly the moment the share is mounted.
+                # Loading it now would be loading it into a session that is about to end when
+                # the stage stops the machine.
+                #
+                "# THE FILE IS THE INSTALL. Its presence in ~/Library/LaunchAgents is what\n"
+                "# makes launchd run it at the next login.\n"
+                "test -f ~/Library/LaunchAgents/' + bootstrap.MACOS_LABEL + '.plist || "
+                "{ echo '=== THE PLIST WAS NOT WRITTEN ==='; exit 1; }\n"
+                "test -x ~/bootstrap-launcher.py || "
+                "{ echo '=== THE LAUNCHER IS NOT EXECUTABLE ==='; exit 1; }\n"
+                "# plutil CATCHES A MALFORMED PLIST NOW RATHER THAN AT THE NEXT LOGIN, where\n"
+                "# nobody would connect the failure to this stage.\n"
+                "plutil -lint ~/Library/LaunchAgents/' + bootstrap.MACOS_LABEL + '.plist\n"
+                "echo INSTALLED_FOR_NEXT_LOGIN\n"
             )
         else:
             ps1 = bootstrap.windows_ps1("C:\\Users\\%s\\bootstrap-launcher.py"
