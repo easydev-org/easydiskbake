@@ -1,6 +1,6 @@
 """Install fedora from its Live ISO, through its own graphical installer.
 
-    python3 linux/fedora/install.py --iso out/iso/<the pinned ISO> \
+    python3 linux/fedora-workstation/install.py --iso out/iso/<the pinned ISO> \
                                     --out out/fedora.qcow2
 
 WHAT THIS FILE IS. It is a DECLARATION, not an implementation. The bake skeleton - disk,
@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.join(REPO, "lib"))
 import livebake     # noqa: E402
 
 BAKE = livebake.Bakery(
-    name="fedora",
+    name="fedora-workstation",
     kernel=('boot/x86_64/loader/linux','boot/x86_64/loader/initrd'),
     cmdline='root=live:CDLABEL=Fedora-WS-Live-43 rd.live.image locale=en_US.UTF-8 quiet rhgb',
     desktop=livebake.DesktopWhen(any_of=('type to search', 'activities', 'install fedora',)),

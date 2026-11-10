@@ -1,11 +1,12 @@
-name: opensuse
+name: fedora-workstation
 
-# Install openSUSE Tumbleweed KDE from its official Live ISO, through YaST2, its graphical installer.
+# Install Fedora Workstation 43 from its official Live ISO, through Anaconda, its graphical installer.
 #
-# openSUSE's live media boots KDE Plasma, and its installer is YaST2 - started
-# by a desktop icon and run as root through kdesu. Running the same script from
-# a shell makes YaST2 fall back to its TEXT front end, which is not the
-# graphical path this workflow exists for.
+# Fedora publishes no separate installer image: Workstation IS a live desktop
+# with Anaconda on it. The installer starts from a Welcome dialog that the
+# live session opens by itself - and that dialog is NOT the installer, which
+# cost one run: the driver clicked Anaconda's Next while the dialog was still
+# on screen, and every later click aimed at a window that had never opened.
 #
 # THE MEDIUM IS BOOTED AS ITS OWN BOOTLOADER INTENDS - no -kernel, no -initrd, no
 # hand-copied command line. Those were tried and cost two runs: an added `copytoram`
@@ -24,7 +25,7 @@ on:
   workflow_dispatch:
     inputs:
       bake_run:
-        description: "Install openSUSE Tumbleweed KDE through YaST2"
+        description: "Install Fedora Workstation 43 through Anaconda"
         type: boolean
         default: true
       iso_url:
@@ -40,8 +41,8 @@ on:
         description: "seconds the installer may take"
         default: "5400"
       publish_tag:
-        description: "tag to publish under; empty for linux-opensuse"
-        default: "linux-opensuse"
+        description: "tag to publish under; empty for linux-fedora-workstation"
+        default: "linux-fedora-workstation"
       boot_timeout:
         description: "stage 2: seconds the booted disk has to reach its desktop"
         default: "900"
@@ -65,7 +66,7 @@ on:
         default: true
 
 concurrency:
-  group: opensuse-${{ github.ref }}
+  group: fedora-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -97,7 +98,7 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: opensuse-prepare
+          name: fedora-prepare
           interval: "10"
           command: |
             set -euo pipefail
@@ -107,20 +108,20 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: opensuse-iso
+          name: fedora-iso
           interval: "10"
           command: |
             set -euo pipefail
             mkdir -p out/iso
             # FROM ghcr, which is what artifacts-publish exists for: the image was fetched
-            # once, verified three ways, and pushed as `iso-opensuse-tumbleweed-kde`. This is a CDN pull.
-            python3 lib/fetch_iso.py opensuse-tumbleweed-kde "out/iso/openSUSE-Tumbleweed-KDE-Live-x86_64-Snapshot20261105-Media.iso"
+            # once, verified three ways, and pushed as `iso-fedora-workstation`. This is a CDN pull.
+            python3 lib/fetch_iso.py fedora-workstation "out/iso/Fedora-Workstation-Live-43-1.6.x86_64.iso"
 
-      - name: install through YaST2
+      - name: install through Anaconda
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: opensuse-install
+          name: fedora-install
           interval: "15"
           command: |
             set -euo pipefail
@@ -128,9 +129,9 @@ jobs:
             export SNAPSHOT_INTERVAL=2
             ISO=$(ls out/iso/*.iso | head -1)
             echo "iso: $ISO"
-            python3 linux/opensuse/install.py \
+            python3 linux/fedora-workstation/install.py \
               --iso "$ISO" \
-              --out out/opensuse.qcow2 \
+              --out out/fedora.qcow2 \
               --disk-size "${{ inputs.disk_size || '64G' }}" \
               --timeout "${{ inputs.install_timeout || '5400' }}"
 
@@ -138,7 +139,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: opensuse-recording
+          name: fedora-recording
           path: |
             out/install.mp4
             out/last-frame.png
@@ -150,9 +151,9 @@ jobs:
         id: publish
         uses: easydev-org/easyactions/oci-push@main
         with:
-          path: out/opensuse.qcow2
-          kind: linux-opensuse
-          tag: ${{ inputs.publish_tag || 'linux-opensuse' }}
+          path: out/fedora.qcow2
+          kind: linux-fedora-workstation
+          tag: ${{ inputs.publish_tag || 'linux-fedora-workstation' }}
           token: ${{ github.token }}
 
   # ===========================================================================
@@ -202,26 +203,26 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: opensuse-launch
+          name: fedora-launch
           interval: "20"
           command: |
             set -euo pipefail
             python3 lib/launch_linux.py \
-              --tag "${{ needs.bake.outputs.tag || 'linux-opensuse' }}" \
-              --kind opensuse \
+              --tag "${{ needs.bake.outputs.tag || 'linux-fedora-workstation' }}" \
+              --kind fedora-workstation \
               --ssh skip \
-              --artifacts "out/opensuse-launch" \
+              --artifacts "out/fedora-launch" \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}"
 
       - name: keep the verdict
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: opensuse-launch
+          name: fedora-launch
           path: |
-            out/opensuse-launch/launch.txt
-            out/opensuse-launch/console.log
-            out/opensuse-launch/screen.png
+            out/fedora-launch/launch.txt
+            out/fedora-launch/console.log
+            out/fedora-launch/screen.png
           if-no-files-found: warn
           retention-days: 14
 
@@ -281,14 +282,14 @@ jobs:
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
-          name: opensuse-ssh
+          name: fedora-ssh
           interval: "20"
           command: |
             set -euo pipefail
             python3 lib/ssh_step.py \
-              --tag "${{ inputs.ssh_from || needs.bake.outputs.tag || 'linux-opensuse' }}" \
-              --kind opensuse \
-              --artifacts out/opensuse-ssh \
+              --tag "${{ inputs.ssh_from || needs.bake.outputs.tag || 'linux-fedora-workstation' }}" \
+              --kind fedora-workstation \
+              --artifacts out/fedora-ssh \
               --ssh-port "${{ inputs.ssh_port || '2222' }}" \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}"
 
@@ -296,12 +297,12 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: opensuse-ssh
+          name: fedora-ssh
           path: |
-            out/opensuse-ssh/ssh.txt
-            out/opensuse-ssh/install.mp4
-            out/opensuse-ssh/last-frame.png
-            out/opensuse-ssh/console.log
-            out/opensuse-ssh/steps/*.png
+            out/fedora-ssh/ssh.txt
+            out/fedora-ssh/install.mp4
+            out/fedora-ssh/last-frame.png
+            out/fedora-ssh/console.log
+            out/fedora-ssh/steps/*.png
           if-no-files-found: warn
           retention-days: 14

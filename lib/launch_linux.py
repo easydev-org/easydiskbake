@@ -74,9 +74,9 @@ BOOTED_MARKER = {
     # --- the GUI bakes, one name per distribution -----------------------------------
     "ubuntu": "Ubuntu",
     "kubuntu": "Ubuntu",
-    "fedora": "Fedora",
+    "fedora-workstation": "Fedora",
     "mint": "Linux Mint",
-    "opensuse": "openSUSE",
+    "opensuse-tumbleweed": "openSUSE",
     "cachyos": "CachyOS",
     "manjaro": "Manjaro",
     "ghostbsd-mate": "FreeBSD/amd64",
@@ -99,9 +99,9 @@ COMPOSITOR = {
     # failed to start is told apart from one whose desktop never existed.
     "ubuntu": "gnome-shell",
     "kubuntu": "kwin_wayland",
-    "fedora": "gnome-shell",
+    "fedora-workstation": "gnome-shell",
     "mint": "cinnamon",          # Cinnamon runs on Xorg
-    "opensuse": "kwin_wayland",
+    "opensuse-tumbleweed": "kwin_wayland",
     "cachyos": "kwin_wayland",
     "manjaro": "kwin_wayland",
     "ghostbsd-mate": "mate-session",  # MATE on Xorg

@@ -108,9 +108,9 @@ EXPECTED = {
     "cachyos.yml":  {"bake": None, "launch": None, "ssh": False},
     "manjaro.yml":  {"bake": None, "launch": None, "ssh": False},
     "mx.yml":       {"bake": None, "launch": None, "ssh": False},
-    "opensuse.yml": {"bake": None, "launch": None, "ssh": False},
+    "opensuse-tumbleweed.yml": {"bake": None, "launch": None, "ssh": False},
     "endeavour.yml": {"bake": None, "launch": None, "ssh": False},
-    "fedora.yml":   {"bake": None, "launch": None, "ssh": False},
+    "fedora-workstation.yml":   {"bake": None, "launch": None, "ssh": False},
     "popos.yml":    {"bake": None, "launch": None, "ssh": False},
     # GhostBSD's gbi has no sshd either, and its launch stage already proves the desktop.
     "ghostbsd-mate.yml": {"bake": None, "launch": None, "ssh": False},

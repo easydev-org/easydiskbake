@@ -1,6 +1,6 @@
 """Install opensuse from its Live ISO, through its own graphical installer.
 
-    python3 linux/opensuse/install.py --iso out/iso/<the pinned ISO> \
+    python3 linux/opensuse-tumbleweed/install.py --iso out/iso/<the pinned ISO> \
                                     --out out/opensuse.qcow2
 
 WHAT THIS FILE IS. It is a DECLARATION, not an implementation. The bake skeleton - disk,
@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.join(REPO, "lib"))
 import livebake     # noqa: E402
 
 BAKE = livebake.Bakery(
-    name="opensuse",
+    name="opensuse-tumbleweed",
     kernel=('boot/x86_64/loader/linux','boot/x86_64/loader/initrd'),
     cmdline='root=live:CDLABEL=openSUSE_Tumbleweed_KDE_Live rd.live.image locale=en_US.UTF-8 quiet splash=silent systemd.show_status=yes',
     after=livebake.After(seconds=180),

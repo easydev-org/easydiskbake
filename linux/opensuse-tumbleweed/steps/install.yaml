@@ -1,10 +1,10 @@
 # openSUSE Tumbleweed KDE: YaST2's walk, as a sequence.
 #
-#     python3 lib/steps.py linux/opensuse/steps/install.yaml --qmp /work/drive.sock.qmp
+#     python3 lib/steps.py linux/opensuse-tumbleweed/steps/install.yaml --qmp /work/drive.sock.qmp
 #
 # WHAT THIS REPLACES
 #
-# linux/opensuse/install.py's walk_yast2(). install.py keeps the machine, the frames,
+# linux/opensuse-tumbleweed/install.py's walk_yast2(). install.py keeps the machine, the frames,
 # the recording and the publish.
 #
 # YAST2, NOT CALAMARES. YaST2 is one window with a navigation list down the left that can be
@@ -21,7 +21,7 @@
 # pane is still drawn behind it), and every run "recovered" from a click that had worked by
 # pressing Return - which on this installer is BACK, dismissing the confirmation. See step 6.
 
-name: opensuse - the YaST2 walk
+name: opensuse-tumbleweed - the YaST2 walk
 resolution: [1920, 1080]
 
 vars:

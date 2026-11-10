@@ -37,8 +37,8 @@ WHAT IT INSTALLS IS NOT DECIDED HERE
 
         linux/ubuntu/steps/ssh.yaml     apt-get install openssh-server
         linux/cachyos/steps/ssh.yaml    pacman -S openssh, `sshd` not `ssh`
-        linux/fedora/...                dnf, plus firewall-cmd --add-service=ssh
-        linux/opensuse/...              zypper, plus firewalld
+        linux/fedora-workstation/...                dnf, plus firewall-cmd --add-service=ssh
+        linux/opensuse-tumbleweed/...              zypper, plus firewalld
         linux/nixos/...                 append the attribute, nixos-rebuild switch
         bsd/ghostbsd/steps/ssh.yaml         sysrc sshd_enable=YES, service sshd start
 
@@ -77,7 +77,7 @@ import vm       # noqa: E402
 # only so `--kind` refuses a typo with the real names, which is what argparse is for.
 KINDS = (
     "ubuntu", "kubuntu", "zorin", "mint", "cachyos", "manjaro",
-    "mx", "opensuse", "endeavour", "fedora", "popos", "nixos",
+    "mx", "opensuse-tumbleweed", "endeavour", "fedora-workstation", "popos", "nixos",
     "ghostbsd-mate",
 )
 
@@ -102,7 +102,7 @@ TERMINAL_WAIT = 12.0
 # HOW LONG THE PACKAGE INSTALL MAY TAKE. apt on a live network is the slowest of these;
 # `nixos-rebuild` has to evaluate and fetch a store path. Both are bounded, and the stage
 # fails with the console in the log rather than hanging.
-INSTALL_WAIT = {"debian": 240, "fedora": 240, "arch": 240, "suse": 300,
+INSTALL_WAIT = {"debian": 240, "fedora-workstation": 240, "arch": 240, "suse": 300,
                 "nixos": 420, "freebsd": 120}
 
 

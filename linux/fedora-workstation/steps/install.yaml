@@ -1,12 +1,12 @@
 # Fedora Workstation: Anaconda, then GNOME's first-boot wizard - two stages in one file.
 #
-#     python3 lib/steps.py linux/fedora/steps/install.yaml --qmp /work/drive.sock.qmp
-#     python3 lib/steps.py linux/fedora/steps/install.yaml --qmp /work/drive.sock.qmp \
+#     python3 lib/steps.py linux/fedora-workstation/steps/install.yaml --qmp /work/drive.sock.qmp
+#     python3 lib/steps.py linux/fedora-workstation/steps/install.yaml --qmp /work/drive.sock.qmp \
 #         --start-at first boot
 #
 # WHAT THIS REPLACES
 #
-# linux/fedora/install.py's walk_anaconda() and walk_first_boot(). install.py keeps the
+# linux/fedora-workstation/install.py's walk_anaconda() and walk_first_boot(). install.py keeps the
 # machine, the frames, the recording and the publish.
 #
 # TWO STAGES IN ONE FILE, AND `--start-at` IS WHY. The installer walk ends by leaving
@@ -27,7 +27,7 @@
 #     19:10:22  alt+n - installation method: Next
 #     19:10:35  after installation method: (identical)
 
-name: fedora - anaconda and the first boot
+name: fedora-workstation - anaconda and the first boot
 resolution: [1920, 1080]
 
 vars:
