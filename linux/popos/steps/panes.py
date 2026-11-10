@@ -116,28 +116,32 @@ def fill_account_name(driver, step) -> bool:
     #   dropping spaces. `Docker User` -> `dockeruser` (run 42570186630's prompt, and
     #   `id -un` on 9e2168b's ssh stage).
     #
-    #   IT ALSO REFUSES THE TWO BEING EQUAL, AND THAT CHECK IGNORES CASE.
+    #   IT ALSO REFUSES WHEN THE TWO ARE THE SAME NAME, AND THE CHECK IGNORES CASE.
     #
-    # Two attempts, both measured, and the second one corrects the first:
+    # MEASURED ON THE REAL PANE, one variable at a time, with both entries read from their own
+    # pixels and the footer judged by its green fill (144,206,176):
     #
-    #   Full Name `docker`   (run 508d45e)  User Name `docker`      Next GONE
-    #   Full Name `Docker`   (run e242215)  User Name `docker`      Next GREY
+    #     Full Name      derived User Name   footer
+    #     docker         docker              DISABLED
+    #     Docker         docker              DISABLED      <- case does not help
+    #     Docker User    dockeruser          ENABLED
+    #     dockeruser     dockeruser          ENABLED       <- equal, but not derived
+    #     Dockeruser     dockeruser          ENABLED
     #
-    # The second frame is the evidence that case does not help: `Docker` lowercases to
-    # `docker`, so the pane sees two equal names and keeps its footer disabled - the entry is
-    # even outlined in the pane's warning colour. `Docker` is not a way round the check; it is
-    # the same value after the check's own normalisation.
+    # TWO RULES, AND THEY EXPLAIN EVERY EARLIER RUN:
     #
-    # SO THE TWO FIELDS ARE FILLED SEPARATELY: a display name that derives to something else,
-    # then the login name typed over the derived value.
+    #   the login name is the display name lowercased with spaces removed
+    #   the pane will not advance when Full Name and User Name are THE SAME after that
+    #   normalisation - it does not matter whether one was typed or derived
     #
-    #     Full Name   Docker User     -> derives `dockeruser`
-    #     User Name   docker          -> typed over it, with Tab and select-all, NOT a click
+    # WHICH MEANS `docker` CANNOT BE OBTAINED FROM THIS INSTALLER AT ALL. The only display
+    # names that derive `docker` are `docker` and `Docker`, and both are the same string to
+    # the check. `dockeruser` is what this installer can produce, and it is what the ssh stage
+    # logs in as - see that file's `ssh_user`.
     #
-    # `Docker User` is what this file used before the `dockeruser` bug was found, and it is
-    # kept as the display name because it derives to a DIFFERENT string. The user name is then
-    # corrected by keyboard: a CLICK on that field has been measured to land on the artwork
-    # picker beside it, which puts a file chooser over the form.
+    # EVERY EARLIER ATTEMPT WAS ONE HALF OF THIS TABLE: `Docker` was tried because the check
+    # looked case-sensitive (run e242215: footer grey), and typing `docker` over the derived
+    # name was tried because the check looked like a string compare (run d579610: footer gone).
     display = user.capitalize() + " User"
 
     deadline = time.time() + float(step.get("timeout", 90))
@@ -159,23 +163,12 @@ def fill_account_name(driver, step) -> bool:
     # here moved the focus after the last character until this was added (run 42502695338 sat
     # with Next grey for forty-two minutes).
     #
-    # AND THE SAME KEYSTROKE LANDS IN USER NAME, WHICH IS WHERE THE OVERRIDE HAPPENS. Tab from
-    # Full Name moves into User Name - keyboard, not a click, because a click there has been
-    # measured to open the artwork picker. The derived value is selected and replaced with the
-    # login name this repository asks for, and the last Tab leaves the form so the pane
-    # validates once more.
+    # AND THE FOCUS-OUT IS WHAT ENABLES THE FOOTER. One Tab leaves Full Name; the derived User
+    # Name follows by itself, and the pane validates on the focus-out. NOTHING HERE TYPES INTO
+    # USER NAME - doing so replaces the derived value with an equal one, which the pane then
+    # refuses (see the table above).
     driver.qmpmod.key(driver.q, "tab")
     time.sleep(1.0)
-    driver.qmpmod.key_combo(driver.q, "ctrl", "a")
-    time.sleep(0.5)
-    import keys as _keys
-    for _ in range(40):
-        driver.qmpmod.key(driver.q, "backspace")
-        time.sleep(0.02)
-    _keys.type_text(driver.q, user, per_char=0.1)
-    time.sleep(0.8)
-    driver.qmpmod.key(driver.q, "tab")
-    time.sleep(1.5)
     driver.look("account name filled")
     return True
 
