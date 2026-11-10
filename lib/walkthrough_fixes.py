@@ -384,6 +384,20 @@ def main() -> int:
               "QEMU_IMG_BINARY" in read("lib/compress.py"))
         check("the disk check uses the same binary as compression", "lib/clean_step.py",
               "compresslib.qemu_img()" in read("lib/clean_step.py"))
+        # AND A COMPRESSED DISK IS NOT BOOTED WITH discard=unmap.
+        #
+        # `discard=unmap` frees clusters as the guest TRIMs them - right for a stage that has
+        # finished writing, and wrong for one still reading a zstd qcow2. The kernel stops at
+        #
+        #     #[EB|LOG:HANDOFF TO XNU] _
+        #
+        # with no panic (run 42778795463: the clean stage, on the artifact share had just
+        # compressed). machine.py already records the trade for the installer, which is why
+        # TARGET_DRIVE_PLAIN exists; the clean is the same case one stage later.
+        check("the clean boots a compressed disk without discard", "lib/clean_step.py",
+              "discard=False" in read("lib/clean_step.py"))
+        check("vm_session can omit discard", "lib/vm_session.py",
+              "TARGET_DRIVE_PLAIN" in read("lib/vm_session.py"))
     except Exception as exc:                          # noqa: BLE001
         check(f"containerfile reads ({exc})", "Containerfile", False)
 

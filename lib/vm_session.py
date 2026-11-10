@@ -65,7 +65,7 @@ def log_to(prefix: str = "vm"):
 
 def start(family: str, disk: str, work: str, *, ssh_port: int = 2222,
           boot_timeout: int = 900, copy: bool = True, share: str | None = None,
-          cpus: int = 4, mem_mb: int = 0, log=print):
+          cpus: int = 4, mem_mb: int = 0, discard: bool = True, log=print):
     """Serve the share, boot `disk`, wait for sshd.
 
     Returns `(guest, reached)`: `reached` is True when sshd answered, None when the machine came
@@ -105,7 +105,8 @@ def start(family: str, disk: str, work: str, *, ssh_port: int = 2222,
             log("  retries. Booting anyway would test a state the disk never ships in.")
             return None, None
 
-    guest = _start_machine(family, running, work, ssh_port, cpus, mem_mb, log)
+    guest = _start_machine(family, running, work, ssh_port, cpus, mem_mb, log,
+                           discard=discard)
     if guest is None:
         hostshare.stop()
         return None, None
@@ -121,7 +122,7 @@ def start(family: str, disk: str, work: str, *, ssh_port: int = 2222,
 
 
 def _start_machine(family: str, disk: str, work: str, ssh_port: int, cpus: int,
-                   mem_mb: int, log):
+                   mem_mb: int, log, discard: bool = True):
     """The machine each family boots on - reused from the stage that built the disk."""
     import vm
 
@@ -143,7 +144,20 @@ def _start_machine(family: str, disk: str, work: str, ssh_port: int, cpus: int,
                 "-device", "virtio-blk-pci,drive=oc,bootindex=0",
                 # TARGET_DRIVE IS THE VALUE, NOT THE FLAG. bake.py pairs it with "-drive" the
                 # same way; passing it alone makes qemu read a filename as an option.
-                "-drive", machine.TARGET_DRIVE.format(disk=disk),
+                #
+                # `discard=False` FOR A DISK THIS PROCESS DID NOT WRITE, and the difference is
+                # not cosmetic. `discard=unmap` frees clusters as the guest TRIMs them, which is
+                # right for a stage that is finished writing and wrong for anything that is still
+                # reading a compressed image: a zstd qcow2 keeps compressed clusters, and handing
+                # blocks back while the guest boots one is how the kernel ends up dead at
+                #
+                #     #[EB|LOG:HANDOFF TO XNU] _
+                #
+                # with no panic (run 42778795463 - the clean stage, on the artifact the share
+                # stage had just compressed). machine.py already documents this trade for the
+                # installer: TARGET_DRIVE_PLAIN exists because the writing stage must not discard.
+                "-drive", (machine.TARGET_DRIVE if discard
+                           else machine.TARGET_DRIVE_PLAIN).format(disk=disk),
                 "-device", "virtio-blk-pci,drive=target,bootindex=1",
                 "-device", f"isa-applesmc,osk={machine.OSK_PLAIN}",
             ],

@@ -203,7 +203,22 @@ def main(argv: list[str]) -> int:
         args.kind, args.disk, work,
         ssh_port=spec["ssh_port"], boot_timeout=args.boot_timeout,
         copy=False, share=hostshare.DEFAULT_DIR,
-        cpus=args.cpus, mem_mb=args.mem, log=note)
+        cpus=args.cpus, mem_mb=args.mem, log=note,
+        # NO DISCARD, BECAUSE THIS DISK IS ALREADY COMPRESSED AND WE ARE STILL READING IT.
+        #
+        # `discard=unmap` frees clusters as the guest TRIMs them. That is right for a stage that
+        # has finished writing and is what makes a published disk smaller - but this stage boots
+        # a zstd qcow2 that another stage produced, and handing blocks back while the guest boots
+        # from compressed clusters leaves the kernel dead at
+        #
+        #     #[EB|LOG:HANDOFF TO XNU] _
+        #
+        # with no panic and nothing in the console after it (run 42778795463). machine.py already
+        # records the same trade for the installer, which is why TARGET_DRIVE_PLAIN exists.
+        #
+        # The clean later re-compresses what it leaves behind, so nothing is lost: discard here
+        # was never going to shrink anything that is already compressed.
+        discard=False)
     if guest is None:
         return 2
 
