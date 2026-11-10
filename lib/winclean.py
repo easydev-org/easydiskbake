@@ -38,6 +38,7 @@ means a caller cannot accidentally get a different guest's connection.
 from __future__ import annotations
 
 import os
+import time
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(HERE, "windows", "11", "clean.ps1")
@@ -97,19 +98,44 @@ def clean(*, port: int, user: str = "vmuser", note=print, timeout: int = 1800,
 
     # THE SCRIPT GOES UP WITH scp, because it is 190 lines and the keyboard is not an option
     # even when a keyboard is what installed sshd.
-    try:
-        copied = subprocess.run(
-            ["sshpass", "-p", SSH_PASSWORD, "scp",
-             "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-             "-P", str(port), SCRIPT, f"{user}@{SSH_HOST}:{remote}"],
-            capture_output=True, text=True, timeout=300,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        note(f"=== CLEAN.PS1 COULD NOT BE COPIED: {exc} ===")
-        return False
-    if copied.returncode != 0:
-        detail = (copied.stderr or copied.stdout or "").strip().splitlines()
-        note(f"=== CLEAN.PS1 COULD NOT BE COPIED: {detail[-1][:200] if detail else ''} ===")
+    #
+    # RETRIED, BECAUSE A PROBE THAT SUCCEEDED IS NOT A SERVER THAT IS READY.
+    #
+    # `session.wait_for_ssh` returns the moment ONE ssh command completes, and on this guest the
+    # very next connection is still refused while sshd finishes starting:
+    #
+    #     [clean-step] ssh answers after 41s
+    #     [clean-step] cleaning the guest
+    #     [clean-step] === CLEAN.PS1 COULD NOT BE COPIED: scp: Connection closed ===
+    #     [clean-step] === THE CLEAN DID NOT FINISH ===
+    #
+    # - run 42877352523, whose ssh stage had just installed OpenSSH and whose disk therefore had
+    # never had a second connection before. Three attempts with a gap is what a person does, and
+    # the failure it removes is one that discards an otherwise finished disk.
+    last = ""
+    copied = None
+    for attempt in range(1, 4):
+        try:
+            copied = subprocess.run(
+                ["sshpass", "-p", SSH_PASSWORD, "scp",
+                 "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+                 "-o", "ConnectTimeout=20",
+                 "-P", str(port), SCRIPT, f"{user}@{SSH_HOST}:{remote}"],
+                capture_output=True, text=True, timeout=300,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            last = str(exc)
+            copied = None
+        else:
+            if copied.returncode == 0:
+                break
+            detail = (copied.stderr or copied.stdout or "").strip().splitlines()
+            last = detail[-1][:200] if detail else ""
+        if attempt < 3:
+            note(f"  the copy was refused ({last}); waiting and trying again")
+            time.sleep(15)
+    if copied is None or copied.returncode != 0:
+        note(f"=== CLEAN.PS1 COULD NOT BE COPIED: {last} ===")
         return False
 
     result = subprocess.run(
