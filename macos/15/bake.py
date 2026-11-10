@@ -253,11 +253,11 @@ class Baker:
         finally:
             # THE WALKTHROUGH STOPPED THE MACHINE, AND THAT IS THE ONLY STOP HERE.
             #
-            # `shutdown: "{{ shutdown }}"` is setup.yaml's last step and the stage passes `acpi`
-            # for it: this guest is a recovery environment with no sshd and no agent, so the
-            # power button is the only graceful route it has, and a kill in the middle of the
-            # installer's own final writes is what produces a disk that repairs itself on first
-            # boot. run_file stops the guest itself if the file fails before reaching it.
+            # `shutdown: "{{ shutdown }}"` is setup.yaml's last step and the stage passes
+            # `kill`: a recovery environment has no sshd and no agent, and macOS refuses ACPI
+            # (it opens a dialog). Safe because the walk does not end until the Setup Assistant
+            # is on screen - the machine is idle, not mid-write. run_file stops the guest itself
+            # if the file fails before reaching it.
             snap.terminate()
             try:
                 snap.wait(timeout=5)
@@ -334,7 +334,7 @@ class Baker:
             # directory it guessed. bake.py sets shots = frames/shots below, and
             # installer_panes() reads exactly that.
             frames=self.frames, session=session,
-            extra_vars={"args.shutdown": "acpi"},
+            extra_vars={"args.shutdown": "kill"},
         )
         log(f"{len(ran)} step(s) answered" if ok
             else f"the walkthrough failed after {len(ran)} step(s)")

@@ -661,6 +661,26 @@ def main() -> int:
           ".github/workflows/windows-11.yml",
           win_workflow.count("WINDOWS_ADMIN_USER=vmuser") == 2)
 
+    # AND NO WALKTHROUGH MAY NAME A SHUTDOWN METHOD ITS OWN FAMILY CANNOT HONOUR.
+    #
+    # This is the check for run 42822632514: macos/15/steps/setup.yaml ended on
+    # `shutdown: "{{ shutdown }}"` with a default of `acpi`, the walkthrough worked perfectly -
+    # the Setup Assistant appeared - and the LAST step raised, because macOS refuses the power
+    # button. Forty minutes of installation, a correct disk, and nothing published.
+    #
+    # A FILE THAT CANNOT FINISH ITS LAST STEP CAN BE READ BEFORE IT STARTS. The method may be a
+    # `{{ var }}` (it usually is), so the check reads the var's default too.
+    macos_files = ["macos/15/steps/setup.yaml", "macos/15/steps/sequoia.yaml",
+                   "macos/15/steps/ssh.yaml", "macos/15/steps/dev.yaml",
+                   "macos/15/steps/vm-configure.yaml"]
+    for path in macos_files:
+        walk = load_yaml(path)
+        default = ((walk.get("vars") or {}).get("shutdown") or {}).get("default")
+        methods = [s.get("shutdown") for s in (walk.get("steps") or []) if s.get("shutdown")]
+        check(f"{path} does not ask macOS for the power button", path,
+              "acpi" not in (default or "")
+              and not any(m == "acpi" for m in methods))
+
     # AND `requires:` RUNS BEFORE `boot:`, WHICH IS ONE OF THE STEPS THAT CAN CARRY IT.
     #
     # The first version sat after the block that defines `login`, so `boot: requires: [overlay]`

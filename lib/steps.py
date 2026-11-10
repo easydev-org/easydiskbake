@@ -1429,6 +1429,19 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
         if session is None:
             raise StepError(f"{step.name}: shutdown needs a session")
         method = step["shutdown"] if isinstance(step["shutdown"], str) else "graceful"
+        # A METHOD THAT CANNOT WORK ON THIS FAMILY IS REFUSED BEFORE THE MACHINE IS TOUCHED.
+        #
+        # `acpi` on macOS opens the Restart/Sleep/Cancel/Shut Down dialog and waits for a click,
+        # and MachineSession.shutdown refuses it - but only when the step RUNS, which for a setup
+        # walkthrough is forty minutes into an installation. That is exactly what happened on run
+        # 42822632514: the Setup Assistant appeared, the walk was complete in every respect that
+        # matters, and the last step raised. A file whose last step can never succeed is a file
+        # that should say so at the first step.
+        if session is not None and str(method) in ("acpi",) and session.family == "macos":
+            raise StepError(
+                f"{step.name}: `shutdown: acpi` cannot work on macOS - it receives the power "
+                f"button as the Restart/Sleep/Cancel/Shut Down dialog and waits for a click. "
+                f"Use `guest_agent` (needs qga), `ssh` (needs sshd) or `kill`.")
         session.shutdown(method=str(method), user=session.login, password=session.password,
                          log=log)
         return

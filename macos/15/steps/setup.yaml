@@ -56,16 +56,25 @@ vars:
     default: main
   expected_gb:
     default: "68"
-  # THE SHUTDOWN METHOD, AS IN THE OTHER macOS FILES. This stage owns the real disk it is
-  # writing to - there is no published artifact to flatten an overlay into - so the default is
-  # the careful one: `ssh` is not available (nothing in recovery answers ssh), so the agent or
-  # the power button are the only graceful routes, and the stage passes `acpi`.
+  # THE SHUTDOWN METHOD IS `kill`, AND THIS STAGE HAS NO OTHER CHOICE FROM THE THREE METHODS
+  # THAT NEED A RUNNING SYSTEM.
   #
-  # THE REASON IT IS A VAR AND NOT A LITERAL is the same as everywhere else: how the run was
-  # started is not a fact about the screen.
+  # `ssh`       nothing in the recovery environment answers ssh; sshd is the NEXT stage's work.
+  # `guest_agent`  same problem - the agent is installed by vm-configure, two stages later.
+  # `acpi`      macOS answers the power button with the Restart/Sleep/Cancel/Shut Down dialog
+  #             and waits for a click. lib/steps.py REFUSES it on macOS by name, because a
+  #             method that can only ever time out is not a graceful shutdown - it is a
+  #             five-minute wait and then the kill it should have been.
+  #
+  # So `kill`, and what makes it safe is what the stage did just before it: the walk's last step
+  # is `until_any` on the Setup Assistant's own first page, which is the machine booted into
+  # the system it installed and idle. There is no write in flight to interrupt.
+  #
+  # THE REASON IT IS STILL A VAR is the same as everywhere else: how the run was started is not
+  # a fact about the screen, so a stage with a different answer can pass one.
   shutdown:
     from: args.shutdown
-    default: acpi
+    default: kill
 
 steps:
   # =======================================================================================
@@ -352,14 +361,17 @@ steps:
   # 5. THE MACHINE IS STOPPED BY THE FILE THAT STARTED IT
   # =======================================================================================
   #
-  # ACPI, BECAUSE THERE IS NO OTHER GRACEFUL ROUTE HERE. macOS answers the power button with
-  # the Restart/Sleep/Cancel/Shut Down dialog and waits for a click - which is why no later
-  # stage uses this method - but this stage's guest is a recovery environment with no sshd and
-  # no agent, and the disk it has just finished writing is one the very next stage boots. The
-  # alternative is a kill in the middle of the installer's own final writes, which is what
-  # produces a disk that has to repair itself on first boot.
+  # `kill`, BECAUSE NONE OF THE THREE GRACEFUL METHODS CAN WORK IN A RECOVERY ENVIRONMENT.
   #
-  # THE STAGE PASSES `acpi`; the default here is the same. See `vars:` above.
+  # `ssh` and `guest_agent` do not exist yet (they are the next two stages' work), and macOS
+  # refuses `acpi` - it opens a dialog and waits for a click. lib/steps.py says so by name
+  # rather than waiting five minutes to say it badly.
+  #
+  # AND IT IS SAFE HERE for the reason a stage on an overlay is: the walk does not stop until
+  # the Setup Assistant is on screen, which means the installer has finished, rebooted into the
+  # system it wrote, and is sitting on a page waiting for a person. Nothing is mid-write.
+  #
+  # See `vars:` above for why it is still a variable.
   - name: stop the machine
     shutdown: "{{ shutdown }}"
     timeout: 300
