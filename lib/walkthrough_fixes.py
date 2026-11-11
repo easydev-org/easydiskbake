@@ -1890,6 +1890,43 @@ def main() -> int:
         if "hostshare.start(" in src5 and "netmod.up(" in src5:
             check(f"{prog} serves the share after the bridge",
                   prog, src5.index("netmod.up(") < src5.index("hostshare.start("))
+    # AND THE LAUNCH AGENT RETRIES ONCE, BECAUSE `RunAtLoad` IS A SINGLE INSTANT AND THAT INSTANT
+    # IS NOT ALWAYS USABLE.
+    #
+    # Run 42971367742 logged in, a Keyboard Setup Assistant appeared 36 seconds AFTER the password
+    # went in, and no ~/shared/hello.txt was written. The plist was in ~/Library/LaunchAgents and
+    # the agent's own log was empty - so launchd either fired at an unusable moment or fired into a
+    # session that was not ready, and `RunAtLoad` has nothing after it to fall back on.
+    #
+    # `StartInterval` IS THAT FALLBACK and the launcher's own marker is what makes it safe: a
+    # second run after a successful one finds the marker and does nothing, which the launcher's
+    # comment already describes. 90 s is past the launcher's one-minute wait for ~/shared, so the
+    # retry cannot overlap the first attempt, and inside the probe's 180 s window at most two fit.
+    import plistlib as _plistlib
+    plist_doc = None
+    try:
+        plist_doc = _plistlib.loads(read("lib/bootstrap.py").split('return f"""', 1)[1]
+                                    .split('"""', 1)[0]
+                                    .replace("{MACOS_LABEL}", "org.vm.bootstrap")
+                                    .replace("{launcher}", "/tmp/l.sh").encode())
+    except Exception:                                      # noqa: BLE001
+        pass
+    if plist_doc is not None:
+        check("the launch agent still runs at load", "lib/bootstrap.py",
+              plist_doc.get("RunAtLoad") is True)
+        check("the launch agent retries once", "lib/bootstrap.py",
+              plist_doc.get("StartInterval") == 90)
+        check("the retry is not a supervisor", "lib/bootstrap.py",
+              plist_doc.get("KeepAlive") is False)
+    # AND THE FAILED LAUNCH PRINTS ITS DIAGNOSIS EVEN WHEN IT FINDS NOTHING. `|| true` and a
+    # `2>/dev/null` made a missing file indistinguishable from an unanswered ssh call: the run
+    # printed the block's two headers and then nothing, so the whole story was "the launcher did
+    # not run" when the useful fact was whether the agent had ever been loaded.
+    ls_src = read("lib/launch_selftest.py")
+    check("a failed launch says what each probe returned", "lib/launch_selftest.py",
+          'ssh -> {st}, {len(body)} byte(s)' in ls_src)
+    check("and asks the plist where it actually lives", "lib/launch_selftest.py",
+          "~/Library/LaunchAgents/" in ls_src and "/tmp/org.vm.bootstrap.err" in ls_src)
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))

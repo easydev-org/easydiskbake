@@ -74,7 +74,29 @@ def macos_plist(launcher: str) -> str:
     </array>
     <key>RunAtLoad</key>
     <true/>
-    <!-- ONE SHOT. A bootstrap that has to keep running is not a bootstrap. -->
+    <!--
+      A SECOND TRY, BECAUSE `RunAtLoad` FIRES AT A MOMENT THAT IS NOT ALWAYS USABLE.
+
+      Run 42971367742 logged in, dismissed a Keyboard Setup Assistant that appeared 36 seconds
+      LATER, and produced no ~/shared/hello.txt. The agent's own output files were empty and the
+      plist was in ~/Library/LaunchAgents, so the plausible reading is that launchd fired the job
+      at the first instant of the session - before the mount and before the window server was
+      ready - and `RunAtLoad` is one shot: after that there is nothing to retry with.
+
+      `StartInterval` IS THAT RETRY, AND IT IS BOUNDED BY THE LAUNCHER'S OWN MARKER. The launcher
+      writes a marker in the guest's home and the probe writes hello.txt into the share; a second
+      run after a successful one finds the marker and does nothing, which is the behaviour its
+      comment describes ("A MARKER FROM A PREVIOUS LAUNCH WOULD MAKE THE LAUNCHER SKIP").
+
+      90 SECONDS IS CHOSEN TO BE PAST THE LAUNCHER'S OWN WAIT, NOT BEFORE IT. The launcher waits
+      up to a minute for ~/shared to appear, so a shorter interval would start a second copy of it
+      while the first is still waiting. 90 s is past that wait, and the probe waits 180 s, so at
+      most two attempts can fit inside the observation window - which is what makes this a retry
+      rather than a change to when the bootstrap runs.
+    -->
+    <key>StartInterval</key>
+    <integer>90</integer>
+    <!-- ONE SHOT PER INTERVAL, NOT A SUPERVISOR. A bootstrap that has to keep running is not one. -->
     <key>KeepAlive</key>
     <false/>
     <key>StandardOutPath</key>

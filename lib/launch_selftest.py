@@ -243,13 +243,42 @@ def main(argv: list[str]) -> int:
             log("  bootstrap.log and bootstrap-refused.txt in its own home, and both are printed")
             log("  below so the two cases can be told apart")
             import session as _s
+
+            # THE DIAGNOSIS MUST NOT BE SILENT WHEN IT FINDS NOTHING. `|| true` and a `2>/dev/null`
+            # made a missing file indistinguishable from an unanswered ssh call, and run
+            # 42971367742 printed this block's two headers and then nothing at all - so "the
+            # launcher did not run" was the whole story when the interesting fact was whether the
+            # agent had ever been LOADED.
+            #
+            # Every branch now says something, including the status and the byte count.
+            def _show(label: str, cmd: str) -> None:
+                st, out = _s.ssh(args.ssh_port, cmd, timeout=60,
+                                 user=args.user, password=args.password)
+                body = (out or "").strip()
+                log(f"    {label}: ssh -> {st}, {len(body)} byte(s)")
+                if not body:
+                    log(f"      (empty - the file is absent, or the command wrote nothing)")
+                for line in body.splitlines()[-12:]:
+                    log(f"      {line[:140]}")
+
             for name in ("bootstrap.log", "bootstrap-refused.txt"):
-                cmd = (f'cmd /c "type C:\\Users\\{args.user}\\{name}"'
-                       if args.family == "windows" else f"cat ~/{name} 2>/dev/null || true")
-                _st, _out = _s.ssh(args.ssh_port, cmd, timeout=60,
-                                   user=args.user, password=args.password)
-                for line in (_out or "").splitlines()[-12:]:
-                    log(f"    {name}: {line[:140]}")
+                if args.family == "windows":
+                    _show(name, 'cmd /c "type C:\\Users\\' + args.user + "\\" + name + '"')
+                else:
+                    _show(name, "cat ~/" + name + " 2>/dev/null")
+            if args.family == "macos":
+                # THE AGENT'S OWN STATE, ASKED WHERE IT ACTUALLY LIVES.
+                #
+                # `launchctl print gui/$(id -u)/...` was in this file and answers
+                # `125: Domain does not support specified action` from an ssh session, because
+                # that session has no GUI domain - which says nothing about whether the agent
+                # loaded in the console user's domain. These three ask the plist, the login items
+                # and the agent's own log instead, and each is answerable over ssh.
+                _show("plist", "ls -l ~/Library/LaunchAgents/ 2>&1")
+                _show("launcher", "ls -l ~/bootstrap-launcher.sh 2>&1")
+                _show("launchd log", "cat /tmp/org.vm.bootstrap.err 2>&1")
+                _show("launchd out", "cat /tmp/org.vm.bootstrap.out 2>&1")
+                _show("console user", "stat -f %Su /dev/console 2>&1")
             return 1
 
         log("the share's hello.txt says:")
