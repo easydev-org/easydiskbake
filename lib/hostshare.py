@@ -490,7 +490,13 @@ def stop() -> None:
         in_our_group = os.getpgid(pid) == os.getpgid(0)
     except OSError:
         in_our_group = False
-    if in_our_group and "smbd " not in looks_like:
+    # EXACTLY "smbd ", NOT "smbd". The daemon's own cmdline is
+    #
+    #     smbd -D --no-process-group -s /tmp/easydiskbake-smb.conf
+    #
+    # with a space after the name, and a `bash -c "...smbd..."` wrapper does not have that in the
+    # same position. A loose substring test is what let a reused pid look like ours.
+    if in_our_group and not looks_like.lstrip().startswith("smbd "):
         log(f"  pid {pid} is in this process's group and is not smbd "
             f"({looks_like[:60]}); refusing to signal it")
         _unlink_pid()
@@ -499,8 +505,22 @@ def stop() -> None:
         log(f"  pid {pid} is not smbd ({looks_like[:60]}); leaving it alone")
         _unlink_pid()
         return
+    # SAY SO BEFORE AND AFTER THE SIGNAL, BECAUSE THIS IS THE ONLY PLACE IN THE PROCESS THAT
+    # SENDS ONE AND THREE RUNS HAVE NOW DIED FIVE MILLISECONDS AFTER `the guest powered off` -
+    # which is when this function runs:
+    #
+    #     42919582582   === SIGNALLED: SIGTERM (15) === ppid=418 pid=419 pgid=418
+    #     42922887078   === SIGNALLED: SIGTERM (15) === ppid=371 pid=378 pgid=378
+    #     42928178260   === SIGNALLED: SIGTERM (15) === ppid=356 pid=363 pgid=363
+    #
+    # If the next run prints `signalling smbd <pid>` and then the SIGNALLED line, the sender is
+    # this function and the pid is wrong. If it prints the SIGNALLED line with no `signalling`
+    # before it, the signal came from outside and this is not the place to look.
     for signal_number in ("TERM", "KILL"):
+        log(f"  signalling smbd {pid} with SIG{signal_number} "
+            f"(this process is {os.getpid()}, group {os.getpgid(0)})")
         done = subprocess.run(["kill", f"-{signal_number}", str(pid)], capture_output=True)
+        log(f"  kill returned {done.returncode}")
         if done.returncode != 0:
             break
         time.sleep(0.5)
