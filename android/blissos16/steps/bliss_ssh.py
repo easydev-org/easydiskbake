@@ -1,0 +1,349 @@
+"""The host-side acts of putting sshd inside an Android guest.
+
+    python: bliss_ssh:build_payload
+    python: bliss_ssh:push_payload
+    python: bliss_ssh:install_key
+    python: bliss_ssh:start
+
+WHY THESE ARE EXTENSIONS AND NOT STEPS
+
+Everything else in android/blissos16/steps/ssh.yaml is a step: `adb_root:`, `adb:`, and the
+`require_ssh:` that is the verdict. These four are not single actions on a guest - one downloads
+fifteen packages and materialises their symlinks, one writes a config file whose every line is a
+measured fact, one starts a daemon and reads its log - and none is expressible in the vocabulary
+without inventing a step for each. `python:` is the escape hatch lib/steps.py documents.
+
+EVERY COMMAND IN THIS FILE WAS RUN AGAINST A REAL GUEST. What is unusual about this stage is how
+many of its facts are unguessable, and each one cost a nine-minute boot to find:
+
+    /etc/passwd is empty and `/` is read-only     "invalid user root" from a guest whose account
+                                                  exists nowhere
+    bionic has no getspnam                       a correct $6$ hash in /etc/shadow is ignored, so
+                                                  password auth cannot work at all
+    Termux's sshd has bin/bash compiled in        "User root not allowed because shell .../bash
+                                                  does not exist", whatever /etc/passwd says
+    sshd requires 700 on the account's HOME       "bad ownership or modes for directory"
+    six libraries the packages do not declare      each one: bind, accept, close
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+for path in (REPO, os.path.join(REPO, "lib")):
+    if path not in sys.path:
+        sys.path.insert(0, path)
+
+import adb  # noqa: E402
+import android_ssh  # noqa: E402
+
+# WHERE THE GUEST KEEPS IT. adb cannot push into /data/data directly - vold owns that directory
+# and creates it on first boot - so the tree goes to the tmpfs and is copied from there.
+STAGING = "/data/local/tmp/termux"
+PREFIX = "/data/data/com.termux/files/usr"
+# THE ACCOUNT'S HOME, AND IT MUST BE 700. sshd refuses a key from a home anybody can write to:
+#
+#     Authentication refused: bad ownership or modes for directory ...
+HOME = "/data/data/com.termux/files/home"
+SSHD_CONFIG = "/data/local/tmp/sshd_config"
+
+
+def _work(driver) -> str:
+    return getattr(driver, "work", "") or "."
+
+
+def _values(driver) -> dict:
+    return getattr(driver, "values", {}) or {}
+
+
+def _serial(driver) -> str:
+    return f"127.0.0.1:{_values(driver).get('adb_port') or '5555'}"
+
+
+def _say(output: str, limit: int = 30) -> None:
+    for line in (output or "").splitlines()[:limit]:
+        print(f"    {line}", flush=True)
+
+
+def build_payload(driver, step) -> bool:
+    """Download the Termux packages and assemble the prefix as a directory of real files."""
+    try:
+        tree = android_ssh.build(_work(driver))
+    except Exception as exc:                       # noqa: BLE001 - reported as a verdict
+        print(f"  the payload could not be built: {exc}", flush=True)
+        return False
+    files = sum(len(fs) for _, _, fs in os.walk(tree))
+    print(f"  {files} files in {tree}", flush=True)
+    # THE PATH TRAVELS ON THE DRIVER rather than being re-derived: a second build() would download
+    # fifteen packages again, and a path guessed in the file would be a second place to agree with
+    # lib/android_ssh.py's naming.
+    setattr(driver, "android_ssh_tree", tree)
+    return files > 0
+
+
+def push_payload(driver, step) -> bool:
+    """Push the tree to the guest's tmpfs and copy it into the prefix, as root."""
+    tree = getattr(driver, "android_ssh_tree", "")
+    if not tree or not os.path.isdir(tree):
+        print("  no payload to push; `python: bliss_ssh:build_payload` has to run first", flush=True)
+        return False
+    serial = _serial(driver)
+
+    print(f"  pushing {tree} -> {STAGING}", flush=True)
+    status, output = adb.run("push", tree + "/.", STAGING + "/", timeout=900, serial=serial)
+    if status != 0:
+        print(f"  push failed: {output[-400:]}", flush=True)
+        return False
+    # `adb push` REPORTS SUCCESS AND STILL PRINTS FAILURES FOR INDIVIDUAL FILES, which is how a
+    # payload missing its libraries reads as a working install until sshd fails to link.
+    if "failed" in output.lower():
+        print(f"  push reported failures: {output[-400:]}", flush=True)
+        return False
+
+    # THE COPY IS THE INSTALL. `cp -a` rather than a rename because the two paths are different
+    # filesystems - the tmpfs and the encrypted /data volume.
+    move = (
+        f"mkdir -p {PREFIX}; "
+        f"cp -a {STAGING}/. {PREFIX}/; "
+        f"chmod -R 755 {PREFIX}/bin {PREFIX}/libexec; "
+        f"rm -rf {STAGING}; "
+        f"test -x {PREFIX}/bin/sshd && test -x {PREFIX}/bin/bash && echo INSTALLED"
+    )
+    status, output = adb.shell(serial, move, timeout=600)
+    print(f"  install -> {status}", flush=True)
+    _say(output)
+    # BASH IS CHECKED TOO, AND FOR A REASON THIS STAGE MEASURED: sshd has its path compiled in and
+    # refuses a login without it, so a payload without bash is a daemon that starts and rejects
+    # every account.
+    if status != 0 or "INSTALLED" not in output:
+        return False
+    return True
+
+
+def install_key(driver, step) -> bool:
+    """Install the caller's public key as root's authorized key, with the modes sshd requires."""
+    # THE KEY COMES FROM THE STEP, NOT FROM `driver.values`, AND THE DIFFERENCE IS A REAL ONE.
+    #
+    # `driver.values` is the resolved `vars` mapping, whose KEYS are the var names - but the walk
+    # substitutes `{{ public_key }}` INTO the step before `_run_python` is called, so by the time
+    # this runs the value is on the step and the var is not necessarily in `values` (it was read
+    # from `args.public_key`, which is an override, not a var). Reading the wrong one produced
+    #
+    #     no --public-key was given
+    #
+    # for a run that HAD passed one. The step first, `values` only as a fallback.
+    key = str(step.get("public_key") or "").strip()
+    if not key:
+        key = str(_values(driver).get("public_key") or "").strip()
+    # `--public-key` NAMES A FILE, NOT THE KEY. The first version treated the whole argument as
+    # the key material and installed a 14-byte authorized_keys containing the path:
+    #
+    #     -rw------- 1 root root 14 ... authorized_keys
+    #     KEYED
+    #
+    # which reads as success and authenticates nobody - `authorized_keys` is a list of KEYS, and a
+    # filename on one line is an invalid entry sshd skips without a word.
+    if key and os.path.isfile(key):
+        with open(key, encoding="utf-8") as fh:
+            key = fh.read().strip()
+    if not key or " " not in key:
+        print(f"  {key[:60]!r} is not a public key (a .pub file holds "
+              f"`<type> <base64> <comment>`)", flush=True)
+        return False
+    if not key:
+        # A KEY IS A RUN FACT AND THE CALLER SUPPLIES ONE. Baking a key into the repository is how
+        # a disk gets an account anybody reading the repository can log into.
+        print("  no --public-key was given; this stage needs one because the guest cannot check "
+              "a password (bionic has no getspnam). Generate one with `ssh-keygen -t ed25519` "
+              "and pass the .pub file.", flush=True)
+        return False
+
+    serial = _serial(driver)
+    work = _work(driver)
+    os.makedirs(work, exist_ok=True)
+    local = os.path.join(work, "authorized_keys")
+    with open(local, "w", encoding="utf-8") as fh:
+        fh.write(key if key.endswith("\n") else key + "\n")
+
+    status, output = adb.run("push", local, "/data/local/tmp/authorized_keys",
+                             timeout=120, serial=serial)
+    if status != 0:
+        print(f"  push failed: {output[-300:]}", flush=True)
+        return False
+
+    # 700 ON THE HOME AND THE DIRECTORY, 600 ON THE FILE. sshd checks all three and refuses with
+    # "bad ownership or modes for directory", which names the directory and not the fix.
+    setup = (
+        f"P={HOME}; mkdir -p $P/.ssh; "
+        f"cp /data/local/tmp/authorized_keys $P/.ssh/authorized_keys; "
+        f"chmod 700 $P $P/.ssh; chmod 600 $P/.ssh/authorized_keys; "
+        f"chown -R root:root $P; "
+        f"ls -ld $P $P/.ssh; ls -l $P/.ssh/authorized_keys; echo KEYED"
+    )
+    status, output = adb.shell(serial, setup, timeout=180)
+    print(f"  key -> {status}", flush=True)
+    _say(output)
+    return status == 0 and "KEYED" in output
+
+
+def install_boot_hook(driver, step) -> bool:
+    """Make the guest start sshd by itself, so the PUBLISHED disk answers with no adb involved.
+
+    THIS IS THE DIFFERENCE BETWEEN "THIS RUN HAS ssh" AND "THE DISK HAS ssh", and it was found by
+    booting the artifact the stage had just published: the binary was there, correct and
+    executable, and NOTHING WAS RUNNING.
+
+        $ ls -la /data/data/com.termux/files/usr/bin/sshd
+        -rwxr-xr-x 1 root root 426216 ... sshd
+        $ ps -A | grep sshd
+        (nothing)
+
+    `/data` IS NOT ENCRYPTED ON THIS DISK, which the earlier Android-x86 route had led me to
+    expect and which is worth stating because it is what makes a boot hook possible at all:
+
+        /dev/block/vda2 on /data type ext4 (rw,seclabel,noatime)     no dm, no nosuid
+        getprop ro.crypto.state -> unsupported
+
+    Android's init is the thing that runs at boot, and `/system/etc/init/*.rc` is where it looks.
+    The service is started `oneshot` after `boot` rather than as a long-running service: sshd
+    forks its own children and init's supervision of a forking daemon is a second thing to get
+    wrong. A tiny wrapper waits for the filesystem to be writable and then execs the daemon.
+    """
+    serial = _serial(driver)
+    work = _work(driver)
+    os.makedirs(work, exist_ok=True)
+
+    wrapper = (
+        "#!/system/bin/sh\n"
+        "# Wait for the encrypted-data path to settle, then start sshd. `boot_completed` is the\n"
+        "# one signal that says the framework is up and /data is mounted for everybody.\n"
+        "for i in $(seq 1 120); do\n"
+        "  [ \"$(getprop sys.boot_completed)\" = \"1\" ] && break\n"
+        "  sleep 2\n"
+        "done\n"
+        f"P={PREFIX}\n"
+        "export LD_LIBRARY_PATH=$P/lib\n"
+        "mkdir -p $P/var/empty $P/var/run\n"
+        "chmod 755 $P/var/empty\n"
+        f"$P/bin/sshd -f {PREFIX}/etc/ssh/sshd_config.installed -E /data/local/tmp/sshd.err\n"
+    )
+    rc = (
+        "# Start sshd inside Android at boot. Written by android/blissos16/steps/ssh.yaml.\n"
+        "#\n"
+        "# THE WRAPPER IS IN /system/bin AND NOT IN /data/local/tmp, WHICH IS THE WHOLE BUG THIS\n"
+        "# FIXES. The first version pointed init at /data/local/tmp/start-sshd.sh, and that is a\n"
+        "# TMPFS: it is empty on the next boot, so init ran a service whose program did not exist\n"
+        "# and said so only in its own log:\n"
+        "#\n"
+        "#     [init.svc.blissos_sshd]: [stopped]\n"
+        "#     [ro.boottime.blissos_sshd]: [15732976153]     <- it DID try\n"
+        "#     $ ls /data/local/tmp/start-sshd.sh\n"
+        "#     No such file or directory\n"
+        "#\n"
+        "# A file that has to survive a power-off belongs on a filesystem that does.\n"
+        "service blissos_sshd /system/bin/start-sshd.sh\n"
+        "    class late_start\n"
+        "    user root\n"
+        "    group root\n"
+        "    oneshot\n"
+        "    disabled\n"
+        "\n"
+        "on property:sys.boot_completed=1\n"
+        "    start blissos_sshd\n"
+    )
+
+    for name, body in (("start-sshd.sh", wrapper), ("blissos_sshd.rc", rc)):
+        local = os.path.join(work, name)
+        with open(local, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        status, output = adb.run("push", local, f"/data/local/tmp/{name}",
+                                 timeout=120, serial=serial)
+        if status != 0:
+            print(f"  could not push {name}: {output[-200:]}", flush=True)
+            return False
+
+    install = (
+        "mount -o rw,remount / 2>&1 || true; "
+        "cp /data/local/tmp/start-sshd.sh /system/bin/start-sshd.sh; "
+        "chmod 755 /system/bin/start-sshd.sh; "
+        "cp /data/local/tmp/blissos_sshd.rc /system/etc/init/blissos_sshd.rc; "
+        "chmod 644 /system/etc/init/blissos_sshd.rc; "
+        "ls -la /system/bin/start-sshd.sh /system/etc/init/blissos_sshd.rc; "
+        "echo HOOKED"
+    )
+    status, output = adb.shell(serial, install, timeout=180)
+    print(f"  boot hook -> {status}", flush=True)
+    _say(output)
+    return status == 0 and "HOOKED" in output
+
+
+def start(driver, step) -> bool:
+    """Write sshd's config, start it, and refuse to continue if it is not listening.
+
+    THE CONFIG IS WRITTEN HERE RATHER THAN SHIPPED, because every line of it is a measured
+    response to something:
+
+        HostKey                  Termux's default is /etc/ssh/... which does not exist on Android
+        PermitRootLogin yes      this account IS root, and it is the only one the guest has
+        PubkeyAuthentication     the only method bionic can check - see the module docstring
+        PasswordAuthentication   off, because a password would be a password nobody verifies
+        AuthorizedKeysFile       an ABSOLUTE path: the default is relative to the home, and the
+                                 home is on an encrypted volume that is not always what sshd thinks
+        Subsystem sftp           the payload's own helper
+
+    `UsePAM` IS ABSENT AND WOULD BE FATAL: Termux's sshd is not built with PAM and answers
+    "Unsupported option UsePAM".
+    """
+    serial = _serial(driver)
+    work = _work(driver)
+    os.makedirs(work, exist_ok=True)
+
+    config = (
+        "Port 8022\n"
+        f"HostKey {PREFIX}/etc/ssh/ssh_host_rsa_key\n"
+        "PermitRootLogin yes\n"
+        "PubkeyAuthentication yes\n"
+        "PasswordAuthentication no\n"
+        "KbdInteractiveAuthentication no\n"
+        f"AuthorizedKeysFile {HOME}/.ssh/authorized_keys\n"
+        f"PidFile /data/local/tmp/sshd.pid\n"
+        f"Subsystem sftp {PREFIX}/libexec/sftp-server\n"
+    )
+    local = os.path.join(work, "sshd_config")
+    with open(local, "w", encoding="utf-8") as fh:
+        fh.write(config)
+    status, output = adb.run("push", local, SSHD_CONFIG, timeout=120, serial=serial)
+    if status != 0:
+        print(f"  could not push the config: {output[-300:]}", flush=True)
+        return False
+    # AND A COPY THE BOOT WRAPPER CAN RESTORE, because /data/local/tmp is a tmpfs and the
+    # artifact is rebooted on a machine this stage never sees.
+    adb.run("push", local, f"{PREFIX}/etc/ssh/sshd_config.installed",
+            timeout=120, serial=serial)
+
+    # KEYS, THE PRIVILEGE SEPARATION DIRECTORY, THEN THE DAEMON. `-E` sends its log to a file this
+    # step reads back, because a daemon that fails to start prints to nowhere anybody is watching.
+    start_command = (
+        f"P={PREFIX}; export LD_LIBRARY_PATH=$P/lib; "
+        f"mkdir -p $P/etc/ssh $P/var/empty $P/var/run; "
+        f"chmod 755 $P/var/empty; "
+        f"[ -f $P/etc/ssh/ssh_host_rsa_key ] || "
+        f"$P/bin/ssh-keygen -t rsa -b 2048 -f $P/etc/ssh/ssh_host_rsa_key -N '' -q; "
+        f"test -f $P/etc/ssh/ssh_host_rsa_key || {{ echo NO_HOST_KEY; exit 1; }}; "
+        f"[ -f /data/local/tmp/sshd.pid ] && kill \"$(cat /data/local/tmp/sshd.pid)\" 2>/dev/null; "
+        f"$P/bin/sshd -f {SSHD_CONFIG} -E /data/local/tmp/sshd.err; "
+        f"sleep 2; "
+        f"tail -5 /data/local/tmp/sshd.err 2>/dev/null; "
+        f"grep -q ':1F56' /proc/net/tcp && echo SSHD_LISTENING"
+    )
+    status, output = adb.shell(serial, start_command, timeout=300)
+    print(f"  start -> {status}", flush=True)
+    _say(output)
+    # THE VERDICT IS THE LISTENING SOCKET, NOT THE EXIT STATUS: `sshd` forks and answers 0 even
+    # when the child it forked died, which is exactly how the missing-library failures presented.
+    if "SSHD_LISTENING" in output:
+        return True
+    print("  sshd did not reach a listening socket; its log is above", flush=True)
+    return False

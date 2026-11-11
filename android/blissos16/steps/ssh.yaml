@@ -1,0 +1,276 @@
+# BlissOS 16.9.7 gets an sshd OF ITS OWN, inside Android, and this file proves it answers.
+#
+#     easyvm android/blissos16/steps/ssh.yaml \
+#         --boot-disk out/blissos16.qcow2 --work out/ssh \
+#         --out out/blissos16-ssh.qcow2
+#
+# THE sshd RUNS IN ANDROID, NOT ON THE HOST, AND THIS WAS PROVEN BY LOGGING IN.
+#
+#     $ ssh -i key -p 8022 root@127.0.0.1 'id; getprop ro.build.version.release; uname -a'
+#     uid=0(root) gid=0(root) groups=0(root) context=u:r:su:s0
+#     13
+#     Linux localhost 6.1.112-gloria-xanmod1 ... x86_64 Toybox
+#
+# `context=u:r:su:s0` is Android's own SELinux context for a root shell, and `Toybox` is Android's
+# userland - so that is the guest's shell answering, not a forward from the host.
+#
+# WHAT THE GUEST HAS, MEASURED ON THE INSTALLED DISK (Android 13, x86_64)
+#
+#     adb shell id          uid=2000(shell) ... context=u:r:shell:s0
+#     adb root              restarting adbd as root
+#     adb shell id          uid=0(root)     ... context=u:r:su:s0
+#     /system/bin/su        does not exist: "su: inaccessible or not found"
+#     /etc/passwd           0 bytes, and on a READ-ONLY `/`
+#     /etc/shadow           does not exist
+#     sshd                  absent; nothing listens on 22
+#
+# SO ROOT COMES FROM `adb root`, AND THE ACCOUNT COMES FROM A FILE THIS STAGE WRITES.
+#
+# Android has no usable account database: /etc/passwd exists but is EMPTY and the root filesystem
+# is mounted `ro`, so a server that authenticates against it finds `invalid user root`. The mount
+# is remounted read-write for the length of this install and back afterwards.
+#
+# WHY PASSWORD AUTHENTICATION IS OFF AND A KEY IS INSTALLED
+#
+# BIONIC HAS NO `getspnam`. sshd on this guest cannot read /etc/shadow at all - measured: with a
+# correct `$6$` hash in it, the login was still refused, and the debug log said
+#
+#     userauth-request for user root service ssh-connection method password
+#     Connection closed by authenticating user root
+#
+# which is "the account exists, the password check cannot happen". A key is the mechanism that
+# works without PAM and without shadow, so this stage installs one.
+#
+# WHY THE SERVER IS TERMUX'S OPENSSH AND NOT A STATIC BINARY
+#
+# Android's C library is bionic, not glibc. A statically linked Debian binary compiles, `file`
+# calls it "not a dynamic executable", and it will not run - measured on the route this replaced.
+# Termux's packages are compiled FOR Android: interpreter /system/bin/linker64, and the libraries
+# that are not the guest's own ship beside it. lib/android_ssh.py assembles that tree.
+#
+# AND THE LIBRARY LIST IS CHECKED, NOT TRUSTED. Five libraries were missing, one per run, and each
+# produced the same symptom - sshd binds the port, accepts the connection, closes it:
+#
+#     libtermux-auth.so       needed by libexec/sshd-session
+#     libgssapi_krb5.so.2     needed by libexec/sshd-session
+#     libandroid-glob.so      needed by lib/libgssapi_krb5.so.2
+#     libresolv_wrapper.so    needed by lib/libcom_err.so
+#     libreadline.so.8        needed by bin/bash
+#     libiconv.so             needed by bin/bash
+#
+# lib/android_ssh.py walks the closure from `bin/sshd`, `libexec/sshd-session` AND `bin/bash` and
+# refuses to hand over a tree with an unreachable library. Every one of those would have been
+# caught before a nine-minute boot instead of after it.
+#
+# WHY /data/data/com.termux/files/usr AND NOT /system
+#
+# The prefix is COMPILED INTO sshd: it looks for host keys and config there. And /data being
+# `nosuid` does not disqualify it - `nosuid` forbids a SETUID bit from taking effect, and sshd is
+# started as root by this stage rather than by one. What /data's ENCRYPTION does disqualify is an
+# rc script at boot: the filesystem is not mounted until vold has the key, which is after init has
+# run. So this stage starts the daemon over adb, once the guest is up.
+#
+# THE PORT IS 8022, Termux's own, and lib/vm.py forwards it 1:1 in user-mode networking.
+#
+# WHAT THIS FILE DOES NOT DO
+#
+#   no forward of the guest's adbd into the published artifact. adb is how this stage gets in;
+#   leaving it as a second way in would be a worse disk.
+
+name: blissos 16.9.7 - put sshd inside Android and prove it answers
+resolution: [1280, 800]
+
+vars:
+  user:
+    from: args.user
+    default: vmuser
+  password:
+    from: args.password
+    default: admin
+  out:
+    from: args.out
+    default: out/blissos16-ssh.qcow2
+  adb_port:
+    from: args.adb_port
+    default: "5555"
+  # WHERE THE PUBLIC KEY COMES FROM. A run fact: the caller decides who may log in, and a key
+  # checked into the repository would be one that anybody reading the repository holds.
+  public_key:
+    from: args.public_key
+    default: ""
+
+# Termux's sshd listens on 8022, and lib/vm.py forwards that port 1:1 to the host, so the wait and
+# every `ssh:` step below reach the port that actually has a daemon on it.
+ssh_user: root
+ssh_port: 8022
+
+steps:
+  # =======================================================================================
+  # 1. THE MACHINE
+  # =======================================================================================
+  #
+  # `os: android` with a qcow2 and NO `--boot-iso` is the INSTALLED-DISK shape: one drive, no
+  # cdrom, no -kernel, and the firmware reads the ESP's GRUB.
+  - name: boot the installed disk
+    boot: true
+    os: android
+    timeout: 300
+
+  # =======================================================================================
+  # 2. THE CHANNEL THAT EXISTS BEFORE ANYTHING IS INSTALLED
+  # =======================================================================================
+  #
+  # NOT `require_ssh:` - there is no sshd yet, and that is what this stage is for. adb is the only
+  # way into an Android guest that has never been configured.
+  - name: attach to the guest's adbd
+    adb_connect: true
+    timeout: 300
+
+  # =======================================================================================
+  # 3. ROOT, WHICH THIS GUEST OBTAINS FROM adbd RATHER THAN FROM `su`
+  # =======================================================================================
+  - name: become root
+    adb_root: true
+    timeout: 120
+
+  - name: prove the shell is root
+    adb: |
+      id
+      getprop ro.build.version.release
+      getprop ro.product.model
+    timeout: 60
+
+  # =======================================================================================
+  # 4. THE PAYLOAD IS BUILT ON THE HOST, WHERE THE PROXY AND THE INDEX ARE
+  # =======================================================================================
+  #
+  # THE GUEST CANNOT FETCH THIS ITSELF: Termux's repository is https and this container reaches
+  # the internet through a proxy the guest knows nothing about. The download happens here, and the
+  # guest only ever sees bytes that arrived - and that were checked for unresolved libraries.
+  - name: build the ssh payload
+    python: bliss_ssh:build_payload
+    timeout: 900
+
+  # =======================================================================================
+  # 5. IT GOES IN, AND IT GOES WHERE THE PREFIX SAYS
+  # =======================================================================================
+  - name: push the payload into the guest
+    python: bliss_ssh:push_payload
+    timeout: 900
+
+  # =======================================================================================
+  # 6. A REAL ACCOUNT, BECAUSE ANDROID DOES NOT HAVE ONE
+  # =======================================================================================
+  #
+  # `/etc/passwd` IS EMPTY AND `/` IS READ-ONLY. Both have to change, and the mount goes back to
+  # `ro` at the end of this file - a published disk whose root filesystem is writable is a disk
+  # anybody can change without leaving a trace.
+  #
+  # THE SHELL IS `usr/bin/bash` AND IT HAS TO EXIST: Termux's sshd has that path COMPILED IN and
+  # refuses a login whose shell is not there - measured as
+  #
+  #     User root not allowed because shell /data/data/com.termux/files/usr/bin/bash
+  #     does not exist
+  #
+  # which is why `bash` is in the payload rather than left to the guest.
+  - name: give the guest a root account
+    adb: |
+      mount -o rw,remount / 2>&1 || true
+      P=/data/data/com.termux/files/usr
+      printf 'root:x:0:0:root:/data/data/com.termux/files/home:%s/bin/bash\n' "$P" > /etc/passwd
+      cat /etc/passwd
+      id root 2>&1 || true
+    timeout: 120
+
+  # =======================================================================================
+  # 7. THE KEY, WHICH IS THE ONLY MECHANISM THIS GUEST CAN CHECK
+  # =======================================================================================
+  #
+  # See the header: bionic has no `getspnam`, so /etc/shadow cannot be consulted and a password is
+  # a password nobody verifies. The key is installed with the modes sshd insists on, and the HOME
+  # is 700 - `bad ownership or modes for directory` is what a 777 home produces, measured.
+  - name: install the login key
+    python: bliss_ssh:install_key
+    # THE KEY ARRIVES AS `--public-key` AND IS SUBSTITUTED HERE. A `python:` step reads its own
+    # arguments off the step, so the value has to be ON the step - `vars` alone does not carry it
+    # to an extension.
+    public_key: "{{ public_key }}"
+    timeout: 180
+
+  # =======================================================================================
+  # 8. START IT
+  # =======================================================================================
+  #
+  # `var/empty` IS sshd's PRIVILEGE SEPARATION DIRECTORY AND HAS TO EXIST EMPTY. Without it:
+  #
+  #     Missing privilege separation directory: .../var/empty
+  #
+  # The config is written beside the payload because the one Termux ships is three lines and
+  # `UsePAM` is not compiled in - passing it is `Unsupported option UsePAM`, measured.
+  - name: configure and start sshd
+    python: bliss_ssh:start
+    timeout: 300
+
+  # =======================================================================================
+  # 8b. AND IT HAS TO SURVIVE A REBOOT, OR THE PUBLISHED DISK ANSWERS NOTHING
+  # =======================================================================================
+  #
+  # MEASURED ON THE ARTEFACT THIS STAGE HAD JUST PUBLISHED, WITH adb ATTACHED AND NO SSH:
+  #
+  #     $ ls -la /data/data/com.termux/files/usr/bin/sshd
+  #     -rwxr-xr-x 1 root root 426216 ... sshd          <- the binary is there
+  #     $ ps -A | grep sshd
+  #     (nothing)                                       <- nothing is running
+  #
+  # The daemon this file started lives in /data/local/tmp as a process, and a process does not
+  # survive a power-off. Android's init is what runs at boot, and /system/etc/init/*.rc is where
+  # it looks - so the hook goes there and starts the daemon once the framework is up.
+  - name: start sshd at boot
+    python: bliss_ssh:install_boot_hook
+    timeout: 180
+
+  # =======================================================================================
+  # 9. THE VERDICT, FROM OUTSIDE AND OVER THE FORWARDED PORT
+  # =======================================================================================
+  #
+  # THIS IS THE CLAIM. Everything above was proved over adb, inside the guest, by a shell that was
+  # already root. This is a TCP connection to the forwarded port, a key, and a command the remote
+  # shell ran - which is what anybody who downloads the disk will do.
+  - name: wait for sshd on the forwarded port
+    require_ssh: true
+    ssh_probe: echo ok
+    timeout: 300
+
+  # AND THE SHELL IS ANDROID'S. `uname -a` says `Toybox` and `id` says `u:r:su:s0`; a forward from
+  # the host would say neither. That is the difference between "a port answers" and "this machine
+  # has an ssh server".
+  - name: prove the answer comes from Android
+    ssh: |
+      set -e
+      id
+      getprop ro.build.version.release
+      uname -a
+      ps -A 2>/dev/null | grep '[s]shd' || ps 2>/dev/null | grep '[s]shd'
+      test -x /data/data/com.termux/files/usr/bin/sshd
+      echo SSHD_IS_THE_GUESTS_OWN
+    timeout: 120
+
+  # =======================================================================================
+  # 10. THE DISK IS THE ARTEFACT
+  # =======================================================================================
+  #
+  # `/` GOES BACK TO READ-ONLY, and that is the flush that matters - the account file is on it.
+  - name: put the root filesystem back to read-only
+    adb: |
+      mount -o ro,remount / 2>&1 || true
+      mount | grep ' / '
+    timeout: 60
+
+  # `shutdown: kill` AND NOT A GRACEFUL ONE: this guest has no ACPI handler worth the wait, and
+  # the writes above are already on disk. The measured alternative is a guest that sits at the
+  # Android screen until the timeout.
+  - name: stop the machine
+    shutdown: kill
+
+  - name: publish the disk
+    compress: "{{ out }}"

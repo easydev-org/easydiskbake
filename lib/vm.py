@@ -362,6 +362,12 @@ class Shape:
     # android/blissos16/steps/launch.yaml, whose frames come over QMP - has nothing to do with
     # dependency, and qemu's own `-netdev user` cannot fail the way a bridge can.
     net: str = "tap"
+    # THE GUEST PORT adb LISTENS ON, forwarded 1:1 when `net` is "none".
+    #
+    # Android is the one family reached over adb before it has an sshd, and qemu's user-mode
+    # network forwards nothing unless it is told to. Every other family leaves this 0 and gets no
+    # forward at all. See `build_args` and lib/vm_session.py's android installed branch.
+    adb_port: int = 0
 
     @classmethod
     def from_env(cls) -> "Shape":
@@ -543,8 +549,22 @@ def build_args(work: str, extra: list[str] | None = None,
     # - measured on android/blissos16/steps/launch.yaml, which reads the screen over QMP and has
     # for an address. `-netdev user` needs no privileges, no helper and no tap.
     if shape.net == "none":
+        # USER-MODE NAT, WITH THE FORWARDS THAT MAKE IT USABLE.
+        #
+        # `-netdev user,id=n0` with no forwards is right for a stage that only reads the screen
+        # over QMP, and wrong for one that reaches the guest: qemu's user-mode network forwards
+        # nothing unless told to. android/blissos16/steps/ssh.yaml is that case - it gets in over
+        # adb on 5555 and then proves sshd on 8022, and neither port exists on the host without
+        # this.
+        #
+        # THE PORTS ARE FORWARDED TO THEMSELVES. `ssh_port` is what `require_ssh:` and every
+        # `ssh:` step dial, and a Termux sshd listens on 8022 - so renumbering it to 22 here
+        # would be a second place to keep in step with the file. Same for adb.
+        forwards = [f"hostfwd=tcp::{shape.ssh_port}-:{shape.ssh_port}"]
+        if shape.adb_port:
+            forwards.append(f"hostfwd=tcp::{shape.adb_port}-:{shape.adb_port}")
         args += [
-            "-netdev", "user,id=n0",
+            "-netdev", "user,id=n0," + ",".join(forwards),
             "-device", f"virtio-net-pci,netdev=n0,mac={mac},romfile={mtu_arg}",
         ]
     else:

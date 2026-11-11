@@ -2227,8 +2227,15 @@ def main() -> int:
     check("requires is checked before the lifecycle steps", "lib/steps.py",
           steps_src_early.index("requires:` IS CHECKED") <
           steps_src_early.index('if step["boot"]:'))
+    # AND IT READS THE ACCOUNT FROM THE DRIVER, WHICH IS AVAILABLE BEFORE ANY LOCAL IS.
+    #
+    # It used `values.get("ssh_user")`, and `values` is the resolved `vars` mapping - no file here
+    # declares `ssh_user` as a VAR, so that read found nothing and fell back to "vmuser". The
+    # account now comes from `driver.ssh_user`, which `walk` sets from the Walk before the first
+    # step runs - so a `boot: requires: [overlay]` is checked against the account the file named.
     check("the capability check does not depend on a later local", "lib/steps.py",
-          'user=values.get("ssh_user") or "vmuser"' in steps_src_early)
+          'getattr(driver, "ssh_user", "")' in steps_src_early
+          and 'user=values.get("ssh_user") or "vmuser"' not in steps_src_early)
 
     # AND `shutdown:` TAKES A METHOD, NOT A BOOLEAN, WITH NO SILENT CHAIN BEHIND IT.
     steps_src = read("lib/steps.py")
