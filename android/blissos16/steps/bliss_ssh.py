@@ -381,6 +381,16 @@ def start(driver, step) -> bool:
         # already inside. The check adds nothing on this guest, and it is the only thing that
         # prevents a login at all.
         "StrictModes no\n"
+        # `LogLevel DEBUG1` IS FOR THE FAILURE THIS STAGE KEEPS HITTING. With the default, sshd
+        # writes "Server listening" and nothing about the authentication that follows - so five
+        # CI runs reported `Permission denied (publickey)` with the server silent about why. The
+        # line that names the reason lives at DEBUG1 and only in `sshd-session`'s log:
+        #
+        #     trying public key file /data/local/home/.ssh/authorized_keys
+        #     Authentication refused: bad ownership or modes for directory /data
+        #
+        # It costs a few lines per connection on a disk nobody reads logs from.
+        "LogLevel DEBUG1\n"
         f"PidFile /data/local/tmp/sshd.pid\n"
         f"Subsystem sftp {PREFIX}/libexec/sftp-server\n"
     )
@@ -477,6 +487,21 @@ def start(driver, step) -> bool:
         if tail.strip():
             print("  sshd's own log:", flush=True)
             _say(tail, limit=20)
+        # AND WHAT sshd THINKS ITS CONFIGURATION IS. `-T` prints the EFFECTIVE values after
+        # include processing, defaults and overrides - so a line that did not take effect says so
+        # here, instead of only in the reason a login failed:
+        #
+        #     $ sshd -T | grep -E 'strictmodes|authorizedkeysfile|permitrootlogin'
+        status, effective = adb.shell(
+            serial,
+            f"P={PREFIX}; export LD_LIBRARY_PATH=$P/lib; "
+            f"$P/bin/sshd -T -f {SSHD_CONFIG} 2>&1 | "
+            f"grep -iE '^(strictmodes|authorizedkeysfile|permitrootlogin|pubkeyauth|"
+            f"passwordauth|usepam|loglevel) '",
+            timeout=60)
+        if effective.strip():
+            print("  sshd's effective config:", flush=True)
+            _say(effective, limit=20)
         return True
     print("  sshd did not reach a listening socket; its log is above", flush=True)
     return False
