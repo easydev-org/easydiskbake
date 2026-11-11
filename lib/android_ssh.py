@@ -82,8 +82,32 @@ INDEX_URL = ("https://packages.termux.dev/apt/termux-main/dists/stable/"
              "main/binary-x86_64/Packages")
 POOL = "https://packages.termux.dev/apt/termux-main"
 
-# WHERE THE GUEST EXPECTS IT. Compiled into sshd: it looks for config and host keys here.
-PREFIX = "data/data/com.termux/files/usr"
+# WHERE THE PAYLOAD GOES, AND IT IS NOT WHERE TERMUX PUTS ITS OWN.
+#
+# Termux's prefix is `/data/data/com.termux/files/usr`, and it is compiled into sshd as the place
+# it looks for its host keys - which is why this module assembles that tree. WHAT IT MUST NOT BE
+# IS THE PATH THE PAYLOAD IS INSTALLED AT, and that cost a whole rebuild to find:
+#
+#     $ ls -ldZ /data/data/com.termux
+#     drwx------ 5 u0_a282 u0_a282 u:object_r:app_data_file:s0:c26,c257,c512,c768
+#
+# That is an APP's private directory. Only uid `u0_a282` - the Termux app - can read it, and
+# `adb root` is not that uid in the way that matters:
+#
+#     $ cp -a /data/data/com.termux/files/usr /data/local/usr
+#     cp: bad '/data/data/com.termux/files/usr': Permission denied
+#
+# on a shell that HAD said `uid=0(root)`. The directory's mode is 700 and its SELinux label is
+# `app_data_file`, so init cannot start a daemon there either - which is exactly what the boot
+# hook found:
+#
+#     mkdir: '/data/data/com.termux/files': Permission denied
+#     /system/bin/start-sshd.sh[12]: /data/data/com.termux/files/usr/bin/sshd: inaccessible
+#
+# `/data/local` is `drwxr-x--x root root u:object_r:system_data_file:s0` and a root shell CAN
+# create under it - measured. So the payload is installed at PREFIX below and sshd is pointed at
+# it with `-f` and `-h`, which is the one thing about the compiled-in path this changes.
+PREFIX = "/data/local/sshd"
 
 # WHAT THE PACKAGES ARE FOR, AND HOW THE LIST WAS DERIVED.
 #
@@ -415,9 +439,13 @@ def build(work: str) -> str:
         fetch(f"{POOL}/{path}", deb)
         extract(deb, tree)
 
-    payload_root = os.path.join(tree, PREFIX)
+    # THE PACKAGES LAND IN TERMUX'S OWN LAYOUT, WHICH IS NOT WHERE THEY ARE INSTALLED. See PREFIX:
+    # the tree is what sshd's binaries expect to be sitting in, and `flat` is a copy of its `usr`
+    # directory - the same files under a path root can write to.
+    termux_prefix = "data/data/com.termux/files/usr"
+    payload_root = os.path.join(tree, termux_prefix)
     if not os.path.isdir(os.path.join(payload_root, "bin")):
-        raise RuntimeError(f"the packages did not produce {PREFIX}/bin")
+        raise RuntimeError(f"the packages did not produce {termux_prefix}/bin")
 
     for required in ("bin/sshd", "bin/ssh-keygen", "lib/libcrypto.so.3",
                      "lib/libldns.so", "lib/libandroid-support.so"):

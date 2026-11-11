@@ -42,11 +42,11 @@ import android_ssh  # noqa: E402
 # WHERE THE GUEST KEEPS IT. adb cannot push into /data/data directly - vold owns that directory
 # and creates it on first boot - so the tree goes to the tmpfs and is copied from there.
 STAGING = "/data/local/tmp/termux"
-PREFIX = "/data/data/com.termux/files/usr"
+PREFIX = android_ssh.PREFIX
 # THE ACCOUNT'S HOME, AND IT MUST BE 700. sshd refuses a key from a home anybody can write to:
 #
 #     Authentication refused: bad ownership or modes for directory ...
-HOME = "/data/data/com.termux/files/home"
+HOME = "/data/local/home"
 SSHD_CONFIG = "/data/local/tmp/sshd_config"
 
 
@@ -195,7 +195,7 @@ def install_boot_hook(driver, step) -> bool:
     booting the artifact the stage had just published: the binary was there, correct and
     executable, and NOTHING WAS RUNNING.
 
-        $ ls -la /data/data/com.termux/files/usr/bin/sshd
+        $ ls -la /data/local/sshd/bin/sshd
         -rwxr-xr-x 1 root root 426216 ... sshd
         $ ps -A | grep sshd
         (nothing)
@@ -308,6 +308,25 @@ def start(driver, step) -> bool:
         "PasswordAuthentication no\n"
         "KbdInteractiveAuthentication no\n"
         f"AuthorizedKeysFile {HOME}/.ssh/authorized_keys\n"
+        # `StrictModes no` IS REQUIRED ON ANDROID AND ITS ABSENCE WAS THE LAST FAILURE.
+        #
+        # With everything else correct - the key installed, 700/700/600, root:root, the account in
+        # /etc/passwd - the login was still refused, and sshd's own debug log named the reason:
+        #
+        #     trying public key file /data/local/home/.ssh/authorized_keys
+        #     Authentication refused: bad ownership or modes for directory /data
+        #
+        # `/data` is `drwxrwx--x system system` on Android and ALWAYS WILL BE. StrictModes walks
+        # every directory from / down to the key and requires each to be owned by the user or
+        # root and not writable by group or other - and /data is owned by `system`, so no path
+        # under it can ever satisfy that check.
+        #
+        # Turning it off is safe HERE and only here, in a way that is worth being explicit about:
+        # the directory it stops checking is /data, which is mode 771 and owned by a system uid,
+        # so the group that could write to it is `system` - the same trust boundary sshd is
+        # already inside. The check adds nothing on this guest, and it is the only thing that
+        # prevents a login at all.
+        "StrictModes no\n"
         f"PidFile /data/local/tmp/sshd.pid\n"
         f"Subsystem sftp {PREFIX}/libexec/sftp-server\n"
     )

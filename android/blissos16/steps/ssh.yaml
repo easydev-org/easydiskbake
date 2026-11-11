@@ -62,13 +62,35 @@
 # refuses to hand over a tree with an unreachable library. Every one of those would have been
 # caught before a nine-minute boot instead of after it.
 #
-# WHY /data/data/com.termux/files/usr AND NOT /system
+# WHY THE PAYLOAD GOES TO /data/local/sshd AND NOT WHERE TERMUX PUTS ITS OWN
 #
-# The prefix is COMPILED INTO sshd: it looks for host keys and config there. And /data being
-# `nosuid` does not disqualify it - `nosuid` forbids a SETUID bit from taking effect, and sshd is
-# started as root by this stage rather than by one. What /data's ENCRYPTION does disqualify is an
-# rc script at boot: the filesystem is not mounted until vold has the key, which is after init has
-# run. So this stage starts the daemon over adb, once the guest is up.
+# THE OBVIOUS PATH IS WRONG, AND THE ERROR IT PRODUCES IS `Permission denied` ON A SHELL THAT HAS
+# JUST SAID `uid=0(root)`:
+#
+#     $ ls -ldZ /data/data/com.termux
+#     drwx------ 5 u0_a282 u0_a282 u:object_r:app_data_file:s0:c26,c257,c512,c768
+#     $ cp -a /data/data/com.termux/files/usr /data/local/usr
+#     cp: bad '/data/data/com.termux/files/usr': Permission denied
+#
+# That is an APP's private directory: mode 700, owned by the Termux app's uid, labelled
+# `app_data_file`. Being root is not enough to read it the way a file copy needs, and init - which
+# is `u:r:init:s0` - cannot start a daemon from it at all, which is exactly what the boot hook
+# reported:
+#
+#     mkdir: '/data/data/com.termux/files': Permission denied
+#     /system/bin/start-sshd.sh[12]: /data/data/com.termux/files/usr/bin/sshd: inaccessible
+#
+# `/data/local` IS NOT THAT. Measured: `drwxr-x--x root root u:object_r:system_data_file:s0`, and
+# a root shell CAN create under it. So the payload is installed at /data/local/sshd and sshd is
+# pointed at it with `-f` and `-h` - the compiled-in Termux prefix is a fact about where sshd
+# LOOKS by default, not about where the files have to be.
+#
+# `/data` IS ALSO NOT ENCRYPTED HERE, which the earlier Android-x86 route had led me to expect:
+#
+#     /dev/block/vda2 on /data type ext4 (rw,seclabel,noatime)     no dm, no nosuid
+#     getprop ro.crypto.state -> unsupported
+#
+# that is what makes a boot hook possible at all.
 #
 # THE PORT IS 8022, Termux's own, and lib/vm.py forwards it 1:1 in user-mode networking.
 #
@@ -169,15 +191,15 @@ steps:
   # THE SHELL IS `usr/bin/bash` AND IT HAS TO EXIST: Termux's sshd has that path COMPILED IN and
   # refuses a login whose shell is not there - measured as
   #
-  #     User root not allowed because shell /data/data/com.termux/files/usr/bin/bash
+  #     User root not allowed because shell .../bin/bash
   #     does not exist
   #
   # which is why `bash` is in the payload rather than left to the guest.
   - name: give the guest a root account
     adb: |
       mount -o rw,remount / 2>&1 || true
-      P=/data/data/com.termux/files/usr
-      printf 'root:x:0:0:root:/data/data/com.termux/files/home:%s/bin/bash\n' "$P" > /etc/passwd
+      P=/data/local/sshd
+      printf 'root:x:0:0:root:/data/local/home:%s/bin/bash\n' "$P" > /etc/passwd
       cat /etc/passwd
       id root 2>&1 || true
     timeout: 120
@@ -217,7 +239,7 @@ steps:
   #
   # MEASURED ON THE ARTEFACT THIS STAGE HAD JUST PUBLISHED, WITH adb ATTACHED AND NO SSH:
   #
-  #     $ ls -la /data/data/com.termux/files/usr/bin/sshd
+  #     $ ls -la /data/local/sshd/bin/sshd
   #     -rwxr-xr-x 1 root root 426216 ... sshd          <- the binary is there
   #     $ ps -A | grep sshd
   #     (nothing)                                       <- nothing is running
@@ -251,7 +273,7 @@ steps:
       getprop ro.build.version.release
       uname -a
       ps -A 2>/dev/null | grep '[s]shd' || ps 2>/dev/null | grep '[s]shd'
-      test -x /data/data/com.termux/files/usr/bin/sshd
+      test -x /data/local/sshd/bin/sshd
       echo SSHD_IS_THE_GUESTS_OWN
     timeout: 120
 
