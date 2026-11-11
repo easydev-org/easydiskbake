@@ -476,6 +476,16 @@ def main() -> int:
     check("the reason StrictModes is off is written down",
           "android/blissos16/steps/bliss_ssh.py",
           "bad ownership or modes for directory /data" in bliss_ssh_src)
+    # AND THE DAEMON IS THE SERVICE, NOT A CHILD OF A WRAPPER THAT EXITS.
+    #
+    # A `oneshot` service's process group is killed when its program exits, and the wrapper had
+    # forked sshd and exited - so the daemon was killed a moment after it bound the port, on every
+    # boot, while its own log showed "Server listening" 26 KB of times. `exec sshd -D` and no
+    # `oneshot` is the shape that leaves init supervising the daemon itself.
+    check("the boot service is the daemon and not a wrapper around it",
+          "android/blissos16/steps/bliss_ssh.py",
+          "exec $P/bin/sshd -D" in bliss_ssh_src
+          and "    oneshot\n" not in bliss_ssh_src.split("service blissos_sshd")[1][:400])
     # AND THE WORKFLOW RUNS IT.
     check("the blissos workflow runs the ssh stage",
           ".github/workflows/blissos16.yml",
