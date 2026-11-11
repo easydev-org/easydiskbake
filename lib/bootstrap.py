@@ -468,15 +468,37 @@ function Say($message) {{
 # sentence. `net use` here passes the password as a VARIABLE, which is a different shape from the
 # literal `""` that lib/hostshare.py found unusable on this platform; whether that difference
 # matters is what these lines will answer.
+# `New-SmbMapping` RATHER THAN `net use`, WHICH IS THE SAME CHOICE lib/hostshare.py ALREADY MADE.
+#
+# `net use '<unc>' $SmbPass /user:$SmbUser` passes the password as a POSITIONAL ARGUMENT, and this
+# account has no password - so `$SmbPass` is the empty string and the token collapses. Every
+# argument after it shifts left and `net use` reads a switch as the password. That is the identical
+# defect lib/hostshare.py documents for the literal form:
+#
+#     net use \\172.30.0.1\shared "" /user:guest /persistent=no
+#     The option /PERSISTENT=NO is unknown.
+#
+# and it is why that file uses New-SmbMapping, where the credential is an OBJECT and there is no
+# list for anything to shift in. The same form works here, and vm-configure's own `share_mount`
+# step is the proof: it mounts with exactly this and the stage publishes.
+#
+# -ErrorAction Stop SO A REFUSAL IS AN EXCEPTION, not a warning the exit status never sees. The
+# return value is still 0/1 so the wait loop below reads like the one it replaced.
 function UseShare {{
-    $out = net use '{unc}' $SmbPass /user:$SmbUser /persistent=no 2>&1
-    $code = $LASTEXITCODE
-    Say ("net use -> " + $code)
-    if ($code -ne 0 -and $out) {{ Say ("  " + ($out -join ' / ')) }}
-    return $code
+    $null = Get-SmbMapping -RemotePath '{unc}' -ErrorAction SilentlyContinue |
+        Remove-SmbMapping -Force -ErrorAction SilentlyContinue
+    try {{
+        $null = New-SmbMapping -RemotePath '{unc}' -UserName $SmbUser -Password '' `
+            -Persistent $false -ErrorAction Stop
+        Say "smb mapping -> ok"
+        return 0
+    }} catch {{
+        Say ("smb mapping -> FAILED: " + $_.Exception.Message)
+        return 1
+    }}
 }}
 
-# THE SESSION, EXPLICITLY. `/persistent:no` because nothing here survives the process, and
+# THE SESSION, EXPLICITLY. `-Persistent $false` because nothing here survives the process, and
 # saying so keeps a stale mapping out of the user's registry for the next logon to trip over.
 $null = UseShare
 

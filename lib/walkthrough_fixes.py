@@ -2065,15 +2065,30 @@ def main() -> int:
     # reader has no way to choose.
     wl = read("lib/bootstrap.py")
     win_tmpl = wl[wl.index("def windows_launcher"):wl.index("def launcher_body")]
-    check("the launcher keeps net use's exit status", "lib/bootstrap.py",
-          "function UseShare" in win_tmpl and "$LASTEXITCODE" in win_tmpl)
-    check("and says it in the log", "lib/bootstrap.py",
-          'Say ("net use -> " + $code)' in win_tmpl)
-    # AND THE COMMAND ITSELF IS NO LONGER DISCARDED ANYWHERE IN THAT TEMPLATE.
-    code_only = "\n".join(l for l in win_tmpl.splitlines() if not l.lstrip().startswith("#"))
-    check("no net use result is thrown away", "lib/bootstrap.py",
-          "net use" not in code_only.split("function UseShare")[0]
-          or "Out-Null" not in code_only)
+    # THE DIAGNOSTIC ANSWERED THE QUESTION IT WAS ADDED FOR, AND THE ANSWER WAS THE OTHER BUG.
+    #
+    # Recording `net use`'s exit status was step one. Step two is what it showed: `$SmbPass` is
+    # `''` for this account, and a POSITIONAL empty argument COLLAPSES in PowerShell - so every
+    # argument after it shifts left and `net use` reads a switch as the password. That is the
+    # identical defect lib/hostshare.py documents for the literal form:
+    #
+    #     net use \\172.30.0.1\shared "" /user:guest /persistent=no
+    #     The option /PERSISTENT=NO is unknown.
+    #
+    # and it is why that file mounts with New-SmbMapping, where the credential is an OBJECT and
+    # there is no argument list for anything to shift in. vm-configure's own `share_mount` step is
+    # the proof that this form works on this guest: it mounts exactly this way and the stage
+    # publishes a disk.
+    check("the launcher mounts with an object credential", "lib/bootstrap.py",
+          "New-SmbMapping" in win_tmpl)
+    check("it does not pass an empty password positionally", "lib/bootstrap.py",
+          "net use '{{unc}}' $SmbPass" not in win_tmpl)
+    # AND A REFUSAL IS AN EXCEPTION, NOT A WARNING THE EXIT STATUS NEVER SEES - which is what
+    # -ErrorAction SilentlyContinue on the NEW call would have made it.
+    check("a refused mapping is raised", "lib/bootstrap.py",
+          "-ErrorAction Stop" in win_tmpl)
+    check("and the launcher says what it answered", "lib/bootstrap.py",
+          "smb mapping -> " in win_tmpl)
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))
