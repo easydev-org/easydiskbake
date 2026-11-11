@@ -516,9 +516,26 @@ jobs:
 
   dev:
     needs: vm-configure
+    # THE LAST STAGE THAT PRODUCES A DISK, SO ITS OUTPUT IS WHAT launch_dev PULLS.
+    #
+    # THIS CONDITION NAMED `share`, A JOB THAT HAS NOT EXISTED SINCE IT WAS RENAMED
+    # `vm-configure`. So `needs.share.outputs.tag` was empty, the `||` fell through to the second
+    # operand, and this job only ever ran when `dev_from` was given by hand:
+    #
+    #     always() && inputs.dev_run && (inputs.dev_from != '' || '' != '')
+    #                                                            ^^^^^^^^^^^^^ never true
+    #
+    # A chain whose middle job can only start when you name its input is a chain that never runs
+    # end to end - which is why no run in this repository has ever reached `dev` by itself. The
+    # same rename was found and fixed in macos15.yml; this file did not get the fix.
+    #
+    # AND `outputs.tag` WAS MISSING ENTIRELY, so `needs.dev.outputs.tag` in launch_dev was empty
+    # too and `launch_dev` had the same problem one job later.
+    outputs:
+      tag: ${{ inputs.dev_publish_tag || 'windows11-dev' }}
     if: |
       always() && inputs.dev_run
-      && (inputs.dev_from != '' || needs.share.outputs.tag != '')
+      && (inputs.dev_from != '' || needs.vm-configure.outputs.tag != '')
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     container:
@@ -553,9 +570,12 @@ jobs:
             set -euo pipefail
             mkdir -p out
             export GITHUB_TOKEN="${{ github.token }}"
+            # THE VM-CONFIGURE DISK, NOT THE SSH DISK. This job reads a disk that has the
+            # share mounted and the logon task registered; pulling `needs.ssh` here would have
+            # started from the stage before it and left out everything vm-configure proved.
             python3 windows/11/pull.py \
-              "${{ inputs.dev_from || needs.ssh.outputs.tag }}" \
-              out/windows11-ssh.qcow2
+              "${{ inputs.dev_from || needs.vm-configure.outputs.tag }}" \
+              out/windows11-vm-configure.qcow2
 
       - name: install the toolchain
         uses: easydev-org/easyactions/log-stream@main
@@ -570,8 +590,11 @@ jobs:
             # logs in as the account the disk actually has rather than one it assumed.
             export WINDOWS_ADMIN_USER=vmuser
             export WINDOWS_ADMIN_PASSWORD=admin
+            # THE FILE PULLED ABOVE, NAMED ONCE MORE. `devtools.py` calls this argument
+            # `--ssh` because that is what it used to be handed; what it means is "the input
+            # disk", and the input is now the vm-configure disk the pull step fetched.
             python3 windows/11/devtools.py \
-              --ssh out/windows11-ssh.qcow2 \
+              --ssh out/windows11-vm-configure.qcow2 \
               --out out/windows11-dev.qcow2 \
               --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
               --no-clean

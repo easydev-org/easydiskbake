@@ -1559,6 +1559,49 @@ def main() -> int:
                 ret_lines.append(node.lineno)
         if arm_lines and ret_lines:
             check(f"{prog} arms before it returns", prog, min(arm_lines) < min(ret_lines))
+    # AND EVERY `needs.<job>.outputs` REFERENCE NAMES A JOB THAT EXISTS, THAT THIS JOB DECLARES
+    # IN ITS OWN `needs`, AND THAT EXPORTS A `tag`.
+    #
+    # Three ways this was wrong at once, and any of them makes a chain that cannot reach its own
+    # middle jobs:
+    #
+    #   windows-11.yml dev   `needs.share.outputs.tag` - `share` was renamed `vm-configure` and
+    #                        this line kept the old name, so the second operand of the `||` was
+    #                        always empty and `dev` could only start when `dev_from` was typed by
+    #                        hand. It also had no `outputs:` at all, so `launch_dev` inherited
+    #                        the same problem one job later.
+    #   macos15.yml     dev  the condition was fixed to `needs.vm-configure` when the rename
+    #                        happened, and the PULL step below it kept `needs.ssh` - which is
+    #                        empty in a job whose `needs` is `vm-configure`. Reachable, and it
+    #                        would have failed its first step.
+    #
+    # A missing or renamed job is not a YAML error (the expression is a string until GitHub
+    # evaluates it, and an unknown `needs.<x>` evaluates to empty rather than raising), so the
+    # file parses, the workflow loads, and the job is simply never selected. This check is the
+    # only thing between that and another silent `skipped` in a run graph.
+    try:
+        import yaml as _yaml
+    except ImportError:
+        _yaml = None
+    if _yaml is not None:
+        import re as _re
+        for wf in ("windows-11.yml", "macos15.yml"):
+            doc = _yaml.safe_load(read(f".github/workflows/{wf}")) or {}
+            wjobs = doc.get("jobs") or {}
+            problems = []
+            for jname, jbody in wjobs.items():
+                text = _yaml.dump(jbody)
+                declared = jbody.get("needs")
+                declared = [declared] if isinstance(declared, str) else (declared or [])
+                for ref in sorted(set(_re.findall(r"needs\.([A-Za-z0-9_-]+)\.outputs", text))):
+                    if ref not in wjobs:
+                        problems.append(f"{jname} needs.{ref}: no such job")
+                    elif ref not in declared:
+                        problems.append(f"{jname} needs.{ref}: not in its own needs {declared}")
+                    elif not (wjobs[ref].get("outputs") or {}).get("tag"):
+                        problems.append(f"{jname} needs.{ref}: that job exports no tag")
+            check(f"{wf} only reads outputs it declares", f".github/workflows/{wf}",
+                  not problems, )
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))

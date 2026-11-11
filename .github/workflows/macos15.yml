@@ -746,10 +746,16 @@ jobs:
             set -euo pipefail
             python3 lib/ci.py tags --prefix macos-
 
-      - name: pull the ssh disk
+      - name: pull the vm-configure disk
         uses: easydev-org/easyactions/oci-pull@main
         with:
-          tag: ${{ inputs.dev_from || needs.ssh.outputs.tag }}
+          # `needs.ssh` IS EMPTY IN THIS JOB. `dev` declares `needs: vm-configure`, and GitHub
+          # only populates the outputs of jobs named in `needs` - so `needs.ssh.outputs.tag`
+          # resolved to the empty string here and the pull asked ghcr for `:`, or for whatever
+          # an empty tag resolves to. The condition above it was fixed to `needs.vm-configure`
+          # when `share` was renamed; this line kept the old name, so the job could be REACHED
+          # and still fail at its first step.
+          tag: ${{ inputs.dev_from || needs.vm-configure.outputs.tag }}
           dest: out
           token: ${{ github.token }}
       - name: install the toolchain
