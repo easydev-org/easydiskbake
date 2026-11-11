@@ -262,6 +262,33 @@ steps:
   # ever proving the disk answers, which is the one thing it exists to prove. What changed instead
   # is that `start` now prints sshd's OWN log the moment the daemon binds - so when this fails,
   # the server's reason is already in the log above it.
+  # THE SERVER'S SIDE OF THE CONVERSATION, TAKEN WHILE THE DAEMON IS STILL WARM AND BEFORE THE
+  # WAIT DECIDES ANYTHING.
+  #
+  # IT HAS TO COME FIRST, and that is the whole point of it being a step: a failing `require_ssh:`
+  # ENDS THE WALKTHROUGH, so a diagnostic after it never runs - which is exactly the shape of the
+  # five runs that reported `Permission denied (publickey)` with no server-side line beside it.
+  #
+  # `-E` captures the parent sshd; the authentication happens in `sshd-session`, and its opinion
+  # is what this reads, from the same file the wrapper appends to:
+  #
+  #     trying public key file /data/local/home/.ssh/authorized_keys
+  #     Authentication refused: bad ownership or modes for directory /data
+  - name: say what the daemon logged
+    adb: |
+      echo "--- sshd.err ---"
+      tail -40 /data/local/tmp/sshd.err 2>/dev/null || echo "(no log)"
+      echo "--- authorized_keys ---"
+      ls -la /data/local/home/.ssh/ 2>/dev/null
+      head -c 200 /data/local/home/.ssh/authorized_keys 2>/dev/null
+      echo
+      echo "--- the account ---"
+      cat /etc/passwd
+      echo "--- who is running ---"
+      ps -A -o USER,PID,ARGS 2>/dev/null | grep '[s]shd' || echo "(no sshd process)"
+    timeout: 120
+    optional: true
+
   - name: wait for sshd on the forwarded port
     require_ssh: true
     ssh_probe: echo ok
