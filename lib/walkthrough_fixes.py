@@ -1113,6 +1113,26 @@ def main() -> int:
           "function Step(" in ps and ps.count('Step "') >= 4)
     check("the retrim announces itself", "windows/11/clean.ps1",
           'Step "trim (no zeroing)' in ps)
+    # AND THE RETRY STOPS EVERY smbd, NOT ONLY THE ONE IT RECORDED.
+    #
+    # Run 42942106447's retry fired and failed the same way, and the reason was in the printed
+    # directory state:
+    #
+    #     private dir ...: entries=['msg.sock', 'passdb.tdb', ...]
+    #     Could not open tdb: No such file or directory
+    #
+    # `msg.sock` and those tdb files are OPENED EXCLUSIVELY by an smbd. A stray one from an earlier
+    # stage in the same container is the "no such file" - the file is there and somebody else has
+    # it. `stop()` only kills the pid it recorded, so the retry now clears them all first, by
+    # reading /proc and matching argv[0] == smbd AND the exact `-s <conf>` argument (never a
+    # `pkill -f` pattern, which is the mistake `stop()` already documents).
+    hs2 = read("lib/hostshare.py")
+    check("the retry clears every smbd", "lib/hostshare.py",
+          "_sh_kill_all_smbd()" in hs2 and "def _sh_kill_all_smbd" in hs2)
+    check("smbd is matched by argv, not by a pattern", "lib/hostshare.py",
+          'parts[0] not in (b"smbd", b"/usr/sbin/smbd")' in hs2)
+    check("the retry waits longer than the first attempt", "lib/hostshare.py",
+          "max(wait, 30.0)" in hs2)
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))

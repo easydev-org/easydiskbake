@@ -356,6 +356,11 @@ def start(directory: str = DEFAULT_DIR, *, wait: float = 10.0) -> bool:
     # the messages are printed and the stage still fails.
     if "Could not open tdb" in tail:
         log("  samba lost its private directory; recreating it and starting smbd once more")
+        # EVERY smbd, NOT ONLY OURS. The private directory holds `msg.sock` and the tdb files -
+        # a second smbd from an earlier stage in the same container opens them and the new one
+        # cannot, which is exactly `Could not open tdb`. `stop()` only kills the pid it recorded,
+        # so a stray one survives it.
+        _sh_kill_all_smbd()
         stop()
         try:
             shutil.rmtree(PRIVATE_DIR, ignore_errors=True)
@@ -369,7 +374,9 @@ def start(directory: str = DEFAULT_DIR, *, wait: float = 10.0) -> bool:
         if result.returncode != 0:
             for line in ((result.stdout or "") + (result.stderr or "")).splitlines()[-4:]:
                 log(f"    {line[:160]}")
-        deadline = time.time() + wait
+        # LONGER THAN THE FIRST ATTEMPT. A restart has to recreate the tdb files it just lost,
+        # and ten seconds is what a healthy smbd needs - not one that is initialising a passdb.
+        deadline = time.time() + max(wait, 30.0)
         while time.time() < deadline:
             if listening():
                 log(f"  smbd is listening on {net.BRIDGE_IP}:445 (second attempt)")
@@ -477,6 +484,41 @@ def _record_pid() -> None:
         return
     with open(PID_PATH, "w") as fh:
         fh.write(str(pids[0]))
+
+
+def _sh_kill_all_smbd() -> None:
+    """Kill every smbd serving THIS module's config, by reading /proc rather than pgrep.
+
+    `pkill -f` would match this process's own command line if it happened to contain the pattern,
+    which is the failure mode `stop()` documents at length. Reading /proc/<pid>/cmdline and
+    comparing the exact `-s <conf>` argument cannot match anything else.
+    """
+    conf = CONF_PATH.encode()
+    killed = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        if pid == os.getpid():
+            continue
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                raw = fh.read()
+        except OSError:
+            continue
+        parts = raw.split(b"\0")
+        if not parts or parts[0] not in (b"smbd", b"/usr/sbin/smbd"):
+            continue
+        if conf not in parts:
+            continue
+        try:
+            os.kill(pid, 15)
+            killed.append(pid)
+        except OSError:
+            pass
+    if killed:
+        log(f"  stopped {len(killed)} smbd process(es) still holding the private directory")
+        time.sleep(1.0)
 
 
 def stop() -> None:
