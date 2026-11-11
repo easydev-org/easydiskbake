@@ -86,6 +86,17 @@ steps:
   # that protected a file which was never at risk.
   - name: take the input disk
     disk: disk.qcow2
+    # `boot:` BUILDS THE OVERLAY, so there is no `disk_overlay:` here any more.
+    #
+    # It was needed for one commit because a file that let `boot:` make the overlay had no way to
+    # tell `compress:` to flatten it. Now `boot:` records the overlay it made, so the two are the
+    # same path: every machine runs on a diff, and publishing flattens it.
+    #
+    # WHY THE DEFAULT IS A DIFF RATHER THAN A MOVE. `working_copy` moves the input by default,
+    # which is right for a disk that came from ghcr and is still there - but a stage that FAILS
+    # has already consumed it, so the retry pays 11 to 20 GiB of download again. `lib/overlay.py`
+    # leaves the base byte-for-byte intact and re-checks it on close, which is the only one of
+    # the three that can prove it.
 
   # `os:` IS THE FACT THAT DECIDES THE MACHINE. A Windows guest is a UEFI firmware, a virtio
   # disk, an OVMF variable store, optionally a TPM, and a fallback loader at \EFI\BOOT\BOOTX64.EFI

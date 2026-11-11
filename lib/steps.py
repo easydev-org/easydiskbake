@@ -166,6 +166,11 @@ STEP_KEYS = {    "name",        # required: what the log calls this step
     "disk",        # PREPARE A DISK BEFORE `boot:` - move, copy or overlay an input qcow2
     "disk_from",   # the input this step prepares; required with `disk:`
     "disk_copy",   # keep the input (true) or move it (false, the default)
+    "disk_overlay",  # start from a READ-ONLY base in a throwaway diff - see lib/overlay.py
+    # `disk_overlay: true` STARTS FROM A READ-ONLY BASE AND WRITES INTO A THROWAWAY DIFF. It is
+    # the third way to prepare a disk, and it is the one that makes "this run started from the
+    # same bytes every time" true: `move` consumes the input, `copy` duplicates 28 GiB, and
+    # neither can promise the base is unchanged afterwards. See lib/overlay.py.
     "os",          # for boot/shutdown: macos, windows, linux, android.
                    # WHAT THIS REPLACES: a stage used to build the qemu command line itself, and
                    # the twelve arguments that make a machine a Windows one (UEFI, OVMF vars, a
@@ -904,6 +909,10 @@ class MachineSession:
         # `disk` FROM `source_disk`, and `disk` changes while `source_disk` does not - which is
         # the difference between "the input" and "the file this stage writes".
         self.source_disk = disk
+        # SET BY A `disk_overlay:` STEP: the Overlay this stage must FLATTEN rather than copy when
+        # it publishes. See the `compress:` step - a diff is a few hundred MiB of a 28 GiB disk
+        # and publishing it would publish a disk with no contents.
+        self.flatten_from = None
         self.work = work
         self.share = share
         self.mem_mb = mem_mb
@@ -991,6 +1000,17 @@ class MachineSession:
         if guest is None:
             raise StepError("the machine could not be started")
         self.guest, self.overlay = guest, overlay
+        # EVERY `boot:` THAT WROTE INTO AN OVERLAY MUST FLATTEN BEFORE IT PUBLISHES. `compress:`
+        # reads this, and without it the step converts the OVERLAY - a few hundred MiB of a diff
+        # whose parent is the base - into the artifact. That file looks like a disk and is not
+        # one: it carries a backing reference to a base the consumer does not have.
+        #
+        # THIS WAS ONLY REACHABLE FROM PYTHON BEFORE. `macos/15/ssh.py` passed its own Overlay in
+        # and `compress:` knew; a file that let `boot:` make one had no way to say so, which is
+        # why `disk_overlay:` set this by hand and a plain `boot:` did not. One assignment covers
+        # both now.
+        if overlay is not None:
+            self.flatten_from = overlay
         self.qmp_path = guest.paths.drive
         if not reached:
             raise StepError(
@@ -1000,10 +1020,11 @@ class MachineSession:
     def _boot_on_existing_overlay(self, assets, ssh_port: int, log):
         """Start on the overlay the CALLER made. See vm_session.start_on."""
         import vm_session
-        if assets is None:
-            raise StepError(
-                "this session was given an overlay and no `assets`; an overlay boot needs the "
-                "OpenCore build the stage made. Pass boot_options={'assets': assets}.")
+        # NO `assets` REQUIREMENT. An overlay is a qcow2 backing chain and has nothing to do with
+        # OpenCore - `lib/overlay.py` says so at length. Requiring the assets here made an overlay
+        # a macOS-only capability, which is exactly what this file's `disk_overlay:` step exists
+        # to stop being true: a Windows guest has no assets and still benefits from starting on a
+        # read-only base. macOS stages pass them and still get them used.
         guest, reached = vm_session.start_on(
             self.disk, self.work, family=self.family, assets=assets,
             ssh_port=ssh_port, cpus=self.cpus, mem_mb=self.mem_mb,
@@ -1095,6 +1116,23 @@ class MachineSession:
         if self.guest is not None and not self.stopped:
             log("the file did not stop its machine; stopping it now")
             self.shutdown(method="kill", log=log)
+        # AND THE OVERLAY IS RELEASED AND ITS BASE VERIFIED, EVEN WHEN THE FILE FAILED.
+        #
+        # A `compress:` step flattens and closes it on the success path. A failed walk never
+        # reaches that step, so without this the base's size and mtime are never re-checked -
+        # which is the guarantee `lib/overlay.py` exists to make, because "I did not write to it"
+        # is an assumption and that file exists to stop that kind of assumption.
+        overlay = getattr(self, "flatten_from", None) or getattr(self, "overlay", None)
+        if overlay is not None:
+            try:
+                overlay.close()
+            except (OSError, RuntimeError) as exc:
+                log(f"  the overlay could not be released: {exc}")
+            self.flatten_from = None
+            self.overlay = None
+            # THE BOOT MUST NOT REUSE A CLOSED OVERLAY if anything asks it to again.
+            self.guest = None
+            self.stopped = True
 
 
 # --- the interpreter ------------------------------------------------------------------
@@ -1760,6 +1798,25 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
                 f"a qemu-img convert cannot read and write one file")
         import compress as compressmod
 
+        # FLATTEN FIRST WHEN THIS RUN WROTE INTO AN OVERLAY. `compress()` converts one qcow2 into
+        # another, and an overlay IS a qcow2 - so converting it directly would produce a `dest`
+        # that still names the base as its parent, which looks like a disk and is not one. The
+        # flatten is what merges the diff into a standalone file.
+        #
+        # TWO STEPS, NOT ONE, BECAUSE THEY ANSWER TWO QUESTIONS: `Overlay.flatten` proves the base
+        # is unchanged and produces a whole disk; `compress` makes it small. Doing both in one
+        # qemu-img call would skip the verification.
+        flatten = getattr(session, "flatten_from", None)
+        if flatten is not None:
+            log(f"  compress: flattening the overlay onto {dest}")
+            flatten.flatten(dest)
+            flatten.close()
+            session.flatten_from = None
+            log(f"  BAKED {dest} ({os.path.getsize(dest) >> 20} MiB)")
+            session.disk = dest
+            driver.disk_path = dest
+            return
+
         log(f"  compress: {os.path.basename(source)} -> {dest}")
         compressmod.compress(source, dest)
         log(f"  BAKED {dest} ({os.path.getsize(dest) >> 20} MiB)")
@@ -1822,6 +1879,46 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
         work = getattr(driver, "work", "") or os.path.dirname(dest) or "."
         if not os.path.isabs(dest):
             dest = os.path.join(work, dest)
+        # THE THIRD WAY, AND THE ONLY ONE THAT CAN PROMISE THE BASE IS UNCHANGED.
+        #
+        #     - name: start from the published disk
+        #       disk: disk.qcow2
+        #       disk_overlay: true
+        #
+        # `move` consumes the input and `copy` duplicates it; neither leaves the input provably
+        # identical afterwards. A qcow2 backing chain does: qemu opens the base READ-ONLY, every
+        # write lands in the overlay, and `Overlay.close()` deletes the overlay and re-checks the
+        # base's size and mtime. lib/overlay.py documents the two failure modes that made this
+        # worth writing, and this step is the same capability the macOS stages use - which is the
+        # point: it was only reachable from Python until now.
+        if step.get("disk_overlay"):
+            import overlay as overlaymod
+
+            # THE SESSION IS CHECKED BEFORE ANYTHING IS CREATED. `Overlay.open()` writes a file
+            # and records the base's identity; doing that and then failing leaves an overlay
+            # nobody closes, on a base nobody re-checks - which is the state `lib/overlay.py`
+            # exists to make impossible.
+            session = getattr(driver, "session", None)
+            if session is None:
+                raise StepError(
+                    f"{step.name}: `disk:` prepares a disk for `boot:`, and this file has none")
+            log(f"  disk: {os.path.basename(source)} -> overlay {dest} (base read-only)")
+            run_overlay = overlaymod.Overlay(source, work, name=os.path.basename(dest))
+            prepared = run_overlay.open()
+            session.disk = prepared
+            # THE BOOT MUST NOT WRAP IT AGAIN. `boot:` makes its own overlay when `copy` is
+            # unset, and a second diff over the first is a disk whose parent is an overlay -
+            # which is the bug this repository already fixed once (`self.overlay = overlay`
+            # followed by `self.overlay = None` four lines later). Handing it the one that
+            # exists is what keeps there being exactly one.
+            session.overlay = run_overlay
+            session._owns_overlay = False
+            # AND `compress:` HAS TO FLATTEN, not copy the diff: the overlay is a few hundred MiB
+            # of a 28 GiB disk, and publishing it would publish a disk with no contents.
+            session.flatten_from = run_overlay
+            driver.disk_path = prepared
+            return
+
         import working_copy as wc
 
         log(f"  disk: {os.path.basename(source)} -> {dest}"

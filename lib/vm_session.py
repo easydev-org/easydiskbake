@@ -367,9 +367,16 @@ def _android_x86(disk: str, work: str, ssh_port: int, cpus: int, mem_mb: int, lo
     return guest
 
 
-def start_on(disk: str, work: str, *, family: str, assets: dict, ssh_port: int = 2222,
+def start_on(disk: str, work: str, *, family: str, assets: dict | None = None,
+             ssh_port: int = 2222,
              cpus: int = 4, mem_mb: int = 0, share: str | None = None, log=print):
-    """Start a macOS guest on a disk that already exists - an overlay a stage made.
+    """Start a guest on a disk that already exists - an overlay a caller made.
+
+    `assets` IS ONLY FOR macOS. It is the OpenCore build, and a stage that already made one
+    passes it here so the recovery image is not fetched twice. Every other family builds its
+    machine from `family` alone, so the parameter is optional: making it required meant an
+    overlay was a macOS-only capability, which it is not - `lib/overlay.py` is a qcow2 backing
+    chain and has nothing to do with OpenCore.
 
     WHY THIS IS SEPARATE FROM start(). `start()` decides whether to make an overlay; a stage that
     has already made one (macos/15/ssh.py, because it chooses between an overlay and a working
@@ -397,8 +404,13 @@ def start_on(disk: str, work: str, *, family: str, assets: dict, ssh_port: int =
             log(f"=== THE HOST COULD NOT SERVE {served} ===")
             return None, None
 
+    # THE ASSETS GO IN ONLY WHEN THERE ARE ANY. `boot_options={"assets": None}` would be a key
+    # that says "a macOS build exists and is empty", which `_start_machine` reads as "the caller
+    # meant to pass one" - the same shape as the bug that made a caller's boot_options
+    # half-effective.
+    options = {"assets": assets} if assets else {}
     guest = _start_machine(family, disk, work, ssh_port, cpus, mem_mb, log,
-                           discard=True, boot_options={"assets": assets})
+                           discard=True, boot_options=options)
     if guest is None:
         if served:
             hostshare.stop()

@@ -1313,6 +1313,34 @@ def main() -> int:
     # send the reader to two different files.
     check("a disk step without a boot is explained", "lib/steps.py",
           "prepares a disk for `boot:`, and this file has none" in st)
+    # --- THE OVERLAY IS THE DEFAULT, AND PUBLISHING FLATTENS IT ------------------------
+    #
+    # `working_copy` moves the input by default. That is right for a disk pulled from ghcr and
+    # still there - but a stage that FAILS has already consumed it, so the retry pays 11 to 20 GiB
+    # of download again, and `working_copy`'s own note says moving can destroy the only copy of an
+    # hour's work. An overlay leaves the base byte-for-byte intact, re-checks it on close, and
+    # costs one flatten at publish time - which is the same `qemu-img convert -c` the compress
+    # step was already doing.
+    #
+    # `boot:` ALREADY DEFAULTED TO IT (`copy=... else not android`). What was missing is that a
+    # file which let `boot:` make the overlay had no way to tell `compress:` to flatten it - only
+    # a Python stage that passed its own Overlay could. So the artifact would have been a diff
+    # whose parent is the base: a file that looks like a disk and is not one.
+    check("every boot records the overlay it made", "lib/steps.py",
+          "self.flatten_from = overlay" in st)
+    check("compress flattens instead of copying a diff", "lib/steps.py",
+          "flatten.flatten(dest)" in st and "flatten.close()" in st)
+    # AND A FAILED WALK RELEASES IT. Without this the base's size and mtime are never re-checked
+    # on the one path where a stage did something unexpected.
+    check("a failed walk still releases the overlay", "lib/steps.py",
+          "the overlay could not be released" in st)
+    # AND AN OVERLAY IS NOT A MACOS FEATURE. `start_on` required `assets` (the OpenCore build),
+    # which made a qcow2 backing chain reachable only from a macOS stage - the parameter is
+    # optional now, and `_boot_on_existing_overlay` no longer demands it.
+    check("an overlay boot does not require OpenCore assets", "lib/steps.py",
+          "NO `assets` REQUIREMENT" in st)
+    check("start_on is not macOS-only", "lib/vm_session.py",
+          "assets: dict | None = None" in read("lib/vm_session.py"))
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))
