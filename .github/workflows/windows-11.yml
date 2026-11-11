@@ -565,7 +565,10 @@ jobs:
           disk-gb: '60'
           token: ${{ github.token }}
 
-      - name: pull the ssh disk
+      # THE NAME SAID "ssh disk" AND THE STEP PULLS THE VM-CONFIGURE DISK. The tag below was
+      # corrected when the `needs.share` reference was fixed; the label was not, and a step whose
+      # name contradicts what it fetches is the kind of thing a reader trusts instead of checking.
+      - name: pull the vm-configure disk
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}

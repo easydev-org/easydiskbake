@@ -467,9 +467,27 @@ jobs:
         id: name
         run: |
           set -euo pipefail
+          # `head -1` IS THE WHOLE FIX, AND THE FAILURE IT PREVENTS IS CONFUSING.
+          #
+          # The stage announces its name twice - once in the announce step and once where it is
+          # actually set - so `grep -o` returns TWO lines. `$GITHUB_OUTPUT` requires `key=value`
+          # on ONE line, and a value containing a newline is rejected with
+          #
+          #     ##[error]Unable to process file command 'output' successfully.
+          #     ##[error]Invalid format 'easyvm-d7732e2b'
+          #
+          # which names the value and not the problem: the name is well formed and the variable
+          # is what is wrong. It failed the job AFTER the stage had done all 22 steps and printed
+          # `WALKTHROUGH COMPLETE`, so the work was thrown away by the step that records it.
           NAME=$(grep -o "this machine will be named '[^']*'" out/hostname.txt \
-                 | sed "s/.*named '//; s/'//")
+                 | head -1 | sed "s/.*named '//; s/'//")
           test -n "$NAME"
+          # A SAFETY NET FOR THE SAME CLASS OF BUG: if anything else ever gets into this value,
+          # the name is not written and the job says why, rather than failing on a format error.
+          case "$NAME" in
+            easyvm-*) ;;
+            *) echo "=== THE NAME IS NOT A HOST NAME: $NAME ==="; exit 1 ;;
+          esac
           echo "hostname=$NAME" >> "$GITHUB_OUTPUT"
           echo "the machine is $NAME"
 
