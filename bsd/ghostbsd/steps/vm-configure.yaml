@@ -348,22 +348,42 @@ steps:
         printf "%s\n" "{{ password }}" | sudo -S -p "" tail -40 /tmp/smbnetfs.log 2>&1 || true'
     timeout: 600
 
-  # THE SHARE IS STILL SEARCHED FOR, BECAUSE ONE FACT ABOUT THIS CLIENT IS NOW KNOWN AND THE REST
-  # IS NOT. Its config has exactly four directives - `auth`, `host`, `group`, `link` - read out of
-  # `reconfigure_read_config_file()` in its source after fifteen runs of `Invalid input line`, and
-  # the `host 172.30.0.1` line this run writes puts a static host in the tree. Whether that host
-  # appears at `<mount>/172.30.0.1/<share>` or under the workgroup first is a detail of how it
-  # merges the static tree with the browsed one, and `find` costs nothing while a wrong guess
-  # costs a run. The depth is four because workgroup/host/share is three.
+  # THE MOUNT POINT IS ITSELF NAMED `shared`, SO `find -name shared` FINDS THE MOUNT POINT.
+  #
+  # Run 7cb7a8f is the one where the tree finally appeared - `visible=true` was the missing word,
+  # and the client log shows real sessions for the first time:
+  #
+  #     smb_conn_srv_auth_fn: url=smb://172.30.0.1/IPC$, grp=WORKGROUP, user=guest
+  #     function_readdir: (/172.30.0.1)
+  #     function_stat: (/172.30.0.1/shared)
+  #
+  # and the tree is exactly `<mount>/<host>/<share>`:
+  #
+  #     /home/vmuser/shared
+  #     /home/vmuser/shared/172.30.0.1
+  #     /home/vmuser/shared/172.30.0.1/shared
+  #
+  # BUT THE PROOF NAMED THE WRONG ONE:
+  #
+  #     --- the share ---
+  #     /home/vmuser/shared                      <- the mount point
+  #     sh: cannot create /home/vmuser/shared/from-guest.txt: Is a directory
+  #
+  # `find <mount> -name shared` matches the MOUNT POINT first, because the mount point is
+  # `/home/vmuser/shared` and `head -1` takes the first hit. So the path is tried directly first
+  # (the client's own log states the shape), and the search - if it is still needed - starts at
+  # depth 1 so it cannot return the mount point again.
   - name: prove the share is readable and writable
     ssh: |
       sh -c '
         set -e
         MOUNT="$HOME/shared"
         echo "--- the tree smbnetfs built ---"
-        find "$MOUNT" -maxdepth 4 -type d 2>/dev/null | head -12
-        SHARE=$(find "$MOUNT" -maxdepth 4 -type d -name {{ share_name }} 2>/dev/null | head -1)
-        if [ -z "$SHARE" ]; then
+        find "$MOUNT" -mindepth 1 -maxdepth 4 -type d 2>/dev/null | head -12
+        SHARE="$MOUNT/{{ host }}/{{ share_name }}"
+        [ -d "$SHARE" ] || \
+          SHARE=$(find "$MOUNT" -mindepth 1 -maxdepth 4 -type d -name {{ share_name }} 2>/dev/null | head -1)
+        if [ -z "$SHARE" ] || [ ! -d "$SHARE" ]; then
           echo "=== NO DIRECTORY NAMED {{ share_name }} UNDER $MOUNT ==="
           exit 1
         fi
