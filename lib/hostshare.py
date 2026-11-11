@@ -1001,11 +1001,31 @@ def mount_commands(host: str = "", user: str = "vmuser",
         # the same fact lib/hostshare.py's macOS note records at length. The account here has no
         # password (`null passwords = yes` on the server), so the `password=` portion is empty
         # and the stdin line is only what `sudo -S` wants.
+        # `-N` IS NOT OPTIONAL OVER ssh, AND THIS IS THE COMMAND THAT NEEDS IT.
+        #
+        # FreeBSD's mount_smbfs ASKS FOR THE PASSWORD ON A TERMINAL when the URL carries none -
+        # the same behaviour the macOS note above records at length, and the same reason it fails
+        # here: there is no terminal, so the prompt reads EOF and the mount aborts. `-N` is the
+        # flag that says "do not prompt", which is correct because the account genuinely has no
+        # password (`null passwords = yes` on the server accepts the empty one the client sends).
+        #
+        # THE `kldload` IS IN THE SAME `sh -c` on purpose: both halves need root, `sudo -S` reads
+        # the password once, and splitting them would spend it twice.
+        # `~` INSIDE `sudo sh -c` IS ROOT'S HOME, AND RUN 7b607f2 IS WHY THAT MATTERS:
+        #
+        #     mount: /root/shared: No such file or directory
+        #
+        # The command said `mkdir -p ~/shared && sudo sh -c 'mount ... ~/shared'`. The FIRST `~`
+        # was expanded by the account's own shell to /home/vmuser, and the SECOND by ROOT's shell
+        # to /root - so the directory was made in one place and the mount attempted in another.
+        #
+        # `HOME` IS READ BEFORE `sudo` AND PASSED IN, which is the same fix every Linux file here
+        # gets for free because `mount -t cifs` is not run through a second `sh -c`.
         "bsd": (
-            f"mkdir -p ~/shared && "
-            f"printf '%s\\n' {shlex.quote(login_password)} | sudo -S -p '' sh -c '"
-            f"kldload smbfs 2>/dev/null || true; "
-            f"mount -t smbfs //{SMB_USER}:@{host}/{SHARE_NAME} ~/shared'"
+            f"SHARED=$HOME/shared; mkdir -p \"$SHARED\" && "
+            f"printf '%s\\n' {shlex.quote(login_password)} | sudo -S -p '' "
+            f"sh -c \"kldload smbfs 2>/dev/null || true; "
+            f"mount_smbfs -N //{SMB_USER}:@{host}/{SHARE_NAME} $SHARED\""
         ),
     }
 
