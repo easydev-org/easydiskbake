@@ -418,14 +418,19 @@ jobs:
           interval: "20"
           command: |
             set -euo pipefail
-            DISK=$(ls out/*.qcow2 | head -1)
-            python3 linux/manjaro/vm_configure.py \
-              --disk "$DISK" \
+            # THE STAGE IS THE FILE. Everything this used to call - moving the input disk,
+            # building the qemu command line, waiting for sshd, shutting down, compressing
+            # the artifact, recording the screen - is a step in vm-configure.yaml, which is
+            # the same shape windows/11/steps/ssh.yaml and macos/15/steps/ssh.yaml have.
+            python3 lib/steps.py linux/manjaro/steps/vm-configure.yaml \
+              # THE PULLED DISK, WHATEVER THE REGISTRY NAMED IT. `oci-pull` writes the
+              # artifact under the tag's own name, and a hard-coded path is a second
+              # place that has to agree with the publisher.
+              --boot-disk "$(ls out/*.qcow2 | head -1)" \
               --out out/manjaro-vm-configure.qcow2 \
-              --walk linux/manjaro/steps/vm-configure.yaml \
+              --work out/manjaro-vm-configure-work \
               --ssh-port "${{ inputs.ssh_port || '2222' }}" \
               --boot-timeout "${{ inputs.vm_configure_boot_timeout || '1800' }}" \
-              --hostname "${{ inputs.hostname }}" \
               | tee out/hostname.txt
 
       # A PLAIN `run:` STEP, BECAUSE THIS IS WHERE THE NEXT JOB'S NAME COMES FROM. GITHUB_OUTPUT

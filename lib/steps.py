@@ -53,6 +53,11 @@ sys.path.insert(0, REPO)
 sys.path.insert(0, os.path.join(REPO, "lib"))
 
 
+def _make_hostname(prefix: str = "easyvm") -> str:
+    """A host name that is unique per build. See the `computed` table in Walk.values()."""
+    return f"{prefix}-{os.urandom(4).hex()}"
+
+
 def _os_of(step, default: str = "") -> str:
     """Which operating system a `boot:`/`shutdown:` step names, under either spelling.
 
@@ -434,6 +439,15 @@ class Walk:
             "args.host": ("net", "BRIDGE_IP"),
             "args.smb_user": ("hostshare", "SMB_USER"),
             "args.smb_pass": ("hostshare", "SMB_PASSWORD"),
+            # A NAME THAT IS UNIQUE PER BUILD, because two disks booted on one bridge must not
+            # both answer to the same host name. `easyvm-` plus eight hex characters: the prefix
+            # says what the machine is, the suffix is 32 bits from os.urandom - NOT a counter
+            # (restarts at zero with every container) and not a timestamp (two runners starting
+            # in the same second would agree). Fifteen characters is a valid RFC 1123 label.
+            #
+            # IT LIVES HERE RATHER THAN IN A STAGE because every Linux and BSD stage needs the
+            # same name, and twelve copies of `os.urandom(4).hex()` is twelve places to disagree.
+            "args.hostname": ("steps", "_make_hostname"),
         }
         resolved = {}
         for key, spec in self.vars.items():
@@ -444,7 +458,18 @@ class Walk:
                 elif source in computed:
                     import importlib
                     module, name = computed[source]
-                    resolved[key] = str(getattr(importlib.import_module(module), name))
+                    value = getattr(importlib.import_module(module), name)
+                    # A COMPUTED VALUE MAY BE A CONSTANT OR A FUNCTION, AND THE DIFFERENCE IS
+                    # THE WHOLE POINT FOR `args.hostname`. `net.BRIDGE_IP` is a string that is
+                    # the same for the life of the process; a host name has to be DIFFERENT FOR
+                    # EACH WALK, because two stages that agreed would put two machines on the
+                    # bridge answering to one name. `str(getattr(...))` on a function produced
+                    #
+                    #     this machine will be named '<function _make_hostname at 0x7f3a...>'
+                    #
+                    # and then `hostnamectl set-hostname <function ...>` failed with a bash
+                    # syntax error - a value that had been a callable all along.
+                    resolved[key] = str(value() if callable(value) else value)
                 else:
                     resolved[key] = spec.get("default", "")
             else:
@@ -1753,17 +1778,19 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
         family = str(step.get("desktop_family") or step["desktop"] or "")
         # `desktop: windows` OR `os: windows` - the second for a file that names the machine once.
         family = family or _os_of(step)
-        if family not in ("windows", "macos", "linux"):
-            raise StepError(f"{step.name}: no desktop test for family {family!r}")
-        if not hasattr(driver, "screen") or driver.screen is None:
-            raise StepError(f"{step.name}: waiting for a desktop needs a screen")
+        # THE JUDGE COMES FROM lib/desktop.py's OWN TABLE, WHICH IS WHERE "WHICH FAMILIES HAVE
+        # A TEST" IS ALREADY ANSWERED. This used to be a literal list of three names here and a
+        # second lookup there, so adding one required editing both - and `bsd` was in neither,
+        # which is why a GhostBSD file could not say `desktop: bsd`.
         import desktop as deskmod
 
-        judge = {"windows": deskmod.is_windows_desktop,
-                 "macos": deskmod.is_macos_desktop,
-                 "linux": getattr(deskmod, "is_linux_desktop", None)}[family]
-        if judge is None:
-            raise StepError(f"{step.name}: lib/desktop.py has no is_{family}_desktop")
+        if family not in deskmod.KINDS or family == "any":
+            raise StepError(
+                f"{step.name}: no desktop test for family {family!r}; "
+                f"lib/desktop.py has {sorted(k for k in deskmod.KINDS if k != 'any')}")
+        if not hasattr(driver, "screen") or driver.screen is None:
+            raise StepError(f"{step.name}: waiting for a desktop needs a screen")
+        judge = deskmod.KINDS[family]
         # `timeout:` ON THE STEP WINS, because a file that names a number for this wait means it.
         # Otherwise `{{ boot_timeout }}` from the command line, otherwise the step's own 900.
         raw = step.get("timeout") or 900
@@ -3338,10 +3365,23 @@ def main(argv: list[str]) -> int:
         # name - and every stage would keep doing its own `working_copy()` in Python.
         driver.session = session
     try:
+        # AN EMPTY OPTION IS NOT AN OVERRIDE, IT IS THE ABSENCE OF ONE.
+        #
+        # `values()` treats a key PRESENT in `overrides` as the answer, so passing
+        # `"args.boot_timeout": ""` made `{{ boot_timeout }}` resolve to the empty string instead
+        # of falling through to the var's own `default`. The file then had a timeout of "" and
+        # `desktop:` read it as 900 while `require_ssh:` read it as 0 - two different numbers from
+        # one blank.
+        #
+        # So the empty ones are dropped here, and the default in the file is what a caller who did
+        # not pass the option gets.
+        cli_overrides = {"args.user": args.user, "args.password": args.password}
+        for option_key, option_value in (("args.out", args.out),
+                                         ("args.boot_timeout", str(args.boot_timeout or ""))):
+            if option_value:
+                cli_overrides[option_key] = option_value
         ok, ran = walk(driver, steps,
-                       overrides={"args.user": args.user, "args.password": args.password,
-                                  "args.out": args.out or "",
-                                  "args.boot_timeout": str(args.boot_timeout or "")},
+                       overrides=cli_overrides,
                        start_at=args.start_at, stop_before=args.stop_before,
                        ssh_port=args.ssh_port, session=session)
     except StepError as exc:

@@ -1,7 +1,7 @@
 """Start a built disk the way the disk expects to be started, and stop it again.
 
     import vm_session
-    with vm_session.open(args.family, args.disk, work, ssh_port=2222) as guest:
+    with vm_session.open_guest(args.family, args.disk, work, ssh_port=2222) as guest:
         ...  # guest is up and its share is being served, or the block is never entered
 
 WHY THIS EXISTS
@@ -245,6 +245,31 @@ def _android_x86(disk: str, work: str, ssh_port: int, cpus: int, mem_mb: int, lo
     THE ISO IS AN OPTION RATHER THAN A FOURTH MEMBER because it is not unpacked - the installer
     reads /src/install.img out of it at run time, and init refuses to install unless the
     mounted source holds isolinux/ and install.img.
+
+    THREE SHAPES, AND WHICH ONE IS DECIDED BY WHAT THE CALLER PUT IN `options`
+    ---------------------------------------------------------------------------
+
+    `options["iso"]` + `options["disk"]`   the INSTALLER: kernel and initrd out of the extracted
+                                           set, the ISO as a cdrom, and a blank qcow2 as target.
+                                           steps/install.yaml answers the TUI.
+
+    neither                                the LIVE boot: the three extracted files and a scratch
+                                           /data. steps/desktop.yaml photographs the launcher.
+
+    `options["installed"]`                  the INSTALLED DISK: this is the shape that makes the
+                                           stage worth having. NO -kernel, NO -initrd, NO cdrom -
+                                           the firmware reads the ESP's GRUB, GRUB loads the
+                                           kernel off the data partition, and Android's own init
+                                           finds its own /data. A disk that needs the host to
+                                           supply its kernel is not an installed system, so this
+                                           branch is the only one that proves the artefact.
+
+    THE INSTALLED SHAPE NEEDS A DRIVER THIS GUEST ACTUALLY HAS, and that is `virtio-vga` rather
+    than `-vga std`. The installed system runs `HWC=drm_minigbm`, which asks for a DRM/KMS node
+    (/dev/dri/card0). `-vga std` provides a framebuffer and no DRM device, so Android brings up no
+    display at all and the screen stops on initrd's last line for as long as you are willing to
+    wait - measured at 240 s, 600 s and 600 s again before the cause was found. `virtio-vga` is
+    the real KMS driver and it is what the ISO's own menu assumes ("QEMU/KVM - Virgl").
     """
     import os
     import subprocess
@@ -254,6 +279,9 @@ def _android_x86(disk: str, work: str, ssh_port: int, cpus: int, mem_mb: int, lo
     opts = dict(options or {})
     iso = opts.get("iso") or ""
     target = opts.get("disk") or ""
+
+    if opts.get("installed"):
+        return _android_installed(disk, work, ssh_port, cpus, mem_mb, log, opts)
 
     # THE INSTALLER SHAPE NEEDS ONLY THE KERNEL AND THE INITRD: system.efs stays inside the
     # ISO, and there is no /data to create because the target disk is partitioned by the
@@ -364,6 +392,73 @@ def _android_x86(disk: str, work: str, ssh_port: int, cpus: int, mem_mb: int, lo
         stdout=os.path.join(work, "console.log"),
     ).start()
     log(f"started android-x86; the QMP socket is {guest.paths.drive}")
+    return guest
+
+
+def _android_installed(disk: str, work: str, ssh_port: int, cpus: int, mem_mb: int, log,
+                       opts: dict):
+    """Boot an INSTALLED Android-x86 disk: firmware, the ESP's GRUB, the disk's own kernel.
+
+    THIS IS THE CLAIM THE WHOLE BLISSOS PATH EXISTS TO MAKE. The live and installer shapes are
+    handed a kernel by the host through `-kernel`, so a disk they boot proves nothing about
+    whether the disk is startable. Here there is no `-kernel` and no cdrom: qemu gets one drive and
+    the firmware does the rest. If the ESP has no loader the guest lands in the UEFI shell, which
+    is exactly the failure this shape detects.
+
+    `bootindex=0` IS NOT DECORATION. With an empty NVRAM, OVMF's boot order is "UEFI Misc Device"
+    then the NIC, and a bootable disk is NOT in it - measured:
+
+        BdsDxe: failed to load Boot0001 "UEFI Misc Device" ... Not Found
+        >>Start PXE over IPv4.   PXE-E16: No valid offer received.
+
+    A published disk must not depend on an installer's NVRAM, so the disk is put first in the
+    command line itself.
+
+    THE GEOMETRY IS SET THROUGH `extra_args`, NOT `resolution:`, AND THAT IS NOT STYLE.
+    lib/vm.py's build_args reads
+
+        if shape.vga == "none":   pass
+        elif shape.resolution:    args += ["-device", f"VGA,xres=..."]
+        else:                     args += ["-vga", shape.vga]
+
+    so ANY resolution mints a standard `VGA` device and `shape.vga="virtio"` is never reached.
+    Measured: a launch that set vga="virtio" and a resolution still put `-device VGA,...` on the
+    command line, Android had no DRM node, and the guest stopped on initrd's last line.
+    """
+    import vm
+
+    code = opts.get("firmware_code") or ""
+    vars_image = opts.get("firmware_vars") or ""
+    for path in (code, vars_image):
+        if not path or not os.path.isfile(path):
+            log(f"=== UEFI FIRMWARE NOT FOUND: {path or '(not given)'} ===")
+            log("  an installed Android-x86 disk boots through the ESP, so it needs OVMF")
+            return None
+
+    # NO TAP BY DEFAULT FOR THIS SHAPE. Nothing here is reached over ssh - `wait_for_ssh` is False
+    # for this family - and lib/net.py raises SystemExit when dnsmasq will not start, which is a
+    # dependency with nothing to do with a stage that only reads the screen over QMP. A caller
+    # that wants an address says `net: "tap"` explicitly.
+    net = str(opts.get("net") or "none")
+
+    shape = vm.Shape(
+        cpus=cpus, mem_mb=mem_mb or 8192, machine="q35",
+        vga="none", net=net, ssh_port=ssh_port,
+        firmware_code=code, firmware_vars=vars_image,
+    )
+    shape.extra_args = [
+        "-device", "virtio-vga,xres=1280,yres=800",
+    ]
+    guest = vm.Guest(
+        work,
+        extra=[
+            "-drive", f"file={disk},if=none,id=hd0,format=qcow2",
+            "-device", "virtio-blk-pci,drive=hd0,bootindex=0",
+        ],
+        shape=shape,
+        stdout=os.path.join(work, "console.log"),
+    ).start()
+    log(f"started the installed disk; the QMP socket is {guest.paths.drive}")
     return guest
 
 
@@ -603,6 +698,28 @@ SHUTDOWN_COMMAND = {
     # ONE LINE: the ssh channel takes a command, not a script, so the newline printf needs is
     # written as an escape inside its format rather than as a line break here.
     "macos": "printf '%s\\n' '{password}' | sudo -S -p '' shutdown -h now",
+
+    # LINUX AND BSD ARE THE SAME COMMAND, AND THEY WERE MISSING - which made `os: linux` an
+    # incomplete statement even though its `boot:` worked. `shutdown: ssh` on any of the twelve
+    # Linux distributions, or on GhostBSD, failed with
+    #
+    #     no ssh shutdown command is known for 'linux'
+    #
+    # - a sentence about this table, not about the guest. Every one of them has `sudo` and every
+    # one of them has `shutdown -h now`: systemd, SysVinit, and FreeBSD's own /sbin/shutdown all
+    # accept it.
+    #
+    # GHOSTBSD NEEDS `-p`, WHICH IS NOT A COSMETIC DIFFERENCE. FreeBSD's `shutdown -h now` halts
+    # the kernel and stops there, leaving the machine at "The operating system has halted" - qemu
+    # never exits, and a stage waiting for the process waits forever. `-p` asks the firmware to
+    # power off after the halt, which is what a VM needs and what ACPI would have done.
+    "linux": "printf '%s\\n' '{password}' | sudo -S -p '' shutdown -h now",
+    "bsd": "printf '%s\\n' '{password}' | sudo -S -p '' shutdown -p now",
+    # `freebsd` IS THE NAME THE CLEAN STEP USES and `ghostbsd` is what the disk is called. Both
+    # resolve to the same command, because it is a fact about the kernel rather than about the
+    # distribution.
+    "freebsd": "printf '%s\\n' '{password}' | sudo -S -p '' shutdown -p now",
+    "ghostbsd": "printf '%s\\n' '{password}' | sudo -S -p '' shutdown -p now",
 }
 
 
@@ -732,8 +849,20 @@ def stop(guest, *, acpi_first: bool = True, family: str = "", password: str = "a
             hostshare.stop()
 
 
+# THIS FUNCTION USED TO BE CALLED `open`, AND THAT SHADOWED THE BUILTIN FOR THE WHOLE MODULE.
+#
+# A module-level `def open(...)` binds the name everywhere in the file, not only after the def -
+# so `_android_x86`'s `with open(data, "wb") as fh:` (the /data image it creates for a live
+# Android-x86 boot) resolved to THIS context manager:
+#
+#     TypeError: open() missing 1 required positional argument: 'work'
+#
+# measured on `family: android` with the three extracted members present. Nothing in the tree
+# called this function - it is documented in the module docstring and nowhere else - so the
+# shadowing was invisible until the live-boot path was actually run. Renamed rather than
+# qualified, because a name that hides a builtin in a file that uses the builtin is a trap.
 @contextlib.contextmanager
-def open(family: str, disk: str, work: str, *, ssh_port: int = 2222,
+def open_guest(family: str, disk: str, work: str, *, ssh_port: int = 2222,
          boot_timeout: int = 900, copy: bool = True, share: str | None = None,
          cpus: int = 4, mem_mb: int = 0, password: str = "admin", log=print):
     """`start()` as a context manager. Stops the guest and the share on the way out."""

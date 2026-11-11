@@ -677,12 +677,48 @@ def is_desktop(path: str, *, explain: bool = False) -> bool:
     return is_macos_desktop(path, explain=explain)
 
 
+def is_linux_desktop(path: str, *, explain: bool = False) -> bool:
+    """Is this frame a Linux desktop?
+
+    LINUX AND BSD SHARE THIS ONE, AND THAT IS A MEASUREMENT RATHER THAN A SHORTCUT.
+
+    `is_windows_desktop` reads a taskbar and `is_macos_desktop` reads a menu bar, because those
+    two guests each have exactly one thing at the bottom (or top) of the screen that no other
+    screen has. The Linux desktops here - GNOME, KDE, XFCE, MATE, Cinnamon, COSMIC - do not share
+    a chrome, and GhostBSD's MATE is the same MATE that runs on Linux.
+
+    So the test is the one lib/launch_linux.py has used since its first run and that three
+    distributions have already been verified against: IS THERE ANYTHING DRAWN. A frame with one
+    colour is a blank framebuffer or a machine that never painted; a frame with structure in it is
+    a machine whose compositor is running.
+
+    IT IS DELIBERATELY LOOSE, AND THE LOOSENESS IS THE POINT. NixOS' labwc draws a completely
+    black frame while working, and miracle-wm draws a flat backdrop - which is why the verdict for
+    a Linux stage is `require_ssh:` and the session inside the guest, not this. This exists so a
+    `desktop:` step can be written in a file that has one, not as a proof that the desktop is
+    usable.
+    """
+    import launch_linux
+
+    # `frame_is_painted` TAKES A PPM PATH AND RETURNS (painted, description). The caller of this
+    # function wants a bool, and `explain` is ignored for the same reason the two above ignore it
+    # in practice: nobody has ever asked this one why.
+    painted, why = launch_linux.frame_is_painted(path)
+    if explain:
+        log(f"  linux desktop: {why}")
+    return painted
+
+
 # THE DEFAULT FOR reached_desktop(), AND THE ONLY THING A CALLER NORMALLY SETS.
 #
 #   "macos"    the menu-bar test - macos/15/desktop.py and macos/15/ssh.py
 #   "windows"  the taskbar test - windows/11/bake.py and windows/11/ssh.py
 #   "any"      either; for a report, never for a decision
-KINDS = {"windows": is_windows_desktop, "macos": is_macos_desktop, "any": is_desktop}
+KINDS = {"windows": is_windows_desktop, "macos": is_macos_desktop,
+         # LINUX AND BSD ARE ONE ENTRY, because they are one measurement - see is_linux_desktop.
+         "linux": is_linux_desktop, "bsd": is_linux_desktop, "freebsd": is_linux_desktop,
+         "ghostbsd": is_linux_desktop,
+         "any": is_desktop}
 
 
 def newest_frame(directory: str) -> str | None:
