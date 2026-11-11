@@ -404,6 +404,16 @@ def main() -> int:
           "android/blissos16/steps/launch.yaml", "    desktop: android" in bliss_launch)
     check("lib/desktop.py has an android judge", "lib/desktop.py",
           '"android": is_android_desktop' in read("lib/desktop.py"))
+    # AND THE FLAG CHECKER READS `easyvm`, OR THE WORKFLOW LINE ABOVE IS UNCHECKED.
+    #
+    # `lib/flagcheck.py` compared `python3 X.py` against X.py's own argparse, and `easyvm` has
+    # none: it hands the whole list to lib/steps.py, which is where every option lives. A workflow
+    # that moved to `easyvm` therefore had its flags checked by nothing - measured before this was
+    # added: 137 calls checked, and the two `./easyvm` lines in windows-11.yml and blissos16.yml
+    # were not among them.
+    flag_src = read("lib/flagcheck.py")
+    check("the flag checker reads easyvm's arguments", "lib/flagcheck.py",
+          "EASYVM = re.compile" in flag_src and "EASYVM_PARSER" in flag_src)
     # AND THE WORKFLOW RUNS THE FILES. `easyvm` is the one supported entry point.
     bliss_wf = read(".github/workflows/blissos16.yml")
     check("the blissos workflow runs its workflow files",
