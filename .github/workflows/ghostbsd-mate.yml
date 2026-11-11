@@ -60,6 +60,22 @@ on:
       ssh_from:
         description: "stage 3: a published tag to put sshd on instead of the bake's output"
         default: ""
+      vm_configure_run:
+        description: "stage 4: name the machine, mount the share, install the guest agent"
+        type: boolean
+        default: true
+      vm_configure_from:
+        description: "stage 4: a published tag to configure instead of the ssh stage's output"
+        default: ""
+      vm_configure_tag:
+        description: "stage 4: tag to publish under; empty for bsd-ghostbsd-mate-vm"
+        default: ""
+      hostname:
+        description: "stage 4: the machine's name; empty for easyvm-<8 random characters>"
+        default: ""
+      vm_configure_boot_timeout:
+        description: "stage 4: seconds the configured disk has to answer ssh"
+        default: "1800"
       ssh_run:
         description: "stage 3: install sshd on the disk and prove the forwarded port answers"
         type: boolean
@@ -278,7 +294,7 @@ jobs:
     permissions:
       contents: read
       checks: write
-      packages: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
 
@@ -297,12 +313,25 @@ jobs:
           interval: "20"
           command: |
             set -euo pipefail
+            DISK=$(ls out/*.qcow2 2>/dev/null | head -1)
             python3 lib/ssh_step.py \
               --tag "${{ inputs.ssh_from || needs.bake.outputs.tag || 'bsd-ghostbsd-mate' }}" \
               --kind ghostbsd-mate \
               --artifacts out/ghostbsd-mate-ssh \
+              --work out/ghostbsd-mate-ssh/work \
               --ssh-port "${{ inputs.ssh_port || '2222' }}" \
-              --boot-timeout "${{ inputs.boot_timeout || '900' }}"
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
+              --publish-out out/ghostbsd-mate-vm.qcow2
+
+      # THE DISK THIS STAGE MADE IS THE NEXT STAGE'S INPUT.
+      - name: push the ssh disk
+        if: success()
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/ghostbsd-mate-vm.qcow2
+          kind: ghostbsd-mate-ssh
+          tag: ${{ inputs.publish_tag || 'bsd-ghostbsd-mate' }}-ssh
+          token: ${{ github.token }}
 
       - name: keep the verdict
         if: always()
@@ -311,9 +340,119 @@ jobs:
           name: ghostbsd-mate-ssh
           path: |
             out/ghostbsd-mate-ssh/ssh.txt
-            out/ghostbsd-mate-ssh/install.mp4
-            out/ghostbsd-mate-ssh/last-frame.png
-            out/ghostbsd-mate-ssh/console.log
-            out/ghostbsd-mate-ssh/steps/*.png
+            out/ghostbsd-mate-ssh/work/install.mp4
+            out/ghostbsd-mate-ssh/work/last-frame.png
+            out/ghostbsd-mate-ssh/work/console.log
+            out/ghostbsd-mate-ssh/work/steps/*.png
           if-no-files-found: warn
           retention-days: 14
+
+  # =========================================================================================
+  # STAGE FOUR. macOS' vm-configure, for GhostBSD.
+  # =========================================================================================
+  #
+  # The same three things the twelve Linux stages do, through this image's own tools: rc.conf
+  # and `service` instead of systemd, and `mount_smbfs` after `kldload smbfs` instead of cifs.
+  #
+  # WHY IT IS A JOB OF ITS OWN: `vm_configure_from` names a tag, so this can be re-run against a
+  # disk that already exists without repeating the install behind it.
+  vm-configure:
+    needs: [ssh]
+    if: |
+      always() && inputs.vm_configure_run
+      && (inputs.vm_configure_from != ''
+          || (inputs.ssh_run && needs.ssh.result == 'success'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm --device /dev/net/tun --cap-add NET_ADMIN
+    permissions:
+      contents: read
+      checks: write
+      packages: write
+    outputs:
+      tag: ${{ inputs.vm_configure_tag || 'bsd-ghostbsd-mate-vm' }}
+      hostname: ${{ steps.name.outputs.hostname }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          disk-gb: '80'
+          token: ${{ github.token }}
+
+      - name: prepare
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: ghostbsd-mate-vm-configure-prepare
+          interval: "10"
+          command: |
+            set -euo pipefail
+            python3 lib/ci.py tags --prefix bsd-
+
+      - name: pull the ssh disk
+        uses: easydev-org/easyactions/oci-pull@main
+        with:
+          tag: ${{ inputs.vm_configure_from || format('{0}-ssh', inputs.publish_tag || 'bsd-ghostbsd-mate') }}
+          dest: out
+          token: ${{ github.token }}
+
+      - name: configure the vm (name, share, guest agent)
+        id: configure
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: ghostbsd-mate-vm-configure
+          interval: "20"
+          command: |
+            set -euo pipefail
+            DISK=$(ls out/*.qcow2 | head -1)
+            test -n "$DISK"
+            python3 lib/steps.py bsd/ghostbsd/steps/vm-configure.yaml \
+              --boot-disk "$DISK" \
+              --out out/ghostbsd-mate-vm.qcow2 \
+              --work out/ghostbsd-mate-vm-configure-work \
+              --ssh-port "${{ inputs.ssh_port || '2222' }}" \
+              --boot-timeout "${{ inputs.vm_configure_boot_timeout || '1800' }}" \
+              | tee out/hostname.txt
+
+      - name: record the machine's name
+        id: name
+        run: |
+          set -euo pipefail
+          NAME=$(grep -o "this machine will be named '[^']*'" out/hostname.txt \
+                 | head -1 | sed "s/.*named '//; s/'//")
+          test -n "$NAME"
+          case "$NAME" in
+            easyvm-*) ;;
+            *) echo "=== THE NAME IS NOT A HOST NAME: $NAME ==="; exit 1 ;;
+          esac
+          echo "hostname=$NAME" >> "$GITHUB_OUTPUT"
+          echo "the machine is $NAME"
+
+      - name: keep the last frame
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ghostbsd-mate-vm-configure-last-frame
+          path: |
+            out/last-frame.png
+            out/hostname.txt
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: push the disk
+        if: success()
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/ghostbsd-mate-vm.qcow2
+          kind: ghostbsd-mate-vm-configure
+          tag: ${{ inputs.vm_configure_tag || 'bsd-ghostbsd-mate-vm' }}
+          token: ${{ github.token }}

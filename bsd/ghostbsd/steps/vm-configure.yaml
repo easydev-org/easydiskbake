@@ -1,0 +1,244 @@
+# Stage four for bsd-ghostbsd: everything a finished disk needs before the toolchain - a name,
+# the host share, and an agent that can shut the machine down.
+#
+#     python3 lib/steps.py bsd/ghostbsd/steps/vm-configure.yaml \
+#         --boot-disk out/ghostbsd-mate-ssh.qcow2 --out out/ghostbsd-mate-vm.qcow2
+#
+# WHY THIS STAGE EXISTS, AND WHY IT COMES AFTER ssh
+#
+# It is macOS' stage four and the twelve Linux ones', for the same three reasons. Before ssh there
+# is no way in that is not a keyboard and a screen; after it, everything here is ordinary remote
+# work. So the stages are ordered install -> ssh -> vm-configure -> dev, and nothing in this file
+# clicks anything.
+#
+# WHAT IT DOES
+#
+#     the machine's name        `easyvm-<8 hex>`, through rc.conf and `hostname`
+#     the host share            ~/shared, mounted from the smbd `share_serve:` starts
+#     the qemu guest agent      a shutdown that is a request, not a power button
+#     the login launcher        a .xinitrc hook that runs ~/shared/bootstrap.sh at login
+#
+# WHAT IS DIFFERENT FROM THE TWELVE LINUX FILES, AND WHY THIS IS PER-DISTRIBUTION
+#
+#   the system manager   rc.conf and `service`, not systemd. There is no `hostnamectl`, no
+#                        `systemctl is-enabled`, and no `.wants` symlink to check.
+#   the package manager  `pkg install`, and the guest agent is `qemu-guest-agent` from ports.
+#   the share client     mount_smbfs? No - GhostBSD has no smbfs driver in the base kernel. It
+#                        mounts with `mount_smbfs` only when the `fusefs-smbnetfs` port is there,
+#                        so this file installs it and mounts through smbnetfs.
+#   the launcher         MATE reads ~/.xinitrc; there is no systemd user session to enable.
+#
+# THE COMMANDS ARE THE IMAGE'S OWN, and every one of them was measured on this disk's own
+# console in bsd/ghostbsd/steps/ssh.yaml - `sudo -S`, `sysrc`, `service`, fish as the login shell.
+
+name: bsd-ghostbsd - configure the vm (name, share, guest agent)
+resolution: [1920, 1080]
+
+vars:
+  user:
+    from: args.user
+    default: vmuser
+  password:
+    from: args.password
+    default: admin
+  # THE MACHINE'S NAME. `args.hostname` is filled by the engine with `easyvm-<8 hex>` unless the
+  # caller names one, so two disks on one bridge never answer to the same name.
+  hostname:
+    from: args.hostname
+    default: easyvm-vm
+  # THE SERVER, SO NO PROOF BELOW HARD-CODES AN ADDRESS.
+  host:
+    from: args.host
+    default: 172.30.0.1
+  # WHERE THIS STAGE'S DISK GOES, AND HOW LONG THE GUEST MAY TAKE TO COME UP.
+  out:
+    from: args.out
+    default: out/vm-configure.qcow2
+  boot_timeout:
+    from: args.boot_timeout
+    default: "1800"
+
+ssh_user: vmuser
+ssh_port: 2222
+
+steps:
+
+  # =======================================================================================
+  # 0. THE MACHINE, WHICH IS FIVE STEPS AND WAS A STAGE IN PYTHON
+  # =======================================================================================
+  - name: start recording
+    record: vm-configure.mp4
+    poll: 20
+
+  - name: take the input disk
+    disk: disk.qcow2
+
+  # `os: bsd` - the generic UEFI path in lib/vm_session.py, which is what GhostBSD is: OVMF, an
+  # OVMF variable store and a virtio disk.
+  - name: boot the disk
+    boot: true
+    os: bsd
+    timeout: "{{ boot_timeout }}"
+
+  - name: wait for sshd
+    require_ssh: true
+    timeout: "{{ boot_timeout }}"
+
+  # =======================================================================================
+  # 1. THE MACHINE'S NAME, THROUGH rc.conf
+  # =======================================================================================
+  #
+  # `sysrc` WRITES THE KNOB AND `hostname` SETS IT FOR THIS BOOT, which is the same pair the Linux
+  # files need: the file alone leaves the running kernel answering the old name, and the command
+  # alone is lost at reboot.
+  - name: announce the machine's name
+    ssh: echo "this machine will be named '{{ hostname }}'"
+    timeout: 60
+
+  - name: set the machine's name
+    ssh: |
+      printf '%s\n' '{{ password }}' | sudo -S -p '' sh -c '
+        sysrc hostname="{{ hostname }}"
+        hostname "{{ hostname }}"'
+    timeout: 120
+
+  - name: point the loopback line at that name
+    ssh: |
+      printf '%s\n' '{{ password }}' | sudo -S -p '' sh -c '
+        if grep -q "^127\.0\.1\.1" /etc/hosts; then
+          sed -i "" "s/^127\.0\.1\.1.*/127.0.1.1 {{ hostname }}/" /etc/hosts
+        else
+          printf "127.0.1.1\t%s\n" "{{ hostname }}" >> /etc/hosts
+        fi'
+    timeout: 120
+
+  - name: prove the name
+    ssh: |
+      set -e
+      echo "rc.conf: $(sysrc -n hostname)"
+      echo "kernel:  $(hostname)"
+      test "$(sysrc -n hostname)" = "{{ hostname }}"
+      test "$(hostname)" = "{{ hostname }}"
+    timeout: 60
+
+  # =======================================================================================
+  # 2. THE QEMU GUEST AGENT
+  # =======================================================================================
+  #
+  # WHY A GUEST AGENT AT ALL, WHEN ssh ALREADY WORKS: `system_powerdown` is an ACPI event and a
+  # desktop answers it with whatever its session policy says. `guest-shutdown` over qga is a
+  # request the guest's own agent executes, and it is acknowledged.
+  #
+  # THE PORT IS `qemu-guest-agent` FROM PORTS, and it is started through rc.conf like everything
+  # else here.
+  - name: install the guest agent
+    ssh: |
+      printf '%s\n' '{{ password }}' | sudo -S -p '' pkg install -y qemu-guest-agent 2>&1 | tail -5
+    timeout: 900
+
+  - name: enable the guest agent at boot
+    ssh: |
+      printf '%s\n' '{{ password }}' | sudo -S -p '' sh -c '
+        sysrc qemu_guest_agent_enable=YES 2>&1
+        service qemu-guest-agent start 2>&1 | tail -3'
+    timeout: 180
+
+  # THE DEVICE AND THE PROCESS, BECAUSE THEY FAIL DIFFERENTLY. A unit that is "running" with no
+  # /dev/virtio-ports/... behind it is an agent that will never answer.
+  - name: prove the guest agent is running
+    ssh: |
+      ls -l /dev/virtio-ports/org.qemu.guest_agent.0 2>&1 &&
+      pgrep -af 'qemu-guest-agent'
+    timeout: 120
+
+  # =======================================================================================
+  # 3. THE HOST SHARE
+  # =======================================================================================
+  #
+  # THE MOUNT HAS TO COME BEFORE smbfs CAN RUN. FreeBSD HAS the smbfs client, but GENERIC does not
+  # load it: `mount_smbfs` answers `no such file or directory` on a fresh install and reads like a
+  # missing binary. `kldload smbfs` is what makes it exist - and `lib/hostshare.py`'s bsd command
+  # does exactly that before mounting, in the same `sh -c`.
+  #
+  # A `kldload` AT BOOT WOULD NEED /boot/loader.conf. It is not added here because the share is a
+  # fact about THIS STAGE and not about the published disk: a disk that mounts ~/shared at boot
+  # without a server is a disk that waits at a failed mount every time it starts.
+  - name: prove smbfs can be loaded
+    ssh: |
+      printf '%s\n' '{{ password }}' | sudo -S -p '' sh -c 'kldload smbfs 2>&1; kldstat | grep -c smbfs'
+    timeout: 120
+
+  - name: serve the host share
+    share_serve: true
+    timeout: 60
+
+  # `share_family: bsd` IS THE smbnetfs COMMAND, not the cifs one the twelve Linux files use.
+  - name: mount the host share
+    share_mount: true
+    share_family: bsd
+    requires: [share]
+    timeout: 180
+
+  - name: prove the share is readable and writable
+    ssh: |
+      set -e
+      mount | grep -i smbnetfs || df | grep -i shared
+      ls -la ~/shared | head -20
+      printf 'written-by-the-guest\n' > ~/shared/from-guest.txt
+      test "$(cat ~/shared/from-guest.txt)" = "written-by-the-guest"
+      echo "round trip ok"
+    timeout: 120
+
+  # =======================================================================================
+  # 4. THE BOOTSTRAP LAUNCHER
+  # =======================================================================================
+  #
+  # MATE ON THIS IMAGE STARTS FROM ~/.xinitrc rather than from a systemd user session, so the
+  # hook is a line in that file. It is written idempotently: `grep -q` first, append only when it
+  # is missing, so a second run does not add it twice.
+  - name: write the launcher
+    python: bootstrap_files:launcher
+    family: linux
+    python_screen: false
+    timeout: 60
+
+  - name: copy the launcher in
+    scp: ["bootstrap-launcher.sh", "/tmp/bootstrap-launcher.sh"]
+    timeout: 300
+
+  - name: install the launcher
+    ssh: |
+      set -e
+      install -m 0755 /tmp/bootstrap-launcher.sh ~/bootstrap-launcher.sh
+      touch ~/.xinitrc
+      grep -q 'bootstrap-launcher.sh' ~/.xinitrc || \
+        printf '\n%s\n' 'sh "$HOME/bootstrap-launcher.sh" &' >> ~/.xinitrc
+      echo INSTALLED_FOR_NEXT_LOGIN
+      tail -3 ~/.xinitrc
+    timeout: 300
+
+  - name: prove the launcher is installed
+    ssh: |
+      set -e
+      ls -l ~/bootstrap-launcher.sh ~/.xinitrc
+      grep -q bootstrap-launcher.sh ~/.xinitrc
+      echo enabled
+    timeout: 60
+
+  # =======================================================================================
+  # 5. THE MACHINE GOES BACK TO ITS DISK, AND THE DISK BECOMES THE ARTIFACT
+  # =======================================================================================
+  #
+  # `ssh` RATHER THAN `kill`: this guest owns the real disk and its filesystem is what gets
+  # published. `lib/vm_session.py`'s SHUTDOWN_COMMAND has the bsd line, and it uses
+  # `shutdown -p now` - FreeBSD's `-h` HALTS and stops at "The operating system has stopped",
+  # leaving qemu running forever.
+  - name: stop the machine
+    shutdown: ssh
+    timeout: 300
+
+  - name: publish the disk
+    compress: "{{ out }}"
+
+  - name: stop recording
+    record: false

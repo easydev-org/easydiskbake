@@ -987,6 +987,26 @@ def mount_commands(host: str = "", user: str = "vmuser",
             f"mount -t cifs //{host}/{SHARE_NAME} ~/shared "
             f"-o vers=3.0,user={SMB_USER},password=,uid=$(id -u),gid=$(id -g),forceuid,forcegid"
         ),
+        # BSD: `mount_smbfs` AFTER LOADING ITS MODULE, AND THAT IS THE WHOLE DIFFERENCE.
+        #
+        # FreeBSD HAS an smbfs client - it is just not in the GENERIC kernel by default, so
+        # `mount_smbfs` answers `no such file or directory` on a fresh install and reads like a
+        # missing binary. `kldload smbfs` is what makes it exist, and it is idempotent: a second
+        # load answers "module already loaded" and succeeds.
+        #
+        # `mkdir -p ~/shared` FIRST, because a mount point that does not exist is the other way
+        # this command fails quietly - `mount_smbfs` creates the file, not the directory.
+        #
+        # THE PASSWORD GOES IN ON STDIN because that is where this client reads it from a pipe,
+        # the same fact lib/hostshare.py's macOS note records at length. The account here has no
+        # password (`null passwords = yes` on the server), so the `password=` portion is empty
+        # and the stdin line is only what `sudo -S` wants.
+        "bsd": (
+            f"mkdir -p ~/shared && "
+            f"printf '%s\\n' {shlex.quote(login_password)} | sudo -S -p '' sh -c '"
+            f"kldload smbfs 2>/dev/null || true; "
+            f"mount -t smbfs //{SMB_USER}:@{host}/{SHARE_NAME} ~/shared'"
+        ),
     }
 
 
