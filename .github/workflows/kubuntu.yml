@@ -433,11 +433,19 @@ jobs:
             # building the qemu command line, waiting for sshd, shutting down, compressing
             # the artifact, recording the screen - is a step in vm-configure.yaml, which is
             # the same shape windows/11/steps/ssh.yaml and macos/15/steps/ssh.yaml have.
+            # THE PULLED DISK, WHATEVER THE REGISTRY NAMED IT. `oci-pull` writes the artifact
+            # under the tag's own name, and a hard-coded path is a second place that has to agree
+            # with the publisher. IT HAS TO BE SET BEFORE THE COMMAND, not inside it: a `#` on a
+            # line that continues the previous one with a backslash is an ARGUMENT, not a comment,
+            # and that is what made all twelve stages fail with
+            #
+            #     FAILED: this walkthrough boots a machine; --boot-disk is required
+            #
+            # while the log showed the flag three lines below.
+            DISK=$(ls out/*.qcow2 | head -1)
+            test -n "$DISK"
             python3 lib/steps.py linux/kubuntu/steps/vm-configure.yaml \
-              # THE PULLED DISK, WHATEVER THE REGISTRY NAMED IT. `oci-pull` writes the
-              # artifact under the tag's own name, and a hard-coded path is a second
-              # place that has to agree with the publisher.
-              --boot-disk "$(ls out/*.qcow2 | head -1)" \
+              --boot-disk "$DISK" \
               --out out/kubuntu-vm-configure.qcow2 \
               --work out/kubuntu-vm-configure-work \
               --ssh-port "${{ inputs.ssh_port || '2222' }}" \
