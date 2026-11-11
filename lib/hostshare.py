@@ -850,8 +850,31 @@ def mount_commands(host: str = "", user: str = "vmuser",
         # and that is a privileged operation; what sudo is NOT doing here is smuggling a password
         # to the client, which is what made the earlier forms fail. The account has no password,
         # so the stdin line sudo reads is the only secret in the command and nothing else wants it.
+        # THE MOUNT POINT MUST NOT BE A DIRECTORY WHEN `mount_smbfs` RUNS, AND THIS USED TO
+        # CREATE ONE FIRST.
+        #
+        # Run 42973656275, the second launch after the share had ever been mounted:
+        #
+        #     mount -> 64
+        #         mount_smbfs: mount error: /Users/vmuser/shared: File exists
+        #     === THE SHARE DID NOT MOUNT; THE LAUNCHER WILL FIND NO bootstrap.sh ===
+        #
+        # `mkdir -p ~/shared` was the first thing this command did, on every call. On a disk that
+        # has never mounted the share that is necessary; on one that has - which is every run
+        # after the first, because ~/shared is in the guest's home and the home is on the disk -
+        # the directory is already there and macOS refuses to mount OVER an existing directory.
+        #
+        # So the directory is created only when the path is NOT already a mount point, and an
+        # empty leftover is removed. That is the rule lib/overlay.py applies to its own file: a
+        # previous attempt's leftovers are not this attempt's.
+        #
+        # `mount` IS THE TEST, NOT `test -d`: a mount point IS a directory, so `-d` cannot tell
+        # the two apart - which is the confusion that produced `File exists`.
         "macos": (
-            f"mkdir -p ~/shared && "
+            'p="$HOME/shared"; '
+            'if mount | grep -q " on $p "; then :; '
+            'else if [ -d "$p" ]; then rmdir "$p" || { echo "NOT_EMPTY $p"; ls -la "$p"; exit 1; }; fi; '
+            'mkdir -p "$p"; fi; '
             f"printf '%s\\n' {shlex.quote(login_password)} | sudo -S -p '' "
             f"mount_smbfs -f 0666 -d 0777 //{SMB_USER}:@{host}/{SHARE_NAME} ~/shared"
         ),
