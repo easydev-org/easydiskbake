@@ -543,13 +543,30 @@ def stop() -> None:
             break
         log(f"  signalling smbd {pid} with SIG{signal_number} "
             f"(this process is {os.getpid()}, group {os.getpgid(0)})")
-        try:
-            os.kill(pid, getattr(_signal, f"SIG{signal_number}"))
-        except ProcessLookupError:
-            log(f"  smbd {pid} exited before the signal")
-            break
-        except PermissionError as exc:
-            log(f"  could not signal smbd {pid}: {exc}")
+        # IN A CHILD, IN ITS OWN SESSION.
+        #
+        # `os.kill` to one pid cannot reach this process - measured: `os.kill(child.pid, SIGTERM)`
+        # leaves the parent alive and the child dies. And yet run 42931268207 shows this process
+        # receiving SIGTERM 3.4 ms after this line's own `signal delivered`:
+        #
+        #     00:37:35.5616815  [share] signalling smbd 434 with SIGTERM (this process is 392)
+        #     00:37:35.5617317  [share] signal delivered
+        #     00:37:35.5650963  [clean-step] === SIGNALLED: SIGTERM (15) === pid=392 pgid=392
+        #
+        # The measurement and the log disagree, so the caller cannot be trusted to be the only
+        # actor here. Doing the call in a child that shares no process group and no terminal makes
+        # this function unable to signal its own process whatever the pid resolves to.
+        sent = subprocess.run(
+            [sys.executable, "-c",
+             "import os,signal,sys\n"
+             "if os.getsid(0) != os.getpid():\n"
+             "    os.setsid()\n"
+             "os.kill(int(sys.argv[1]), int(sys.argv[2]))",
+             str(pid), str(int(getattr(_signal, f"SIG{signal_number}")))],
+            capture_output=True, text=True, start_new_session=True)
+        if sent.returncode != 0:
+            log(f"  the signal helper failed ({sent.returncode}): "
+                f"{(sent.stderr or '').strip()[:160]}")
             break
         log("  signal delivered")
         time.sleep(0.5)
