@@ -516,13 +516,42 @@ def stop() -> None:
     # If the next run prints `signalling smbd <pid>` and then the SIGNALLED line, the sender is
     # this function and the pid is wrong. If it prints the SIGNALLED line with no `signalling`
     # before it, the signal came from outside and this is not the place to look.
+    # `os.kill`, NOT `kill` IN A SUBPROCESS, AND THE PID IS RE-CHECKED FIRST.
+    #
+    # The subprocess form was chosen so that a wrong number would kill the wrong process rather
+    # than this one. It does not: `subprocess.run(["kill", "-TERM", p])` cannot hurt the caller,
+    # but the pid can be REUSED between the check above and the call, and a reused pid in this
+    # process's own group takes the stage down with it - which is exactly the shape of
+    # `=== SIGNALLED: SIGTERM (15) === ppid=277 pid=284 pgid=284`, four milliseconds after
+    # `qemu stopped`, in four runs.
+    #
+    # `os.kill` sends to one pid and to nothing else. There is no group form and no shell to
+    # interpret anything, so the only remaining risk is a reused pid - and that is checked here,
+    # immediately before the signal, rather than forty lines earlier.
+    import signal as _signal
+
     for signal_number in ("TERM", "KILL"):
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                again = fh.read().replace(b"\0", b" ").decode(errors="replace")
+        except OSError:
+            log(f"  smbd {pid} is gone; nothing to signal")
+            break
+        if (pid == os.getpid() or pid <= 1
+                or not again.lstrip().startswith("smbd ")):
+            log(f"  pid {pid} no longer looks like smbd ({again[:60]}); not signalling it")
+            break
         log(f"  signalling smbd {pid} with SIG{signal_number} "
             f"(this process is {os.getpid()}, group {os.getpgid(0)})")
-        done = subprocess.run(["kill", f"-{signal_number}", str(pid)], capture_output=True)
-        log(f"  kill returned {done.returncode}")
-        if done.returncode != 0:
+        try:
+            os.kill(pid, getattr(_signal, f"SIG{signal_number}"))
+        except ProcessLookupError:
+            log(f"  smbd {pid} exited before the signal")
             break
+        except PermissionError as exc:
+            log(f"  could not signal smbd {pid}: {exc}")
+            break
+        log("  signal delivered")
         time.sleep(0.5)
         if not os.path.exists(f"/proc/{pid}"):
             break
