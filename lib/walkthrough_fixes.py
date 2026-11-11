@@ -104,17 +104,28 @@ def main() -> int:
     # --- the interpreter ---------------------------------------------------------------
     check("at+type is ONE action, not a type then a click", "lib/steps.py",
           'elif step["at"] is None and step["type"] is not None:' in steps_src)
-    # A `python:` STEP NEEDS A SCREEN UNLESS IT SAYS OTHERWISE, IN BOTH PLACES THAT DECIDE.
+    # A `python:` STEP NEEDS A SCREEN UNLESS IT SAYS OTHERWISE, AND THERE IS ONE PLACE THAT SAYS SO.
     #
     # The default is conservative because most extensions drive the GUI - and forgetting it was
     # a crash (`HeadlessDriver` has no `key`). But macos/15/steps/dev.yaml's two extensions fetch
     # and copy a file over ssh, never touching the screen, and being told they needed a QMP
     # socket is what stopped run 42632192846 before its first step. `python_screen: false` is the
-    # declaration, and it has to be honoured by BOTH needs_screen expressions or a walkthrough
-    # passes one check and dies in the other.
-    check("python: needs a screen unless the file says it does not (both checks)",
+    # declaration.
+    #
+    # IT USED TO SAY "both checks", because there were two copies of the expression - `run_file`
+    # and the CLI - and a walkthrough could pass one and die in the other. They had already
+    # drifted (only one knew about `until_dark`, `wait_for_change` or `sweep`) and BOTH were
+    # missing `desktop:` and `screenshot:`, which is what gave android/blissos16/steps/launch.yaml
+    # a headless driver for a file whose second step is "wait for a desktop". One function now,
+    # `_needs_screen`, called from both places - so the check is that the expression appears ONCE
+    # and that both call sites use it.
+    check("python: needs a screen unless the file says it does not (one answer, two callers)",
           "lib/steps.py",
-          steps_src.count('s["python"] and s.get("python_screen") is not False') == 2)
+          steps_src.count('s["python"] and s.get("python_screen") is not False') == 1
+          and steps_src.count("needs_screen = _needs_screen(steps)") == 2)
+    # AND THE THREE STEPS THAT READ THE FRAMEBUFFER WITHOUT CLICKING OR TYPING ARE IN IT.
+    check("desktop: and screenshot: need a screen too", "lib/steps.py",
+          'or s["desktop"] or s["screenshot"]' in steps_src)
     check("a cropped read puts the whole-frame words back", "lib/steps.py",
           "driver.words = whole" in steps_src)
     check("waits_for accepts alternatives, not one phrase", "lib/steps.py",
@@ -341,6 +352,65 @@ def main() -> int:
     # type the sshd statements, wait for the port, push the guest settings; then install four
     # packages and prove three of them work. Both stages still start a machine and publish a
     # disk - that stays in Python - and both call lib/steps.py now.
+    # --- THE FIRST STAGE WITH NO PYTHON BESIDE IT AT ALL -------------------------------
+    #
+    # android/blissos16 is the first system in this repository whose whole stage is its files:
+    #
+    #     steps/install.yaml   make the disk, boot the ISO's installer, answer ten panes,
+    #                          place the fallback loader, read the ESP, publish
+    #     steps/launch.yaml    boot the installed disk with NO -kernel and NO cdrom, and wait
+    #                          for Android's own UI
+    #
+    # There is no install.py and no launch.py. What used to be in them is either a step
+    # (`disk:` with `disk_gb:`/`disk_gpt:`, `boot:` with `os: android`, `compress:`) or a
+    # `python:` EXTENSION for the one act that is not an action on a screen - editing a FAT
+    # filesystem inside a partition of a qcow2.
+    #
+    # IT IS ALSO THE FIRST STAGE THAT PROVES `os:` IS COMPLETE. Before this, `os: android`
+    # needed two firmware keys from a Python caller (`opts["firmware_code"]`), which made the
+    # word a half-statement; lib/vm_session.py now finds OVMF and makes a fresh variable store
+    # itself, the same way `os: windows` and `os: linux` already did.
+    check("the blissos install stage is a workflow file, with no program beside it",
+          "android/blissos16",
+          not os.path.exists(os.path.join(REPO, "android/blissos16/install.py")))
+    check("the blissos launch stage is a workflow file, with no program beside it",
+          "android/blissos16",
+          not os.path.exists(os.path.join(REPO, "android/blissos16/launch.py")))
+    bliss_install = read("android/blissos16/steps/install.yaml")
+    bliss_launch = read("android/blissos16/steps/launch.yaml")
+    # IT MAKES ITS OWN DISK. Before `disk_gb:` every install-onto-a-disk stage wrote six lines of
+    # Python for this, and none of them was about a screen.
+    check("the blissos install makes the disk it installs to", "android/blissos16/steps/install.yaml",
+          "disk_gb:" in bliss_install and "disk_gpt: true" in bliss_install)
+    # AND NAMES ONE MACHINE IN ONE WORD, for both of its shapes.
+    check("both blissos stages name the machine with os:",
+          "android/blissos16/steps/*.yaml",
+          "    os: android" in bliss_install and "    os: android" in bliss_launch)
+    # THE LAUNCH DOES NOT HAND THE GUEST A KERNEL, BECAUSE THE POINT IS THAT THE DISK BOOTS ITSELF.
+    #
+    # THE CHECK IS ON WHAT THE FILE ASKS FOR, NOT ON THE WORD, and that distinction is the whole
+    # check: the file's own comments say "no -kernel" several times, so a `"kernel" not in body`
+    # test fails on the explanation of the property it is checking. What matters is that the step
+    # does not name an ISO - `--boot-iso` is what puts `os: android` into its installer shape and
+    # passes `-kernel`/`-initrd` - and that no step hands qemu one directly.
+    check("the blissos launch does not hand the guest a kernel",
+          "android/blissos16/steps/launch.yaml",
+          "boot_iso" not in bliss_launch
+          and "kernel_append" not in bliss_launch
+          and "    boot: true\n    os: android" in bliss_launch)
+    # AND THE VERDICT IS THE SHARED JUDGE, NOT A WORD LIST IN A STAGE. `desktop: android` is
+    # lib/desktop.py's `is_android_desktop`, which is where the greyscale stretch lives.
+    check("the blissos launch waits for a desktop, not for words it typed itself",
+          "android/blissos16/steps/launch.yaml", "    desktop: android" in bliss_launch)
+    check("lib/desktop.py has an android judge", "lib/desktop.py",
+          '"android": is_android_desktop' in read("lib/desktop.py"))
+    # AND THE WORKFLOW RUNS THE FILES. `easyvm` is the one supported entry point.
+    bliss_wf = read(".github/workflows/blissos16.yml")
+    check("the blissos workflow runs its workflow files",
+          ".github/workflows/blissos16.yml",
+          "./easyvm android/blissos16/steps/install.yaml" in bliss_wf
+          and "./easyvm android/blissos16/steps/launch.yaml" in bliss_wf)
+
     win_ssh = read("windows/11/ssh.py")
     win_dev = read("windows/11/devtools.py")
     check("windows ssh is driven by ssh.yaml", "windows/11/ssh.py",
@@ -1727,6 +1797,42 @@ def main() -> int:
     outside = " ".join(l for l in body.splitlines() if "--override" not in l)
     check("no winget switch is passed beside --override", "windows/11/steps/dev.yaml",
           "--quiet" not in outside and "--wait" not in outside)
+    # AND "ALREADY INSTALLED" IS A SUCCESS, WHICH WINGET REPORTS AS EXIT CODE 43.
+    #
+    # Run 42966695727, the first run where the BuildTools install ever worked - 13m42s, exit 0:
+    #
+    #     script install-buildtools.ps1 (powershell) -> 0
+    #     === install the windows sdk
+    #       Found an existing package already installed. Trying to upgrade ...
+    #       No available upgrade found.
+    #       No newer package versions are available from the configured sources.
+    #       -> 43
+    #
+    # 43 is APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE - present, nothing to do. The VCTools
+    # workload had already brought the SDK, which THIS FILE SAYS IT DOES seventeen lines above
+    # the step. So the stage failed on its own success, and would have done so on every rebuild.
+    #
+    # `windows/11/devtools.py` already holds this judgement in Python; the YAML did not.
+    dev3 = _y4.safe_load(read("windows/11/steps/dev.yaml"))
+    plain = [x for x in dev3["steps"]
+             if x["name"] in ("install the windows sdk", "install the dotnet sdk",
+                              "install powershell 7", "install python", "install node",
+                              "install git")]
+    check("there are six plain winget installs to check", "windows/11/steps/dev.yaml",
+          len(plain) == 6)
+    for step in plain:
+        body3 = str(step.get("script") or "")
+        check(f"{step['name']} treats winget 43 as success",
+              "windows/11/steps/dev.yaml",
+              "$rc -eq 43" in body3 and "ALREADY_PRESENT" in body3)
+        # ANY OTHER NON-ZERO STILL FAILS - the rule must not become "ignore winget".
+        check(f"{step['name']} still fails on any other code",
+              "windows/11/steps/dev.yaml", "exit $rc" in body3)
+    # AND THE BUILD TOOLS ARE NOT IN THAT SET: an explicit --version either installs that
+    # version or it does not, and 43 there would hide a pin that no longer exists.
+    bt = next(x for x in dev3["steps"] if x["name"] == "install the build tools")
+    check("the pinned build tools do not accept 43",
+          "windows/11/steps/dev.yaml", "ALREADY_PRESENT" not in str(bt.get("script") or ""))
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))
