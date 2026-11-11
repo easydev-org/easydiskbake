@@ -800,10 +800,10 @@ SHARED_COMMAND = (
     "SHARED=$HOME/shared; mkdir -p \"$SHARED\" && "
     "printf '%s\\n' __PASSWORD__ | sudo -S -p '' "
     "sh -c 'mkdir -p $HOME/.smb; "
-    "{ printf \"auth %s\\n\" \"__USER__\"; "
-    "printf \"smb_server=%s\\n\" \"__HOST__\"; } > $HOME/.smb/smbnetfs.conf; "
+    "echo \"auth __USER__\" > $HOME/.smb/smbnetfs.conf; "
+    "echo \"smb_server=__HOST__\" >> $HOME/.smb/smbnetfs.conf; "
     "chmod 600 $HOME/.smb/smbnetfs.conf; "
-    "smbnetfs \"$1\" 2>&1 | tail -4; sleep 4; "
+    "smbnetfs -o allow_other \"$1\" 2>&1 | tail -4; sleep 4; "
     "ls -d \"$1\"/*/ >/dev/null 2>&1' _ \"$SHARED\""
 )
 
