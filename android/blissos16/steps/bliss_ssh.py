@@ -227,7 +227,18 @@ def install_boot_hook(driver, step) -> bool:
         "export LD_LIBRARY_PATH=$P/lib\n"
         "mkdir -p $P/var/empty $P/var/run\n"
         "chmod 755 $P/var/empty\n"
-        f"$P/bin/sshd -f {PREFIX}/etc/ssh/sshd_config.installed -E /data/local/tmp/sshd.err\n"
+        # `exec` AND `-D`, BECAUSE A WRAPPER THAT EXITS TAKES ITS CHILD WITH IT.
+        #
+        # This is the last link in the chain and the one that cost the most runs. The wrapper ran
+        # on every boot - `/data/local/tmp/sshd.err` was 26 KB of "Server listening" lines, one
+        # per boot - and yet nothing was ever listening when the machine had finished starting.
+        # The reason is a `oneshot` service: when its program exits, init kills the service's
+        # PROCESS GROUP, so sshd - which the wrapper had forked and left running - was killed
+        # a moment after it bound the port.
+        #
+        # `-D` keeps sshd in the foreground and `exec` makes it the service's own process, so the
+        # thing init supervises IS the daemon. The wait for the framework stays above it.
+        f"exec $P/bin/sshd -D -f {PREFIX}/etc/ssh/sshd_config.installed -E /data/local/tmp/sshd.err\n"
     )
     rc = (
         "# Start sshd inside Android at boot. Written by android/blissos16/steps/ssh.yaml.\n"
@@ -252,12 +263,18 @@ def install_boot_hook(driver, step) -> bool:
         # init reaches that class, and `late_start` is the class that comes after the framework
         # - which is exactly when /data is usable and the networks are up.
         #
-        # `oneshot` STAYS, because sshd forks its own children and exits; init's supervision of a
-        # forking daemon is a second thing to get wrong, and there is nothing to supervise.
+        # AND IT IS NOT `oneshot`. A oneshot service's process group is killed when its program
+        # exits - which is what happened to the sshd the wrapper had forked: it bound 8022 and was
+        # killed a moment later, on every boot:
+        #
+        #     $ wc -c /data/local/tmp/sshd.err
+        #     26386                       <- one "Server listening" per boot, and no listener left
+        #
+        # The wrapper `exec`s `sshd -D` now, so the daemon IS the service process and there is
+        # nothing to kill. init restarts it if it ever dies, which is what a server wants.
         "    class late_start\n"
         "    user root\n"
         "    group root\n"
-        "    oneshot\n"
         "\n"
         # `on boot` AND NOT `on property:sys.boot_completed=1`, AND THE DIFFERENCE IS THE WHOLE
         # BUG. A `property:` trigger fires on a CHANGE - init replays it only for an rc it parsed
