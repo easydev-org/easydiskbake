@@ -231,11 +231,12 @@ def install_boot_hook(driver, step) -> bool:
         "chmod 755 /data/data/com.termux/files/usr/var/empty 2>/dev/null\n"
         "T=/data/data/com.termux/files/usr\n"
         "mkdir -p $T/libexec 2>/dev/null\n"
-        # sshd execs this for each connection, from the path it was BUILT with. See `start()`.
-        "if [ ! -x $T/libexec/sshd-session ]; then\n"
-        "  cp $P/libexec/sshd-session $T/libexec/sshd-session 2>/dev/null\n"
-        "  chmod 755 $T/libexec/sshd-session 2>/dev/null\n"
-        "fi\n"
+        # sshd execs these for each connection, from the path it was BUILT with. See `start()`.
+        "for f in $P/libexec/*; do\n"
+        "  [ -f \"$f\" ] && [ ! -e \"$T/libexec/$(basename $f)\" ] && "
+        "cp \"$f\" $T/libexec/ 2>/dev/null\n"
+        "done\n"
+        "chmod 755 $T/libexec/* 2>/dev/null\n"
         "chmod 755 $P/var/empty\n"
         # `exec` AND `-D`, BECAUSE A WRAPPER THAT EXITS TAKES ITS CHILD WITH IT.
         #
@@ -433,9 +434,20 @@ def start(driver, step) -> bool:
         # everything else stays where root can write freely.
         f"T=/data/data/com.termux/files/usr; "
         f"mkdir -p $T/libexec 2>/dev/null; "
-        f"if [ ! -x $T/libexec/sshd-session ]; then "
-        f"cp $P/libexec/sshd-session $T/libexec/sshd-session 2>/dev/null; "
-        f"chmod 755 $T/libexec/sshd-session 2>/dev/null; fi; "
+        # THE WHOLE libexec DIRECTORY, NOT THE ONE HELPER THAT COMPLAINED FIRST.
+        #
+        # `sshd-session` was the first name to appear in an error and copying it exposed the
+        # next one - `sshd-auth` - and there are five helpers in that directory. Copying them one
+        # per CI run is a loop that costs twenty minutes an iteration, and the SET is what sshd
+        # 10.6 actually needs at its compiled-in prefix:
+        #
+        #     sshd-session  sshd-auth  ssh-keysign  ssh-pkcs11-helper  ssh-sk-helper
+        #
+        # So every regular file in `libexec` is placed there. The directory cannot be `cp -a`'d,
+        # but individual files can, and this is the last place the compiled-in prefix matters.
+        f"for f in $P/libexec/*; do "
+        f"[ -f \"$f\" ] && cp \"$f\" $T/libexec/ 2>/dev/null; done; "
+        f"chmod 755 $T/libexec/* 2>/dev/null; "
         f"[ -f $P/etc/ssh/ssh_host_rsa_key ] || "
         f"$P/bin/ssh-keygen -t rsa -b 2048 -f $P/etc/ssh/ssh_host_rsa_key -N '' -q; "
         f"test -f $P/etc/ssh/ssh_host_rsa_key || {{ echo NO_HOST_KEY; exit 1; }}; "
