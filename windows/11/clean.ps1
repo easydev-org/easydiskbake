@@ -13,6 +13,16 @@ $before = (Get-PSDrive C -ErrorAction SilentlyContinue).Used
 Write-Output ("=== clean ===")
 Write-Output ("used before: " + [math]::Round($before/1MB,0) + " MB")
 
+# EVERY STEP ANNOUNCES ITSELF, WITH A CLOCK.
+#
+# Run 42937358029's clean was killed at thirty-one minutes with `cleaning the guest` as its last
+# line - the script had produced nothing since, so neither the host nor a reader could tell a slow
+# retrim from a hung PowerShell from a Defender scan. `Write-Output` is flushed line by line over
+# ssh, so a timestamp per step makes the slow one visible while it is still slow.
+function Step($what) {
+    Write-Output ("[" + (Get-Date -Format "HH:mm:ss") + "] " + $what)
+}
+
 function Report($what, $path) {
     if ($path -and (Test-Path $path)) {
         $sz = (Get-ChildItem $path -Recurse -Force -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
@@ -23,7 +33,7 @@ function Report($what, $path) {
 }
 
 # 1. My own helper scripts and the compile test.
-Write-Output "--- build artefacts ---"
+Step "build artefacts"
 Report "msvc-check dir" (Join-Path $env:USERPROFILE "msvc-check")
 Remove-Item (Join-Path $env:USERPROFILE "msvc-check") -Recurse -Force -ErrorAction SilentlyContinue
 Get-ChildItem $env:USERPROFILE -Filter "vs-*.ps1" -ErrorAction SilentlyContinue | ForEach-Object {
@@ -34,10 +44,12 @@ Get-ChildItem $env:USERPROFILE -Filter "msvc-check.ps1" -ErrorAction SilentlyCon
 
 # 2. User and system temp.
 Write-Output "--- temp ---"
+Step "user TEMP"
 Report "user TEMP" $env:TEMP
 Get-ChildItem $env:TEMP -Force -ErrorAction SilentlyContinue | ForEach-Object {
     Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
 }
+Step "Windows Temp"
 Report "Windows Temp" (Join-Path $env:SystemRoot "Temp")
 Get-ChildItem (Join-Path $env:SystemRoot "Temp") -Force -ErrorAction SilentlyContinue | ForEach-Object {
     Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
@@ -68,6 +80,7 @@ Get-ChildItem (Join-Path $env:LOCALAPPDATA "Packages") -Directory -Filter "Micro
 # 4. Delivery optimisation cache - Windows Update style peer cache, often several GB.
 Write-Output "--- delivery optimisation ---"
 $do = "$env:SystemRoot\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization"
+Step "DeliveryOptimization"
 Report "DeliveryOptimization" $do
 if (Test-Path $do) {
     Get-ChildItem $do -Force -ErrorAction SilentlyContinue | ForEach-Object {
@@ -169,7 +182,8 @@ Write-Output ("  cleared " + $cleared + " logs")
  # The verbose stream is what shows the result. Without it the cmdlet is silent and there is no
  # evidence it did anything - which, for a step whose whole value is "the image got smaller",
  # is the one thing that cannot be skipped.
- Write-Output "--- trim (no zeroing) ---"
+ Step "trim (no zeroing) - the slow one"
+Write-Output "--- trim (no zeroing) ---"
  $trimStart = Get-Date
  $trimmed = $false
  foreach ($vol in (Get-Volume | Where-Object { $_.DriveLetter -and $_.FileSystemType -eq 'NTFS' })) {

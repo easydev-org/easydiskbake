@@ -68,7 +68,7 @@ def _allocated_mib(disk: str) -> int:
         return -1
 
 
-def clean(*, port: int, user: str = "vmuser", note=print, timeout: int = 1800,
+def clean(*, port: int, user: str = "vmuser", note=print, timeout: int = 3600,
           disk: str | None = None) -> bool:
     """Copy clean.ps1 into the guest, run it, and report what it freed.
 
@@ -138,14 +138,34 @@ def clean(*, port: int, user: str = "vmuser", note=print, timeout: int = 1800,
         note(f"=== CLEAN.PS1 COULD NOT BE COPIED: {last} ===")
         return False
 
-    result = subprocess.run(
-        ["sshpass", "-p", SSH_PASSWORD, "ssh",
-         "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-         "-o", "ConnectTimeout=15",
-         "-p", str(port), f"{user}@{SSH_HOST}",
-         f"powershell -NoProfile -ExecutionPolicy Bypass -File {remote}"],
-        capture_output=True, text=True, timeout=timeout,
-    )
+    # AN HOUR, AND IT IS NOT SLACK - IT IS THE MEASURED COST.
+    #
+    # Run 42937358029's clean was still inside its PowerShell script after thirty-one minutes, so
+    # the 1800-second budget expired and the stage was killed with the work unfinished. The script
+    # walks the filesystem (`Get-ChildItem -Recurse` in its size reports), retrims a 128 GiB volume
+    # with `Optimize-Volume -ReTrim`, and on this image sits behind Defender. None of that is a
+    # bound anybody measured at 1800.
+    #
+    # A TIMEOUT THAT FIRES DURING NORMAL WORK IS A WRONG ANSWER, NOT A SAFETY NET. The job limit
+    # (90 minutes for this stage) is the real ceiling; this number only has to be larger than the
+    # work.
+    try:
+        result = subprocess.run(
+            ["sshpass", "-p", SSH_PASSWORD, "ssh",
+             "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+             "-o", "ConnectTimeout=20",
+             "-o", "ServerAliveInterval=60",
+             "-p", str(port), f"{user}@{SSH_HOST}",
+             f"powershell -NoProfile -ExecutionPolicy Bypass -File {remote}"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        # SAID, NOT RAISED. An uncaught TimeoutExpired produces a forty-line traceback whose last
+        # line is `subprocess.TimeoutExpired: Command ... timed out after 3600 seconds`, and it
+        # never mentions that the guest was reachable and the script was mid-work.
+        note(f"=== THE CLEAN DID NOT FINISH IN {timeout}s ===")
+        note("  the guest answered and the script was still running; the disk is unchanged")
+        return False
     out = (result.stdout or "") + (result.stderr or "")
 
     summary = []

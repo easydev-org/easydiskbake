@@ -1087,6 +1087,32 @@ def main() -> int:
           "shutil.rmtree(PRIVATE_DIR" in hs and "os.makedirs(PRIVATE_DIR" in hs)
     check("the private directory state is reported", "lib/hostshare.py",
           "writable={os.access(PRIVATE_DIR, os.W_OK)}" in hs)
+    # AND THE WINDOWS CLEAN GETS AN HOUR, AND SAYS WHERE ITS TIME WENT.
+    #
+    # Run 42937358029's clean was still inside its PowerShell script at thirty-one minutes, so the
+    # 1800-second ssh budget expired and the stage was killed -
+    #
+    #     [clean-step] === SIGNALLED: SIGTERM (15) === ppid=305 pid=312 pgid=312
+    #     [clean-step]   signal 1, and the clean has NOT finished; obeying it
+    #
+    # (the tolerance from 13f59c9 correctly REFUSING to save it, because the work was not done).
+    # Nothing in that script is bounded at 1800: it walks the filesystem for its size reports,
+    # retrims a 128 GiB volume, and sits behind Defender. A timeout that fires during normal work
+    # is a wrong answer, not a safety net - the job limit is the real ceiling.
+    #
+    # And since the log could not distinguish a slow retrim from a hung shell, every section now
+    # announces itself with a clock.
+    wc_src = read("lib/winclean.py")
+    check("the windows clean gets an hour", "lib/winclean.py",
+          "timeout: int = 3600" in wc_src)
+    check("an expired clean is reported, not raised", "lib/winclean.py",
+          "except subprocess.TimeoutExpired:" in wc_src
+          and "THE CLEAN DID NOT FINISH IN" in wc_src)
+    ps = read("windows/11/clean.ps1")
+    check("the windows clean announces each step", "windows/11/clean.ps1",
+          "function Step(" in ps and ps.count('Step "') >= 4)
+    check("the retrim announces itself", "windows/11/clean.ps1",
+          'Step "trim (no zeroing)' in ps)
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))
