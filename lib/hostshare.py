@@ -799,12 +799,10 @@ mount_smbfs -f 0666 -d 0777 "//SMB_USER:@$host/SHARE_NAME" "$p"
 SHARED_COMMAND = (
     "SHARED=$HOME/shared; mkdir -p \"$SHARED\" && "
     "printf '%s\\n' __PASSWORD__ | sudo -S -p '' "
-    "sh -c 'mkdir -p $HOME/.smb; "
-    "echo \"auth __USER__\" > $HOME/.smb/smbnetfs.conf; "
-    "echo \"smb_server=__HOST__\" >> $HOME/.smb/smbnetfs.conf; "
-    "chmod 600 $HOME/.smb/smbnetfs.conf; "
-    "smbnetfs -o allow_other \"$1\" 2>&1 | tail -4; sleep 4; "
-    "ls -d \"$1\"/*/ >/dev/null 2>&1' _ \"$SHARED\""
+    "sh -c 'smbnetfs -o allow_other -o smb_server=__HOST__ -o auth=__USER__ \"$1\" 2>&1 | tail -6; "
+    "sleep 5; "
+    "echo --- what appeared ---; ls -la \"$1\" 2>&1 | head -8; "
+    "find \"$1\" -maxdepth 3 -type d 2>/dev/null | head -10' _ \"$SHARED\""
 )
 
 
