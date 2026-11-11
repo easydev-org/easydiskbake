@@ -134,28 +134,45 @@ def smbnetfs_conf(driver, step, **_kwargs) -> bool:
         "   client min protocol = SMB2\n"
         "   client max protocol = SMB3\n"
     ))
-    # THE THREE LINES ARE THE ONES THIS CLIENT DOCUMENTS, AND NOTHING ELSE.
+    # FOUR WORDS ARE ALL THIS PARSER KNOWS, AND I READ THEM IN ITS SOURCE RATHER THAN GUESSING.
     #
-    # Run 14ae549 reported
+    # Fifteen runs were spent on `Invalid input line : auth` and `Invalid input line : smb_`, and
+    # the reason is in `reconfigure_read_config_file()`: after the simple `key value` options it
+    # accepts exactly
     #
-    #     Invalid input line : auth
-    #     Invalid input line : smb_
+    #     auth [computer[/share]] [domain_or_workgroup/]user password     2-3 fields
+    #     host computer_name [parent_group=...] [visible=...]
+    #     group group_name
+    #     link link_name [link_contents]
     #
-    # from a file `scp` had copied in successfully - so the content reached /root/.smb and the
-    # PARSER rejected it. Two candidate causes, and the config is now written so that the log
-    # distinguishes them:
+    # and anything else is `Invalid input line : <the whole line>`. TWO CONSEQUENCES, AND THEY ARE
+    # THE TWO ERRORS:
     #
-    #   `smb_share=` IS NOT A KEYWORD THIS CLIENT KNOWS. It takes the share from the tree it
-    #   enumerates (`<mount>/<group>/<host>/<share>`), not from the config, and an unknown keyword
-    #   is `Invalid input line`. It is REMOVED.
+    #   `smb_server=` IS NOT AMONG THEM AND NEVER WAS. There is no such keyword in this client;
+    #   the server is named by `host` (or found by browsing, which this build has off the network
+    #   for). Removing it was half the fix.
     #
-    #   THE FILE MUST END WITH A NEWLINE AND HAVE NO BLANK LINE. `\n`.join of the lines plus one
-    #   trailing `\n` is exactly that, and the step prints `cat -A` of the installed copy so the
-    #   next run shows the bytes rather than a guess about them.
+    #   `auth guest` IS ONE FIELD, AND `reconfigure_parse_auth_option` RETURNS 0 FOR `count < 2` -
+    #   a bare user name is a malformed line, not a passwordless login. The password is a REQUIRED
+    #   field, and an empty one is written as `""`.
+    #
+    # So the file is the sample's own spelling (`auth "guest" ""`, conf/smbnetfs.conf line 327)
+    # plus a static host, which is what gives the mount a tree without browsing:
+    #
+    #     auth guest ""            <- wait, quotes are stripped by the splitter, see below
+    #     host 172.30.0.1
+    #
+    # QUOTES ARE STRIPPED, NOT KEPT: `reconfigure_split_line` has a QUOTED mode that ends at the
+    # matching quote and stores the characters between them, which is how `""` becomes an empty
+    # field instead of two quote characters. That is the opposite of what I assumed on run 4481870,
+    # where I removed the quotes to avoid sending `"\"\""` as the password.
+    #
+    # AND `cat -A` OF THE INSTALLED COPY IS PRINTED BY THE STEP, so the next run shows these bytes
+    # rather than a belief about them.
     _write(work, "smbnetfs.conf", "".join(
         f"{line}\n" for line in (
-            f"auth {hostshare.SMB_USER}",
-            f"smb_server={net.BRIDGE_IP}",
+            f'auth "{hostshare.SMB_USER}" ""',
+            f"host {net.BRIDGE_IP}",
         )
     ))
     log(f"  {label}: wrote smb.conf and smbnetfs.conf for the `scp:` steps after this")

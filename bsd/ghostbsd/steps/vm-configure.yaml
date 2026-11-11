@@ -327,8 +327,13 @@ steps:
         find "$MOUNT" -maxdepth 3 -type d 2>/dev/null | head -10'
     timeout: 600
 
-  # THE SHARE COMES FROM THE CONFIG THAT WAS WRITTEN FOR THIS RUN, so the path is known rather
-  # than searched: `<mount>/<serveur>/<share>` is what smbnetfs builds from `smb_server`.
+  # THE SHARE IS STILL SEARCHED FOR, BECAUSE ONE FACT ABOUT THIS CLIENT IS NOW KNOWN AND THE REST
+  # IS NOT. Its config has exactly four directives - `auth`, `host`, `group`, `link` - read out of
+  # `reconfigure_read_config_file()` in its source after fifteen runs of `Invalid input line`, and
+  # the `host 172.30.0.1` line this run writes puts a static host in the tree. Whether that host
+  # appears at `<mount>/172.30.0.1/<share>` or under the workgroup first is a detail of how it
+  # merges the static tree with the browsed one, and `find` costs nothing while a wrong guess
+  # costs a run. The depth is four because workgroup/host/share is three.
   - name: prove the share is readable and writable
     ssh: |
       sh -c '
