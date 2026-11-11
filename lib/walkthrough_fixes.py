@@ -1843,6 +1843,42 @@ def main() -> int:
     bt = next(x for x in dev3["steps"] if x["name"] == "install the build tools")
     check("the pinned build tools do not accept 43",
           "windows/11/steps/dev.yaml", "ALREADY_PRESENT" not in str(bt.get("script") or ""))
+    # AND THE BRIDGE IS UP BEFORE THE SHARE IS SERVED, IN EVERY PROGRAM THAT DOES BOTH.
+    #
+    # `hostshare.start()` writes `interfaces = <bridge address>` into samba's config and waits for
+    # smbd to bind there. That address is created by `net.up()`, which stages normally reach
+    # through `vm.Guest.start()`. `lib/launch_selftest.py` calls `hostshare.start()` FIRST - it
+    # has to, because the launcher waits for the share - and it did not call `net.up()` at all:
+    #
+    #     05:58:16  private dir ... exists=True writable=True entries=['msg.sock', ...]
+    #     05:58:26  samba lost its private directory; recreating it and starting smbd once more
+    #
+    # smbd was asked to bind an address that did not exist, waited ten seconds, failed, and fell
+    # into the tdb retry - which made the failure read as samba's problem rather than as an
+    # ordering mistake in the caller. `lib/vm_session.py` learned this at run 42813552966 and says
+    # so in capitals; this program never got the fix.
+    import ast as _ast5
+    launch_src = read("lib/launch_selftest.py")
+    tree5 = _ast5.parse(launch_src)
+    main5 = next(n for n in _ast5.walk(tree5)
+                 if isinstance(n, _ast5.FunctionDef) and n.name == "main")
+
+    def first_call_line(node, needle):
+        hits = [c.lineno for c in _ast5.walk(node)
+                if isinstance(c, _ast5.Call) and needle in _ast5.unparse(c.func)]
+        return min(hits) if hits else None
+
+    up_line = first_call_line(main5, ".up")
+    share_line = first_call_line(main5, "hostshare.start")
+    check("launch_selftest brings the bridge up", "lib/launch_selftest.py", up_line is not None)
+    check("it brings the bridge up before serving the share", "lib/launch_selftest.py",
+          up_line is not None and share_line is not None and up_line < share_line)
+    # AND THE SAME RULE WHEREVER ELSE BOTH APPEAR.
+    for prog in ("lib/vm_session.py",):
+        src5 = read(prog)
+        if "hostshare.start(" in src5 and "netmod.up(" in src5:
+            check(f"{prog} serves the share after the bridge",
+                  prog, src5.index("netmod.up(") < src5.index("hostshare.start("))
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))

@@ -127,8 +127,33 @@ def main(argv: list[str]) -> int:
         log(f"=== NO DISK AT {args.disk} ===")
         return 2
 
-    # THE SHARE FIRST, because the launcher waits for it: starting the guest before the server
-    # is up means the launcher's one-minute wait is spent on nothing.
+    # THE BRIDGE BEFORE THE SHARE, AND THIS PROGRAM DID NOT DO IT.
+    #
+    # `hostshare.start()` writes `interfaces = <bridge address>` into samba's config and waits
+    # for smbd to bind there. That address is created by `net.up()`, which every other stage
+    # reaches through `vm.Guest.start()` - and this program calls `hostshare.start()` FIRST,
+    # twenty lines above `boot_machine.start()`, because the launcher waits for the share and
+    # starting the guest before the server would spend the launcher's one-minute wait on nothing.
+    #
+    # So smbd was asked to bind an address that did not exist yet, waited ten seconds, failed,
+    # and fell into the `Could not open tdb` retry - which is where it died:
+    #
+    #     05:58:16  private dir ... exists=True writable=True entries=['msg.sock', ...]
+    #     05:58:26  samba lost its private directory; recreating it and starting smbd once more
+    #     05:58:26  [entrypoint] signal 1, and the work has NOT finished; obeying it
+    #
+    # `lib/vm_session.py` learned this same ordering and says so: "THE BRIDGE FIRST, BECAUSE
+    # smbd BINDS TO ITS ADDRESS ... a share that started perfectly and bound to no interface"
+    # (run 42813552966). The fix there was to call `net.up()` before `hostshare.start()`. This
+    # program never got it, and the tdb retry is what made the failure look like samba's.
+    #
+    # `net.up()` IS IDEMPOTENT - `vm.Guest.start()` calls it again and finds what is there - so
+    # this is not a second setup, it is the same call moved to before the thing depending on it.
+    import net as netmod
+
+    netmod.up(ssh_port=args.ssh_port)
+
+    # AND THEN THE SHARE, because the launcher waits for it.
     share_dir = os.path.expanduser("~/shared")
     if not hostshare.start(share_dir):
         log("=== THE HOST COULD NOT SERVE ~/shared ===")
