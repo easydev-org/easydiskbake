@@ -511,11 +511,26 @@ def _sh_kill_all_smbd() -> None:
             continue
         if conf not in parts:
             continue
-        try:
-            os.kill(pid, 15)
+        # IN A CHILD, IN ITS OWN SESSION - THE SAME RULE `stop()` LEARNED THE HARD WAY.
+        #
+        # Run 42943819411's launch_dev printed `stopped 1 smbd process(es)` and then NOTHING: no
+        # retry log line, no bind failure, no `COULD NOT SERVE`. The process was gone. The smbd it
+        # signalled lives in this process's own group (`smbd -D --no-process-group` does not leave
+        # it), and a signal delivered to it took the caller too.
+        #
+        # That is the shape behind every `=== SIGNALLED: SIGTERM === ppid=N pid=N pgid=N` in the
+        # clean runs as well - the signal came from a kill this process issued, reaching a member
+        # of its own group.
+        sent = subprocess.run(
+            [sys.executable, "-c",
+             "import os,signal,sys\n"
+             "if os.getsid(0) != os.getpid():\n"
+             "    os.setsid()\n"
+             "os.kill(int(sys.argv[1]), int(sys.argv[2]))",
+             str(pid), "15"],
+            capture_output=True, text=True, start_new_session=True)
+        if sent.returncode == 0:
             killed.append(pid)
-        except OSError:
-            pass
     if killed:
         log(f"  stopped {len(killed)} smbd process(es) still holding the private directory")
         time.sleep(1.0)

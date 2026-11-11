@@ -1133,6 +1133,29 @@ def main() -> int:
           'parts[0] not in (b"smbd", b"/usr/sbin/smbd")' in hs2)
     check("the retry waits longer than the first attempt", "lib/hostshare.py",
           "max(wait, 30.0)" in hs2)
+    # AND THE STRAY-SMBD KILL IS THE LIKELY ANSWER TO A QUESTION FIVE ROUNDS COULD NOT SETTLE.
+    #
+    # Run 42943819411's launch_dev is the first run that printed the step before dying:
+    #
+    #     [share]   stopped 1 smbd process(es) still holding the private directory
+    #     <nothing else - no retry, no bind, no COULD NOT SERVE>
+    #
+    # The smbd it signalled is in this process's own group, because `smbd -D --no-process-group`
+    # never leaves it. `os.kill(pid, 15)` to a member of your own group is enough to take you with
+    # it - measured:
+    #
+    #     parent pgid=33148  target pgid=33148
+    #     helper rc=0
+    #     parent survived, target poll=-15
+    #
+    # which is exactly why the same signal now goes through a child in its own session. This is
+    # also the shape behind every `=== SIGNALLED: SIGTERM === ppid=N pid=N pgid=N` in the clean
+    # runs: a kill this process issued, reaching a member of its own group.
+    hs3 = read("lib/hostshare.py")
+    stray = hs3[hs3.index("def _sh_kill_all_smbd"):]
+    stray = stray[:stray.index("def stop() -> None:")]
+    check("the stray-smbd kill is isolated too", "lib/hostshare.py",
+          "start_new_session=True" in stray and "os.setsid()" in stray)
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))
