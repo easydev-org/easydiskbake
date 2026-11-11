@@ -265,6 +265,39 @@ steps:
   # WHY IT IS NOT `enable --now` ONLY. A disk that already has the symlink costs one idempotent
   # command, and a disk that does not is repaired rather than published - which is the difference
   # between this and the version of this file that shipped a disk with nothing on port 22.
+
+  # THE HOST KEYS ARE GENERATED WHILE THE CHANNEL IS OPEN, BECAUSE THE BOOT MAY NOT DO IT.
+  #
+  # `sshd.service` on this family runs `sshd-keygen` as an ExecStartPre, and that step needs to
+  # write /etc/ssh/ssh_host_*_key. A disk where it fails - a read-only remount at that point in the
+  # boot, a missing /etc/ssh directory - starts nothing, leaves `is-enabled: enabled` and the
+  # symlink in place, and refuses port 22 forever afterwards. That is the artefact measured here:
+  # the greeter showed `vmuser`, the desktop came up, and 172.30.0.1:2222 answered `Connection
+  # refused` on a disk whose own stage had proved `id -un` through that port minutes earlier.
+  #
+  # RUNNING IT HERE IS NOT A WORKAROUND FOR THE SYMPTOM - it is doing the same work earlier, while
+  # there is a channel to see the result on. `ssh-keygen -A` is idempotent: it writes the keys that
+  # do not exist and leaves the ones that do.
+  - name: make sure the host keys exist
+    ssh: |
+      set -e
+      printf '%s\n' '{{ password }}' | sudo -S -p '' mkdir -p /etc/ssh
+      printf '%s\n' '{{ password }}' | sudo -S -p '' ssh-keygen -A 2>&1 | tail -4
+      echo "--- the keys ---"
+      ls -l /etc/ssh/ssh_host_*_key | head -8
+      echo "--- and the one sshd needs first ---"
+      printf '%s\n' '{{ password }}' | sudo -S -p '' test -s /etc/ssh/ssh_host_ed25519_key
+    timeout: 120
+
+  # AND THE UNIT IS STARTED FRESH FROM THAT STATE, SO A FAILURE NAMES ITSELF.
+  - name: restart sshd now that the keys are on disk
+    ssh: |
+      printf '%s\n' '{{ password }}' | sudo -S -p '' systemctl restart sshd 2>&1 | tail -3
+      sleep 2
+      systemctl is-active sshd
+      ss -lnt 2>/dev/null | grep ':22 ' || apt-get --version >/dev/null 2>&1 || true
+    timeout: 180
+
   - name: enable sshd again, over ssh, where the exit status is readable
     ssh: |
       printf '%s\n' '{{ password }}' | sudo -S -p '' systemctl enable --now sshd 2>&1 | tail -3
