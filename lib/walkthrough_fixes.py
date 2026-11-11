@@ -2051,6 +2051,29 @@ def main() -> int:
     # AND THE TPM IS STARTED THROUGH THE MODULE THAT HAS IT.
     check("launch_windows starts the TPM through lib/swtpm", "lib/launch_windows.py",
           "swtpmmod.start(work)" in read("lib/launch_windows.py"))
+    # AND A LAUNCHER THAT FAILS TO REACH THE SHARE SAYS WHAT `net use` ANSWERED.
+    #
+    # Run 42982289514's launch_dev, from the launcher's own log - the first time the diagnostic
+    # block added a commit earlier had anything to show:
+    #
+    #     bootstrap.log: ssh -> 0, 85 byte(s)
+    #       no \\172.30.0.1\shared\bootstrap.ps1 on the share; nothing to run
+    #
+    # That sentence is honest about "was the file there" and silent about WHY. The share is opened
+    # by `net use` two lines above it, and its exit status went to `Out-Null` - so "not reachable",
+    # "credential refused" and "file not there yet" all produced the same words, and the next
+    # reader has no way to choose.
+    wl = read("lib/bootstrap.py")
+    win_tmpl = wl[wl.index("def windows_launcher"):wl.index("def launcher_body")]
+    check("the launcher keeps net use's exit status", "lib/bootstrap.py",
+          "function UseShare" in win_tmpl and "$LASTEXITCODE" in win_tmpl)
+    check("and says it in the log", "lib/bootstrap.py",
+          'Say ("net use -> " + $code)' in win_tmpl)
+    # AND THE COMMAND ITSELF IS NO LONGER DISCARDED ANYWHERE IN THAT TEMPLATE.
+    code_only = "\n".join(l for l in win_tmpl.splitlines() if not l.lstrip().startswith("#"))
+    check("no net use result is thrown away", "lib/bootstrap.py",
+          "net use" not in code_only.split("function UseShare")[0]
+          or "Out-Null" not in code_only)
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))

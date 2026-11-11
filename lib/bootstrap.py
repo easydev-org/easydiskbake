@@ -463,9 +463,22 @@ function Say($message) {{
         -ErrorAction SilentlyContinue
 }}
 
+# THE SESSION, WITH ITS ANSWER KEPT. This is the only place the launcher touches the network, and
+# its exit status used to go to Out-Null - so every way of failing to reach the share produced one
+# sentence. `net use` here passes the password as a VARIABLE, which is a different shape from the
+# literal `""` that lib/hostshare.py found unusable on this platform; whether that difference
+# matters is what these lines will answer.
+function UseShare {{
+    $out = net use '{unc}' $SmbPass /user:$SmbUser /persistent=no 2>&1
+    $code = $LASTEXITCODE
+    Say ("net use -> " + $code)
+    if ($code -ne 0 -and $out) {{ Say ("  " + ($out -join ' / ')) }}
+    return $code
+}}
+
 # THE SESSION, EXPLICITLY. `/persistent:no` because nothing here survives the process, and
 # saying so keeps a stale mapping out of the user's registry for the next logon to trip over.
-net use '{unc}' $SmbPass /user:$SmbUser /persistent:no 2>&1 | Out-Null
+$null = UseShare
 
 # THE SHARE MAY NOT BE REACHABLE YET. A logon trigger can fire before the network is up, so this
 # waits for the file rather than checking once - and re-opens the session on the way, because the
@@ -473,14 +486,14 @@ net use '{unc}' $SmbPass /user:$SmbUser /persistent:no 2>&1 | Out-Null
 $found = $false
 for ($i = 0; $i -lt 60; $i++) {{
     if (Test-Path $Script) {{ $found = $true; break }}
-    if ($i % 10 -eq 9) {{ net use '{unc}' $SmbPass /user:$SmbUser /persistent:no 2>&1 | Out-Null }}
+    if ($i % 10 -eq 9) {{ $null = UseShare }}
     Start-Sleep -Seconds 1
 }}
 
 if (-not $found) {{
     # SAID OUT LOUD, because "the task ran and nothing happened" is otherwise indistinguishable
     # from "the task never ran".
-    Say "no $Script on the share; nothing to run"
+    Say "no $Script on the share after 60s; nothing to run (see the net use lines above)"
     exit 0
 }}
 # THE FALLBACK: NO SCRIPT, NO RUN.
