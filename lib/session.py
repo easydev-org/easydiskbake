@@ -75,6 +75,20 @@ SSH_PASSWORD = os.environ.get("SSH_PASSWORD") or "admin"
 # the measurement; this is the one place the address is read from.
 SSH_HOST = os.environ.get("SSH_HOST") or net.FORWARD_HOST
 
+# ...EXCEPT WHEN THERE IS NO BRIDGE, AND THEN IT IS 127.0.0.1.
+#
+# `Shape.net = "none"` gives the guest qemu's own user-mode NAT: `-netdev user` with `hostfwd`,
+# and there is no bridge, no DNAT and no 172.30.0.1 at all. Measured on
+# android/blissos16/steps/ssh.yaml's first real run:
+#
+#     ssh: connect to host 172.30.0.1 port 8022: Connection timed out
+#
+# for a guest whose sshd was listening and whose port WAS forwarded - to the other address.
+# qemu's user-mode forwards land on the loopback of the process that made them, which is this
+# one, so 127.0.0.1 is the right answer there and the wrong one everywhere else. Both are
+# exported as constants and the caller chooses; nothing guesses.
+USER_MODE_HOST = "127.0.0.1"
+
 
 def log(message: str) -> None:
     print(f"[session {time.strftime('%H:%M:%S')}] {message}", flush=True)
@@ -252,7 +266,7 @@ def wait_for_port_down(port: int, seconds: int, note=log, settle: float = 2.0,
 
 def wait_for_ssh(port: int, seconds: int, note=log, settle: int = 10,
                  probe: str = "true", user: str | None = None,
-                 password: str | None = None) -> bool:
+                 password: str | None = None, host: str | None = None) -> bool:
     """Wait until sshd answers and the account can log in.
 
     A BANNER IS NOT ENOUGH - this runs a command, because a socket that accepts a
@@ -295,7 +309,7 @@ def wait_for_ssh(port: int, seconds: int, note=log, settle: int = 10,
     beat = 60.0
     next_beat = started + beat
     while time.time() < deadline:
-        status, out = ssh(port, probe, timeout=20, user=user, password=password)
+        status, out = ssh(port, probe, timeout=20, user=user, password=password, host=host)
         if status == 0:
             note(f"ssh answers after {time.time() - started:.0f}s")
             return True
@@ -319,12 +333,12 @@ def wait_for_ssh(port: int, seconds: int, note=log, settle: int = 10,
     # failed connection or credential; 124 is this function's timeout; 127 is a missing client.
     note(f"  last status: {status}")
     note(f"  last output: {out[:300]}")
-    explain(port, probe, note, user=user, password=password)
+    explain(port, probe, note, user=user, password=password, host=host)
     return False
 
 
 def explain(port: int, probe: str, note=log, user: str | None = None,
-            password: str | None = None) -> None:
+            password: str | None = None, host: str | None = None) -> None:
     """One last attempt with ssh's own account of why, printed in full.
 
     THIS IS NOT A SECOND CHECK, IT IS THE EXPLANATION FOR THE FIRST ONE. Everything the run
@@ -359,7 +373,7 @@ def explain(port: int, probe: str, note=log, user: str | None = None,
         "-o", "ConnectTimeout=10",
         "-o", "PreferredAuthentications=password",
         "-o", "PubkeyAuthentication=no",
-        f"{user or SSH_USER}@{SSH_HOST}",
+        f"{user or SSH_USER}@{host or SSH_HOST}",
         probe,
     ]
     try:
