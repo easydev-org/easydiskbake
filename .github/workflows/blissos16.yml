@@ -122,7 +122,16 @@ jobs:
   install:
     if: inputs.install_run || inputs.install_from != ''
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # 150 AND NOT 60, BECAUSE THE DOWNLOAD IS NOT THIS REPOSITORY'S TO SCHEDULE.
+    #
+    # Run 43061390716 was cancelled at exactly 1h0m0s with the ISO at 92% - SourceForge served
+    # 2.2 GiB at about 0.5 MB/s, which is 50 minutes, and the install itself needs 17 more. The
+    # budget was sized for the work and the download is somebody else's weather.
+    #
+    # The step-level timeout is the protection that matters (the install step has its own), so a
+    # job-level ceiling exists only to stop a hung runner. 150 covers a slow mirror without
+    # letting a wedged job sit for a day.
+    timeout-minutes: 150
     container:
       # THE SAME IMAGE THE WINDOWS AND macOS STAGES USE, and the right one because it carries
       # no Android SDK: this path never touches `emulator`, `avdmanager` or `kernel-ranchu`. It
