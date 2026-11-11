@@ -397,7 +397,15 @@ def start(directory: str = DEFAULT_DIR, *, wait: float = 10.0) -> bool:
     # it - and a second attempt after recreating it is what a person would do. If the second fails
     # the messages are printed and the stage still fails.
     if "Could not open tdb" in tail:
-        log("  samba lost its private directory; recreating it and starting smbd once more")
+        # SAY WHAT THE RETRY IS ABOUT TO DO, AND TO WHAT - the first version logged the retry and
+        # then died before any of it ran, which reads as "the retry failed" when the truth was
+        # "the retry never started".
+        log(f"  samba could not open its tdb files (private dir {PRIVATE_DIR})")
+        log("  the first attempt's smbd log:")
+        for line in tail.splitlines()[-10:]:
+            log(f"    {line[:150]}")
+        log("  evicting every smbd for this config, recreating the private directory, "
+            "and starting once more")
         # EVERY smbd, NOT ONLY OURS. The private directory holds `msg.sock` and the tdb files -
         # a second smbd from an earlier stage in the same container opens them and the new one
         # cannot, which is exactly `Could not open tdb`. `stop()` only kills the pid it recorded,
@@ -552,6 +560,35 @@ def _sh_kill_all_smbd() -> None:
         if not parts or parts[0] not in (b"smbd", b"/usr/sbin/smbd"):
             continue
         if conf not in parts:
+            continue
+        # THIS PROCESS'S OWN GROUP IS NEVER SIGNALLED, AND `stop()` HAS HAD THIS GUARD ALL ALONG.
+        #
+        # `smbd -D --no-process-group` daemonises but does NOT leave this process's group - the
+        # comment below says so, having learned it from run 42943819411. `stop()` therefore checks
+        # `getpgid(pid) == getpgid(0)` and refuses before signalling. This function was written
+        # later and skipped that check: it excluded only `os.getpid()`, which protects this
+        # process and nothing else in its group.
+        #
+        # RUN 42967972415 IS THE MEASUREMENT, and it is the first run where the handler could say
+        # what it saw:
+        #
+        #     [share 05:58:26]   samba lost its private directory; recreating it and starting smbd once more
+        #     [entrypoint]   signal 1, and the work has NOT finished; obeying it
+        #
+        # The handler was installed and it fired - so the tolerance that nine stage programs carry
+        # works, and it correctly refused to save a stage whose work was not done. The signal came
+        # from INSIDE `start()`, 15 ms after this line's own log, which is exactly the moment this
+        # loop runs.
+        #
+        # WHY AN ISOLATED GRANDCHILD DOES NOT HELP. `os.kill(pid, SIGTERM)` to a pid in this
+        # process's group cannot reach this process - measured - so the grandchild is not the
+        # sender either. But a pid that is THIS PROCESS, reused, or a member of this group is a
+        # different question, and the guard that answers it is the one `stop()` already has.
+        try:
+            if os.getpgid(pid) == os.getpgid(0):
+                log(f"  smbd {pid} is in this process's group; not signalling it")
+                continue
+        except OSError:
             continue
         # IN A CHILD, IN ITS OWN SESSION - THE SAME RULE `stop()` LEARNED THE HARD WAY.
         #
