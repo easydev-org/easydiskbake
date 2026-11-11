@@ -790,6 +790,28 @@ mount_smbfs -f 0666 -d 0777 "//SMB_USER:@$host/SHARE_NAME" "$p"
 """
 
 
+# THE BSD MOUNT, AS A TEMPLATE BECAUSE IT HAS TWO SHELLS IN IT.
+#
+# `smbnetfs` takes its server from ~/.smb/smbnetfs.conf and its mount point as an argument, and it
+# daemonises - so the command is three acts: write the config, mount, and check that the share
+# appeared one level down. `{password}` is quoted by the caller; `{host}` and `{share}` are safe
+# names by construction.
+SHARED_COMMAND = (
+    "SHARED=$HOME/shared; CONF=$HOME/.smb/smbnetfs.conf; "
+    "mkdir -p $HOME/.smb \"$SHARED\" && "
+    "printf 'auth %s \"\"\\n' {user} > \"$CONF\" && "
+    # THE PATHS GO IN AS ARGUMENTS, NOT AS VARIABLES THE INNER SHELL READS.
+    #
+    # `sh -c '... $SHARED ...'` is SINGLE-QUOTED, so the inner shell expands `$SHARED` - and that
+    # shell runs as ROOT, where `$HOME` is /root. Run 7b607f2 was exactly this shape one layer up
+    # (`mount: /root/shared: No such file or directory`). `sh -c '<script>' <arg1> <arg2>` passes
+    # them as $1 and $2, which the OUTER shell expanded.
+    "printf '%s\\n' {password} | sudo -S -p '' "
+    "sh -c 'smbnetfs \"$1\" \"$2\" 2>&1 | tail -3; sleep 2; "
+    "ls -d \"$2\"/{share} >/dev/null 2>&1' _ {host} \"$SHARED\""
+)
+
+
 def mount_commands(host: str = "", user: str = "vmuser",
                    login_password: str = "admin") -> dict[str, str]:
     """What a guest types to mount this share, per family.
@@ -1021,23 +1043,98 @@ def mount_commands(host: str = "", user: str = "vmuser",
         #
         # `HOME` IS READ BEFORE `sudo` AND PASSED IN, which is the same fix every Linux file here
         # gets for free because `mount -t cifs` is not run through a second `sh -c`.
-        # THE URL FORM AND THE `-I` FORM ARE DIFFERENT, AND FREEBSD WANTS THE SECOND.
+        # FREEBSD'S `mount_smbfs` SPEAKS SMB1 ONLY, AND THIS SERVER DOES NOT. THAT IS THE WHOLE
+        # STORY, AND IT TOOK THE DIAGNOSTIC STEP TO SEE IT.
         #
-        # Run 58cf56c got past the shell and then:
+        # Run 55d8f5c asked the two questions in the right order:
         #
-        #     mount_smbfs: can't get server address: syserr = Operation timed out
+        #     --- the address this guest has ---     inet 172.30.0.2 netmask 0xffffff00
+        #     --- the route to the host ---          interface: vtnet0
+        #     --- can it open 445 ---                Connection to 172.30.0.1 445 succeeded!
         #
-        # "can't get server address" is the RESOLVE step, not the connect - so the address in the
-        # URL was never parsed as an address. `//guest:@172.30.0.1/shared` relies on the client
-        # splitting `user:password@host` itself, and with an EMPTY password the split is ambiguous.
+        # The network is perfect. The mount then said
         #
-        # `-I` NAMES THE SERVER AND `-U` NAMES THE ACCOUNT, so nothing has to be parsed out of a
-        # URL at all. `-N` still says "do not prompt", which is what makes this work over ssh.
+        #     mount_smbfs: unable to open connection: syserr = Operation timed out
+        #
+        # - a TCP port that opens and an SMB session that never starts. `mount_smbfs` is the
+        # kernel's smbfs, written for SMB1 and never taught SMB2; `lib/hostshare.py` sets
+        # `server min protocol = SMB2_10` because macOS 15 refuses SMB1 outright and Windows 11
+        # ships with it off. LOWERING THE SERVER IS NOT AN OPTION - it would trade a BSD that
+        # mounts for two guests that stop.
+        #
+        # SO THE BSD CLIENT IS A USERSPACE ONE. `fusefs-smbnetfs` speaks SMB2/3 through libsmbclient
+        # and mounts with FUSE, which GhostBSD's GENERIC kernel already has. The stage installs it
+        # first.
+        #
+        # TWO THINGS ABOUT ITS SHAPE, AND BOTH ARE IN THE COMMAND:
+        #
+        #   it takes a CONFIG FILE naming the server, not a URL on the command line
+        #   the share appears ONE LEVEL DOWN, at <mountpoint>/<share>, because smbnetfs enumerates
+        #   the server rather than mounting one share
+        #
+        # `SHARED` IS READ BEFORE `sudo`, because `~` inside `sudo sh -c` is root's home - the
+        # failure run 7b607f2 recorded as `mount: /root/shared: No such file or directory`.
+        # FREEBSD'S `mount_smbfs` SPEAKS SMB1 ONLY, AND THIS SERVER DOES NOT. THAT IS THE WHOLE
+        # STORY, AND IT TOOK THE DIAGNOSTIC STEP TO SEE IT.
+        #
+        # Run 55d8f5c asked the two questions in the right order:
+        #
+        #     --- the address this guest has ---     inet 172.30.0.2 netmask 0xffffff00
+        #     --- the route to the host ---          interface: vtnet0
+        #     --- can it open 445 ---                Connection to 172.30.0.1 445 succeeded!
+        #
+        # The network is perfect, and the mount still said
+        #
+        #     mount_smbfs: unable to open connection: syserr = Operation timed out
+        #
+        # - a TCP port that opens and an SMB session that never starts. `mount_smbfs` is the
+        # kernel's smbfs, written for SMB1 and never taught SMB2; this server sets
+        # `server min protocol = SMB2_10` because macOS 15 refuses SMB1 outright and Windows 11
+        # ships with it off. LOWERING THE SERVER IS NOT AN OPTION - it would trade a BSD that
+        # mounts for two guests that stop mounting.
+        #
+        # SO THE BSD CLIENT IS A USERSPACE ONE: `fusefs-smbnetfs` reaches SMB2/3 through
+        # libsmbclient and mounts with FUSE, which GhostBSD's GENERIC kernel has.
+        #
+        # ITS SHAPE IS DIFFERENT FROM EVERY OTHER CLIENT HERE:
+        #
+        #   the SERVER comes from `~/.smb/smbnetfs.conf`, not from the command line
+        #   the command is `smbnetfs <mountpoint>` and it daemonises
+        #   the shares appear ONE LEVEL DOWN, at <mountpoint>/<share>, because smbnetfs enumerates
+        #   the server rather than mounting one share
+        #
+        # `$HOME` IS EXPANDED BEFORE `sudo`, because `~` inside `sudo sh -c` is root's home - the
+        # failure run 7b607f2 recorded as `mount: /root/shared: No such file or directory`.
+        # FREEBSD'S `mount_smbfs` SPEAKS SMB1 ONLY, AND THIS SERVER DOES NOT.
+        #
+        # Run 55d8f5c asked the two questions in the right order:
+        #
+        #     --- the address this guest has ---     inet 172.30.0.2 netmask 0xffffff00
+        #     --- the route to the host ---          interface: vtnet0
+        #     --- can it open 445 ---                Connection to 172.30.0.1 445 succeeded!
+        #
+        # The network is perfect, and the mount still said
+        #
+        #     mount_smbfs: unable to open connection: syserr = Operation timed out
+        #
+        # - a TCP port that opens and an SMB session that never starts. `mount_smbfs` is the
+        # kernel's smbfs, written for SMB1 and never taught SMB2; this server sets
+        # `server min protocol = SMB2_10` because macOS 15 refuses SMB1 outright and Windows 11
+        # ships with it off. LOWERING THE SERVER IS NOT AN OPTION - it would trade a BSD that
+        # mounts for two guests that stop mounting.
+        #
+        # SO THE BSD CLIENT IS A USERSPACE ONE: `fusefs-smbnetfs` reaches SMB2/3 through
+        # libsmbclient and mounts with FUSE, which GhostBSD's GENERIC kernel has.
+        #
+        #   the SERVER comes from ~/.smb/smbnetfs.conf, not from the command line
+        #   the command is `smbnetfs <mountpoint>` and it daemonises
+        #   the shares appear ONE LEVEL DOWN, at <mountpoint>/<share>
+        #
+        # `$HOME` IS EXPANDED BEFORE `sudo`, because `~` inside `sudo sh -c` is root's home -
+        # run 7b607f2 recorded that as `mount: /root/shared: No such file or directory`.
         "bsd": (
-            f"SHARED=$HOME/shared; mkdir -p \"$SHARED\" && "
-            f"printf '%s\\n' {shlex.quote(login_password)} | sudo -S -p '' "
-            f"sh -c \"kldload smbfs 2>/dev/null || true; "
-            f"mount_smbfs -N -I {host} -U {SMB_USER} //{host}/{SHARE_NAME} $SHARED\""
+            SHARED_COMMAND.format(host=host, share=SHARE_NAME, user=SMB_USER,
+                                  password=shlex.quote(login_password))
         ),
     }
 
