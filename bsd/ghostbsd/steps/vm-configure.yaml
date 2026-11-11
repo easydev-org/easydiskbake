@@ -304,8 +304,17 @@ steps:
     scp: ["smbnetfs.conf", "/tmp/smbnetfs.conf"]
     timeout: 300
 
-  # 0600 BEFORE THE CLIENT READS IT, and `-o allow_other` because the mount is made by root and
-  # read by the account.
+  # 0600 BEFORE THE CLIENT READS IT, AND THE TREE IS ASYNCHRONOUS.
+  #
+  # Run b5267d9 got the config ACCEPTED for the first time - no `Invalid input line` at all - and
+  # the mount point still listed only `.` and `..` while its link count said 3, which means one
+  # subdirectory existed internally and readdir had not been handed it. smbnetfs forks an smbclient
+  # context per host and fills the tree in from the child, so a fixed `sleep 5` is a guess about a
+  # process this step cannot see.
+  #
+  # SO THE STEP WAITS FOR THE TREE INSTEAD OF FOR A DURATION, and prints the client's own log when
+  # it gives up. `smbnetfs_debug 7` and `log_file` are in the config it was given, so the reason is
+  # in that file rather than in a second round of guesses about keywords.
   - name: mount the host share
     ssh: |
       sh -c '
@@ -319,14 +328,24 @@ steps:
           chmod 600 /root/.smb/smb.conf /root/.smb/smbnetfs.conf
           echo \"--- the conf smbnetfs will read ---\"
           cat -e /root/.smb/smbnetfs.conf
-          echo \"--- its bytes ---\"
-          od -c /root/.smb/smbnetfs.conf | head -8
           echo \"--- end ---\"
-          smbnetfs -o allow_other \"$MOUNT\" 2>&1 | tail -6
-          sleep 5"
+          rm -f /tmp/smbnetfs.log
+          smbnetfs -o allow_other \"$MOUNT\" 2>&1 | tail -6"
+        echo "--- waiting for the tree ---"
+        n=0
+        while [ $n -lt 30 ]; do
+          if [ -n "$(ls -A \"$MOUNT\" 2>/dev/null)" ]; then
+            echo "the tree appeared after $((n * 2))s"
+            break
+          fi
+          n=$((n + 1))
+          sleep 2
+        done
         echo "--- what appeared ---"
-        ls -la "$MOUNT" 2>&1 | head -8
-        find "$MOUNT" -maxdepth 3 -type d 2>/dev/null | head -10'
+        ls -la "$MOUNT" 2>&1 | head -10
+        find "$MOUNT" -maxdepth 3 -type d 2>/dev/null | head -12
+        echo "--- the client log, if it wrote one ---"
+        printf "%s\n" "{{ password }}" | sudo -S -p "" tail -40 /tmp/smbnetfs.log 2>&1 || true'
     timeout: 600
 
   # THE SHARE IS STILL SEARCHED FOR, BECAUSE ONE FACT ABOUT THIS CLIENT IS NOW KNOWN AND THE REST

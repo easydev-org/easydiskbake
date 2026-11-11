@@ -159,7 +159,7 @@ def smbnetfs_conf(driver, step, **_kwargs) -> bool:
     # So the file is the sample's own spelling (`auth "guest" ""`, conf/smbnetfs.conf line 327)
     # plus a static host, which is what gives the mount a tree without browsing:
     #
-    #     auth guest ""            <- wait, quotes are stripped by the splitter, see below
+    #     auth "guest" ""
     #     host 172.30.0.1
     #
     # QUOTES ARE STRIPPED, NOT KEPT: `reconfigure_split_line` has a QUOTED mode that ends at the
@@ -167,12 +167,25 @@ def smbnetfs_conf(driver, step, **_kwargs) -> bool:
     # field instead of two quote characters. That is the opposite of what I assumed on run 4481870,
     # where I removed the quotes to avoid sending `"\"\""` as the password.
     #
-    # AND `cat -A` OF THE INSTALLED COPY IS PRINTED BY THE STEP, so the next run shows these bytes
-    # rather than a belief about them.
+    # THE LAST THREE LINES ARE THE CLIENT'S OWN DIAGNOSTICS, AND THEY ARE `key value`, NOT
+    # `key=value`. Run b5267d9 finally got a config it ACCEPTED - no `Invalid input line` at all -
+    # and the mount point still listed nothing while its link count said one subdirectory existed.
+    # That is the state where guessing produces another fifteen runs, so the client is asked:
+    #
+    #     smbnetfs_debug 7          its own trace, into a file root can read
+    #     log_file "/tmp/smbnetfs.log"
+    #     smb_query_browsers "false"  use the static `host` line and do not go looking for browsers
+    #
+    # The last one matters here: this bridge has no WINS server, and a client that scans for
+    # browsers before showing a host it was already told about is a client that shows nothing
+    # for a while.
     _write(work, "smbnetfs.conf", "".join(
         f"{line}\n" for line in (
             f'auth "{hostshare.SMB_USER}" ""',
             f"host {net.BRIDGE_IP}",
+            "smbnetfs_debug 7",
+            'log_file "/tmp/smbnetfs.log"',
+            'smb_query_browsers "false"',
         )
     ))
     log(f"  {label}: wrote smb.conf and smbnetfs.conf for the `scp:` steps after this")
