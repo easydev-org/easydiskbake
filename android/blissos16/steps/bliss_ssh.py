@@ -249,7 +249,8 @@ def install_boot_hook(driver, step) -> bool:
         #
         # `-D` keeps sshd in the foreground and `exec` makes it the service's own process, so the
         # thing init supervises IS the daemon. The wait for the framework stays above it.
-        f"exec $P/bin/sshd -D -f {PREFIX}/etc/ssh/sshd_config.installed -E /data/local/tmp/sshd.err\n"
+        f"exec $P/bin/sshd -D -e -f {PREFIX}/etc/ssh/sshd_config.installed "
+        f">> /data/local/tmp/sshd.err 2>&1\n"
     )
     rc = (
         "# Start sshd inside Android at boot. Written by android/blissos16/steps/ssh.yaml.\n"
@@ -462,7 +463,19 @@ def start(driver, step) -> bool:
         f"$P/bin/ssh-keygen -t rsa -b 2048 -f $P/etc/ssh/ssh_host_rsa_key -N '' -q; "
         f"test -f $P/etc/ssh/ssh_host_rsa_key || {{ echo NO_HOST_KEY; exit 1; }}; "
         f"[ -f /data/local/tmp/sshd.pid ] && kill \"$(cat /data/local/tmp/sshd.pid)\" 2>/dev/null; "
-        f"$P/bin/sshd -f {SSHD_CONFIG} -E /data/local/tmp/sshd.err; "
+        # `-e` AND A REDIRECT, NOT `-E`, BECAUSE THE AUTHENTICATION HAPPENS IN A CHILD.
+        #
+        # `-E file` sends the PARENT's log to that file. sshd 10.6 forks `sshd-session` for each
+        # connection, and that child writes its own - so five CI runs had a log containing
+        # "Server listening" and not one line about the login that was refused a second later:
+        #
+        #     --- sshd.err ---
+        #     debug1: Bind to port 8022 on ::.
+        #     Server listening on :: port 8022.
+        #
+        # `-e` writes to stderr, and the shell redirects BOTH the parent and every child into the
+        # same file, which is the only way the reason reaches the log this stage reads.
+        f"$P/bin/sshd -e -f {SSHD_CONFIG} >> /data/local/tmp/sshd.err 2>&1; "
         f"sleep 2; "
         f"tail -5 /data/local/tmp/sshd.err 2>/dev/null; "
         f"grep -q ':1F56' /proc/net/tcp && echo SSHD_LISTENING"
