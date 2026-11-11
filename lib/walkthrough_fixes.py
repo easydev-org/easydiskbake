@@ -453,6 +453,29 @@ def main() -> int:
           "def missing_libraries(" in read("lib/android_ssh.py")
           and "the payload links libraries it does not ship"
           in read("lib/android_ssh.py"))
+    # AND THE PAYLOAD IS NOT INSTALLED WHERE TERMUX PUTS ITS OWN. `/data/data/com.termux` is mode
+    # 700, owned by the Termux app's uid and labelled `app_data_file`, so a root shell cannot copy
+    # out of it and init cannot start anything from it. The stage writes to /data/local instead -
+    # which a root shell CAN create under - and points sshd at it with `-f`/`-h`.
+    bliss_ssh_src = read("android/blissos16/steps/bliss_ssh.py")
+    check("the ssh payload is not installed in an app's private directory",
+          "lib/android_ssh.py",
+          'PREFIX = "/data/local/sshd"' in read("lib/android_ssh.py")
+          and 'PREFIX = "/data/data/com.termux' not in read("lib/android_ssh.py"))
+    # AND `StrictModes` IS OFF, BECAUSE /data CAN NEVER SATISFY IT. `/data` is
+    # `drwxrwx--x system system`: StrictModes wants every directory from / down to the key owned
+    # by the user or root and not group-writable, and /data is owned by `system`. Without this the
+    # key is found and refused:
+    #
+    #     Authentication refused: bad ownership or modes for directory /data
+    check("the guest's sshd turns StrictModes off", "android/blissos16/steps/bliss_ssh.py",
+          '"StrictModes no\\n"' in bliss_ssh_src)
+    # AND THE FILE SAYS WHY, so the next reader does not "fix" it back on. A check on the REASON is
+    # unusual and right here: this is a security-relevant setting turned off, and the argument for
+    # it is that /data's group is `system` - the same trust boundary sshd is already inside.
+    check("the reason StrictModes is off is written down",
+          "android/blissos16/steps/bliss_ssh.py",
+          "bad ownership or modes for directory /data" in bliss_ssh_src)
     # AND THE WORKFLOW RUNS IT.
     check("the blissos workflow runs the ssh stage",
           ".github/workflows/blissos16.yml",

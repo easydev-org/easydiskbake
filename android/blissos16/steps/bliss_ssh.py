@@ -244,13 +244,39 @@ def install_boot_hook(driver, step) -> bool:
         "#\n"
         "# A file that has to survive a power-off belongs on a filesystem that does.\n"
         "service blissos_sshd /system/bin/start-sshd.sh\n"
+        # `class late_start` IS WHAT MAKES `on boot` START IT, AND IT NEEDS NO `disabled`.
+        #
+        # A service with `disabled` is started only by an explicit `start`, and the explicit
+        # `start` here is the `on boot` trigger below - which is correct but fragile: one rc that
+        # forgets the trigger and the daemon never runs. A service in a class is started when
+        # init reaches that class, and `late_start` is the class that comes after the framework
+        # - which is exactly when /data is usable and the networks are up.
+        #
+        # `oneshot` STAYS, because sshd forks its own children and exits; init's supervision of a
+        # forking daemon is a second thing to get wrong, and there is nothing to supervise.
         "    class late_start\n"
         "    user root\n"
         "    group root\n"
         "    oneshot\n"
-        "    disabled\n"
         "\n"
-        "on property:sys.boot_completed=1\n"
+        # `on boot` AND NOT `on property:sys.boot_completed=1`, AND THE DIFFERENCE IS THE WHOLE
+        # BUG. A `property:` trigger fires on a CHANGE - init replays it only for an rc it parsed
+        # before the property was set. This rc is written when the stage runs, which is AFTER
+        # boot, and on the next boot init parses it early enough that `sys.boot_completed` is
+        # still 0... and then the property is set and it SHOULD fire. Measured: it did not.
+        #
+        #     [init.svc.blissos_sshd]: [stopped]
+        #     $ setprop ctl.start blissos_sshd
+        #     [init.svc.blissos_sshd]: [stopped]        <- still, with no error in dmesg
+        #
+        # Running the wrapper by hand worked, so the script and every path in it are fine. `on
+        # boot` is the trigger init runs for every service file it parsed at startup, and it is
+        # the one that does not depend on the ordering of a property it did not observe.
+        #
+        # THE WAIT MOVED INTO THE WRAPPER, which now polls sys.boot_completed itself before it
+        # execs sshd - so the daemon still starts after the framework is up, which is what the
+        # property trigger was for.
+        "on boot\n"
         "    start blissos_sshd\n"
     )
 
