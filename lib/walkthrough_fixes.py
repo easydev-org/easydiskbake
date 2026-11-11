@@ -2089,6 +2089,26 @@ def main() -> int:
           "-ErrorAction Stop" in win_tmpl)
     check("and the launcher says what it answered", "lib/bootstrap.py",
           "smb mapping -> " in win_tmpl)
+    # AND A FAILED BOOTSTRAP PROOF ASKS THE SCHEDULER, NOT THE FILE'S TIMESTAMP.
+    #
+    # Run 42984841904's bootstrap.log began with
+    #
+    #     2026-11-11 06:59:27 no ...bootstrap.ps1 on the share; nothing to run
+    #
+    # which is the line written during the VM-CONFIGURE boot an HOUR earlier. So ONLOGON does fire
+    # on this disk - it fired there - and it did not fire in this run. The file cannot distinguish
+    # "never ran" from "ran and wrote the same thing"; `schtasks /Query /V` reports Last Run Time
+    # and Last Result, and those answer it.
+    #
+    # AND THE TRIGGER ITSELF IS SUSPECT ON THIS DISK: the answer file sets AutoAdminLogon, so the
+    # session is created DURING BOOT and a later logon - which is what ONLOGON waits for - never
+    # happens. `query session` and the AutoAdminLogon value settle that in two commands instead of
+    # another 15 GiB round trip.
+    ls_src2 = read("lib/launch_selftest.py")
+    check("a failed windows bootstrap asks the scheduler", "lib/launch_selftest.py",
+          'schtasks /Query /TN vm-bootstrap /V /FO LIST' in ls_src2)
+    check("and asks whether a logon happens at all", "lib/launch_selftest.py",
+          "query session" in ls_src2 and "AutoAdminLogon" in ls_src2)
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))

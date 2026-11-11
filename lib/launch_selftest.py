@@ -263,9 +263,30 @@ def main(argv: list[str]) -> int:
 
             for name in ("bootstrap.log", "bootstrap-refused.txt"):
                 if args.family == "windows":
-                    _show(name, 'cmd /c "type C:\\Users\\' + args.user + "\\" + name + '"')
+                    _show(name, 'cmd /c "type C:\\Users\\' + args.user + '\\' + name + '"')
                 else:
                     _show(name, "cat ~/" + name + " 2>/dev/null")
+
+            if args.family == "windows":
+                # DID THE TASK FIRE AT ALL, AND WHAT DID IT ANSWER - asked of Task Scheduler
+                # rather than inferred from a file timestamp.
+                #
+                # Run 42984841904 bootstrap.log still began with the line written an hour
+                # earlier, during the vm-configure boot:
+                #
+                #     2026-11-11 06:59:27 no ...bootstrap.ps1 on the share; nothing to run
+                #
+                # So ONLOGON does fire on this disk - it fired there - and it did not fire
+                # here. "The log did not change" cannot tell "never ran" from "ran and wrote
+                # the same thing", and the scheduler's Last Run Time and Last Result can.
+                _show("task", "schtasks /Query /TN vm-bootstrap /V /FO LIST")
+                # AND WHETHER THERE IS AN INTERACTIVE LOGON FOR ONLOGON TO FIRE ON AT ALL.
+                # The answer file sets AutoAdminLogon, so the session is created DURING BOOT
+                # and a later logon never happens - which would explain exactly this silence
+                # and means the trigger is wrong rather than the launcher.
+                _show("sessions", "query session")
+                _show("autologon",
+                      'reg query "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon" /v AutoAdminLogon')
             if args.family == "macos":
                 # THE AGENT'S OWN STATE, ASKED WHERE IT ACTUALLY LIVES.
                 #
