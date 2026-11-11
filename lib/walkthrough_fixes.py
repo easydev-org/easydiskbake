@@ -2109,6 +2109,21 @@ def main() -> int:
           'schtasks /Query /TN vm-bootstrap /V /FO LIST' in ls_src2)
     check("and asks whether a logon happens at all", "lib/launch_selftest.py",
           "query session" in ls_src2 and "AutoAdminLogon" in ls_src2)
+    # AND THE DIAGNOSTIC DOES NOT TRUNCATE THE DIAGNOSIS.
+    #
+    # Run 42986325108 added `schtasks /Query /TN vm-bootstrap /V /FO LIST` - 1476 bytes - and the
+    # printer took `[-12:]`. `Last Run Time`, `Last Result` and `Scheduled Task State` are in the
+    # FIRST twenty lines of that output; the last twelve are `Repeat: Until: ...` lines. So the
+    # probe collected the answer and the logger hid it, which is the third time in this thread
+    # that a diagnostic was defeated by how it was printed.
+    #
+    # A short body is printed whole; a long one shows its head, a count of what was elided, and
+    # its tail.
+    ls2 = read("lib/launch_selftest.py")
+    check("a long diagnostic body is not tail-only", "lib/launch_selftest.py",
+          "lines_out[:18]" in ls2 and "line(s) ..." in ls2)
+    check("and a short one is printed whole", "lib/launch_selftest.py",
+          "if len(lines_out) <= 24:" in ls2)
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))

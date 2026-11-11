@@ -258,8 +258,24 @@ def main(argv: list[str]) -> int:
                 log(f"    {label}: ssh -> {st}, {len(body)} byte(s)")
                 if not body:
                     log(f"      (empty - the file is absent, or the command wrote nothing)")
-                for line in body.splitlines()[-12:]:
-                    log(f"      {line[:140]}")
+                # THE HEAD AS WELL AS THE TAIL, BECAUSE THE ANSWER IS USUALLY AT THE TOP.
+                #
+                # `[-12:]` was enough for a bootstrap.log, whose newest lines are at the end. It
+                # is exactly wrong for `schtasks /Query /V`, which is 1476 bytes with `Last Run
+                # Time`, `Last Result` and `Scheduled Task State` in the FIRST twenty lines and
+                # nothing but `Repeat: Until: ...` at the bottom. Run 42986325108 printed the
+                # tail and hid the three values the probe existed to collect - a diagnostic that
+                # truncates the diagnosis, which is the third time in this thread.
+                lines_out = body.splitlines()
+                if len(lines_out) <= 24:
+                    for line in lines_out:
+                        log(f"      {line[:140]}")
+                else:
+                    for line in lines_out[:18]:
+                        log(f"      {line[:140]}")
+                    log(f"      ... {len(lines_out) - 24} more line(s) ...")
+                    for line in lines_out[-6:]:
+                        log(f"      {line[:140]}")
 
             for name in ("bootstrap.log", "bootstrap-refused.txt"):
                 if args.family == "windows":
