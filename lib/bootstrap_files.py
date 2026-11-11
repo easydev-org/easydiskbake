@@ -98,6 +98,53 @@ def launcher(driver, step, **_kwargs) -> bool:
     return True
 
 
+def smbnetfs_conf(driver, step, **_kwargs) -> bool:
+    """Write the two files smbnetfs insists on, for `scp:` to copy into the guest.
+
+    WHY A FILE AND NOT `-o`, WHICH IS WHAT EVERY OTHER CLIENT HERE USES
+
+    Because FUSE refuses an option it does not know and smbnetfs never sees it:
+
+        fuse: unknown option `smb_server=172.30.0.1'
+
+    - measured on run 6d67231. And smbnetfs says what it wants instead:
+
+        This directory should contain at least two files: smb.conf and smbnetfs.conf.
+
+    WHY IT IS WRITTEN HERE AND NOT IN THE SSH BODY
+
+    The body of a `share_mount:` command runs inside `sudo sh -c '...'`, where a heredoc needs
+    quotes of its own and a second layer of quoting eats the newlines. Three spellings of that
+    command all produced a file smbnetfs read as `Invalid input line : auth` - the line truncated
+    at its first word. A file written on the HOST has no shell in the way at all, and `scp:` moves
+    it in as bytes.
+
+    smb.conf IS DELIBERATELY MINIMAL: it is libsmbclient's own configuration, and this guest is
+    given one server on one bridge. Everything that matters is in smbnetfs.conf.
+    """
+    import hostshare
+    import net
+
+    work = _work(driver)
+    label = getattr(step, "name", "smbnetfs")
+
+    _write(work, "smb.conf", (
+        "[global]\n"
+        "   workgroup = WORKGROUP\n"
+        "   client min protocol = SMB2\n"
+        "   client max protocol = SMB3\n"
+    ))
+    # `auth <user>` WITH NO PASSWORD FIELD - the server accepts an empty one and this parser
+    # rejects a trailing space as `Invalid input`.
+    _write(work, "smbnetfs.conf", (
+        f"auth {hostshare.SMB_USER}\n"
+        f"smb_server={net.BRIDGE_IP}\n"
+        f"smb_share={hostshare.SHARE_NAME}\n"
+    ))
+    log(f"  {label}: wrote smb.conf and smbnetfs.conf for the `scp:` steps after this")
+    return True
+
+
 def macos_plist(driver, step, **_kwargs) -> bool:
     """The LaunchAgent that runs the launcher at login. macOS only."""
     import bootstrap

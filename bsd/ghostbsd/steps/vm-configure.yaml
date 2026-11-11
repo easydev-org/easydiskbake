@@ -276,65 +276,70 @@ steps:
     optional: true
 
   # `share_family: bsd` IS THE smbnetfs COMMAND, not the cifs one the twelve Linux files use.
-  - name: mount the host share
-    share_mount: true
-    share_family: bsd
-    requires: [share]
-    timeout: 180
+  # THE MOUNT IS FOUR STEPS AND NO `share_mount:`, BECAUSE THIS CLIENT NEEDS FILES.
+  #
+  # `share_mount:` sends one command. smbnetfs wants two configuration files that cannot be
+  # written from inside `sudo sh -c '...'` - a heredoc there needs quotes of its own, and the
+  # second layer of quoting truncates every line at its first word:
+  #
+  #     Invalid input line : auth
+  #     Invalid input line : smb_
+  #
+  # and `-o smb_server=...` is refused by FUSE before smbnetfs sees it:
+  #
+  #     fuse: unknown option `smb_server=172.30.0.1'
+  #
+  # So the files are WRITTEN ON THE HOST (`python:`), COPIED IN (`scp:`), and only the mount itself
+  # is a command - which is the one thing about this that is like the other twelve.
+  - name: write the smb client's configuration
+    python: bootstrap_files:smbnetfs_conf
+    python_screen: false
+    timeout: 60
 
-  # THE ROUND TRIP IS THE PROOF. THE MOUNT LINE IS FOR THE LOG, NOT FOR THE VERDICT.
-  #
-  # It used to be `mount | grep -i smbfs || df | grep -i shared` under `set -e`, and FreeBSD's
-  # mount table names a mounted share by its DEVICE rather than by the filesystem:
-  #
-  #     //guest@172.30.0.1/shared on /home/vmuser/shared (smbfs, ...)
-  #
-  # - which does contain `smbfs`, but a kernel that prints only the device and the mount point
-  # would not, and then a step about the SHARE would fail on a string. The same mistake the Linux
-  # files record for `official` metacharacters: a verdict should be about the fact.
-  #
-  # WHAT IS ASKED NOW: list the directory, write a file through the mount, read it back. If the
-  # share is not mounted, `ls` shows an empty local directory and the write lands on the DISK -
-  # which the round trip cannot tell apart from success. So the mount IS checked, with `findmnt`
-  # where it exists and a `df` fallback, and only its EXIT STATUS is used.
-  # THE SHARE IS ONE LEVEL DOWN: `smbnetfs` ENUMERATES THE SERVER rather than mounting one share,
-  # so it appears at ~/shared/<share>. The Linux files read ~/shared directly because `mount -t
-  # cifs` mounts the share itself; this is the one client that does not.
-  #
-  # THE ROUND TRIP IS THE VERDICT and the mount table is only logged: a step about the SHARE must
-  # not depend on how this kernel spells a filesystem name.
-  # THE MOUNT IS `smbnetfs on /home/vmuser/shared (fusefs)` AND THE SHARE IS DEEPER THAN ONE LEVEL.
-  #
-  # Run 4481870 got the mount - the first time - and then read nothing:
-  #
-  #     --- the share directory ---
-  #                          <- empty, the guess was wrong
-  #     smbnetfs on /home/vmuser/shared (fusefs)
-  #     --- the round trip ---
-  #     ls: : No such file or directory
-  #
-  # `smbnetfs` ENUMERATES THE SERVER, so what appears under the mount point is a tree:
-  #
-  #     <mountpoint>/<workgroup>/<host>/<share>
-  #
-  # - and `<mountpoint>/<host>` is not a path it produces. Guessing the depth is what failed; the
-  # file is now FOUND rather than named, by looking for the share directory anywhere under the
-  # mount point, and the search says what it saw when it finds nothing.
+  - name: copy smb.conf in
+    scp: ["smb.conf", "/tmp/smb.conf"]
+    timeout: 300
+
+  - name: copy smbnetfs.conf in
+    scp: ["smbnetfs.conf", "/tmp/smbnetfs.conf"]
+    timeout: 300
+
+  # 0600 BEFORE THE CLIENT READS IT, and `-o allow_other` because the mount is made by root and
+  # read by the account.
+  - name: mount the host share
+    ssh: |
+      sh -c '
+        set -e
+        MOUNT="$HOME/shared"
+        mkdir -p "$MOUNT"
+        printf "%s\n" "{{ password }}" | sudo -S -p "" sh -c "
+          mkdir -p /root/.smb
+          cp /tmp/smb.conf /root/.smb/smb.conf
+          cp /tmp/smbnetfs.conf /root/.smb/smbnetfs.conf
+          chmod 600 /root/.smb/smb.conf /root/.smb/smbnetfs.conf
+          smbnetfs -o allow_other \"$MOUNT\" 2>&1 | tail -6
+          sleep 5"
+        echo "--- what appeared ---"
+        ls -la "$MOUNT" 2>&1 | head -8
+        find "$MOUNT" -maxdepth 3 -type d 2>/dev/null | head -10'
+    timeout: 600
+
+  # THE SHARE COMES FROM THE CONFIG THAT WAS WRITTEN FOR THIS RUN, so the path is known rather
+  # than searched: `<mount>/<serveur>/<share>` is what smbnetfs builds from `smb_server`.
   - name: prove the share is readable and writable
     ssh: |
       sh -c '
         set -e
         MOUNT="$HOME/shared"
-        echo "--- what smbnetfs put under the mount point ---"
+        echo "--- the tree smbnetfs built ---"
         find "$MOUNT" -maxdepth 4 -type d 2>/dev/null | head -12
         SHARE=$(find "$MOUNT" -maxdepth 4 -type d -name {{ share_name }} 2>/dev/null | head -1)
         if [ -z "$SHARE" ]; then
           echo "=== NO DIRECTORY NAMED {{ share_name }} UNDER $MOUNT ==="
           exit 1
         fi
-        echo "--- the share directory ---"
+        echo "--- the share ---"
         echo "$SHARE"
-        echo "--- the round trip ---"
         ls -la "$SHARE" | head -20
         printf "written-by-the-guest\n" > "$SHARE/from-guest.txt"
         test "$(cat "$SHARE/from-guest.txt")" = "written-by-the-guest"
