@@ -84,6 +84,10 @@ STEP_KEYS = {    "name",        # required: what the log calls this step
     "ssh",         # a command run over ssh IN THE GUEST - see _do_action
     "require_ssh", # wait for sshd before the steps that use it
     "ssh_probe",   # the command that wait runs; 'true' is not a Windows command
+    # `ssh_after_reboot: true` ON A `require_ssh:` MEANS "WAIT OUT THE OLD DAEMON FIRST". See the
+    # step that implements it: without this, a wait placed after `systemctl reboot` passes on the
+    # process that is about to die.
+    "ssh_after_reboot",
     "terminal_wait",  # seconds to wait for the terminal after `run` opens it
     "line_gap",    # seconds between the lines of a multi-line `run`
     "type_gap",    # seconds between keystrokes; 0.04 suits a POSIX shell, 0.15 a Windows one
@@ -1473,6 +1477,19 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
         # answering perfectly. A walkthrough whose guest is not a POSIX shell says so with
         # `ssh_probe: echo ok`.
         probe = str(step.get("ssh_probe", "true"))
+        # `ssh_after_reboot: THE OLD DAEMON IS WAITED OUT BEFORE THE NEW ONE IS WAITED FOR.
+        #
+        # Measured on run 799fa65: a `require_ssh:` one step after `systemctl reboot` passed in
+        # ONE SECOND against the daemon that had not gone down yet, and the step after it - a new
+        # connection - failed with 255. Waiting for the port to refuse first is what makes the
+        # answer mean the machine came back rather than that it had not left.
+        if step.get("ssh_after_reboot"):
+            import session as _session
+            if not _session.wait_for_port_down(ssh_port, seconds, note=log):
+                if not step["optional"]:
+                    raise StepError(
+                        f"{step.name}: the old daemon never stopped answering, so the machine "
+                        f"did not reboot")
         log(f"  waiting up to {seconds}s for sshd on port {ssh_port}")
         if not session.wait_for_ssh(ssh_port, seconds, user=login, probe=probe,
                                     password=password):

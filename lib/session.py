@@ -166,6 +166,51 @@ def scp(local: str, remote: str, *, port: int = 2222, timeout: int = 300,
     return result.returncode, (result.stdout + result.stderr).strip()
 
 
+def wait_for_port_down(port: int, seconds: int, note=log, settle: float = 2.0,
+                       host: str | None = None) -> bool:
+    """Wait until nothing answers on `port`, so the next answer is a NEW daemon.
+
+    WHY THIS EXISTS, MEASURED ON RUN 799fa65
+
+    The ssh stage asks the guest to reboot and then waits for sshd:
+
+        === restart the machine
+        === come back up with sshd answering       <- passed in ONE SECOND
+        === read what this boot did
+        steps.StepError: the command exited 255
+
+    `systemctl reboot` returns as soon as the request is queued. The daemon keeps serving for the
+    second or two before the kernel goes down, so the wait connected to THE PROCESS THAT WAS ABOUT
+    TO DIE and called the machine up. The next step opened a new connection and found nothing.
+
+    A port that REFUSES is the one fact that says the old daemon is gone. `REFUSED` specifically:
+    a timeout means a firewall is dropping packets and says nothing about the daemon, so it is not
+    treated as "down".
+
+    A MACHINE THAT REBOOTS TOO FAST IS A PASS. If it is already gone before the first probe, that
+    is exactly what was wanted - the caller then waits for it to come back.
+    """
+    import socket
+
+    target = host or SSH_HOST
+    deadline = time.time() + seconds
+    started = time.time()
+    while time.time() < deadline:
+        try:
+            with socket.create_connection((target, port), timeout=3):
+                pass
+        except (ConnectionRefusedError, OSError) as exc:
+            # REFUSED, NOT "ANY ERROR". A timeout is a firewall and proves nothing about sshd.
+            if isinstance(exc, ConnectionRefusedError) or getattr(exc, "errno", None) in (
+                    111,  # ECONNREFUSED
+            ):
+                note(f"the old daemon stopped answering after {time.time() - started:.0f}s")
+                return True
+        time.sleep(settle)
+    note(f"=== NOTHING STOPPED ANSWERING ON PORT {port} IN {seconds}s ===")
+    return False
+
+
 def wait_for_ssh(port: int, seconds: int, note=log, settle: int = 10,
                  probe: str = "true", user: str | None = None,
                  password: str | None = None) -> bool:

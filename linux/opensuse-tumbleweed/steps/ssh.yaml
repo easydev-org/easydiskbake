@@ -288,12 +288,25 @@ steps:
     timeout: 60
     optional: true
 
-  # THE GUEST IS COMING BACK ON ITS OWN, AND THIS IS THE WHOLE QUESTION.
+  # THE OLD DAEMON HAS TO BE GONE BEFORE THE NEW ONE IS WAITED FOR, AND RUN 799fa65 IS WHY.
   #
-  # A `require_ssh:` never lets this stage publish a disk whose daemon only worked in the session
-  # that installed it.
+  # `require_ssh:` one step after the reboot passed in ONE SECOND:
+  #
+  #     === restart the machine
+  #     === come back up with sshd answering
+  #     === read what this boot did
+  #     steps.StepError: read what this boot did: the command exited 255
+  #
+  # It connected to the sshd that was STILL RUNNING on the machine that had been asked to reboot.
+  # `systemctl reboot` returns as soon as the request is queued, and the daemon keeps serving for
+  # the second or two before the kernel goes down - so the wait passed on the OLD process, and the
+  # next step, which opens a NEW connection, found nothing.
+  #
+  # `ssh_after_reboot: true` IS THE FIX IN THE ENGINE: it waits for the port to REFUSE before it
+  # waits for it to answer, so anything that answers afterwards is a daemon this boot made.
   - name: come back up with sshd answering
     require_ssh: true
+    ssh_after_reboot: true
     timeout: 900
 
   # AND NOW THE JOURNAL IS THE BOOT THAT MATTERS - this one, not the one that installed sshd.
