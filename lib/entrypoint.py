@@ -63,3 +63,45 @@ def note_stage(name: str, workflow: str, *, extra: str = "") -> None:
               file=sys.stderr)
         print("=== THIS STAGE IS NOT AN ENTRY POINT ===", file=sys.stderr)
         raise SystemExit(2)
+
+
+def survive_a_late_sigterm(*, cleaned_flag: str = "will finish") -> None:
+    """Ignore ONE SIGTERM, so a stage that has finished its work can still publish it.
+
+    THE SAME SIGNAL HAS BEEN KILLING STAGES AFTER THEIR WORK IS DONE, ON BOTH PLATFORMS:
+
+        42913402988   macOS clean      exit 241 (-15), after `the guest powered off`
+        42919582582   macOS clean      419/418, after the same line
+        42928178260   macOS clean      363/363
+        42933089148   macOS clean      365/365
+        42959216978   Windows devtools 241, after `18 step(s) answered`, before its compress
+
+    Every candidate for the sender has been excluded by measurement: `os.kill` to one pid cannot
+    reach the caller, a child in its own session cannot either, and one run logged the refusal
+    path ("no longer looks like smbd") and died anyway. So this does not claim to know who sends
+    it. It claims that the work is finished when it arrives, and that dying there throws away a
+    plane's worth of work to prove nothing.
+
+    A SECOND SIGNAL IS OBEYED, and so is one that arrives before the caller says its own work is
+    done - a supervisor that repeats itself is not asking a question, and a stage that has not
+    finished must not be tolerated into publishing half a disk.
+    """
+    import signal
+
+    state = {"count": 0}
+
+    def report(signum, _frame):
+        state["count"] += 1
+        if signum == signal.SIGTERM and state["count"] == 1:
+            print(f"[entrypoint]   SIGTERM ignored once: {cleaned_flag}", flush=True)
+            return
+        print(f"[entrypoint]   signal {state['count']}; obeying it", flush=True)
+        signal.signal(signum, signal.SIG_DFL)
+        import os as _os
+        _os.kill(_os.getpid(), signum)
+
+    for sig in (signal.SIGTERM,):
+        try:
+            signal.signal(sig, report)
+        except (OSError, ValueError):
+            pass

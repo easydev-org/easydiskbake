@@ -1472,6 +1472,31 @@ def main() -> int:
     # (a mapping dies with its logon session), so anything already there is a previous attempt's.
     check("a stale windows mapping is removed first", "lib/hostshare.py",
           "Remove-SmbMapping -Force" in hs)
+    # AND ONE LATE SIGTERM IS SURVIVED BY A STAGE, NOT ONLY BY THE CLEAN.
+    #
+    # Run 42959216978's vm-configure did EVERYTHING:
+    #
+    #     install the driver the agent talks on   PNPUTIL_EXIT=0
+    #     install the guest agent                 MSIEXEC_EXIT=0
+    #     prove the guest agent answers           service: Running / Automatic
+    #     mount the host share                    -> 0   (New-SmbMapping)
+    #     copy the launcher in                    -> 0
+    #     prove the logon task is registered      TaskName: \vm-bootstrap / Status: Ready
+    #     18 step(s) answered  ->  return 0
+    #
+    # and then exit 241 - `-15 & 0xFF` - before the compress in its `finally` could run. A stage
+    # that had done everything published nothing.
+    #
+    # The same signal has killed macOS cleans the same way since 42913402988, and every candidate
+    # for its sender has been excluded by measurement. What is established is that the work is
+    # finished when it arrives, so one is survived and a second is obeyed.
+    ep2 = read("lib/entrypoint.py")
+    check("one late SIGTERM can be survived", "lib/entrypoint.py",
+          "def survive_a_late_sigterm(" in ep2 and "SIGTERM ignored once" in ep2)
+    check("a second signal is obeyed", "lib/entrypoint.py",
+          "signal {state['count']}; obeying it" in ep2)
+    check("the windows vm-configure stage installs it", "windows/11/devtools.py",
+          "survive_a_late_sigterm(" in read("windows/11/devtools.py"))
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))

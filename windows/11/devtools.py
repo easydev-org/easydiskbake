@@ -361,4 +361,15 @@ def stop_swtpm(work: str) -> None:
 
 
 if __name__ == "__main__":
+    # ONE LATE SIGTERM IS SURVIVED, because the work is finished when it arrives.
+    #
+    # Run 42959216978: `18 step(s) answered`, the task registered as
+    # `TaskName: \vm-bootstrap / Status: Ready`, `return 0` executed - and then exit 241
+    # (`-15 & 0xFF`) before the compress in the `finally` could run, so a stage that had done
+    # everything published nothing. The same signal has killed macOS cleans the same way; see
+    # lib/entrypoint.py for what has been ruled out about its sender.
+    import entrypoint
+
+    entrypoint.survive_a_late_sigterm(
+        cleaned_flag="the walkthrough answered every step, so the disk is configured")
     raise SystemExit(main(sys.argv[1:]))
