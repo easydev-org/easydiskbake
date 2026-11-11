@@ -167,6 +167,10 @@ STEP_KEYS = {    "name",        # required: what the log calls this step
     "release",     # which release this pane's numbers were measured on
     "python",      # an escape hatch: "module:function" for a measured exception
     "python_screen",  # false when a python: step never touches the screen (ssh only)
+    # A PYTHON EXTENSION MAY CARRY ITS OWN ARGUMENTS. `install_key` needs the caller's public key
+    # and there is no vocabulary for "a key" - the alternative is a second way to pass a run fact
+    # that only one extension understands.
+    "public_key",  # for a python: step that installs a login key
     "press",       # for a python step: which footer control it should press by name
     # --- THE VM ITSELF -------------------------------------------------------------------
     #
@@ -1539,7 +1543,8 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
                 step["requires"],
                 guest=getattr(session, "guest", None) if session is not None else None,
                 port=ssh_port,
-                user=values.get("ssh_user") or "vmuser",
+                user=(getattr(driver, "ssh_user", "") or values.get("ssh_user")
+                      or "vmuser"),
                 password=password or "admin")
         except capabilities.Broken as exc:
             raise StepError(f"{step.name}: {exc}") from exc
@@ -1570,7 +1575,8 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
         # assertions above it, rather than a second guess at what the disk was installed with.
         # READ FROM THE DRIVER, NOT FROM `login` BELOW: this block runs before that local is set.
         values_here = getattr(driver, "values", {}) or {}
-        session.login = values_here.get("ssh_user") or ""
+        session.login = (getattr(driver, "ssh_user", "") or
+                         values_here.get("ssh_user") or "")
         session.password = password or "admin"
         # THE DRIVER HAS TO SEE THE NEW SOCKET. A boot in the middle of a sequence replaces the
         # machine, and a Driver built before it holds a connection to a qemu that no longer runs.
@@ -1640,13 +1646,38 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
     # writes `dockeruser`. A walkthrough that knows that says `ssh_user: dockeruser` in its
     # own `vars`, and this is where that reaches the client. `None` means "the default the
     # client already carries", so a file that does not name one is unchanged.
-    login = (getattr(driver, "values", {}) or {}).get("ssh_user") or None
+    # THE FILE'S `ssh_user:` IS THE ACCOUNT, AND `driver.values` DOES NOT CARRY IT.
+    #
+    # `values` is the resolved `vars` mapping - every file here declares `ssh_user:` as a
+    # TOP-LEVEL key, not a var, so this read always found None and `login` stayed None, which
+    # means lib/session.py fell back to its own default:
+    #
+    #     vmuser@127.0.0.1: Permission denied (publickey).
+    #
+    # for a guest whose only account is root, and a file that plainly says `ssh_user: root`.
+    # `walk` has the Walk object, which is where that key was parsed.
+    login = (getattr(driver, "ssh_user", "") or
+             (getattr(driver, "values", {}) or {}).get("ssh_user") or None)
 
     # AND WHERE TO DIAL. The session knows, because it started the machine and saw the shape -
     # the bridge for every family that has one, this process's loopback for `net: "none"`.
     # Every `ssh:`/`scp:`/`require_ssh:` below passes it, or the one guest with user-mode
     # networking gets a timeout against an address that has nothing on it.
     ssh_host = getattr(session, "ssh_host", "") or ""
+
+    # AND HOW TO AUTHENTICATE. A password is the default and a key is the exception, for the one
+    # guest that cannot check a password at all - see lib/session.py's `key` parameter. It comes
+    # from the same `--public-key` the key was installed from; `ssh` wants the PRIVATE half, so
+    # the file beside it is used when the `.pub` was named.
+    # THE PRIVATE HALF, beside the public one: `ssh` and `scp` want the private key and a caller
+    # names the `.pub`. Derived here rather than in the file, because it is a property of how the
+    # key was named and not a second fact the file should have to state.
+    ssh_key = ""
+    _named = str((getattr(driver, "values", {}) or {}).get("public_key") or "")
+    if _named:
+        ssh_key = _named[:-4] if _named.endswith(".pub") else _named
+    if _named:
+        log(f"  ssh: authenticating by key {ssh_key} (named {_named})")
 
     # --- require_ssh: WAIT FOR THE GUEST'S OWN SSHD BEFORE USING IT -------------------
     #
@@ -1681,7 +1712,8 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
                         f"did not reboot")
         log(f"  waiting up to {seconds}s for sshd on port {ssh_port}")
         if not session.wait_for_ssh(ssh_port, seconds, user=login, probe=probe,
-                                    password=password, host=ssh_host or None):
+                                    password=password, host=ssh_host or None,
+                                    key=ssh_key or None):
             # A FRAME BEFORE FAILING, because the question that follows is always "what was
             # on screen". The ssh stage's first failures had nothing to look at, and the
             # answer - a lock screen, an empty terminal, a sudo prompt - was only visible in
@@ -1755,12 +1787,10 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
         # AND THE PROOF IS THE UID, NOT THE COMMAND'S EXIT STATUS. `adb root` answers 0 on a
         # build whose adbd cannot elevate (a user build) and the next command then runs as
         # `shell` - which is a failure four steps later, in a step that looks unrelated.
-        status2, who = adbmod.shell(serial, "id", timeout=60)
-        log(f"    id -> {who.splitlines()[0] if who else '(no answer)'}")
-        if status2 != 0 or "uid=0(" not in who:
+        log(f"    id -> {(output or '').splitlines()[0] if output else '(no answer)'}")
+        if status != 0 or "uid=0(" not in (output or ""):
             if not step["optional"]:
-                raise StepError(
-                    f"{step.name}: adbd did not come back as root ({who.splitlines()[0] if who else 'no answer'})")
+                raise StepError(f"{step.name}: adbd did not come back as root ({output[:200]})")
         return
 
     if step["adb"]:
@@ -1785,8 +1815,9 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
         import session
         command = str(step["ssh"])
         timeout = int(step.get("timeout", 120))
+        command = "sh -c " + shlex.quote(command)
         status, output = session.ssh(ssh_port, command, timeout=timeout, user=login,
-                                     password=password, host=ssh_host or None)
+                                     password=password, host=ssh_host or None, key=ssh_key or None)
         log(f"  ssh: {command} -> {status}")
         for line in (output or "").splitlines()[:40]:
             log(f"    {line}")
@@ -1839,7 +1870,7 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
             remote = f"/tmp/{name}"
         timeout = int(step.get("timeout", 1800))
         status, output = session.scp(local, remote, port=ssh_port, timeout=300, user=login,
-                                     password=password, host=ssh_host or None)
+                                     password=password, host=ssh_host or None, key=ssh_key or None)
         if status != 0:
             log(f"  scp: {name} -> {remote} -> {status}")
             if not step["optional"]:
@@ -1858,7 +1889,7 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
             # is fine; it is the mode that is not.
             command = f"bash {remote}"
         status, output = session.ssh(ssh_port, command, timeout=timeout, user=login,
-                                     password=password, host=ssh_host or None)
+                                     password=password, host=ssh_host or None, key=ssh_key or None)
         log(f"  script {name} ({shell}) -> {status}")
         for line in (output or "").splitlines()[:40]:
             log(f"    {line[:150]}")
@@ -2304,11 +2335,25 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
             raise StepError(
                 f"{step.name}: nothing is serving on port 445; a `share_serve:` step comes first")
 
+        # A COMMAND BUILT HERE IS SENT TO THE GUEST'S LOGIN SHELL, AND ONE OF THEM IS FISH.
+        #
+        # Run cef0c8a's GhostBSD stage is the measurement:
+        #
+        #     mount: SHARED=$HOME/shared; mkdir -p "$SHARED" && ...   -> 127
+        #       fish: Unsupported use of '='. In fish, please use 'set SHARED $HOME/shared'.
+        #
+        # The `ssh:` steps in the walkthrough files wrap their own bodies in `sh -c`, but this one
+        # is BUILT IN PYTHON and handed straight to the shell - so a disk whose login shell is fish
+        # never accepted it, and the failure reads like a bad mount command rather than a bad shell.
+        #
+        # THE WRAP IS HERE AND NOT IN mount_commands() because this is the single place the command
+        # crosses into the guest; every caller then gets one rule instead of remembering one.
+        # `shlex.quote` does the quoting, so the command's own single and double quotes survive.
         command = hostshare.mount_commands(user=login or "vmuser",
                                           login_password=password or "admin")[family]
         timeout = int(step.get("timeout", 180))
         status, output = session.ssh(ssh_port, command, timeout=timeout, user=login,
-                                    password=password, host=ssh_host or None)
+                                    password=password, host=ssh_host or None, key=ssh_key or None)
         log(f"  mount: {command[:100]} -> {status}")
         for line in (output or "").splitlines()[:10]:
             log(f"    {line[:150]}")
@@ -2362,7 +2407,7 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
                 local = os.path.join(REPO, local)
         timeout = int(step.get("timeout", 300))
         status, output = session.scp(local, remote, port=ssh_port, timeout=timeout,
-                                     user=login, password=password, host=ssh_host or None)
+                                     user=login, password=password, host=ssh_host or None, key=ssh_key or None)
         log(f"  scp: {local} -> {remote} -> {status}")
         for line in (output or "").splitlines()[:10]:
             log(f"    {line}")
@@ -3126,6 +3171,21 @@ def walk(driver: Driver, steps: Walk, *, overrides: dict[str, str] | None = None
     run starts from the disk it already has.
     """
     values = steps.values(overrides)
+    # THE ACCOUNT THE FILE DECLARED, ON THE DRIVER. `vars` does not carry it - `ssh_user:` is a
+    # top-level key - and a step has no other way to reach the Walk it is running against.
+    setattr(driver, "ssh_user", steps.ssh_user)
+    # AND THE RESOLVED VALUES, WHICH THIS FUNCTION NEVER PUT ON THE DRIVER AT ALL.
+    #
+    # `walk_with` and `run_file` both do; `walk` did not, so every step that reads
+    # `driver.values` - which is how an extension gets the account and how an `ssh:` step learns
+    # which key to use - saw an empty mapping when the walk was started from the CLI. Measured:
+    #
+    #     [steps]   ssh: authenticating by key ...        <- absent from the log
+    #     [session]   still waiting ... Permission denied (publickey)
+    #
+    # for a guest whose authorized_keys was installed and correct. One assignment, in the one
+    # place all three entry points pass through.
+    setattr(driver, "values", values)
     if steps.panes:
         return walk_panes(driver, steps, values, ssh_port=ssh_port, password=password,
                           session=session)
@@ -3298,7 +3358,7 @@ def driver_for(qmp_path: str, *, work: str = "", width: int = 1920, height: int 
 
 def walk_with(steps: Walk, driver: "Driver", *, values: dict[str, str] | None = None,
               ssh_port: int = 2222, user: str = "vmuser",
-              password: str = "admin", frames: str = "", out: str = "",
+              password: str = "admin", public_key: str = "", frames: str = "", out: str = "",
               start_at: str = "", stop_before: str = "") -> tuple[bool, list[str]]:
     """Walk `steps` against `driver` - the half of run_file that does not open a connection.
 
@@ -3309,6 +3369,8 @@ def walk_with(steps: Walk, driver: "Driver", *, values: dict[str, str] | None = 
     setattr(driver, "release", str(steps.document.get("release", "15")))
     setattr(driver, "frames_dir", frames or "")
     overrides = {"args.user": user, "args.password": password}
+    if public_key:
+        overrides["args.public_key"] = public_key
     if out:
         overrides["args.out"] = out
     if values:
@@ -3344,7 +3406,7 @@ def walk_with(steps: Walk, driver: "Driver", *, values: dict[str, str] | None = 
 
 
 def run_file(walkthrough: str, qmp_path: str, *, work: str = "",
-             user: str = "vmuser", password: str = "admin",
+             user: str = "vmuser", password: str = "admin", public_key: str = "",
              disk_path: str | None = None, ssh_port: int = 2222,
              start_at: str = "", stop_before: str = "",
              release: str = "15", frames: str = "",
@@ -3437,8 +3499,14 @@ def run_file(walkthrough: str, qmp_path: str, *, work: str = "",
     # form needs the account the walk was given, and passing it through the step's own keys
     # would mean inventing a vocabulary for every field. The resolved vars are attached
     # instead, so an extension reads `driver.values["user"]` and the YAML stays data.
-    setattr(driver, "values", steps.values(
-        {"args.user": user, "args.password": password}))
+    # EVERY OVERRIDE THIS RUN KNOWS, or a var that came from the command line is invisible to an
+    # extension. `public_key` is the one that proved it: the step carried it, the extension read
+    # `driver.values` for the private half, and found nothing - so `require_ssh` fell back to
+    # password authentication against a guest that cannot check a password.
+    _overrides = {"args.user": user, "args.password": password}
+    if public_key:
+        _overrides["args.public_key"] = public_key
+    setattr(driver, "values", steps.values(_overrides))
     setattr(driver, "ssh_port", ssh_port)
     setattr(driver, "password", password)
 
@@ -3447,6 +3515,8 @@ def run_file(walkthrough: str, qmp_path: str, *, work: str = "",
         # needs the base64 install script, which is per-family and cannot be written in the
         # file; everything else (`user`, `password`) already comes from the two named args.
         overrides: dict[str, str] = {"args.user": user, "args.password": password}
+        if public_key:
+            overrides["args.public_key"] = public_key
         if extra_vars:
             overrides.update(extra_vars)
         return walk(driver, steps,
@@ -3468,7 +3538,9 @@ def main(argv: list[str]) -> int:
     p.add_argument("--qmp", default="",
                    help="the guest's QMP socket; omit for a walkthrough with no GUI steps")
     p.add_argument("--work", default=None)
-    p.add_argument("--user", default="vmuser")
+    # None, NOT "vmuser": a default equal to a legal value makes "not given" indistinguishable
+    # from "given that value", and the file's own `ssh_user:` could then never win.
+    p.add_argument("--user", default=None)
     p.add_argument("--password", default="admin")
     p.add_argument("--disk", default=None,
                    help="the target qcow2; a setup pane watches it for growth")
@@ -3501,6 +3573,12 @@ def main(argv: list[str]) -> int:
     # a different host is a kernel panic in the first second - see the note in
     # vm_session._start_machine. A file can also say `cpu:` on its `boot:` step, which is the
     # better place for a fact about THAT disk rather than about the run.
+    # A KEY TO INSTALL, FOR A GUEST THAT CANNOT CHECK A PASSWORD. Android's bionic has no
+    # `getspnam`, so sshd there cannot consult /etc/shadow: a password would be a password nobody
+    # verifies. The path is a run fact - the caller decides who may log in - so it arrives here
+    # and a step reads it as `{{ public_key }}`.
+    p.add_argument("--public-key", default="",
+                   help="a .pub file to install as the guest's authorized key")
     p.add_argument("--boot-cpu", default="",
                    help="the guest's -cpu model; empty means -cpu host")
     # WHERE A `compress:` STEP SHOULD PUT THE RESULT, when the file says `compress: "{{ out }}"`.
@@ -3522,11 +3600,16 @@ def main(argv: list[str]) -> int:
     # caller who names one means it; a file that names one is describing the guest.
     if not args.ssh_port:
         args.ssh_port = steps.ssh_port or 2222
-    if not args.user or args.user == "vmuser":
-        # THE FILE'S ACCOUNT IS A DEFAULT TOO, for the same reason and with the same precedence:
-        # `--user` wins, and every file that names `ssh_user:` gets what it named.
-        if steps.ssh_user:
-            args.user = steps.ssh_user
+    # THE FILE'S ACCOUNT, UNLESS THE CALLER NAMED ONE. `--user` defaults to "vmuser", so a
+    # comparison against that string cannot tell "the caller said vmuser" from "nobody said
+    # anything" - and the first version of this compared, which meant a file saying `ssh_user:
+    # root` still logged in as vmuser:
+    #
+    #     vmuser@127.0.0.1: Permission denied (publickey).
+    #
+    # for a guest whose only account is root. `None` is the way to say "not given".
+    if args.user is None:
+        args.user = steps.ssh_user or "vmuser"
 
     log(f"walkthrough {steps.name}: {len(steps.steps)} step(s), {steps.path}")
     if steps.notes:
@@ -3635,6 +3718,7 @@ def main(argv: list[str]) -> int:
         # not pass the option gets.
         cli_overrides = {"args.user": args.user, "args.password": args.password}
         for option_key, option_value in (("args.out", args.out),
+                                         ("args.public_key", args.public_key),
                                          ("args.boot_timeout", str(args.boot_timeout or ""))):
             if option_value:
                 cli_overrides[option_key] = option_value
