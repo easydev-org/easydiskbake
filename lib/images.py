@@ -448,11 +448,26 @@ BLISSOS = {
 
 
 def all_images() -> dict:
-    """Every pinned image, keyed by the tag it is published under."""
+    """Every pinned image, keyed by the tag it is published under.
+
+    BLISSOS IS IN HERE NOW, AND IT WAS DELIBERATELY OUT BEFORE. The note above its table said an
+    ISO added to this function would change what every scheduled mirror run publishes - true, and
+    the reason it was kept out. What changed is measurement:
+
+        SourceForge served 2.2 GiB at about 0.5 MB/s
+        -> fifty minutes of the install job's budget, and run 43061390716 was cancelled at
+           exactly 1h0m0s with the ISO at 92%
+
+    A mirror on ghcr is the same bytes behind a CDN that answers in a minute. The pin is verified
+    on the way in and on the way out, so the copy is checked twice - see android/blissos16/
+    fetch_iso.py, which falls back to SourceForge when the tag has not been published yet.
+    """
     merged = {}
-    for table in (WINDOWS, VIRTIO, LINUX, DESKTOP, BSD):
+    for table in (WINDOWS, VIRTIO, LINUX, DESKTOP, BSD, BLISSOS):
         for name, pin in table.items():
-            merged[tag(name)] = pin
+            # A PIN MAY ALREADY CARRY ITS PREFIX. BlissOS is keyed `iso:blissos-16.9.7` because
+            # that is what its own fetch names, and `tag()` would prefix it a second time.
+            merged[name if ":" in name else tag(name)] = pin
     return merged
 
 

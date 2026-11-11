@@ -141,7 +141,45 @@ def main(argv: list[str]) -> int:
     name = pin.get("name") or os.path.basename(pin["url"]).split("?")[0]
     archive = os.path.join(out, name)
 
-    iso.fetch_url(pin["url"], archive, sha256=pin["sha256"], size=pin["size"])
+    # THE MIRROR FIRST, THE VENDOR SECOND, AND THE FALLBACK IS WHY THE VENDOR IS STILL HERE.
+    #
+    # SourceForge served this file at about 0.5 MB/s - fifty minutes - and run 43061390716 was
+    # cancelled at exactly 1h0m0s with the ISO at 92%. The same bytes on ghcr come from a CDN in
+    # about a minute. So the tag is tried first, and a registry that does not have it yet is not a
+    # failure: the pin's own URL is still the authority and its sha256 is checked either way.
+    #
+    # The tag is `iso-blissos-16.9.7` - `iso:` with the colon replaced, because ghcr tags cannot
+    # contain one.
+    published = KEY.replace(":", "-")
+    fetched = False
+    try:
+        log(f"trying the mirror: {published}")
+        iso.fetch_iso(published, archive)
+        fetched = os.path.isfile(archive) and os.path.getsize(archive) > 0
+        if fetched:
+            log(f"  mirror served it ({os.path.getsize(archive):,} B)")
+    except Exception as exc:                       # noqa: BLE001 - reported, then the vendor
+        log(f"  the mirror did not have it: {str(exc).splitlines()[0][:160]}")
+
+    if not fetched:
+        log(f"pulling from the vendor ({pin['url'][:80]}...)")
+        iso.fetch_url(pin["url"], archive, sha256=pin["sha256"], size=pin["size"])
+
+    # AND THE SAME CHECK EITHER WAY. A mirror is a copy; the pin is the claim, and it is checked
+    # on the bytes that actually arrived.
+    if os.path.getsize(archive) != pin["size"]:
+        raise SystemExit(
+            f"=== SIZE MISMATCH ===\n  got {os.path.getsize(archive):,}, pin says {pin['size']:,}")
+    if pin.get("sha256"):
+        import hashlib
+        digest = hashlib.sha256()
+        with open(archive, "rb") as fh:
+            for block in iter(lambda: fh.read(1 << 20), b""):
+                digest.update(block)
+        if digest.hexdigest() != pin["sha256"]:
+            raise SystemExit(f"=== SHA256 MISMATCH ===\n  got {digest.hexdigest()}")
+        log("  sha256 ok")
+
     extract(archive, out)
 
     for member in MEMBERS:
