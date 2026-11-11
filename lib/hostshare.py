@@ -312,6 +312,29 @@ def start(directory: str = DEFAULT_DIR, *, wait: float = 10.0) -> bool:
             log(f"    {line[:160]}")
         return False
 
+    # WHAT THE TDB ERROR CANNOT SAY: WHETHER THE DIRECTORY IS THERE, AND WHO CAN WRITE IT.
+    #
+    # Run 42941249853's launch_dev failed with
+    #
+    #     === smbd DID NOT BIND 172.30.0.1:445 IN 10s ===
+    #       Could not open tdb: No such file or directory
+    #       Failed to fetch domain sid for WORKGROUP
+    #
+    # and `os.makedirs(PRIVATE_DIR, exist_ok=True)` is four lines above the config write, so the
+    # directory was created and then something made it unusable. That error cannot distinguish
+    # "removed", "not writable", and "there but stale" - and each wants a different fix.
+    try:
+        import pwd as _pwd
+        who = _pwd.getpwuid(os.geteuid()).pw_name
+    except (ImportError, KeyError):
+        who = str(os.geteuid())
+    try:
+        listing = sorted(os.listdir(PRIVATE_DIR))[:8]
+    except OSError as exc:
+        listing = [f"<unlistable: {exc}>"]
+    log(f"  private dir {PRIVATE_DIR}: exists={os.path.isdir(PRIVATE_DIR)} "
+        f"writable={os.access(PRIVATE_DIR, os.W_OK)} user={who} entries={listing}")
+
     deadline = time.time() + wait
     while time.time() < deadline:
         if listening():
@@ -319,11 +342,42 @@ def start(directory: str = DEFAULT_DIR, *, wait: float = 10.0) -> bool:
             _record_pid()
             return True
         time.sleep(0.5)
-    log(f"=== smbd DID NOT BIND {net.BRIDGE_IP}:445 IN {wait:.0f}s ===")
     tail = ""
     if os.path.isfile(LOG_PATH):
         with open(LOG_PATH) as fh:
             tail = "".join(fh.readlines()[-6:])
+    # ONE RETRY, WITH THE PRIVATE DIRECTORY REBUILT - BECAUSE `Could not open tdb` IS USUALLY
+    # A DIRECTORY THAT VANISHED RATHER THAN A CONFIGURATION THAT IS WRONG.
+    #
+    # Run 42941249853's launch_dev: `smbd DID NOT BIND ... IN 10s`, and samba's own log said
+    # `Could not open tdb: No such file or directory` then `Failed to fetch domain sid for
+    # WORKGROUP`. The directory is created a few lines above, so between the two something removed
+    # it - and a second attempt after recreating it is what a person would do. If the second fails
+    # the messages are printed and the stage still fails.
+    if "Could not open tdb" in tail:
+        log("  samba lost its private directory; recreating it and starting smbd once more")
+        stop()
+        try:
+            shutil.rmtree(PRIVATE_DIR, ignore_errors=True)
+        except OSError:
+            pass
+        os.makedirs(PRIVATE_DIR, exist_ok=True)
+        os.chmod(PRIVATE_DIR, 0o700)
+        if not _ensure_account():
+            log("=== the share account could not be recreated ===")
+        result = subprocess.run(argv, capture_output=True, text=True)
+        if result.returncode != 0:
+            for line in ((result.stdout or "") + (result.stderr or "")).splitlines()[-4:]:
+                log(f"    {line[:160]}")
+        deadline = time.time() + wait
+        while time.time() < deadline:
+            if listening():
+                log(f"  smbd is listening on {net.BRIDGE_IP}:445 (second attempt)")
+                _record_pid()
+                return True
+            time.sleep(0.5)
+
+    log(f"=== smbd DID NOT BIND {net.BRIDGE_IP}:445 IN {wait:.0f}s ===")
     for line in tail.splitlines():
         log(f"    {line[:160]}")
     return False

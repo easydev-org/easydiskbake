@@ -1067,6 +1067,26 @@ def main() -> int:
     check("the cleaned flag is set before the shutdown", "lib/clean_step.py",
           clean2.index('_ARTIFACTS["cleaned"] = True')
           < clean2.index('vm_session.stop(guest, acpi_first=ok'))
+    # AND A SHARE THAT LOST ITS PRIVATE DIRECTORY GETS ONE MORE ATTEMPT.
+    #
+    # Run 42941249853 (launch_dev) failed before the guest booted:
+    #
+    #     === smbd DID NOT BIND 172.30.0.1:445 IN 10s ===
+    #       Could not open tdb: No such file or directory
+    #     === THE HOST COULD NOT SERVE ~/shared ===
+    #
+    # `os.makedirs(PRIVATE_DIR, exist_ok=True)` runs a few lines above the config write, so the
+    # directory existed and then something removed it. Samba's own message names that case, so the
+    # retry is conditional on it rather than a blanket second try - and the state of the directory
+    # is printed either way, because "exists / writable / owner / entries" is what that message
+    # cannot say.
+    hs = read("lib/hostshare.py")
+    check("a share that lost its tdb directory retries", "lib/hostshare.py",
+          'if "Could not open tdb" in tail:' in hs)
+    check("the retry rebuilds the private directory", "lib/hostshare.py",
+          "shutil.rmtree(PRIVATE_DIR" in hs and "os.makedirs(PRIVATE_DIR" in hs)
+    check("the private directory state is reported", "lib/hostshare.py",
+          "writable={os.access(PRIVATE_DIR, os.W_OK)}" in hs)
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))
