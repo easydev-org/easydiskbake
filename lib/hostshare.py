@@ -797,22 +797,13 @@ mount_smbfs -f 0666 -d 0777 "//SMB_USER:@$host/SHARE_NAME" "$p"
 # appeared one level down. `{password}` is quoted by the caller; `{host}` and `{share}` are safe
 # names by construction.
 SHARED_COMMAND = (
-    "SHARED=$HOME/shared; "
-    # THE CONFIG GOES WHERE THE PROCESS THAT READS IT LOOKS - AND THAT PROCESS IS ROOT.
-    #
-    # `smbnetfs` reads `$HOME/.smb/smbnetfs.conf`, and this one runs under `sudo`, so its `$HOME`
-    # is /root. Writing the file as the account and then running the client as root is the same
-    # two-homes mistake run 7b607f2 recorded one layer up.
-    #
-    # THE FILE IS BUILT WITH A HEREDOC INSIDE THE ROOT SHELL, which is the one quoting form here
-    # that does not need escaping three levels deep. Everything before `smbnetfs` is a command on
-    # its own line, so no line continuation appears anywhere.
-    "mkdir -p \"$SHARED\" && "
-    "printf '%s\\n' {password} | sudo -S -p '' "
+    "SHARED=$HOME/shared; mkdir -p \"$SHARED\" && "
+    "printf '%s\\n' __PASSWORD__ | sudo -S -p '' "
     "sh -c 'mkdir -p $HOME/.smb; "
-    "{ printf \"auth %s \\n\" \"{user}\"; "
-    "printf \"smb_server=%s\\n\" \"{host}\"; } > $HOME/.smb/smbnetfs.conf; "
-    "smbnetfs \"$1\" 2>&1 | tail -3; sleep 3; "
+    "{ printf \"auth %s\\n\" \"__USER__\"; "
+    "printf \"smb_server=%s\\n\" \"__HOST__\"; } > $HOME/.smb/smbnetfs.conf; "
+    "chmod 600 $HOME/.smb/smbnetfs.conf; "
+    "smbnetfs \"$1\" 2>&1 | tail -4; sleep 4; "
     "ls -d \"$1\"/*/ >/dev/null 2>&1' _ \"$SHARED\""
 )
 
@@ -1142,10 +1133,9 @@ def mount_commands(host: str = "", user: str = "vmuser",
             # and doubling every brace for Python's formatter made a line nobody could read. The
             # three values are substituted by name instead.
             SHARED_COMMAND
-            .replace("{user}", SMB_USER)
-            .replace("{host}", host)
-            .replace("{share}", SHARE_NAME)
-            .replace("{password}", shlex.quote(login_password))
+            .replace("__USER__", SMB_USER)
+            .replace("__HOST__", host)
+            .replace("__PASSWORD__", shlex.quote(login_password))
         ),
     }
 
