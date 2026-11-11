@@ -1394,6 +1394,24 @@ def main() -> int:
     # been a coincidence that reads as a design.
     check("tpm is its own key, not bootstate", "lib/clean_step.py",
           '"bootstate": True, "tpm": True' in cl)
+    # AND `record:` TAKES THE FRAMES IT ENCODES, BECAUSE NOTHING ELSE WAS.
+    #
+    # Run 42952160130 uploaded `windows11-ssh-failed-screen` and nothing else:
+    #
+    #     [steps]   recording: out/ssh-work/install.mp4
+    #     ##[warning]No files were found with the provided path: out/ssh-work/install.mp4
+    #
+    # `lib/live.py` returns without writing anything when there are no frames (`if total == 0:
+    # return`). A stage whose steps are all `key:` and `ssh:` never screenshots, so `shots/` stayed
+    # empty - and `record:` was encoding nothing. `lib/snapshots.py` is what takes them; the macOS
+    # stages have always started it by hand, and a YAML file had no way to say so.
+    check("a record step starts its own sampler", "lib/steps.py",
+          "driver._sampler = subprocess.Popen" in st)
+    # AND THE SAMPLER STOPS BEFORE THE FINAL ENCODE, so the last second is on disk rather than
+    # written while the encoder is reading.
+    rec = st[st.index('if step["record"] is not None:'):]
+    check("the sampler stops before the encoder", "lib/steps.py",
+          rec.index("sampler.terminate()") < rec.index("recorder.stop(final=True)"))
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))

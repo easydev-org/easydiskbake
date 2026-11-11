@@ -44,6 +44,7 @@ import json
 import os
 import re
 import shlex
+import subprocess
 import sys
 import time
 
@@ -1968,6 +1969,17 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
     if step["record"] is not None:
         import live
         if step["record"] is False or str(step["record"]).lower() in ("false", "stop"):
+            # THE SAMPLER STOPS FIRST, SO THE LAST SECOND IS ON DISK BEFORE THE ENCODER READS.
+            # Stopping the encoder while the sampler still writes gives a video that ends one
+            # frame early - and on a fast shutdown that is the frame with the work in it.
+            sampler = getattr(driver, "_sampler", None)
+            if sampler is not None:
+                try:
+                    sampler.terminate()
+                    sampler.wait(timeout=15)
+                except (OSError, subprocess.SubprocessError):
+                    pass
+                driver._sampler = None
             recorder = getattr(driver, "_recorder", None)
             if recorder is not None:
                 try:
@@ -1978,6 +1990,43 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
                 log("  recording stopped")
             return
         work = getattr(driver, "work", "") or "."
+        # THE RECORDING NEEDS FRAMES, AND NOTHING WAS TAKING ANY.
+        #
+        # `record:` only encoded: `lib/live.py` reads frame files and writes an mp4 from them, and
+        # it returns without writing anything when there are none (`if total == 0: return`). A
+        # stage whose steps are all `key:` and `ssh:` never screenshots, so `shots/` stayed empty
+        # and the run uploaded nothing:
+        #
+        #     [steps]   recording: out/ssh-work/install.mp4
+        #     ##[warning]No files were found with the provided path: out/ssh-work/install.mp4
+        #
+        # run 42952160130. `lib/snapshots.py` is what takes them - it reads the QMP record socket
+        # once a second for the whole run, which is also how the macOS stages have always got
+        # their frames. Started here rather than by each stage, because the file is what says it
+        # wants a video.
+        sampler = getattr(driver, "_sampler", None)
+        if sampler is None:
+            shots_dir = os.path.join(work, "shots")
+            os.makedirs(shots_dir, exist_ok=True)
+            # `vm.Paths` IS WHERE THE RECORD SOCKET'S NAME COMES FROM, so it is not guessed
+            # here. Imported inside the branch because it is only needed by a file that records.
+            import vm as vmmod
+
+            socket = vmmod.Paths(work).record
+            if socket:
+                log(f"  sampler: {os.path.basename(socket)} -> {shots_dir}")
+                try:
+                    driver._sampler = subprocess.Popen(
+                        [sys.executable, os.path.join(REPO, "lib", "snapshots.py"),
+                         socket, shots_dir,
+                         os.environ.get("SNAPSHOT_INTERVAL", "1")],
+                        stdout=open(os.path.join(shots_dir, "snapshots.log"), "wb"),
+                        stderr=subprocess.STDOUT,
+                    )
+                except OSError as exc:
+                    log(f"  the sampler could not start: {exc}")
+            else:
+                log("  no record socket: this stage will have no frames")
         video = str(step["record"])
         if not os.path.isabs(video):
             video = os.path.join(work, video)
@@ -3019,6 +3068,24 @@ def walk_with(steps: Walk, driver: "Driver", *, values: dict[str, str] | None = 
     # environment, which is how two answers to one question start.
     setattr(driver, "ssh_port", ssh_port)
     setattr(driver, "password", password)
+    # THE DRIVER REACHES THE SESSION, AND THIS HAS TO HAPPEN AFTER THE DRIVER EXISTS.
+    #
+    # It used to be forty lines earlier, before any of the three branches above had assigned
+    # `driver`, and that is an UnboundLocalError for every walkthrough that passes a session:
+    #
+    #     File "lib/steps.py", line 3048, in run_file
+    #         driver.session = session
+    #     UnboundLocalError: cannot access local variable 'driver' where it is not associated
+    #     with a value
+    #
+    # - measured on the first run of android/blissos16/install.py once it started calling
+    # run_file. Nothing exercised the combination before: the macOS stages that pass a session
+    # do so from a `python:` extension, and those build their own Driver.
+    #
+    # The comment that travelled with it: a `disk:` step can name the file `boot:` starts, and
+    # the step only ever reads `session.disk`.
+    if session is not None:
+        driver.session = session
     return walk(driver, steps, overrides=overrides, start_at=start_at,
                 stop_before=stop_before, ssh_port=ssh_port, password=password)
 
@@ -3071,12 +3138,6 @@ def run_file(walkthrough: str, qmp_path: str, *, work: str = "",
             # made a caller's boot_options half-effective, which reads in a log as a rebuild
             # that should not have happened.
             ssh_port=ssh_port, boot_options=opts)
-
-    # THE DRIVER REACHES THE SESSION FROM EITHER ENTRY POINT, so a `disk:` step can name the file
-    # `boot:` starts. Set unconditionally: a caller that passed its own session passes one that
-    # already knows its disk, and the step only ever reads `session.disk`.
-    if session is not None:
-        driver.session = session
 
     needs_screen = bool(steps.panes) or any(
         s["at"] or s["double"] or s["expect"] or s["expect_any"] or s["until"]
