@@ -342,6 +342,53 @@ steps:
   #
   # NO SERIAL CONSOLE AND NO TEXT TTY: this repository does not fall back to either, so a
   # failure here is reported as a failure of this stage rather than worked around.
+  # THE PROOF FAILED ABOVE ON cachyos, SO THE DIAGNOSIS IS WRITTEN TO THE DISK BEFORE THE REBOOT.
+  #
+  # `read what this boot did` can only run if sshd came back, and the whole question is what
+  # happens when it does not. A machine that will not answer cannot be asked why - so the answer
+  # has to be left somewhere the NEXT stage can read, and the only place that survives a failed
+  # boot is the disk.
+  #
+  # THIS IS ONE STEP AND IT RUNS BEFORE THE REBOOT. It writes what systemd knows about sshd right
+  # now, plus whether the unit is enabled, failed, or masked, into /var/log/ where a later stage's
+  # `ssh:` can cat it - and a boot that does not start sshd leaves the file in place instead of
+  # taking the explanation with it.
+  - name: leave the sshd diagnosis where a later boot can read it
+    ssh: |
+      printf '%s\n' '{{ password }}' | sudo -S -p '' sh -c '
+        {
+          echo "=== $(date) writing the diagnosis before the reboot ==="
+          echo "--- is-enabled / is-active / is-failed ---"
+          systemctl is-enabled sshd; systemctl is-active sshd; systemctl is-failed sshd
+          echo "--- the unit that is enabled ---"
+          systemctl cat sshd 2>&1 | head -30
+          echo "--- the symlinks that would start it ---"
+          ls -l /etc/systemd/system/*.wants/sshd* /etc/systemd/system/sshd* 2>&1
+          echo "--- masked? ---"
+          systemctl is-enabled sshd 2>&1
+          echo "--- host keys ---"
+          ls -l /etc/ssh/ssh_host_*_key 2>&1
+          echo "--- the journal of this boot ---"
+          journalctl -b -u sshd --no-pager 2>&1 | tail -20
+        } > /var/log/easyvm-sshd.txt 2>&1
+        chmod 644 /var/log/easyvm-sshd.txt
+        echo "wrote $(wc -l < /var/log/easyvm-sshd.txt) lines to /var/log/easyvm-sshd.txt"'
+    timeout: 180
+
+  # AND THE ENTRY THAT MAKES A BOOT WORK EVEN WHEN THE SERVICE DOES NOT: An sshd.socket
+  # listens without sshd.service running at all - systemd starts a per-connection instance.
+  #
+  # IT IS ENABLED *AND* THE SERVICE IS LEFT ENABLED, which is not redundant: whichever answers
+  # first is the one the port gets, and a disk where the service fails at boot still answers
+  # through the socket.
+  - name: enable the socket as well, for a boot where the service does not start
+    ssh: |
+      printf '%s\n' '{{ password }}' | sudo -S -p '' sh -c '
+        systemctl enable --now sshd.socket 2>&1 | tail -3
+        systemctl is-enabled sshd.socket 2>&1 || true'
+    timeout: 180
+    optional: true
+
   - name: restart the machine
     ssh: |
       printf '%s\n' '{{ password }}' | sudo -S -p '' systemctl reboot
