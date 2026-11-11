@@ -463,6 +463,20 @@ def start(driver, step) -> bool:
     # THE VERDICT IS THE LISTENING SOCKET, NOT THE EXIT STATUS: `sshd` forks and answers 0 even
     # when the child it forked died, which is exactly how the missing-library failures presented.
     if "SSHD_LISTENING" in output:
+        # THE DAEMON IS UP. ITS LOG IS KEPT AND PRINTED ANYWAY, because the step that follows is
+        # the one that authenticates and the reason a key is refused lives in this file, not in
+        # the ssh client's output:
+        #
+        #     trying public key file /data/local/home/.ssh/authorized_keys
+        #     Authentication refused: bad ownership or modes for directory /data
+        #
+        # Six runs were spent looking at the client side of that. Printing the server's own log
+        # the moment the daemon starts makes the next failure name itself.
+        status, tail = adb.shell(serial, "tail -20 /data/local/tmp/sshd.err 2>/dev/null",
+                                 timeout=60)
+        if tail.strip():
+            print("  sshd's own log:", flush=True)
+            _say(tail, limit=20)
         return True
     print("  sshd did not reach a listening socket; its log is above", flush=True)
     return False

@@ -123,6 +123,12 @@ def ssh(port: int, command: str, timeout: int = 30, host: str | None = None,
     bound or refuse the connection, and neither is a fact about the disk.
     """
     if key:
+        # A KEY THAT IS NOT THERE HAS TO SAY SO. ssh with a missing `-i` file falls through to
+        # "no more authentication methods to try" and the log reads as "the server refused a key
+        # I offered", which is a different thing - measured on the first CI run of the ssh stage,
+        # where the path was relative to a directory the step had already left.
+        if not os.path.isfile(key):
+            return 127, f"no private key at {key!r} (the walkthrough named it; ssh cannot offer one)"
         # KEY AUTHENTICATION, WITH NO PASSWORD AND NO sshpass. `IdentitiesOnly` stops ssh from
         # also offering the runner's own ~/.ssh keys, which would make a failure depend on
         # whether the machine running this happens to have one.

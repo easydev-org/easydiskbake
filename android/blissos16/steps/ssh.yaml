@@ -258,6 +258,10 @@ steps:
   # THIS IS THE CLAIM. Everything above was proved over adb, inside the guest, by a shell that was
   # already root. This is a TCP connection to the forwarded port, a key, and a command the remote
   # shell ran - which is what anybody who downloads the disk will do.
+  # NOT `optional`: this IS the claim. A wait that may be skipped is a stage that passes without
+  # ever proving the disk answers, which is the one thing it exists to prove. What changed instead
+  # is that `start` now prints sshd's OWN log the moment the daemon binds - so when this fails,
+  # the server's reason is already in the log above it.
   - name: wait for sshd on the forwarded port
     require_ssh: true
     ssh_probe: echo ok
