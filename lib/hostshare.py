@@ -262,6 +262,25 @@ def listening(host: str = "", port: int = 445, timeout: float = 2.0) -> bool:
         return False
 
 
+def _serving_directory() -> str:
+    """The directory the CURRENT config names, or "" when there is none.
+
+    Read from the config this module wrote rather than remembered in memory: it survives a
+    process boundary, which is what makes it the right answer for "is the server that is
+    running the one this call wants".
+    """
+    try:
+        with open(CONF_PATH, "r", encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return ""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith("path ="):
+            return os.path.abspath(stripped.split("=", 1)[1].strip())
+    return ""
+
+
 def start(directory: str = DEFAULT_DIR, *, wait: float = 10.0) -> bool:
     """Write the config, start smbd, and wait for the port.
 
@@ -298,6 +317,29 @@ def start(directory: str = DEFAULT_DIR, *, wait: float = 10.0) -> bool:
 
     if not _ensure_account():
         return False
+
+    # A SERVER THAT IS ALREADY SERVING THIS DIRECTORY IS LEFT ALONE.
+    #
+    # `stop()` below is what a SECOND call pays, and it is not free: it signals the pid from the
+    # pid file, sleeps between signals, and - when the pid has been reused by something in this
+    # process's own group - takes the stage down with it. That is the shape of run 42959948715:
+    #
+    #     [share] signalling smbd 286 with SIGTERM (this process is 173, group 173)
+    #     ##[error] Process completed with exit code 241.
+    #
+    # AND A SECOND CALL IS THE NORMAL CASE IN A YAML STAGE. `boot:` starts the machine with
+    # `share=None`, which means "serve ~/shared" - so a file that then says `share_serve:` runs
+    # this function a second time inside one process. The twelve Linux stages do exactly that,
+    # and they did before the `share_serve:` step existed because the stage's own Python called
+    # `hostshare.start()` once.
+    #
+    # The check is both halves: the config names the same directory, AND something is listening
+    # on 445. A stale config with no server behind it is not "already serving", and a server on
+    # another directory has to be replaced.
+    if (_serving_directory() == os.path.abspath(directory)
+            and listening(timeout=2.0)):
+        log(f"  already serving {directory!r} on {net.BRIDGE_IP}:445; nothing to restart")
+        return True
 
     # STOP ONE THIS MODULE STARTED EARLIER. `smbd -D` daemonises, so the process is not a
     # child and cannot be waited on - which is why the pid file is written rather than a
