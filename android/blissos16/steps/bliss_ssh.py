@@ -226,6 +226,9 @@ def install_boot_hook(driver, step) -> bool:
         f"P={PREFIX}\n"
         "export LD_LIBRARY_PATH=$P/lib\n"
         "mkdir -p $P/var/empty $P/var/run\n"
+        # THE PATH sshd WAS COMPILED WITH, WHICH CANNOT BE MOVED. See `start()`.
+        "mkdir -p /data/data/com.termux/files/usr/var/empty 2>/dev/null\n"
+        "chmod 755 /data/data/com.termux/files/usr/var/empty 2>/dev/null\n"
         "chmod 755 $P/var/empty\n"
         # `exec` AND `-D`, BECAUSE A WRAPPER THAT EXITS TAKES ITS CHILD WITH IT.
         #
@@ -391,6 +394,22 @@ def start(driver, step) -> bool:
         f"P={PREFIX}; export LD_LIBRARY_PATH=$P/lib; "
         f"mkdir -p $P/etc/ssh $P/var/empty $P/var/run; "
         f"chmod 755 $P/var/empty; "
+        # AND THE PRIVILEGE SEPARATION DIRECTORY AT THE PATH sshd WAS COMPILED WITH.
+        #
+        # This is the one part of the prefix this stage cannot move. sshd computes its privsep
+        # chroot from a path baked in at build time, and Termux's is
+        #
+        #     /data/data/com.termux/files/usr/var/empty
+        #
+        # no matter what `-f` says - so a payload installed at /data/local/sshd started with
+        #
+        #     Missing privilege separation directory: /data/data/com.termux/files/usr/var/empty
+        #
+        # and exited. That PATH CAN BE CREATED even though its parent cannot be COPIED INTO:
+        # mode 700 and `app_data_file` stop a file copy, and `mkdir` as root succeeds - measured.
+        # So the directory is made, empty, which is all sshd wants it for.
+        f"mkdir -p /data/data/com.termux/files/usr/var/empty 2>/dev/null; "
+        f"chmod 755 /data/data/com.termux/files/usr/var/empty 2>/dev/null; "
         f"[ -f $P/etc/ssh/ssh_host_rsa_key ] || "
         f"$P/bin/ssh-keygen -t rsa -b 2048 -f $P/etc/ssh/ssh_host_rsa_key -N '' -q; "
         f"test -f $P/etc/ssh/ssh_host_rsa_key || {{ echo NO_HOST_KEY; exit 1; }}; "
