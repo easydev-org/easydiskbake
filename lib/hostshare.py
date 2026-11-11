@@ -797,18 +797,23 @@ mount_smbfs -f 0666 -d 0777 "//SMB_USER:@$host/SHARE_NAME" "$p"
 # appeared one level down. `{password}` is quoted by the caller; `{host}` and `{share}` are safe
 # names by construction.
 SHARED_COMMAND = (
-    "SHARED=$HOME/shared; CONF=$HOME/.smb/smbnetfs.conf; "
-    "mkdir -p $HOME/.smb \"$SHARED\" && "
-    "printf 'auth %s \"\"\\n' {user} > \"$CONF\" && "
-    # THE PATHS GO IN AS ARGUMENTS, NOT AS VARIABLES THE INNER SHELL READS.
+    "SHARED=$HOME/shared; "
+    # THE CONFIG GOES WHERE THE PROCESS THAT READS IT LOOKS - AND THAT PROCESS IS ROOT.
     #
-    # `sh -c '... $SHARED ...'` is SINGLE-QUOTED, so the inner shell expands `$SHARED` - and that
-    # shell runs as ROOT, where `$HOME` is /root. Run 7b607f2 was exactly this shape one layer up
-    # (`mount: /root/shared: No such file or directory`). `sh -c '<script>' <arg1> <arg2>` passes
-    # them as $1 and $2, which the OUTER shell expanded.
+    # `smbnetfs` reads `$HOME/.smb/smbnetfs.conf`, and this one runs under `sudo`, so its `$HOME`
+    # is /root. Writing the file as the account and then running the client as root is the same
+    # two-homes mistake run 7b607f2 recorded one layer up.
+    #
+    # THE FILE IS BUILT WITH A HEREDOC INSIDE THE ROOT SHELL, which is the one quoting form here
+    # that does not need escaping three levels deep. Everything before `smbnetfs` is a command on
+    # its own line, so no line continuation appears anywhere.
+    "mkdir -p \"$SHARED\" && "
     "printf '%s\\n' {password} | sudo -S -p '' "
-    "sh -c 'smbnetfs \"$1\" \"$2\" 2>&1 | tail -3; sleep 2; "
-    "ls -d \"$2\"/{share} >/dev/null 2>&1' _ {host} \"$SHARED\""
+    "sh -c 'mkdir -p $HOME/.smb; "
+    "{ printf \"auth %s \\n\" \"{user}\"; "
+    "printf \"smb_server=%s\\n\" \"{host}\"; } > $HOME/.smb/smbnetfs.conf; "
+    "smbnetfs \"$1\" 2>&1 | tail -3; sleep 3; "
+    "ls -d \"$1\"/*/ >/dev/null 2>&1' _ \"$SHARED\""
 )
 
 
@@ -1133,8 +1138,14 @@ def mount_commands(host: str = "", user: str = "vmuser",
         # `$HOME` IS EXPANDED BEFORE `sudo`, because `~` inside `sudo sh -c` is root's home -
         # run 7b607f2 recorded that as `mount: /root/shared: No such file or directory`.
         "bsd": (
-            SHARED_COMMAND.format(host=host, share=SHARE_NAME, user=SMB_USER,
-                                  password=shlex.quote(login_password))
+            # `.format` IS NOT USED ON THIS ONE: the command contains `{ ...; }` - a shell group -
+            # and doubling every brace for Python's formatter made a line nobody could read. The
+            # three values are substituted by name instead.
+            SHARED_COMMAND
+            .replace("{user}", SMB_USER)
+            .replace("{host}", host)
+            .replace("{share}", SHARE_NAME)
+            .replace("{password}", shlex.quote(login_password))
         ),
     }
 
