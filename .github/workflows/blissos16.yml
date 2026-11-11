@@ -203,7 +203,7 @@ jobs:
             mkdir -p out/install
             ./easyvm android/blissos16/steps/install.yaml \
               --boot-disk out/install/blissos16.qcow2 \
-              --boot-iso out/bliss/bliss16.iso \
+              --boot-iso out/bliss \
               --work out/install/work \
               --out out/install/blissos16-out.qcow2 \
               --boot-mem "${{ inputs.mem_mb || '4096' }}"

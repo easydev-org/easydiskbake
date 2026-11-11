@@ -3409,7 +3409,26 @@ def main(argv: list[str]) -> int:
         # (installer, live, or an installed disk) and to find the kernel and initrd beside it.
         boot_opts: dict = {}
         if args.boot_iso:
-            boot_opts["iso"] = os.path.abspath(args.boot_iso)
+            # A DIRECTORY IS AS GOOD AS A FILE, AND IT IS THE HONEST ARGUMENT.
+            #
+            # The ISO and the three members extracted out of it are ONE SET that must stay
+            # together - a kernel paired with a different system.efs is a guest that boots and
+            # then cannot find its system - and `fetch_iso.py --out DIR` puts all four in DIR.
+            # Naming the directory is therefore the statement; naming the file is naming one
+            # member of a set the caller would then have to keep in step.
+            #
+            # One `.iso` in the directory is what makes it unambiguous; two is a refusal, because
+            # guessing which one an installer should boot is exactly the kind of guess this
+            # repository has paid for.
+            candidate = os.path.abspath(args.boot_iso)
+            if os.path.isdir(candidate):
+                found = sorted(n for n in os.listdir(candidate) if n.lower().endswith(".iso"))
+                if len(found) != 1:
+                    log(f"FAILED: {args.boot_iso} holds {len(found)} .iso file(s); "
+                        f"--boot-iso needs exactly one")
+                    return 1
+                candidate = os.path.join(candidate, found[0])
+            boot_opts["iso"] = candidate
             boot_opts["disk"] = os.path.abspath(args.boot_disk)
         session = MachineSession(
             _os_of(first, "macos"), args.boot_disk, work,

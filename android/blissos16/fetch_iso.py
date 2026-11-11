@@ -58,7 +58,10 @@ import images  # noqa: E402
 import iso  # noqa: E402
 
 KEY = "iso:blissos-16.9.7"
-MEMBERS = ("kernel", "initrd.img", "system.efs")
+# THE THREE FILES QEMU IS HANDED, and the pin already names them (`members`). One statement, so a
+# fifth member cannot be added to one list and forgotten in the other.
+MEMBERS = images.BLISSOS[KEY]["members"]
+
 
 
 def log(msg: str) -> None:
@@ -124,7 +127,20 @@ def main(argv: list[str]) -> int:
 
     out = os.path.abspath(a.out)
     os.makedirs(out, exist_ok=True)
-    archive = os.path.join(out, os.path.basename(pin["url"]))
+    # THE FILE IS NAMED, BECAUSE THE URL'S LAST SEGMENT IS `download`.
+    #
+    # SourceForge serves every file through `/download`, so `os.path.basename(pin["url"])` is the
+    # word `download` - and the ISO landed at out/bliss/download. The first CI run of the
+    # YAML-only install then handed qemu `out/bliss/bliss16.iso` and qemu exited before the first
+    # QMP message:
+    #
+    #     qemu-system-x86_64: -drive file=.../out/bliss/bliss16.iso,media=cdrom,readonly=on:
+    #     Could not open '.../out/bliss/bliss16.iso': No such file or directory
+    #
+    # `name` is the pin's own statement of what this file is, and it is what the workflow and
+    # `--boot-iso` both name.
+    name = pin.get("name") or os.path.basename(pin["url"]).split("?")[0]
+    archive = os.path.join(out, name)
 
     iso.fetch_url(pin["url"], archive, sha256=pin["sha256"], size=pin["size"])
     extract(archive, out)

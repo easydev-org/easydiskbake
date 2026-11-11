@@ -58,6 +58,10 @@ as a cdrom, `-kernel`/`-initrd` out of the ISO's own directory) and the INSTALLE
 drive, no kernel, the firmware reads the ESP's GRUB). A file that installs names it; the same file
 with it omitted starts the system it produced, which is why the two android stages are two files
 and not one with a flag in it.
+
+IT TAKES THE DIRECTORY `fetch_iso.py --out` WROTE, NOT ONLY THE FILE. The ISO and the three
+members extracted out of it are one set, and naming the set is the statement; one `.iso` in the
+directory is what makes it unambiguous.
 """
 
 from __future__ import annotations

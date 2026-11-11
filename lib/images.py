@@ -472,6 +472,11 @@ BLISSOS = {
         "sha256": "735cb962ec6bd92b62eb82a812831a38d79a0dfdf12b7973d2d0f7ab001ba68e",
         "sha1": None,
         "size": 2_342_518_784,
+        # THE FILE'S OWN NAME, BECAUSE THE URL'S LAST SEGMENT IS `download`. SourceForge serves
+        # every file through that segment, so deriving a filename from the URL produced
+        # `out/bliss/download` - and the first CI run of the YAML-only install handed qemu
+        # `bliss16.iso`, which did not exist, and qemu exited before the first QMP message.
+        "name": "bliss16.iso",
         "android": "13",
         # The three files qemu is handed, in the ISO's own names.
         "members": ("kernel", "initrd.img", "system.efs"),
