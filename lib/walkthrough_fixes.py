@@ -1494,9 +1494,71 @@ def main() -> int:
     check("one late SIGTERM can be survived", "lib/entrypoint.py",
           "def survive_a_late_sigterm(" in ep2 and "SIGTERM ignored once" in ep2)
     check("a second signal is obeyed", "lib/entrypoint.py",
-          "signal {state['count']}; obeying it" in ep2)
-    check("the windows vm-configure stage installs it", "windows/11/devtools.py",
-          "survive_a_late_sigterm(" in read("windows/11/devtools.py"))
+          "signal {_TOLERATED['signals']}" in ep2)
+    # THE FIRST VERSION OF THIS CHECK NAMED `windows/11/devtools.py`, WHICH IS THE DEV JOB'S
+    # PROGRAM. The vm-configure job runs `windows/11/vm_configure.py`, so the check passed on a
+    # file the failing job never executed - and run 42959948715 reproduced the same exit 241 with
+    # no `[entrypoint]` line. A check that names the file that happens to be open is not a check;
+    # the loop below derives the file list from the shape instead.
+    check("the vm-configure program installs the handler", "windows/11/vm_configure.py",
+          "entrypoint.tolerate_one_sigterm()" in read("windows/11/vm_configure.py"))
+    # AND THE TOLERANCE IS INSTALLED BY EVERY STAGE PROGRAM, NOT ONLY THE ONE THAT FAILED.
+    #
+    # The first version put `survive_a_late_sigterm()` into `windows/11/devtools.py` - which is
+    # the DEV job's program - and dispatched the VM-CONFIGURE job, which runs
+    # `windows/11/vm_configure.py`. Run 42959948715 then showed the same shape as the run before:
+    #
+    #     [devtools] 18 step(s) answered
+    #     [share]    signalling smbd 286 with SIGTERM (this process is 173, group 173)
+    #     ##[error] Process completed with exit code 241.
+    #
+    # with no `[entrypoint]` line at all, because the file that would have printed one was never
+    # executed. A fix applied to "the file I was reading" instead of "the files that have this
+    # shape" is how a bug survives a commit that names it.
+    #
+    # So the shape is the contract: every program a workflow runs that compresses a disk and has
+    # its own __main__ installs the handler, and arms it where its own work becomes true.
+    import glob
+    stage_programs = [
+        f for f in sorted(glob.glob("macos/**/*.py", recursive=True)
+                          + glob.glob("windows/**/*.py", recursive=True))
+        if "compress.compress(" in read(f) and 'if __name__ == "__main__":' in read(f)
+    ]
+    check("there are stage programs to check", "windows/11/vm_configure.py",
+          len(stage_programs) >= 9)
+    for prog in stage_programs:
+        body = read(prog)
+        check(f"{prog} installs the signal handler", prog,
+              "entrypoint.tolerate_one_sigterm()" in body)
+        check(f"{prog} arms it when its work is done", prog,
+              "entrypoint.work_is_finished(" in body)
+    # AND NOTHING IS TOLERATED BEFORE THE STAGE SAYS ITS OWN WORK IS FINISHED. One call for both
+    # would ignore the first signal whenever it arrived, which a cancel satisfies just as well.
+    ep3 = read("lib/entrypoint.py")
+    check("installing the handler tolerates nothing yet", "lib/entrypoint.py",
+          '_TOLERATED = {"armed": False' in ep3)
+    check("only an armed stage survives a signal", "lib/entrypoint.py",
+          '_TOLERATED["signals"] == 1 and _TOLERATED["armed"]' in ep3)
+    check("an unarmed stage says the work has not finished", "lib/entrypoint.py",
+          "and the work has NOT finished" in ep3)
+    # AND THE ARM IS REACHABLE - the first attempt put it after `return 0`.
+    import ast as _ast
+    for prog in stage_programs:
+        gtree = _ast.parse(read(prog))
+        mains = [n for n in _ast.walk(gtree)
+                 if isinstance(n, _ast.FunctionDef) and n.name == "main"]
+        if not mains:
+            continue
+        arm_lines, ret_lines = [], []
+        for node in _ast.walk(mains[0]):
+            if isinstance(node, _ast.Call) and isinstance(node.func, _ast.Attribute) \
+                    and node.func.attr == "work_is_finished":
+                arm_lines.append(node.lineno)
+            if isinstance(node, _ast.Return) and isinstance(node.value, _ast.Constant) \
+                    and node.value.value == 0:
+                ret_lines.append(node.lineno)
+        if arm_lines and ret_lines:
+            check(f"{prog} arms before it returns", prog, min(arm_lines) < min(ret_lines))
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))

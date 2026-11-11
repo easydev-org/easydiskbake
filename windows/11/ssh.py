@@ -449,6 +449,14 @@ def main(argv: list[str]) -> int:
             log("not cleaning here; the next step does it (lib/clean_step.py)")
 
         ok = True
+        # THE WORK IS DONE; ONLY THE TEARDOWN AND THE COMPRESS REMAIN.
+        #
+        # Armed HERE rather than at startup because this is the line that makes the
+        # sentence true. Before it, a SIGTERM means a cancel and must be obeyed.
+        import entrypoint
+
+        entrypoint.work_is_finished(
+            "the ssh stage answered every step")
         return 0
     finally:
         guest.stop(acpi_first=ok)
@@ -755,4 +763,17 @@ if __name__ == "__main__":
 
     entrypoint.note_stage("windows/11/ssh.py", "windows/11/steps/ssh.yaml",
                           extra="--boot-disk out/windows11-gold.qcow2")
+    # ONE LATE SIGTERM IS SURVIVED, ONCE THE WORK IS FINISHED.
+    #
+    # Six runs have been killed by SIGTERM after their work was done and before their compress:
+    # macOS cleans at 42913402988, 42919582582, 42928178260 and 42933089148, and Windows
+    # vm-configure at 42959216978 and 42959948715 - the last of which had answered all 18 steps,
+    # registered the logon task as Ready, and published nothing. The sender is not established
+    # and every candidate has been excluded by measurement; see lib/entrypoint.py.
+    #
+    # INSTALLED HERE AND ARMED AT `ok = True`. Nothing is tolerated before that point, so a
+    # cancel still stops the stage - the tolerant case is only a finished stage whose teardown
+    # was interrupted.
+    import entrypoint
+    entrypoint.tolerate_one_sigterm()
     raise SystemExit(main(sys.argv[1:]))

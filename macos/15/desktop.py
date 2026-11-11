@@ -387,6 +387,13 @@ def main(argv: list[str]) -> int:
         log("=== THE DISK FAILED ITS CHECKS; refusing to produce an artifact ===")
         return 1
 
+    # THE WORK IS DONE; ONLY THE COMPRESS REMAINS. Armed here because this is
+    # the line that makes it true - see lib/entrypoint.py on why a stage that
+    # has NOT finished still dies on the first signal.
+    import entrypoint
+
+    entrypoint.work_is_finished(
+        "the disk reaches its desktop and passed its checks")
     log("compressing")
     if run_overlay is not None:
         run_overlay.flatten(out)
@@ -419,4 +426,17 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    # ONE LATE SIGTERM IS SURVIVED, ONCE THE WORK IS FINISHED.
+    #
+    # Six runs have been killed by SIGTERM after their work was done and before their compress:
+    # macOS cleans at 42913402988, 42919582582, 42928178260 and 42933089148, and Windows
+    # vm-configure at 42959216978 and 42959948715 - the last of which had answered all 18 steps,
+    # registered the logon task as Ready, and published nothing. The sender is not established
+    # and every candidate has been excluded by measurement; see lib/entrypoint.py.
+    #
+    # INSTALLED HERE AND ARMED AT `ok = True`. Nothing is tolerated before that point, so a
+    # cancel still stops the stage - the tolerant case is only a finished stage whose teardown
+    # was interrupted.
+    import entrypoint
+    entrypoint.tolerate_one_sigterm()
     raise SystemExit(main(sys.argv[1:]))

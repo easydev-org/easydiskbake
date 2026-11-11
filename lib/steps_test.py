@@ -699,7 +699,10 @@ def test_share_mount_step() -> None:
         hostshare.listening = real_listening
     check(ok, f"both steps pass when the host serves the directory, ran={ran}")
     check(len(started) == 1, f"the host was asked to serve once, got {started}")
-    check(any("net use" in c for c in mounted),
+    # THE MOUNT IS `New-SmbMapping`, NOT `net use` - see lib/hostshare.py for why the older form
+    # could not express an account with no password (`The option /PERSISTENT=NO is unknown`,
+    # run 42958385108). This check asserted `net use` and had to be updated with the command.
+    check(any("New-SmbMapping" in c for c in mounted),
           f"the windows client command reached the guest, got {mounted}")
 
     # AND A SERVER THAT DID NOT START IS NOT A STEP THAT CARRIES ON.

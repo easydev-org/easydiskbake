@@ -65,43 +65,77 @@ def note_stage(name: str, workflow: str, *, extra: str = "") -> None:
         raise SystemExit(2)
 
 
-def survive_a_late_sigterm(*, cleaned_flag: str = "will finish") -> None:
-    """Ignore ONE SIGTERM, so a stage that has finished its work can still publish it.
+# --- ONE SIGTERM, SURVIVED, ONCE THE WORK IS FINISHED ------------------------------------
+#
+# THE SIGNAL HAS KILLED SIX STAGES AFTER THEIR WORK WAS DONE, ON BOTH PLATFORMS:
+#
+#     42913402988   macOS clean       241, after `the guest powered off`
+#     42919582582   macOS clean       419/418
+#     42928178260   macOS clean       363/363
+#     42933089148   macOS clean       365/365
+#     42959216978   Windows devtools  241, after `18 step(s) answered`
+#     42959948715   Windows vm-conf   241, after `18 step(s) answered`
+#
+# Every candidate for the sender has been excluded by measurement: `os.kill` to one pid cannot
+# reach the caller, a child in its own session cannot either, one run logged the refusal path
+# ("no longer looks like smbd") and died anyway, and the isolated-grandchild form that
+# lib/hostshare.py now uses survives a local reproduction. So this does not claim to know who
+# sends it.
+#
+# WHAT IT CLAIMS IS NARROWER AND USEFUL: when the signal arrives, the work is already done and
+# the disk is already correct - only the teardown and the compress remain - so dying there
+# throws away a plane's worth of work to prove nothing.
+#
+# WHY THIS IS TWO CALLS AND NOT ONE. The first version armed the tolerance at STARTUP and
+# ignored whatever signal arrived first, which a cancel would also satisfy. It is split so the
+# handler can be installed once, cheaply, in __main__ (`tolerate_one_sigterm`), while nothing is
+# actually tolerated until the stage says its own work is finished (`work_is_finished`). A stage
+# that has NOT finished still dies on the first signal, which is what a cancel means.
 
-    THE SAME SIGNAL HAS BEEN KILLING STAGES AFTER THEIR WORK IS DONE, ON BOTH PLATFORMS:
+_TOLERATED = {"armed": False, "flag": "", "signals": 0}
 
-        42913402988   macOS clean      exit 241 (-15), after `the guest powered off`
-        42919582582   macOS clean      419/418, after the same line
-        42928178260   macOS clean      363/363
-        42933089148   macOS clean      365/365
-        42959216978   Windows devtools 241, after `18 step(s) answered`, before its compress
 
-    Every candidate for the sender has been excluded by measurement: `os.kill` to one pid cannot
-    reach the caller, a child in its own session cannot either, and one run logged the refusal
-    path ("no longer looks like smbd") and died anyway. So this does not claim to know who sends
-    it. It claims that the work is finished when it arrives, and that dying there throws away a
-    plane's worth of work to prove nothing.
+def tolerate_one_sigterm() -> None:
+    """Install the handler. Call from `__main__`, before `main()` runs.
 
-    A SECOND SIGNAL IS OBEYED, and so is one that arrives before the caller says its own work is
-    done - a supervisor that repeats itself is not asking a question, and a stage that has not
-    finished must not be tolerated into publishing half a disk.
+    Installing it is safe at any time because it ignores nothing until `work_is_finished()` is
+    called; see the note above for why the two are separate.
     """
     import signal
 
-    state = {"count": 0}
-
     def report(signum, _frame):
-        state["count"] += 1
-        if signum == signal.SIGTERM and state["count"] == 1:
-            print(f"[entrypoint]   SIGTERM ignored once: {cleaned_flag}", flush=True)
+        _TOLERATED["signals"] += 1
+        if signum == signal.SIGTERM and _TOLERATED["signals"] == 1 and _TOLERATED["armed"]:
+            print(f"[entrypoint]   SIGTERM ignored once: {_TOLERATED['flag']}", flush=True)
             return
-        print(f"[entrypoint]   signal {state['count']}; obeying it", flush=True)
+        why = "" if _TOLERATED["armed"] else ", and the work has NOT finished"
+        print(f"[entrypoint]   signal {_TOLERATED['signals']}{why}; obeying it", flush=True)
         signal.signal(signum, signal.SIG_DFL)
         import os as _os
         _os.kill(_os.getpid(), signum)
 
-    for sig in (signal.SIGTERM,):
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         try:
             signal.signal(sig, report)
         except (OSError, ValueError):
             pass
+
+
+def work_is_finished(flag: str = "the work is finished") -> None:
+    """Say that everything except the teardown and the publish is done.
+
+    Placed where the stage sets `ok = True`, because that is the exact moment the statement
+    becomes true - not earlier, when it would tolerate a cancel.
+    """
+    _TOLERATED["armed"] = True
+    _TOLERATED["flag"] = flag
+
+
+def survive_a_late_sigterm(*, cleaned_flag: str = "will finish") -> None:
+    """Both calls at once: install the handler and say the work is already finished.
+
+    Kept for a caller that arms at startup and has nothing left to do, and so that an existing
+    one-liner in a stage program keeps working.
+    """
+    tolerate_one_sigterm()
+    work_is_finished(cleaned_flag)
