@@ -149,6 +149,11 @@ STEP_KEYS = {    "name",        # required: what the log calls this step
     "requires",    # capabilities this step needs; a missing one stops the run before it starts
     "screenshot",  # save a PNG of the screen into the work directory
     "record",      # start/stop a video of the screen; see the `record` step below
+    "desktop",     # WAIT FOR A DESKTOP of `desktop_family`: windows, macos
+    "desktop_family",
+    "disk",        # PREPARE A DISK BEFORE `boot:` - move, copy or overlay an input qcow2
+    "disk_from",   # the input this step prepares; required with `disk:`
+    "disk_copy",   # keep the input (true) or move it (false, the default)
     "family",      # for boot/shutdown: macos, windows, linux, android
                    #            `android` is Android-x86: -kernel/-initrd and two files,
                    #            so `disk` names a DIRECTORY of kernel, initrd.img and
@@ -876,6 +881,10 @@ class MachineSession:
                  boot_options: dict | None = None) -> None:
         self.family = family
         self.disk = disk
+        # WHAT THE RUN WAS GIVEN, as opposed to what `boot:` will start. A `disk:` step prepares
+        # `disk` FROM `source_disk`, and `disk` changes while `source_disk` does not - which is
+        # the difference between "the input" and "the file this stage writes".
+        self.source_disk = disk
         self.work = work
         self.share = share
         self.mem_mb = mem_mb
@@ -1645,6 +1654,111 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
     # would be a second set of ffmpeg flags to keep in step. It survives being asked to stop when
     # nothing is recording, because a file that records "just in case" should not fail when the
     # step before it already stopped.
+    # --- desktop: WAIT FOR A DESKTOP, JUDGED BY `lib/desktop.py` -----------------------
+    #
+    # BOTH PLATFORMS WAITED FOR THIS, EACH IN ITS OWN PLACE. macOS used
+    # `python: ssh_panes:wait_for_desktop` - an extension that exists only to run a loop - and
+    # Windows kept a 92-line function in `windows/11/ssh.py` that did the same thing with its own
+    # brightness thresholds. The JUDGEMENT was already shared (`lib/desktop.py` has
+    # `is_windows_desktop` and `is_macos_desktop`, and its comment says a second opinion about
+    # what a desktop looks like is a second thing to keep in step); only the loop was written
+    # twice.
+    #
+    #     - name: wait for the desktop
+    #       desktop: windows
+    #       timeout: 900
+    #
+    # THE FRAME IS TAKEN THROUGH THE DRIVER, so this works with whatever screen the stage holds
+    # and needs no QMP of its own.
+    if step["desktop"]:
+        family = str(step.get("desktop_family") or step["desktop"] or "")
+        if family not in ("windows", "macos", "linux"):
+            raise StepError(f"{step.name}: no desktop test for family {family!r}")
+        if not hasattr(driver, "screen") or driver.screen is None:
+            raise StepError(f"{step.name}: waiting for a desktop needs a screen")
+        import desktop as deskmod
+
+        judge = {"windows": deskmod.is_windows_desktop,
+                 "macos": deskmod.is_macos_desktop,
+                 "linux": getattr(deskmod, "is_linux_desktop", None)}[family]
+        if judge is None:
+            raise StepError(f"{step.name}: lib/desktop.py has no is_{family}_desktop")
+        seconds = float(step.get("timeout", 900))
+        poll = float(step.get("poll", 5))
+        deadline = time.time() + seconds
+        started = time.time()
+        shot = ""
+        while time.time() < deadline:
+            stem = f"desktop-{int(time.time() - started)}"
+            ppm = driver.screen.grab(stem)
+            if ppm:
+                shot = ppm
+                if judge(ppm, explain=False):
+                    log(f"  a {family} desktop is on screen ({time.time() - started:.0f}s)")
+                    return
+            time.sleep(poll)
+        raise StepError(
+            f"{step.name}: no {family} desktop in {seconds:.0f}s (last frame {shot or 'none'})")
+
+    # --- disk: PUT THE INPUT WHERE `boot:` WILL USE IT ---------------------------------
+    #
+    # EVERY STAGE THAT STARTS FROM A FINISHED DISK DID THIS IN PYTHON FIRST, and it is the same
+    # six lines every time - `working_copy()`, a log line, and a decision about whether the
+    # caller could afford to lose the input. That decision is not a fact about the screen; it is
+    # a fact about where the disk came from, and the file knows that better than the driver:
+    #
+    #     - name: take the input disk
+    #       disk: desktop.qcow2
+    #       disk_from: "{{ disk }}"
+    #       disk_copy: false        # it is in the registry; move it
+    #
+    #     - name: boot the disk
+    #       boot: true
+    #       family: macos
+    #
+    # TWO THINGS THIS DELIBERATELY DOES NOT DO.
+    #
+    # It does not guess `copy`. `working_copy` documents why: only the caller knows whether the
+    # input is the only copy, and guessing wrong either wastes minutes on a 28 GiB copy or
+    # destroys the only copy of an hour's work. `disk_copy` is a statement, not a default.
+    #
+    # It does not build the qemu command line. A stage whose machine needs OpenCore, an OSK, a
+    # specific CPU model or a second disk is expressing a fact about a MACHINE, and inventing a
+    # YAML key per qemu argument would be a worse language than the one qemu already has. Those
+    # stay in `lib/vm.py`, chosen by `boot:`'s `family:`.
+    if step["disk"]:
+        dest = str(step["disk"])
+        # `disk_from` DEFAULTS TO THE --boot-disk ARGUMENT, because that IS the input: the whole
+        # point of the step is to put the disk the run was given where `boot:` will use it. It is
+        # overridable for the one case that needs it - a stage that starts from something other
+        # than what it was handed.
+        source = str(step.get("disk_from") or "") or str(
+            getattr(getattr(driver, "session", None), "source_disk", "") or "")
+        if not source:
+            raise StepError(
+                f"{step.name}: `disk:` needs `disk_from:`, or a --boot-disk to read from")
+        if not os.path.isabs(source):
+            source = os.path.join(REPO, source)
+        if not os.path.isfile(source):
+            raise StepError(f"{step.name}: no disk at {source}")
+        work = getattr(driver, "work", "") or os.path.dirname(dest) or "."
+        if not os.path.isabs(dest):
+            dest = os.path.join(work, dest)
+        import working_copy as wc
+
+        log(f"  disk: {os.path.basename(source)} -> {dest}"
+            f" ({'copy' if step.get('disk_copy') else 'move'})")
+        prepared = wc.working_copy(source, dest, copy=bool(step.get("disk_copy")), note=log)
+        session = getattr(driver, "session", None)
+        if session is None:
+            raise StepError(
+                f"{step.name}: a `disk:` step has to come before the `boot:` that uses it")
+        # THE BOOT USES IT BECAUSE THE SESSION NOW POINTS AT IT. `boot:` reads `self.disk` when it
+        # starts the machine, so this is the whole contract - no second place to keep in step.
+        session.disk = prepared
+        driver.disk_path = prepared
+        return
+
     if step["record"] is not None:
         import live
         if step["record"] is False or str(step["record"]).lower() in ("false", "stop"):
@@ -2750,6 +2864,12 @@ def run_file(walkthrough: str, qmp_path: str, *, work: str = "",
             # that should not have happened.
             ssh_port=ssh_port, boot_options=opts)
 
+    # THE DRIVER REACHES THE SESSION FROM EITHER ENTRY POINT, so a `disk:` step can name the file
+    # `boot:` starts. Set unconditionally: a caller that passed its own session passes one that
+    # already knows its disk, and the step only ever reads `session.disk`.
+    if session is not None:
+        driver.session = session
+
     needs_screen = bool(steps.panes) or any(
         s["at"] or s["double"] or s["expect"] or s["expect_any"] or s["until"]
         or s["until_any"] or s["disk_settle"] or s["until_dark"] or s["wait_for_change"]
@@ -2935,6 +3055,10 @@ def main(argv: list[str]) -> int:
         session = MachineSession(
             str(first.get("family") or "macos"), args.boot_disk, work,
             share=args.boot_share, mem_mb=args.boot_mem, cpus=args.boot_cpus)
+        # THE DRIVER CAN REACH THE SESSION, so a `disk:` step can say which file `boot:` should
+        # start. Without this the two would need a third mechanism - an output the file cannot
+        # name - and every stage would keep doing its own `working_copy()` in Python.
+        driver.session = session
     try:
         ok, ran = walk(driver, steps,
                        overrides={"args.user": args.user, "args.password": args.password},

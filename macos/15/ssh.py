@@ -100,7 +100,7 @@ def main(argv: list[str]) -> int:
     p.add_argument("--work", default=None)
     p.add_argument("--mem", type=int, default=8192)
     p.add_argument("--cpus", type=int, default=4)
-    p.add_argument("--ssh-port", type=int, default=2223,
+    p.add_argument("--ssh-port", type=int, default=2222,
                    help="the HOST port the guest's 22 is forwarded to")
     p.add_argument("--steps", default="",
                    help="turn Remote Login on from this YAML walkthrough instead of ssh.py's "

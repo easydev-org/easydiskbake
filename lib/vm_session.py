@@ -524,10 +524,21 @@ def _start_machine(family: str, disk: str, work: str, ssh_port: int, cpus: int,
     # ALWAYS A FRESH COPY, never a leftover: the point is a machine with no boot entries.
     shutil.copyfile(template, firmware_vars)
 
+    # A TPM, WHEN THE CALLER ASKED FOR ONE. Windows 11 refuses to install without it and the
+    # failure is the installer's own dialog, which a stage cannot read. `boot_options["tpm"]`
+    # is the statement; the socket is started here so a stage that says "this guest has a TPM"
+    # does not also have to know what swtpm is.
+    tpm_socket = ""
+    if boot_options.get("tpm"):
+        import swtpm as swtpmmod
+        tpm_socket = swtpmmod.start(work) or ""
+        if not tpm_socket:
+            log("=== A TPM WAS ASKED FOR AND swtpm DID NOT START ===")
+            log("  Windows 11 will stop at the hardware check with a dialog nobody can click")
     shape = vm.Shape(
         cpus=cpus, mem_mb=mem_mb or 6144, machine="q35",
         firmware_code=firmware_code, firmware_vars=firmware_vars,
-        tpm_socket="", vga="std", ssh_port=ssh_port,
+        tpm_socket=tpm_socket, vga="std", ssh_port=ssh_port,
         qga_socket=qga_socket, qga_transport=qga_transport,
     )
     guest = vm.Guest(

@@ -1228,6 +1228,36 @@ def main() -> int:
           "os.path.isfile(path)" in ep)
     for stage in ("windows/11/ssh.py", "macos/15/ssh.py"):
         check(f"{stage} is guarded", stage, "entrypoint.note_stage(" in read(stage))
+    # --- PREPARING A DISK AND WAITING FOR A DESKTOP ARE STEPS NOW ----------------------
+    #
+    # Both were the same six (or ninety) lines in every stage that needed them:
+    #
+    #     working_copy(args.disk, os.path.join(work, "desktop.qcow2"), ...)
+    #
+    # and a desktop wait that macOS expressed as `python: ssh_panes:wait_for_desktop` - an
+    # extension existing only to run a loop - while `windows/11/ssh.py` kept a 92-line function
+    # with its own brightness thresholds. The JUDGEMENT was already shared: lib/desktop.py has
+    # `is_windows_desktop` and `is_macos_desktop`, and says in its own comment that a second
+    # opinion about what a desktop looks like is a second thing to keep in step.
+    st = read("lib/steps.py")
+    check("a disk can be prepared by a step", "lib/steps.py",
+          '"disk",        # PREPARE A DISK' in st and "wc.working_copy(" in st)
+    # AND IT DOES NOT GUESS `copy`: working_copy documents that only the caller knows whether the
+    # input is the only copy, and guessing wrong either wastes a 28 GiB copy or destroys the only
+    # copy of an hour's work. `disk_copy` is a statement.
+    check("the disk step does not guess whether to copy", "lib/steps.py",
+          'copy=bool(step.get("disk_copy"))' in st)
+    # AND THE BOOT USES WHAT THE STEP PREPARED, by pointing the session at it - one place, not two.
+    check("the boot uses the prepared disk", "lib/steps.py",
+          "session.disk = prepared" in st)
+    check("a desktop wait is a step", "lib/steps.py",
+          '"desktop",     # WAIT FOR A DESKTOP' in st and "is_windows_desktop" in st)
+    # AND THE MACHINE FACTS STAY IN lib/ - a TPM is one of them, and both Windows stages had
+    # their own copy of the same `start_swtpm`.
+    check("the tpm is one implementation", "lib/swtpm.py",
+          "def start(" in read("lib/swtpm.py") and "def stop(" in read("lib/swtpm.py"))
+    check("the machine honours boot_options['tpm']", "lib/vm_session.py",
+          'boot_options.get("tpm")' in read("lib/vm_session.py"))
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))

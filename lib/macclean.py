@@ -1,7 +1,7 @@
 """Clean a running macOS guest over ssh, then let APFS hand its free blocks back.
 
     from lib.clean_disk import clean_running
-    ok = clean_running("macos", port=2223, note=log)
+    ok = clean_running("macos", port=2222, note=log)
 
 WHAT THIS IS FOR, AND WHY IT IS THE LAST SYSTEM TO GET ONE
 

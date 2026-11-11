@@ -116,7 +116,7 @@ def main(argv: list[str]) -> int:
     p.add_argument("--work", default=None)
     p.add_argument("--mem", type=int, default=8192)
     p.add_argument("--cpus", type=int, default=4)
-    p.add_argument("--ssh-port", type=int, default=2223)
+    p.add_argument("--ssh-port", type=int, default=2222)
     p.add_argument("--boot-timeout", type=int, default=900)
     # NO --clean HERE ANY MORE, AND THE ONE THAT EXISTED WAS THE WRONG KIND ANYWAY.
     #
