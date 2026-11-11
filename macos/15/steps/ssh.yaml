@@ -136,7 +136,6 @@ steps:
   - name: wait for the login window
     python: ssh_panes:wait_for_login_window
     timeout: 240
-    optional: true
 
   # THE ESCAPE COMES FIRST because a wake hint or a notification banner swallows the next
   # keystroke, and it also takes focus off the field. The click afterwards is the one place this
@@ -168,7 +167,6 @@ steps:
   - name: dismiss the overlays macOS puts up on a first login
     python: ssh_panes:dismiss_post_login_windows
     timeout: 240
-    optional: true
 
   # AND NOW THE PASSWORD CAN BE JUDGED. This is the only step that can tell an accepted password
   # from a rejected one: a failed login leaves the same window up and shakes the field, and the
@@ -220,7 +218,6 @@ steps:
       - [wi-fi]
     timeout: 90
     poll: 3
-    optional: true
 
   # THE SEARCH FIELD, AND THE FIELD IS CLEARED AS PART OF TYPING INTO IT.
   #
@@ -454,7 +451,6 @@ steps:
   # failure must not fail a stage whose real evidence is the three checks above it.
   - name: name the machine
     ssh: printf '%s\n' "{{ password }}" | sudo -S scutil --set LocalHostName {{ user }}
-    optional: true
 
   # --- 3. A READ-MEANT-TO-FAIL IS NOT A FAILURE -----------------------------------------
   #

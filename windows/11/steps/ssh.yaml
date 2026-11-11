@@ -255,15 +255,12 @@ steps:
   - name: no hibernation file
     ssh: powershell -Command "powercfg -h off"
     timeout: 120
-    optional: true
   - name: hold windows update
     ssh: powershell -Command "New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' -Force | Out-Null; Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' -Name NoAutoRebootWithLoggedOnUsers -Value 1 -Type DWord -Force; Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' -Name NoAutoUpdate -Value 1 -Type DWord -Force"
     timeout: 120
-    optional: true
   - name: turn off restore points
     ssh: powershell -Command "Disable-ComputerRestore -Drive 'C:\' -ErrorAction SilentlyContinue"
     timeout: 180
-    optional: true
 
   # THE COMPONENT STORE, WITHOUT `/ResetBase`.
   #

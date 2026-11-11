@@ -547,4 +547,23 @@ def keep_last_frame(shots: str, dest: str, note) -> None:
 
 
 if __name__ == "__main__":
+    # ONE LATE SIGTERM IS SURVIVED, ONCE THE WORK IS FINISHED.
+    #
+    # THIS PROGRAM STARTS THE SHARE, AND `hostshare.start()` SIGNALS smbd INSIDE ITS OWN RETRY
+    # PATH - which is exactly where macOS' launch_dev has been dying:
+    #
+    #     02:29:21  share 'shared' -> /github/home/shared (read-write, account 'guest')
+    #     02:29:21  private dir /tmp/easydiskbake-samba-private: exists=True writable=True ...
+    #     02:29:31  samba lost its private directory; recreating it and starting smbd once more
+    #     02:29:31  ##[error] Process completed with exit code 241.
+    #
+    # 241 is `-15 & 0xFF`, it arrives 800 ms after that line, and no `signal delivered` follows -
+    # so the process was gone before the helper's own log line was written. That is the shape the
+    # nine stage programs already survive (lib/entrypoint.py), and this program was not in that
+    # set because it is the only launch that starts a share and it does not compress a disk.
+    #
+    # INSTALLED HERE AND ARMED AT `ok = True`: a launch that has not read hello.txt yet must still
+    # obey a cancel.
+    import entrypoint
+    entrypoint.tolerate_one_sigterm()
     raise SystemExit(main(sys.argv[1:]))

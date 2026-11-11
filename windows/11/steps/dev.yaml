@@ -55,112 +55,273 @@ steps:
     ssh_probe: echo ok
     timeout: 900
 
-  # --- 1. THE TOOLCHAIN ----------------------------------------------------------------
+  # WINGET IS NOT ON THE PATH AN SSH SESSION SEES, AND SEVEN INSTALLS DIED BEFORE ANYONE ASKED.
   #
-  # The Build Tools, pinned, with the VCTools workload. The Windows SDK and CMake come with the
-  # workload, which is why they are not installed separately here.
+  # Run 42964952432, the first time this stage ever ran:
+  #
+  #     === install the build tools
+  #       'winget' is not recognized as an internal or external command,
+  #     === install the windows sdk
+  #       'winget' is not recognized as an internal or external command,
+  #     ... seven times, and then === prove python node and git
+  #       MISSING python / MISSING node / MISSING git
+  #     === THE THREE THE macOS DISK ALSO HAS ARE NOT ALL HERE ===
+  #
+  # The last line is true and useless: nothing was installed, so nothing is present. The failure
+  # it reports is three missing tools when the fact is ONE MISSING COMMAND, and the seven
+  # installs above had already said so and been told it did not matter.
+  #
+  # WHY winget IS INVISIBLE HERE AND VISIBLE TO THE BAKE. `winget` is an alias under
+  # %LOCALAPPDATA%\Microsoft\WindowsApps, a reparse point registered per-user, and it is not on
+  # the MACHINE PATH. windows/11/steps/ssh.yaml installs OpenSSH by typing into a real PowerShell
+  # window on the console - a full user session, where that path IS set - and this stage is the
+  # first to run winget over `ssh:`, where sshd starts a shell with the environment it captured.
+  #
+  # `windows/11/probe.ps1` already documents the same mechanism for `pwsh`, found the same way
+  # and for the same reason: a product installed five seconds ago is not in this session's PATH,
+  # but it is in the machine's.
+  #
+  # SO THE PATH IS RESOLVED ONCE, HERE, AND THE EIGHTEEN STEPS BELOW USE $env:WINGET.
+  # WINGET IS NOT ON THE PATH AN SSH SESSION SEES, AND SEVEN INSTALLS DIED BEFORE ANYONE ASKED.
+  #
+  # Run 42964952432, the first time this stage ever ran:
+  #
+  #     === install the build tools
+  #       'winget' is not recognized as an internal or external command,
+  #     === install the windows sdk
+  #       'winget' is not recognized as an internal or external command,
+  #     ... seven times, and then === prove python node and git
+  #       MISSING python / MISSING node / MISSING git
+  #     === THE THREE THE macOS DISK ALSO HAS ARE NOT ALL HERE ===
+  #
+  # The last line is true and useless: nothing was installed, so nothing is present. It reports
+  # three missing tools when the fact is ONE MISSING COMMAND, and the seven installs above had
+  # already said so and been told - by `optional: true` - that it did not matter.
+  #
+  # WHY winget IS INVISIBLE HERE AND VISIBLE TO THE BAKE. `winget` is an alias under
+  # %LOCALAPPDATA%\Microsoft\WindowsApps, a reparse point registered per-user, and it is NOT on
+  # the machine PATH. windows/11/steps/ssh.yaml installs OpenSSH by typing into a real PowerShell
+  # window on the console - a full user session, where that path IS set - and this stage is the
+  # first to run winget over `ssh:`, where sshd starts a shell with the environment it captured.
+  #
+  # IT IS ALSO THE ONLY STAGE WHERE IT MATTERS, which is why the fix is here and not in the
+  # answer file: every other component this chain installs arrives with the OS image.
+  #
+  # WHY setx AND NOT JUST $env:Path. `ssh exec` starts a NEW process for every step, and a new
+  # process reads the environment sshd captured - which setx does not change. So this step does
+  # both: it finds the directory, and it puts that directory on the MACHINE path so an sshd that
+  # restarts picks it up, while printing the absolute path so the failure message below can name
+  # it if the search comes up empty.
+  #
+  # THE SEARCH IS THE ONE windows/11/probe.ps1 ALREADY USES for `pwsh`, for the same reason: a
+  # product installed five seconds ago is not in this session's PATH, but it is in the machine's
+  # (and in the user's, which is where winget lives).
   - name: install the build tools
     script: |
-      @echo off
-      winget install --id Microsoft.VisualStudio.2022.BuildTools --exact --source winget --scope machine --version 17.14.44 --accept-source-agreements --disable-interactivity --quiet --wait --norestart --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
-    script_shell: cmd
-    script_name: install-buildtools.bat
+      # WINGET IS AN ALIAS UNDER %LOCALAPPDATA%\Microsoft\WindowsApps AND IS NOT ON THE MACHINE
+      # PATH, so an `ssh exec` shell - which gets the environment sshd captured, not the user's
+      # profile - cannot name it. Resolved here, per step, because every step is a new process.
+      $winget = $null
+      $dirs = @()
+      foreach ($scope in @('Machine', 'User')) {
+        try { $dirs += ([Environment]::GetEnvironmentVariable('Path', $scope) -split ';') } catch { }
+      }
+      $dirs += (Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps')
+      foreach ($dir in ($dirs | Where-Object { $_ })) {
+        $cand = Join-Path $dir 'winget.exe'
+        if (Test-Path $cand) { $winget = $cand; break }
+      }
+      if (-not $winget) {
+        Write-Output 'WINGET_NOT_FOUND'
+        exit 1
+      }
+      # THE PINNED VERSION AND THE WORKLOAD ARE WHY THIS IS A SCRIPT AND NOT A ONE-LINER: the
+      # `--override` string carries spaces, quotes and a comma-free workload list, and by the
+      # time it has been through ssh and cmd the quotes are gone. windows/11/devtools.py holds
+      # the measurements that chose 17.14.44 over 17.9.7 and over the aka.ms bootstrapper.
+      & $winget install --id Microsoft.VisualStudio.2022.BuildTools --exact --source winget `
+        --scope machine --version 17.14.44 --accept-source-agreements --disable-interactivity `
+        --quiet --wait --norestart `
+        --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+      exit $LASTEXITCODE
+    script_shell: powershell
+    script_name: install-buildtools.ps1
     timeout: 3600
-    optional: true
 
   - name: install the windows sdk
-    ssh: winget install --id Microsoft.WindowsSDK.10.0.26100 --exact --source winget --scope machine --accept-source-agreements --accept-package-agreements --disable-interactivity
+    script: |
+      # WINGET IS AN ALIAS UNDER %LOCALAPPDATA%\Microsoft\WindowsApps AND IS NOT ON THE MACHINE
+      # PATH, so an `ssh exec` shell - which gets the environment sshd captured, not the user's
+      # profile - cannot name it. This is the same lookup windows/11/probe.ps1 does for `pwsh`,
+      # for the same reason. Resolved in THIS process so no state has to survive between steps.
+      $winget = $null
+      $dirs = @()
+      foreach ($scope in @('Machine', 'User')) {
+        try { $dirs += ([Environment]::GetEnvironmentVariable('Path', $scope) -split ';') } catch { }
+      }
+      $dirs += (Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps')
+      foreach ($dir in ($dirs | Where-Object { $_ })) {
+        $cand = Join-Path $dir 'winget.exe'
+        if (Test-Path $cand) { $winget = $cand; break }
+      }
+      if (-not $winget) {
+        Write-Output 'WINGET_NOT_FOUND'
+        exit 1
+      }
+      # `--scope machine` AND `--disable-interactivity`: an ssh session has no console to answer
+      # a prompt on, and a machine-scoped install lands where the next stage finds it.
+      & $winget install --id Microsoft.WindowsSDK.10.0.26100 --exact --source winget --scope machine `
+        --accept-source-agreements --accept-package-agreements --disable-interactivity
+      exit $LASTEXITCODE
+    script_shell: powershell
+    script_name: install-the-windows-sdk.ps1
     timeout: 2400
-    optional: true
 
   - name: install the dotnet sdk
-    ssh: winget install --id Microsoft.DotNet.SDK.10 --exact --source winget --scope machine --accept-source-agreements --accept-package-agreements --disable-interactivity
+    script: |
+      # WINGET IS AN ALIAS UNDER %LOCALAPPDATA%\Microsoft\WindowsApps AND IS NOT ON THE MACHINE
+      # PATH, so an `ssh exec` shell - which gets the environment sshd captured, not the user's
+      # profile - cannot name it. This is the same lookup windows/11/probe.ps1 does for `pwsh`,
+      # for the same reason. Resolved in THIS process so no state has to survive between steps.
+      $winget = $null
+      $dirs = @()
+      foreach ($scope in @('Machine', 'User')) {
+        try { $dirs += ([Environment]::GetEnvironmentVariable('Path', $scope) -split ';') } catch { }
+      }
+      $dirs += (Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps')
+      foreach ($dir in ($dirs | Where-Object { $_ })) {
+        $cand = Join-Path $dir 'winget.exe'
+        if (Test-Path $cand) { $winget = $cand; break }
+      }
+      if (-not $winget) {
+        Write-Output 'WINGET_NOT_FOUND'
+        exit 1
+      }
+      # `--scope machine` AND `--disable-interactivity`: an ssh session has no console to answer
+      # a prompt on, and a machine-scoped install lands where the next stage finds it.
+      & $winget install --id Microsoft.DotNet.SDK.10 --exact --source winget --scope machine `
+        --accept-source-agreements --accept-package-agreements --disable-interactivity
+      exit $LASTEXITCODE
+    script_shell: powershell
+    script_name: install-the-dotnet-sdk.ps1
     timeout: 2400
-    optional: true
 
-  # POWERSHELL 7 IS LAST, AND THAT IS NOT ALPHABETICAL. Its MSI can drop the ssh session it is
-  # running over, so anything after it would be the thing that disappeared.
-  # `--scope machine` IS NOT COSMETIC HERE - IT PICKS A DIFFERENT INSTALLER.
-  #
-  # Microsoft.PowerShell ships FIVE installers and the msix ones are listed first:
-  #
-  #     Platform: Windows.Universal, InstallerType: msix     x64, x86, arm64
-  #     Architecture: x64,           InstallerType: wix, Scope: machine
-  #
-  # winget takes the first that fits, so without --scope this installs the MSIX: an Appx
-  # package under the user's profile, registered per-user, and NOT on the machine PATH as
-  # `pwsh`. The step after this one asks `pwsh -v` and would report a toolchain with no
-  # PowerShell 7 on it - while the package is genuinely installed for the account that ran it.
-  #
-  # `--scope machine` selects the wix/MSI variant instead, which lands in
-  # C:\Program Files\PowerShell\7 and puts pwsh on the machine PATH. Same id, different file.
   - name: install powershell 7
-    ssh: winget install --id Microsoft.PowerShell --exact --source winget --scope machine --accept-source-agreements --accept-package-agreements --disable-interactivity
+    script: |
+      # WINGET IS AN ALIAS UNDER %LOCALAPPDATA%\Microsoft\WindowsApps AND IS NOT ON THE MACHINE
+      # PATH, so an `ssh exec` shell - which gets the environment sshd captured, not the user's
+      # profile - cannot name it. This is the same lookup windows/11/probe.ps1 does for `pwsh`,
+      # for the same reason. Resolved in THIS process so no state has to survive between steps.
+      $winget = $null
+      $dirs = @()
+      foreach ($scope in @('Machine', 'User')) {
+        try { $dirs += ([Environment]::GetEnvironmentVariable('Path', $scope) -split ';') } catch { }
+      }
+      $dirs += (Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps')
+      foreach ($dir in ($dirs | Where-Object { $_ })) {
+        $cand = Join-Path $dir 'winget.exe'
+        if (Test-Path $cand) { $winget = $cand; break }
+      }
+      if (-not $winget) {
+        Write-Output 'WINGET_NOT_FOUND'
+        exit 1
+      }
+      # `--scope machine` AND `--disable-interactivity`: an ssh session has no console to answer
+      # a prompt on, and a machine-scoped install lands where the next stage finds it.
+      & $winget install --id Microsoft.PowerShell --exact --source winget --scope machine `
+        --accept-source-agreements --accept-package-agreements --disable-interactivity
+      exit $LASTEXITCODE
+    script_shell: powershell
+    script_name: install-powershell-7.ps1
     timeout: 2400
-    optional: true
 
-  # --- 1b. THE THREE THE macOS DISK ALREADY HAS, SO THE TWO DISKS AGREE -----------------
-  #
-  # WHY THESE AND NOT ONLY THE COMPILERS. The macOS dev stage installs python, node and git
-  # because a runner is not useful without them; a Windows disk that has an MSVC toolchain and
-  # no python is a disk you cannot run a script on. That mattered the moment the bootstrap
-  # launcher became Python: `~/shared/bootstrap.py` is written once and has to run on both
-  # disks, and it cannot on a Windows disk with no interpreter.
-  #
-  # PYTHON IS THE ONE THAT IS ACTUALLY REQUIRED; node and git are here so the two disks offer
-  # the same thing rather than two different toolchains behind the same name.
-  #
-  # THE IDS ARE THE WINGET ONES, checked against microsoft/winget-pkgs rather than guessed:
-  #
-  #     Python.Python.3.13     manifests/p/Python/Python/3/13/     3.13.9
-  #     OpenJS.NodeJS.LTS      manifests/o/OpenJS/NodeJS/LTS/     24.11.1
-  #     Git.Git                manifests/g/Git/Git/               2.51.0
-  #
-  # `Python.Python.3.13` INSTALLS FOR THE CURRENT USER, under
-  # %LOCALAPPDATA%\Programs\Python\Python313 - which is why the bootstrap launcher looks
-  # there first and only then asks PATH. An all-users install would land in C:\Program Files
-  # and need elevation, which this channel cannot answer.
-  # EXPLICIT `--scope machine` ON ALL THREE, BECAUSE OTHERWISE THEY LAND IN THREE PLACES.
-  #
-  # What the manifests actually say, read from microsoft/winget-pkgs rather than assumed:
-  #
-  #   Python.Python.3.13   burn    Scope: user AND machine   (InstallAllUsers=0 / =1)
-  #   OpenJS.NodeJS.LTS    wix     Scope: machine only, ElevationRequirement: elevatesSelf
-  #   Git.Git              inno    Scope: user AND machine   (it decides by admin membership)
-  #
-  # Without --scope, winget prefers the user installer when a manifest offers both - so Python
-  # would go to %LOCALAPPDATA%\Programs\Python\Python313 and node to C:\Program Files\nodejs,
-  # and a script that named either path would be right about one of them. `machine` makes all
-  # three land under Program Files, which is also what the launcher's search order assumes.
-  #
-  # THE ELEVATION IS WHY THIS WORKS AT ALL, AND IT IS NOT OBVIOUS. `elevatesSelf` means the
-  # installer asks Windows for a UAC prompt when it is not already elevated - and a prompt over
-  # ssh is a dialog nobody can click, which is a hang. It does not happen here because the
-  # answer file turns UAC off:
-  #
-  #     answer/Autounattend.xml, pass="offlineServicing"
-  #         Microsoft-Windows-LUA-Settings / EnableLUA = false
-  #
-  # With EnableLUA off there is no filtered token, so the session is genuinely elevated and the
-  # prompt is never raised. That is a dependency this stage has on the answer file, and it is
-  # worth knowing before anyone removes those two lines.
   - name: install python
-    ssh: winget install --id Python.Python.3.13 --exact --source winget --scope machine --accept-source-agreements --accept-package-agreements --disable-interactivity
+    script: |
+      # WINGET IS AN ALIAS UNDER %LOCALAPPDATA%\Microsoft\WindowsApps AND IS NOT ON THE MACHINE
+      # PATH, so an `ssh exec` shell - which gets the environment sshd captured, not the user's
+      # profile - cannot name it. This is the same lookup windows/11/probe.ps1 does for `pwsh`,
+      # for the same reason. Resolved in THIS process so no state has to survive between steps.
+      $winget = $null
+      $dirs = @()
+      foreach ($scope in @('Machine', 'User')) {
+        try { $dirs += ([Environment]::GetEnvironmentVariable('Path', $scope) -split ';') } catch { }
+      }
+      $dirs += (Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps')
+      foreach ($dir in ($dirs | Where-Object { $_ })) {
+        $cand = Join-Path $dir 'winget.exe'
+        if (Test-Path $cand) { $winget = $cand; break }
+      }
+      if (-not $winget) {
+        Write-Output 'WINGET_NOT_FOUND'
+        exit 1
+      }
+      # `--scope machine` AND `--disable-interactivity`: an ssh session has no console to answer
+      # a prompt on, and a machine-scoped install lands where the next stage finds it.
+      & $winget install --id Python.Python.3.13 --exact --source winget --scope machine `
+        --accept-source-agreements --accept-package-agreements --disable-interactivity
+      exit $LASTEXITCODE
+    script_shell: powershell
+    script_name: install-python.ps1
     timeout: 2400
-    optional: true
 
   - name: install node
-    ssh: winget install --id OpenJS.NodeJS.LTS --exact --source winget --scope machine --accept-source-agreements --accept-package-agreements --disable-interactivity
+    script: |
+      # WINGET IS AN ALIAS UNDER %LOCALAPPDATA%\Microsoft\WindowsApps AND IS NOT ON THE MACHINE
+      # PATH, so an `ssh exec` shell - which gets the environment sshd captured, not the user's
+      # profile - cannot name it. This is the same lookup windows/11/probe.ps1 does for `pwsh`,
+      # for the same reason. Resolved in THIS process so no state has to survive between steps.
+      $winget = $null
+      $dirs = @()
+      foreach ($scope in @('Machine', 'User')) {
+        try { $dirs += ([Environment]::GetEnvironmentVariable('Path', $scope) -split ';') } catch { }
+      }
+      $dirs += (Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps')
+      foreach ($dir in ($dirs | Where-Object { $_ })) {
+        $cand = Join-Path $dir 'winget.exe'
+        if (Test-Path $cand) { $winget = $cand; break }
+      }
+      if (-not $winget) {
+        Write-Output 'WINGET_NOT_FOUND'
+        exit 1
+      }
+      # `--scope machine` AND `--disable-interactivity`: an ssh session has no console to answer
+      # a prompt on, and a machine-scoped install lands where the next stage finds it.
+      & $winget install --id OpenJS.NodeJS.LTS --exact --source winget --scope machine `
+        --accept-source-agreements --accept-package-agreements --disable-interactivity
+      exit $LASTEXITCODE
+    script_shell: powershell
+    script_name: install-node.ps1
     timeout: 2400
-    optional: true
 
   - name: install git
-    ssh: winget install --id Git.Git --exact --source winget --scope machine --accept-source-agreements --accept-package-agreements --disable-interactivity
+    script: |
+      # WINGET IS AN ALIAS UNDER %LOCALAPPDATA%\Microsoft\WindowsApps AND IS NOT ON THE MACHINE
+      # PATH, so an `ssh exec` shell - which gets the environment sshd captured, not the user's
+      # profile - cannot name it. This is the same lookup windows/11/probe.ps1 does for `pwsh`,
+      # for the same reason. Resolved in THIS process so no state has to survive between steps.
+      $winget = $null
+      $dirs = @()
+      foreach ($scope in @('Machine', 'User')) {
+        try { $dirs += ([Environment]::GetEnvironmentVariable('Path', $scope) -split ';') } catch { }
+      }
+      $dirs += (Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps')
+      foreach ($dir in ($dirs | Where-Object { $_ })) {
+        $cand = Join-Path $dir 'winget.exe'
+        if (Test-Path $cand) { $winget = $cand; break }
+      }
+      if (-not $winget) {
+        Write-Output 'WINGET_NOT_FOUND'
+        exit 1
+      }
+      # `--scope machine` AND `--disable-interactivity`: an ssh session has no console to answer
+      # a prompt on, and a machine-scoped install lands where the next stage finds it.
+      & $winget install --id Git.Git --exact --source winget --scope machine `
+        --accept-source-agreements --accept-package-agreements --disable-interactivity
+      exit $LASTEXITCODE
+    script_shell: powershell
+    script_name: install-git.ps1
     timeout: 2400
-    optional: true
 
-  # THE SERVICE SURVIVES AN INSTALLER THAT RESTARTED IT, OR THE NEXT STEP FAILS FOR A REASON
-  # THAT READS LIKE A BROKEN DISK.
   - name: wait for sshd again
     require_ssh: true
     ssh_probe: echo ok
@@ -214,7 +375,6 @@ steps:
     script_shell: powershell
     script_name: msvc-check.ps1
     timeout: 900
-    optional: true
 
   # A VERSION STRING WAS NOT ENOUGH, AND IN RUN 41775507806 IT WAS EMPTY. `dotnet --version`
   # writes its error to stderr and exits non-zero when no SDK sits beside the muxer, and merging
@@ -251,14 +411,12 @@ steps:
     script_shell: powershell
     script_name: dotnet-check.ps1
     timeout: 1800
-    optional: true
 
   # pwsh -v prints "PowerShell 7.6.9", not a bare number, so the shell checks the shape rather
   # than the exit code alone.
   - name: prove powershell 7
     ssh: powershell -Command "pwsh -v"
     timeout: 300
-    optional: true
 
   # THE THREE PACKAGES THAT ARE NOT PROVEN BY A SCRIPT. Winget listing them is not the claim -
   # the disk is - so this asks each one's own directory to exist, which is the cheapest check
@@ -266,7 +424,6 @@ steps:
   - name: prove the windows sdk
     ssh: powershell -Command "if (Test-Path 'C:\Program Files (x86)\Windows Kits\10\Include') { Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\Include' -Name } else { 'SDK_MISSING' }"
     timeout: 120
-    optional: true
 
   # THE THREE THAT MUST BE ON PATH AFTER A REBOOT, not just in this session. `winget` edits the
   # user PATH, and an ssh session started before that edit keeps the old one - so this asks a

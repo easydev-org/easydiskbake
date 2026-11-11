@@ -1633,6 +1633,68 @@ def main() -> int:
                         problems.append(f"{jname} needs.{ref}: that job exports no tag")
             check(f"{wf} only reads outputs it declares", f".github/workflows/{wf}",
                   not problems, )
+    # AND `optional: true` IS NOT ON A STEP WHOSE FAILURE ANOTHER STEP WILL REPORT AS SOMETHING
+    # ELSE. Run 42964952432 is the whole argument:
+    #
+    #     === install python
+    #       'winget' is not recognized as an internal or external command,   (exit 1)
+    #     ... seven times, each optional, each ignored ...
+    #     === prove python node and git
+    #       MISSING python / MISSING node / MISSING git
+    #     === THE THREE THE macOS DISK ALSO HAS ARE NOT ALL HERE ===
+    #
+    # The verdict names three missing tools. The fact was one missing COMMAND, and seven steps
+    # above it had already said so. A step that installs a package or proves the toolchain works
+    # is a verdict, and a verdict cannot be optional: `optional` exists for a check whose
+    # NEGATIVE result is information ("note what is absent"), not for the claim the stage makes.
+    dev_yaml = read("windows/11/steps/dev.yaml")
+    dev_doc = None
+    try:
+        import yaml as _y2
+        dev_doc = _y2.safe_load(dev_yaml)
+    except Exception:                                      # noqa: BLE001
+        pass
+    VERDICTS = ("install ", "build and run", "prove ")
+    DIAGNOSTIC = ("note ",)
+    if dev_doc:
+        opt = [s["name"] for s in dev_doc["steps"]
+               if s.get("optional") and not s["name"].startswith(DIAGNOSTIC)]
+        check("no install or proof step on the windows dev disk is optional",
+              "windows/11/steps/dev.yaml", not opt)
+    # WINGET IS NOT ON THE PATH AN SSH SESSION SEES, and each step must resolve it itself.
+    #
+    # `winget` is an alias under %LOCALAPPDATA%\Microsoft\WindowsApps, registered per-user and
+    # absent from the machine PATH. `ssh exec` gets the environment sshd captured, so it cannot
+    # name winget - which is why all seven installs above failed with "not recognized" while the
+    # bake's own `winget install` (typed into a real console session) worked.
+    winget_steps = [s for s in (dev_doc or {}).get("steps", [])
+                    if "winget install" in str(s.get("script", ""))]
+    check("every winget install resolves the binary itself", "windows/11/steps/dev.yaml",
+          len(winget_steps) >= 7 and all(
+              "GetEnvironmentVariable('Path'" in s["script"] for s in winget_steps))
+    check("no winget install relies on the bare name", "windows/11/steps/dev.yaml",
+          not any(str(s.get("ssh", "")).startswith("winget") for s in
+                  (dev_doc or {}).get("steps", [])))
+    # AND THE CONFIGURATION STEPS WHOSE EFFECT IS INVISIBLE UNTIL A LATER STAGE ARE NOT OPTIONAL
+    # EITHER. `hold windows update` and `turn off restore points` had no read-back at all: the
+    # first lets an update land after the disk is published, the second lets restore points eat
+    # ten gigabytes during the clean. `do not blank the screen` keeps its `optional` because
+    # `prove the power settings took` reads MONITOR/STANDBY back - that is what a backstop is.
+    win_ssh = read("windows/11/steps/ssh.yaml")
+    win_doc = None
+    try:
+        import yaml as _y3
+        win_doc = _y3.safe_load(win_ssh)
+    except Exception:                                      # noqa: BLE001
+        pass
+    if win_doc:
+        names = {s["name"]: s for s in win_doc["steps"]}
+        for must_fail in ("hold windows update", "turn off restore points",
+                          "no hibernation file"):
+            check(f"{must_fail!r} can fail the stage", "windows/11/steps/ssh.yaml",
+                  not names.get(must_fail, {}).get("optional", False))
+        check("'do not blank the screen' keeps its read-back", "windows/11/steps/ssh.yaml",
+              names.get("do not blank the screen", {}).get("optional", False))
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))
@@ -2379,9 +2441,13 @@ def main() -> int:
     # while the package is genuinely installed for that account.
     pwsh = next((s for s in (win_dev_walk.get("steps") or [])
                  if s.get("name") == "install powershell 7"), {})
+    # THE STEP IS A `script:` NOW, NOT AN `ssh:` ONE-LINER, because the command has to resolve
+    # winget's own path first (see the note on that below) and a line that long does not survive
+    # ssh -> cmd - which this file already says about the Build Tools install. So the check reads
+    # whichever body the step has, rather than the one it happened to have when it was written.
+    pwsh_body = str(pwsh.get("script") or pwsh.get("ssh") or "")
     check("powershell installs the MSI, not the per-user msix",
-          "windows/11/steps/dev.yaml",
-          "--scope machine" in str(pwsh.get("ssh") or ""))
+          "windows/11/steps/dev.yaml", "--scope machine" in pwsh_body)
 
     # AND IT ONLY WORKS BECAUSE THE ANSWER FILE TURNS UAC OFF. `elevatesSelf` means a UAC prompt
     # when the session is not already elevated, and a prompt over ssh is a dialog nobody can
