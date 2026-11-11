@@ -50,6 +50,11 @@ vars:
   host:
     from: args.host
     default: 172.30.0.1
+  # THE SHARE'S NAME, WHICH IS ALSO THE PORT-FORWARD'S, AND THE ONLY PART OF THE smbnetfs TREE
+  # THIS FILE NEEDS TO KNOW: the depth above it is the client's business.
+  share_name:
+    from: args.share_name
+    default: shared
   # WHERE THIS STAGE'S DISK GOES, AND HOW LONG THE GUEST MAY TAKE TO COME UP.
   out:
     from: args.out
@@ -298,21 +303,43 @@ steps:
   #
   # THE ROUND TRIP IS THE VERDICT and the mount table is only logged: a step about the SHARE must
   # not depend on how this kernel spells a filesystem name.
+  # THE MOUNT IS `smbnetfs on /home/vmuser/shared (fusefs)` AND THE SHARE IS DEEPER THAN ONE LEVEL.
+  #
+  # Run 4481870 got the mount - the first time - and then read nothing:
+  #
+  #     --- the share directory ---
+  #                          <- empty, the guess was wrong
+  #     smbnetfs on /home/vmuser/shared (fusefs)
+  #     --- the round trip ---
+  #     ls: : No such file or directory
+  #
+  # `smbnetfs` ENUMERATES THE SERVER, so what appears under the mount point is a tree:
+  #
+  #     <mountpoint>/<workgroup>/<host>/<share>
+  #
+  # - and `<mountpoint>/<host>` is not a path it produces. Guessing the depth is what failed; the
+  # file is now FOUND rather than named, by looking for the share directory anywhere under the
+  # mount point, and the search says what it saw when it finds nothing.
   - name: prove the share is readable and writable
     ssh: |
       sh -c '
         set -e
-        SHARE="$HOME/shared/{{ host }}"
-        [ -d "$SHARE" ] || SHARE=$(ls -d "$HOME/shared"/*/ 2>/dev/null | head -1)
+        MOUNT="$HOME/shared"
+        echo "--- what smbnetfs put under the mount point ---"
+        find "$MOUNT" -maxdepth 4 -type d 2>/dev/null | head -12
+        SHARE=$(find "$MOUNT" -maxdepth 4 -type d -name {{ share_name }} 2>/dev/null | head -1)
+        if [ -z "$SHARE" ]; then
+          echo "=== NO DIRECTORY NAMED {{ share_name }} UNDER $MOUNT ==="
+          exit 1
+        fi
         echo "--- the share directory ---"
         echo "$SHARE"
-        mount | grep -i fuse || true
         echo "--- the round trip ---"
         ls -la "$SHARE" | head -20
         printf "written-by-the-guest\n" > "$SHARE/from-guest.txt"
         test "$(cat "$SHARE/from-guest.txt")" = "written-by-the-guest"
         echo "round trip ok"'
-    timeout: 120
+    timeout: 180
 
   # =======================================================================================
   # 4. THE BOOTSTRAP LAUNCHER
