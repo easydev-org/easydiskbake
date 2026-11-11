@@ -1448,6 +1448,30 @@ def main() -> int:
           "for attempt in range(1, retries + 1):" in cap)
     check("only a timeout is retried", "lib/capabilities.py",
           "if status != 124:" in cap)
+    # AND A WINDOWS GUEST MOUNTS THE SHARE WITHOUT A PASSWORD, WHICH `net use` CANNOT EXPRESS.
+    #
+    # Run 42958385108, the first time a Windows guest tried to mount this share with the password
+    # the account now has (none). Everything before it in that stage passed:
+    #
+    #     install the driver the agent talks on   PNPUTIL_EXIT=0
+    #     install the guest agent                 MSIEXEC_EXIT=0
+    #     prove the guest agent answers           service: Running / Automatic
+    #     mount the host share                    The option /PERSISTENT=NO is unknown.
+    #
+    # `net use \\host\shared "" /user:guest /persistent=no` was parsed as a share name followed
+    # by an empty password and then a switch it did not recognise. `New-SmbMapping` takes the
+    # credential as an object, so there is no positional ambiguity - and `-ErrorAction Stop` makes
+    # a failure raise rather than print a warning the exit status never sees.
+    hs = read("lib/hostshare.py")
+    # CODE, NOT PROSE: the note above explains why `net use` was replaced, which is the point of
+    # it, and a grep over the whole file cannot tell a comment from a command.
+    hs_code = "\n".join(line for line in hs.splitlines() if not line.lstrip().startswith("#"))
+    check("a windows mount does not use net use", "lib/hostshare.py",
+          "New-SmbMapping" in hs_code and "net use \\\\" not in hs_code)
+    # AND A LEFTOVER MAPPING IS REMOVED FIRST: the command runs once per ssh invocation by design
+    # (a mapping dies with its logon session), so anything already there is a previous attempt's.
+    check("a stale windows mapping is removed first", "lib/hostshare.py",
+          "Remove-SmbMapping -Force" in hs)
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))
@@ -1943,8 +1967,10 @@ def main() -> int:
         # which is a substring of everything, so "password not in command" cannot be asserted.
         check("the macos mount uses the no-password form", "lib/hostshare.py",
               f"//{hostshare.SMB_USER}:@" in mac)
+        # `New-SmbMapping -UserName guest -Password ''` - the credential is an object, not a
+        # positional token, which is what `net use` could not do (see the note above).
         check("the windows mount passes an empty password", "lib/hostshare.py",
-              '"" /user:' + hostshare.SMB_USER in win)
+              f"-UserName {hostshare.SMB_USER} -Password ''" in win)
         # NOT `nsmb.conf`, WHICH HAS NO `password` KEYWORD AT ALL.
         check("macos does not pretend nsmb.conf can hold a password", "lib/hostshare.py",
               "nsmb.conf" not in mac)

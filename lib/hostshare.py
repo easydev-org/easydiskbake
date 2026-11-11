@@ -791,7 +791,39 @@ def mount_commands(host: str = "", user: str = "vmuser",
         # NO DRIVE LETTER: a mapping belongs to the logon session that created it, which is run
         # 42737785611 - `net use Z:` answered 0 and the next command could not find the path.
         # The share is addressed by UNC path while the session lives.
-        "windows": (f'net use \\\\{host}\\{SHARE_NAME} "" /user:{SMB_USER} /persistent=no'),
+        # `net use` CANNOT TAKE AN EMPTY PASSWORD AND A SWITCH IN THAT ORDER.
+        #
+        # It parsed
+        #
+        #     net use \\172.30.0.1\shared "" /user:guest /persistent=no
+        #
+        # as "the share is called `\172.30.0.1\shared`, the password is empty, the user is
+        # guest" and then answered
+        #
+        #     The option /PERSISTENT=NO is unknown.
+        #
+        # - run 42958385108, the first time a Windows guest tried to mount this share with the
+        # password the account now has (none). Everything before it in that stage passed:
+        # PNPUTIL_EXIT=0, MSIEXEC_EXIT=0, `service: Running / Automatic`.
+        #
+        # `New-SmbMapping` takes the credential as an object, so there is no positional
+        # ambiguity to get wrong, and `-Persistent $false` is a parameter rather than a token in
+        # a list. The `-ErrorAction Stop` is what makes a failure raise instead of printing a
+        # warning the caller's exit status never sees.
+        "windows": (
+            'powershell -NoProfile -Command "'
+            # A LEFTOVER MAPPING MAKES THE NEW ONE FAIL WITH "already exists", and this command
+            # runs once per ssh invocation by design (a mapping belongs to the logon session, so
+            # nothing survives between them). Removing first is the same rule `lib/overlay.py`
+            # applies to its overlay: a previous attempt's state is not this attempt's.
+            f'Get-SmbMapping -RemotePath \\\\{host}\\{SHARE_NAME} '
+            '-ErrorAction SilentlyContinue | Remove-SmbMapping -Force '
+            '-ErrorAction SilentlyContinue; '
+            '$null = New-SmbMapping '
+            f'-RemotePath \\\\{host}\\{SHARE_NAME} '
+            f'-UserName {SMB_USER} -Password \'\' '
+            '-Persistent $false -ErrorAction Stop"'
+        ),
         # LINUX: THE KERNEL'S OWN CIFS CLIENT, AND IT IS THE SAME SERVER THE OTHER TWO USE.
         #
         # The module's header used to say Linux was "deliberately absent" because it would use
