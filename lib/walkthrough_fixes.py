@@ -1585,8 +1585,39 @@ def main() -> int:
         _yaml = None
     if _yaml is not None:
         import re as _re
+
+        # AND IT PARSES WITHOUT A DUPLICATE KEY, WHICH `safe_load` DOES NOT REPORT.
+        #
+        # Fixing the `needs.share` condition introduced a SECOND `outputs:` block in the dev job,
+        # because the first one was already there - I had decided it was missing from a diff of
+        # the condition rather than from the file. PyYAML keeps the last duplicate key silently,
+        # so this check passed on a file GitHub refused to load:
+        #
+        #     could not create workflow dispatch event: HTTP 422: Invalid Argument -
+        #     failed to parse workflow: (Line: 551, Col: 5): 'outputs' is already defined
+        #
+        # A validator that tolerates what the runner rejects is worse than none, because it
+        # turns "the workflow will not load" into "the job was skipped again".
+        class _Strict(_yaml.SafeLoader):
+            pass
+
+        def _no_duplicates(loader, node, deep=False):
+            seen = {}
+            for key_node, _ in node.value:
+                key = loader.construct_object(key_node, deep=deep)
+                if key in seen:
+                    raise ValueError(f"duplicate key {key!r} at line {key_node.start_mark.line + 1}")
+                seen[key] = True
+            return _yaml.SafeLoader.construct_mapping(loader, node, deep=deep)
+
+        _Strict.add_constructor(_yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_duplicates)
         for wf in ("windows-11.yml", "macos15.yml"):
-            doc = _yaml.safe_load(read(f".github/workflows/{wf}")) or {}
+            try:
+                doc = _yaml.load(read(f".github/workflows/{wf}"), Loader=_Strict) or {}
+            except ValueError as exc:
+                check(f"{wf} has no duplicate keys", f".github/workflows/{wf}", False)
+                continue
+            check(f"{wf} has no duplicate keys", f".github/workflows/{wf}", True)
             wjobs = doc.get("jobs") or {}
             problems = []
             for jname, jbody in wjobs.items():

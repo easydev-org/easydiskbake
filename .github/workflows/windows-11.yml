@@ -529,10 +529,15 @@ jobs:
     # end to end - which is why no run in this repository has ever reached `dev` by itself. The
     # same rename was found and fixed in macos15.yml; this file did not get the fix.
     #
-    # AND `outputs.tag` WAS MISSING ENTIRELY, so `needs.dev.outputs.tag` in launch_dev was empty
-    # too and `launch_dev` had the same problem one job later.
-    outputs:
-      tag: ${{ inputs.dev_publish_tag || 'windows11-dev' }}
+    # `outputs.tag` WAS ALREADY HERE AND IS CORRECT - `launch_dev` has always been able to read
+    # it. The comment that claimed otherwise was mine, written from the diff of a condition
+    # rather than from the file, and the duplicate `outputs:` key it introduced is what made
+    # GitHub refuse to load this workflow:
+    #
+    #     Line: 551, Col: 5: 'outputs' is already defined
+    #
+    # PyYAML silently keeps the last duplicate key, so `yaml.safe_load` raised nothing and the
+    # job-graph check passed on a file the runner would not parse.
     if: |
       always() && inputs.dev_run
       && (inputs.dev_from != '' || needs.vm-configure.outputs.tag != '')
