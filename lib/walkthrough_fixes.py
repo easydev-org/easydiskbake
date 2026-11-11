@@ -1963,6 +1963,22 @@ def main() -> int:
         check("an empty leftover is removed", "lib/hostshare.py", "rmdir" in mac_cmd)
         check("a non-empty leftover is reported, not deleted", "lib/hostshare.py",
               "NOT_EMPTY" in mac_cmd)
+        # AND AN EXISTING MOUNT IS UNMOUNTED, NOT SKIPPED. `mount_smbfs` refuses a mount point
+        # that is still a mount with the SAME `File exists` it gives for a bare directory, so the
+        # two states want opposite fixes and produce one message. Run 42975762321 proved the skip
+        # was wrong: the log showed the mount command's own error and NONE of the preparation,
+        # because the preparation had been skipped as "already fine".
+        mount_script = getattr(_hs, "MACOS_MOUNT_SCRIPT", "")
+        check("an existing mount is unmounted first", "lib/hostshare.py",
+              'mounted" = yes' in mount_script and "umount" in mount_script)
+        # AND EVERY PRIVILEGED STEP IS INSIDE ONE `sudo sh -s`, because a password can only be
+        # fed to sudo once per command: `printf pw | sudo -S a; sudo b` gives the second sudo a
+        # closed stdin. The script arrives on stdin so nothing in it survives another quoting
+        # layer.
+        check("the privileged steps share one sudo", "lib/hostshare.py",
+              "sudo -S -p '' sh -s" in mac_cmd)
+        check("the mount script arrives on stdin", "lib/hostshare.py",
+              "MACOS_MOUNT_SCRIPT" in read("lib/hostshare.py"))
     # AND A REGISTERED PER-USER MSIX IS REMOVED BEFORE THE MACHINE MSI IS INSTALLED.
     #
     # Run 42973132779, the first run where the low-byte fix let the powershell step get past its

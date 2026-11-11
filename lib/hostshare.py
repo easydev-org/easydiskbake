@@ -772,6 +772,24 @@ def _unlink_pid() -> None:
         pass
 
 
+# THE PRIVILEGED HALF OF THE MACOS MOUNT, KEPT AS A SCRIPT RATHER THAN A ONE-LINER.
+#
+# It runs under `sudo sh -s -- <mountpoint> <mounted> <host>`, so its arguments are positional and
+# nothing in it has to survive another layer of quoting. `mounted` is `yes` when the path is
+# already a mount point, which means a previous attempt left one behind.
+MACOS_MOUNT_SCRIPT = """\
+p=$1
+mounted=$2
+host=$3
+if [ "$mounted" = yes ]; then
+    # A PREVIOUS MOUNT IS IN THE WAY, AND `mount_smbfs` CALLS THAT "File exists" TOO.
+    umount "$p" || { echo "BUSY $p"; mount | grep " on $p "; exit 1; }
+fi
+mkdir -p "$p" || exit 1
+mount_smbfs -f 0666 -d 0777 "//SMB_USER:@$host/SHARE_NAME" "$p"
+"""
+
+
 def mount_commands(host: str = "", user: str = "vmuser",
                    login_password: str = "admin") -> dict[str, str]:
     """What a guest types to mount this share, per family.
@@ -870,13 +888,32 @@ def mount_commands(host: str = "", user: str = "vmuser",
         #
         # `mount` IS THE TEST, NOT `test -d`: a mount point IS a directory, so `-d` cannot tell
         # the two apart - which is the confusion that produced `File exists`.
+        # EVERY PRIVILEGED STEP IS ONE `sudo sh -s`, AND THAT IS NOT TIDINESS.
+        #
+        # `umount` needs root as much as `mount_smbfs` does, and a password can only be fed to
+        # sudo ONCE per command: `printf pw | sudo -S a; sudo b` gives the second sudo a closed
+        # stdin. So the privileged sequence is one shell reading from a heredoc, and the script
+        # is passed on stdin rather than as an argument - which also removes every quoting
+        # problem from a command that has already been through python, ssh and sh.
+        #
+        # AN EXISTING MOUNT IS UNMOUNTED, NOT SKIPPED. `mount_smbfs` refuses a mount point that
+        # is still a mount with the same `File exists` it gives for a bare directory - so "it is
+        # already mounted" and "a directory is in the way" produce ONE message and want opposite
+        # fixes. Run 42975762321's skip branch proved it: the log showed the mount command's
+        # error and none of the preparation, because the preparation had been skipped.
+        #
+        # THE UNPRIVILEGED PREPARATION RUNS FIRST, so a non-empty directory is refused before a
+        # password is asked for.
         "macos": (
             'p="$HOME/shared"; '
-            'if mount | grep -q " on $p "; then :; '
-            'else if [ -d "$p" ]; then rmdir "$p" || { echo "NOT_EMPTY $p"; ls -la "$p"; exit 1; }; fi; '
-            'mkdir -p "$p"; fi; '
-            f"printf '%s\\n' {shlex.quote(login_password)} | sudo -S -p '' "
-            f"mount_smbfs -f 0666 -d 0777 //{SMB_USER}:@{host}/{SHARE_NAME} ~/shared"
+            'mounted=no; mount | grep -q " on $p " && mounted=yes; '
+            'if [ "$mounted" = no ] && [ -d "$p" ]; then '
+            '  rmdir "$p" || { echo "NOT_EMPTY $p"; ls -la "$p"; exit 1; }; '
+            'fi; '
+            f"{{ printf '%s\\n' {shlex.quote(login_password)}; "
+            f"  printf '%s\\n' "
+            f"{shlex.quote(MACOS_MOUNT_SCRIPT.replace('SMB_USER', SMB_USER).replace('SHARE_NAME', SHARE_NAME))}; }} | "
+            f"sudo -S -p '' sh -s -- ~/shared \"$mounted\" {shlex.quote(host)}"
         ),
         # WINDOWS: THE SAME ACCOUNT, THE SAME EMPTY PASSWORD, SUPPLIED PER SESSION.
         #
