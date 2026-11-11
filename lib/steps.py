@@ -1058,10 +1058,23 @@ class MachineSession:
         import capabilities
         import vm_session
 
-        # ONLY AN OVERLAY THIS SESSION MADE IS CLOSED BY `vm_session.stop`. The caller's own is
-        # flattened into the artifact by the stage that made it; passing it here would delete the
-        # run's writes a moment before they are read.
-        owned = self.overlay if self._owns_overlay else None
+        # AN OVERLAY IS DELETED BY WHOEVER NO LONGER NEEDS IT, AND THIS SESSION STILL DOES.
+        #
+        # The rule used to be "only one this session made is closed here", which is right for a
+        # file with no `compress:` - the diff is throwaway and the artifact was never going to be
+        # made from it. It is WRONG for a file that publishes: `compress:` flattens the overlay
+        # into the artifact, so deleting it at `shutdown:` leaves the next step with nothing to
+        # read.
+        #
+        # The first real run of `compress:` (42949499311) failed for the other half of this -
+        # no `shutdown:` at all, so qemu held the lock - and fixing that alone would have moved
+        # the failure one step later instead of removing it.
+        #
+        # SO: no overlay is released here while a flatten is still owed. `compress:` closes it
+        # after flattening, and `stop_if_running` closes it on the failure path.
+        owned = (self.overlay
+                 if (self._owns_overlay and getattr(self, "flatten_from", None) is None)
+                 else None)
 
         if method in ("guest_agent", "agent", "qga"):
             capabilities.require("qga", guest=self.guest)
@@ -1122,6 +1135,14 @@ class MachineSession:
         # reaches that step, so without this the base's size and mtime are never re-checked -
         # which is the guarantee `lib/overlay.py` exists to make, because "I did not write to it"
         # is an assumption and that file exists to stop that kind of assumption.
+        # A FLATTEN THAT NEVER RAN MEANS THE FILE FAILED BEFORE ITS `compress:` STEP. The overlay
+        # is then throwaway and its base has never been re-checked - so it is closed here, which
+        # is the only place that can still verify the base.
+        #
+        # WHEN THE FLATTEN DID RUN, `compress:` closed it already and cleared `flatten_from`, so
+        # the fallback below is `self.overlay` - which is now a file that does not exist. Overlay
+        # .close() is idempotent (`if os.path.exists` then verify), so this is safe either way
+        # rather than needing a third flag.
         overlay = getattr(self, "flatten_from", None) or getattr(self, "overlay", None)
         if overlay is not None:
             try:
@@ -1789,8 +1810,18 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
         session = getattr(driver, "session", None)
         if session is None or not getattr(session, "disk", ""):
             raise StepError(f"{step.name}: `compress:` needs a `boot:` before it")
+        # RELATIVE TO THE REPOSITORY, NOT TO THE WORK DIRECTORY.
+        #
+        # `compress:` NAMES THE ARTIFACT the workflow will publish, and a workflow writes
+        # `out/windows11-ssh.qcow2` - relative to where the job started. Joining that onto
+        # `work` (which is `out/ssh-work`) produced `out/ssh-work/out/windows11-ssh.qcow2` and
+        # the publish step would then upload nothing. Measured on the first real run of this
+        # step: run 42949499311.
+        #
+        # `disk:` is different and stays relative to `work`, because that one names a file INSIDE
+        # the work directory - the prepared copy the machine runs on.
         if not os.path.isabs(dest):
-            dest = os.path.join(getattr(driver, "work", "") or ".", dest)
+            dest = os.path.join(REPO, dest)
         source = session.disk
         if os.path.abspath(source) == os.path.abspath(dest):
             raise StepError(

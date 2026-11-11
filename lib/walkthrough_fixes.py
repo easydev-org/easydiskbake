@@ -1341,6 +1341,30 @@ def main() -> int:
           "NO `assets` REQUIREMENT" in st)
     check("start_on is not macOS-only", "lib/vm_session.py",
           "assets: dict | None = None" in read("lib/vm_session.py"))
+    # --- THE TWO BUGS THE FIRST REAL `compress:` FOUND ---------------------------------
+    #
+    # Run 42949499311 was the first time `compress:` ever ran, and it failed with
+    #
+    #     could not flatten the overlay: qemu-img: Could not open 'session-overlay.qcow2':
+    #     Failed to get shared "write" lock
+    #
+    # on a path that was `out/ssh-work/out/windows11-ssh.qcow2`. Two separate faults:
+    check("a compress path is relative to the repository", "lib/steps.py",
+          "dest = os.path.join(REPO, dest)" in st)
+    # AND THE MACHINE IS STOPPED BEFORE THE DISK IS READ. `windows/11/steps/ssh.yaml` had no
+    # `shutdown:` at all - macOS' file has had one since its conversion, this one was converted
+    # later and the step was not carried over, so qemu still held the overlay.
+    win_ssh2 = read("windows/11/steps/ssh.yaml")
+    check("the windows stage stops its machine", "windows/11/steps/ssh.yaml",
+          "shutdown: kill" in win_ssh2)
+    check("the machine stops before the disk is published", "windows/11/steps/ssh.yaml",
+          win_ssh2.index("name: stop the machine")
+          < win_ssh2.index('compress: "{{ out }}"'))
+    # AND STOPPING IT DOES NOT DELETE THE OVERLAY THAT IS STILL OWED TO `compress:`.
+    # `vm_session.stop(overlay=...)` deletes the file; fixing only the missing `shutdown:` would
+    # have moved this failure one step later instead of removing it.
+    check("an overlay owed to compress survives the shutdown", "lib/steps.py",
+          'getattr(self, "flatten_from", None) is None' in st)
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))

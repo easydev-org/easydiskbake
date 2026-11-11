@@ -323,6 +323,25 @@ steps:
   #
   # AFTER THE LAST REAL STEP, not in a `finally`: a failed walk leaves a disk that the failed
   # steps may have half-configured, and compressing it publishes that.
+  # THE MACHINE STOPS BEFORE THE DISK IS READ, AND THAT ORDER IS NOT OPTIONAL.
+  #
+  # The first real run of `compress:` (42949499311) failed with
+  #
+  #     could not flatten the overlay: qemu-img: Could not open 'session-overlay.qcow2':
+  #     Failed to get shared "write" lock
+  #
+  # because this file had no `shutdown:` at all - the machine was still running and qemu held the
+  # overlay. macOS' file has had one since it was converted; Windows' was converted later and the
+  # step was not carried over.
+  #
+  # `kill` RATHER THAN `ssh`: this guest's writes are a throwaway diff over a read-only base, so
+  # there is no filesystem state a graceful shutdown could protect - and `lib/overlay.py` deletes
+  # the diff either way. It is also what the file's own `record:` step expects, and a shutdown
+  # that needs sshd is one more thing that can fail after the work is done.
+  - name: stop the machine
+    shutdown: kill
+    timeout: 120
+
   - name: publish the disk
     compress: "{{ out }}"
 
