@@ -357,7 +357,42 @@ steps:
         Write-Output 'WINGET_NOT_FOUND'
         exit 1
       }
+      # `--installer-type wix` IS THE FIX, AND `--scope machine` ALONE IS NOT ENOUGH.
+      #
+      # Run 42973132779, the first run where this step got past its own exit-code check:
+      #
+      #     Found PowerShell [Microsoft.PowerShell] Version 7.6.10.0
+      #     This application is licensed to you by its owner.
+      #     Successfully verified installer hash
+      #     The current system configuration does not support the installation of this package.
+      #     WINGET_EXIT=-1978334957          (0x8A150113)
+      #
+      # READ THE MISSING LINE. The dotnet SDK, which installed in the same run, printed
+      #
+      #     Downloading https://download.microsoft.com/.../dotnet-sdk-10.0.404-win-x64.exe
+      #
+      # and this one went straight from "licensed to you by its owner" to "Successfully verified
+      # installer hash" - no download at all. It was not fetching the 107 MB MSI; it had selected a
+      # DIFFERENT INSTALLER TYPE that was already present, and a packaged app (MSIX) cannot be
+      # installed in the system context. That is precisely what the message says.
+      #
+      # THE FILE ALREADY NAMED THE TWO INSTALLER TYPES, FOUR SENTENCES ABOVE THIS STEP:
+      #
+      #     Architecture: x64, InstallerType: wix, Scope: machine
+      #     Platform: Windows.Universal, InstallerType: msix
+      #
+      # and concluded that `--scope machine` "selects the wix/MSI variant". It selects a scope; it
+      # does not exclude an installer TYPE. winget's own maintainer says so in
+      # microsoft/winget-pkgs#367912: "if the default installer type isn't the same as what's
+      # installed, WinGet may install the other installer type. You can use `--installer-type` to
+      # force WinGet to use the desired installer type." The same thread shows 7.5.4 downloading
+      # its MSI and 7.5.5+ failing exactly as this run did.
+      #
+      # SO THE TYPE IS NAMED. `wix` is the manifest's own name for the MSI variant of this
+      # package, and it is the one that lands in C:\Program Files\PowerShell\7 and puts `pwsh`
+      # on the machine PATH - which the `prove powershell 7` step below depends on.
       & $winget install --id Microsoft.PowerShell --exact --source winget --scope machine `
+        --installer-type wix `
         --accept-source-agreements --accept-package-agreements --disable-interactivity
       # THE EXIT CODE IS READ ON THE LINE IMMEDIATELY AFTER THE NATIVE CALL, and that placement
       # is itself a fix. The first version read it after a twenty-line comment block and printed

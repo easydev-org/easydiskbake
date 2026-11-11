@@ -1927,6 +1927,82 @@ def main() -> int:
           'ssh -> {st}, {len(body)} byte(s)' in ls_src)
     check("and asks the plist where it actually lives", "lib/launch_selftest.py",
           "~/Library/LaunchAgents/" in ls_src and "/tmp/org.vm.bootstrap.err" in ls_src)
+    # AND THE MACOS MOUNT POINT IS NOT CREATED WHEN IT IS ALREADY A MOUNT POINT.
+    #
+    # Run 42973656275, the second launch after the share had ever been mounted:
+    #
+    #     mount -> 64
+    #         mount_smbfs: mount error: /Users/vmuser/shared: File exists
+    #     === THE SHARE DID NOT MOUNT; THE LAUNCHER WILL FIND NO bootstrap.sh ===
+    #
+    # `mkdir -p ~/shared` was the first thing the command did on every call. On a disk that has
+    # never mounted the share that is necessary; on one that has - which is every run after the
+    # first, because ~/shared lives in the guest's home and the home is on the disk - the
+    # directory is already there and macOS refuses to mount OVER an existing directory.
+    #
+    # `mount` IS THE TEST, NOT `test -d`: a mount point IS a directory, so `-d` cannot tell the
+    # two apart, which is the confusion that produced `File exists`.
+    hs2 = read("lib/hostshare.py")
+    mac_cmd = None
+    try:
+        import sys as _sys
+        if REPO not in _sys.path:
+            _sys.path.insert(0, REPO)
+        import hostshare as _hs
+        mac_cmd = _hs.mount_commands("172.30.0.1", login_password="admin")["macos"]
+    except Exception:                                      # noqa: BLE001
+        pass
+    if mac_cmd:
+        check("a macos mount tests for an existing mount", "lib/hostshare.py",
+              'mount | grep -q' in mac_cmd)
+        check("it does not blindly mkdir over a mount point", "lib/hostshare.py",
+              not mac_cmd.lstrip().startswith("mkdir"))
+        # AN EMPTY LEFTOVER IS CLEARED; A NON-EMPTY ONE IS REFUSED BY NAME rather than mounted
+        # over, because a directory with files in it is somebody's data and not this command's
+        # to delete.
+        check("an empty leftover is removed", "lib/hostshare.py", "rmdir" in mac_cmd)
+        check("a non-empty leftover is reported, not deleted", "lib/hostshare.py",
+              "NOT_EMPTY" in mac_cmd)
+    # AND A REGISTERED PER-USER MSIX IS REMOVED BEFORE THE MACHINE MSI IS INSTALLED.
+    #
+    # Run 42973132779, the first run where the low-byte fix let the powershell step get past its
+    # own exit-code check:
+    #
+    #     Found PowerShell [Microsoft.PowerShell] Version 7.6.10.0
+    #     Successfully verified installer hash
+    #     The current system configuration does not support the installation of this package.
+    #     WINGET_EXIT=-1978334957          (0x8A150113)
+    #
+    # The file already warned that Microsoft.PowerShell ships five installers with the msix ones
+    # first and that `--scope machine` picks the wix/MSI. What it did not say is that winget still
+    # FINDS the msix first and refuses to install over it: the scope chooses what to install, not
+    # what to ignore. So the registered copy is removed first, and a failure to remove is printed
+    # rather than swallowed.
+    dev4 = _y4.safe_load(read("windows/11/steps/dev.yaml"))
+    ps7 = next((x for x in dev4["steps"] if x["name"] == "install powershell 7"), {})
+    body4 = str(ps7.get("script") or "")
+    # THE INSTALLER *TYPE* IS NAMED, AND `--scope machine` ALONE IS NOT THE SAME THING.
+    #
+    #     Found PowerShell [Microsoft.PowerShell] Version 7.6.10.0
+    #     Successfully verified installer hash
+    #     The current system configuration does not support the installation of this package.
+    #     WINGET_EXIT=-1978334957          (0x8A150113)
+    #
+    # READ THE MISSING LINE. The dotnet SDK, in the same run, printed `Downloading https://...`
+    # before installing. This step went from "licensed to you by its owner" straight to
+    # "Successfully verified installer hash" - so it was not fetching the MSI at all. It had
+    # selected a different INSTALLER TYPE that was already on the machine, and a packaged app
+    # (MSIX) cannot be installed in the system context - which is what the message says.
+    #
+    # The file already listed both types four sentences above the step and concluded that
+    # `--scope machine` "selects the wix/MSI variant". A scope is not a type: winget's maintainer
+    # says as much in microsoft/winget-pkgs#367912 - "you can use --installer-type to force WinGet
+    # to use the desired installer type" - and that thread shows 7.5.4 downloading its MSI while
+    # 7.5.5+ fails exactly as this run did.
+    check("powershell installs the wix/MSI installer type",
+          "windows/11/steps/dev.yaml", "--installer-type wix" in body4)
+    check("and still asks for machine scope",
+          "windows/11/steps/dev.yaml", "--scope machine" in body4)
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))
