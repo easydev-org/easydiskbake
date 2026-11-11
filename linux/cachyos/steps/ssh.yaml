@@ -321,25 +321,51 @@ steps:
   # as root by design. This step is `optional` so on a disk where the first one worked its only
   # effect is one harmless line in the same terminal.
 
-  # WHAT THE BOOT ACTUALLY DID, FROM THE JOURNAL, BECAUSE THE SYMLINK IS NOT THE WHOLE STORY.
+  # =======================================================================================
+  # THE MACHINE RESTARTS AND HAS TO PROVE SSHD SURVIVES IT
+  # =======================================================================================
   #
-  # Run 8bd7746 proved `is-enabled: enabled` AND that the symlink exists, and the published disk
-  # still booted to a login screen with NOTHING on port 22 - measured twice in a local pod, on the
-  # artifact itself, with the account `vmuser` visible on the greeter. So "enabled" is true and
-  # "running after a boot" is false, and the difference is in what the unit said when it tried.
+  # EVERY CHECK ABOVE RUNS IN THE SESSION WHERE SSHD WAS JUST STARTED, so not one of them can
+  # see the failure this stage exists to prevent. That gap is the whole history of this file:
   #
-  # `--boot` READ FROM THE JOURNAL IS THE ONLY PLACE THAT ANSWER IS WRITTEN. A host key that could
-  # not be generated, a port already held, a unit ordered before the network it needs - all three
-  # look identical from outside (a refused port) and different in one line of `journalctl`.
-  - name: read what sshd said at the last boot
+  #     `id -un` over port 22             passes, on a daemon `restart` started
+  #     `systemctl is-enabled sshd`       answers `enabled` - the symlink is real
+  #     ls of the .wants symlink          the link is there
+  #     journalctl -b -u sshd             `Started OpenSSH Daemon`, `listening on 0.0.0.0:22`
+  #
+  # and then the PUBLISHED DISK boots to a login screen with nothing on port 22. Measured on the
+  # artifact itself, in a local pod, twice.
+  #
+  # THE ONLY TEST THAT CAN SEE THAT IS A RESTART. `systemctl reboot` through this ssh session
+  # kills the connection it was issued on - that is what `optional: true` is for - and the
+  # `require_ssh:` below is what says whether the machine came back with a listening daemon.
+  #
+  # NO SERIAL CONSOLE AND NO TEXT TTY: this repository does not fall back to either, so a
+  # failure here is reported as a failure of this stage rather than worked around.
+  - name: restart the machine
     ssh: |
+      printf '%s\n' '{{ password }}' | sudo -S -p '' systemctl reboot
+    timeout: 60
+    optional: true
+
+  # THE GUEST IS COMING BACK ON ITS OWN, AND THIS IS THE WHOLE QUESTION.
+  #
+  # A `require_ssh:` never lets this stage publish a disk whose daemon only worked in the session
+  # that installed it.
+  - name: come back up with sshd answering
+    require_ssh: true
+    timeout: 900
+
+  # AND NOW THE JOURNAL IS THE BOOT THAT MATTERS - this one, not the one that installed sshd.
+  - name: read what this boot did
+    ssh: |
+      set -e
+      echo "--- identity, over a connection that did not exist when sshd was installed ---"
+      id -un; hostname
       echo "--- is-enabled / is-active ---"
       systemctl is-enabled sshd; systemctl is-active sshd
-      echo "--- host keys ---"
-      ls -l /etc/ssh/ssh_host_*_key 2>&1 | head -6
-      echo "--- the unit's own account of its start ---"
-      journalctl -b -u sshd --no-pager 2>&1 | tail -20
-      echo "--- and whether it failed ---"
-      systemctl --failed --no-pager 2>&1 | head -10
+      echo "--- the unit's own account of this start ---"
+      journalctl -b -u sshd --no-pager 2>&1 | tail -12
+      test "$(systemctl is-enabled sshd)" = "enabled"
+      test "$(systemctl is-active sshd)" = "active"
     timeout: 120
-    optional: true
