@@ -182,15 +182,37 @@ steps:
   # SO THE CHECK IS TWO THINGS THAT ARE TRUE ON BOTH: the daemon is running, and SOME virtio
   # console device exists. A disk with the agent installed but no channel has the process and no
   # device, which is the failure this is meant to catch.
+  # THE PROOF IS THE OUTPUT, NOT THE EXIT STATUS OF A PIPELINE.
+  #
+  # Run 85f73fe printed everything this step exists to print
+  #
+  #     --- the process ---
+  #     1345
+  #     1346
+  #     1341
+  #     --- a virtio console, whichever path this kernel uses ---
+  #     /dev/vtcon/org.qemu.guest_agent.0
+  #
+  # - the daemon running and the device node present, which is exactly the pair the step asks for -
+  # and then exited 1. The cause is `pgrep -af qemu-ga || pgrep -af qemu-guest-agent`: the first
+  # pgrep finds nothing on this image, so the `||` branch runs and prints the pids, and the
+  # pipeline's status is whichever pgrep happened to be last. Under `set -e` that status ends the
+  # step, AFTER the output has already proved the point.
+  #
+  # SO NOTHING HERE DEPENDS ON A PIPELINE'S STATUS. Each fact is captured into a variable, the
+  # variable is printed, and the step asserts on what was CAPTURED - which is the same standard the
+  # `expect:` steps use, and the reason they exist.
   - name: prove the guest agent is running
     ssh: |
       sh -c '
-        set -e
         echo "--- the process ---"
-        pgrep -af qemu-ga || pgrep -af qemu-guest-agent
+        PIDS=$(pgrep -f qemu-ga 2>/dev/null || true)
+        echo "${PIDS:-none}"
         echo "--- a virtio console, whichever path this kernel uses ---"
-        ls -d /dev/vtcon/* /dev/virtio-ports/* 2>/dev/null | head -6
-        ls -d /dev/vtcon/* /dev/virtio-ports/* >/dev/null 2>&1'
+        CONS=$(ls -d /dev/vtcon/* /dev/virtio-ports/* 2>/dev/null || true)
+        echo "${CONS:-none}"
+        test -n "$PIDS"
+        test -n "$CONS"'
     timeout: 120
 
   # =======================================================================================
