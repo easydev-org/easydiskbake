@@ -229,6 +229,13 @@ def install_boot_hook(driver, step) -> bool:
         # THE PATH sshd WAS COMPILED WITH, WHICH CANNOT BE MOVED. See `start()`.
         "mkdir -p /data/data/com.termux/files/usr/var/empty 2>/dev/null\n"
         "chmod 755 /data/data/com.termux/files/usr/var/empty 2>/dev/null\n"
+        "T=/data/data/com.termux/files/usr\n"
+        "mkdir -p $T/libexec 2>/dev/null\n"
+        # sshd execs this for each connection, from the path it was BUILT with. See `start()`.
+        "if [ ! -x $T/libexec/sshd-session ]; then\n"
+        "  cp $P/libexec/sshd-session $T/libexec/sshd-session 2>/dev/null\n"
+        "  chmod 755 $T/libexec/sshd-session 2>/dev/null\n"
+        "fi\n"
         "chmod 755 $P/var/empty\n"
         # `exec` AND `-D`, BECAUSE A WRAPPER THAT EXITS TAKES ITS CHILD WITH IT.
         #
@@ -410,6 +417,25 @@ def start(driver, step) -> bool:
         # So the directory is made, empty, which is all sshd wants it for.
         f"mkdir -p /data/data/com.termux/files/usr/var/empty 2>/dev/null; "
         f"chmod 755 /data/data/com.termux/files/usr/var/empty 2>/dev/null; "
+        # AND THE HELPER sshd EXECS FOR EACH CONNECTION, AT THE SAME COMPILED-IN PATH.
+        #
+        # sshd 10.6 splits the per-connection work into `libexec/sshd-session`, and that path is
+        # baked in beside the privsep one - so moving the payload to /data/local/sshd made the
+        # daemon bind the port and then refuse every connection with
+        #
+        #     /data/data/com.termux/files/usr/libexec/sshd-session
+        #     does not exist or is not executable
+        #
+        # THE SAME MKDIR-AND-COPY TRICK WORKS HERE, and it is worth being precise about why the
+        # whole tree cannot simply be installed at the compiled-in prefix: `cp -a` of a DIRECTORY
+        # into an `app_data_file` parent is refused, while `mkdir` and a per-FILE copy succeed -
+        # measured. So the two files sshd needs at that path are placed there, one at a time, and
+        # everything else stays where root can write freely.
+        f"T=/data/data/com.termux/files/usr; "
+        f"mkdir -p $T/libexec 2>/dev/null; "
+        f"if [ ! -x $T/libexec/sshd-session ]; then "
+        f"cp $P/libexec/sshd-session $T/libexec/sshd-session 2>/dev/null; "
+        f"chmod 755 $T/libexec/sshd-session 2>/dev/null; fi; "
         f"[ -f $P/etc/ssh/ssh_host_rsa_key ] || "
         f"$P/bin/ssh-keygen -t rsa -b 2048 -f $P/etc/ssh/ssh_host_rsa_key -N '' -q; "
         f"test -f $P/etc/ssh/ssh_host_rsa_key || {{ echo NO_HOST_KEY; exit 1; }}; "
