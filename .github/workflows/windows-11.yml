@@ -347,6 +347,26 @@ jobs:
               --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
               --no-clean
 
+      # THE SSH STAGE'S OWN VIDEO, WHICH DID NOT EXIST UNTIL NOW.
+      #
+      # `install ssh` is one step that runs the whole walkthrough, so its duration says nothing
+      # about where the time went - and two runs spent an hour inside it with no way to look. The
+      # stage records itself now (`lib/snapshots.py` + `lib/live.py`, the same pair the bakes use)
+      # and this is where the result leaves the runner.
+      #
+      # `if: always()` because a failed stage is the one worth watching. macOS has had exactly
+      # this step for its ssh stage; Windows never did.
+      - name: keep the ssh recording
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows11-ssh-recording
+          path: |
+            out/ssh-work/install.mp4
+            out/ssh-work/last-frame.png
+          if-no-files-found: warn
+          retention-days: 14
+
       # CLEANING IS ITS OWN STEP, AND IT IS TYPED AT THE RUN GRAPH. The install above passes
       # --no-clean, so this is the only place it happens.
       - name: clean the disk

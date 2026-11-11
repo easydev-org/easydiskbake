@@ -1179,6 +1179,29 @@ def main() -> int:
           "optional: true" in win_steps.split("name: compact the component store", 1)[1][:400])
     check("a step timeout is exempted by optional", "lib/session.py",
           "return 124" in read("lib/session.py"))
+    # AND THE WINDOWS SSH STAGE RECORDS ITSELF, WHICH IT NEVER DID.
+    #
+    # `install ssh` is ONE GitHub step that runs the entire walkthrough, so its duration says
+    # nothing about where the time went. Two runs sat inside it for an hour and the only evidence
+    # was the timestamps of `===` markers; the frames that would have shown the screen were never
+    # captured, because `windows/11/ssh.py` created a `shots` directory and started no sampler.
+    #
+    # macos/15/ssh.py has started `lib/snapshots.py` and `lib/live.py` since it was fixed for the
+    # same reason - a stage that fails must still leave a video - and its artifact proves it
+    # (run 42874167311: macos15-ssh-recording, 3789241 bytes). The Windows stage gets the same
+    # pair, started before the machine so the boot and the lock screen are in the file.
+    wssh = read("windows/11/ssh.py")
+    check("the windows ssh stage samples frames", "windows/11/ssh.py",
+          "snapshots.py" in wssh and "snap = subprocess.Popen(" in wssh)
+    check("the windows ssh stage encodes a video", "windows/11/ssh.py",
+          "livelib.start(" in wssh)
+    check("the sampler starts before the machine", "windows/11/ssh.py",
+          wssh.index("snap = subprocess.Popen(") < wssh.index("vm.Guest(work, extra=drives"))
+    check("the video is finalised whatever the outcome", "windows/11/ssh.py",
+          "live.stop(final=True)" in wssh)
+    wf = read(".github/workflows/windows-11.yml")
+    check("the windows ssh recording is uploaded", ".github/workflows/windows-11.yml",
+          "windows11-ssh-recording" in wf and "out/ssh-work/install.mp4" in wf)
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))
