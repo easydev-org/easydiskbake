@@ -95,7 +95,8 @@ def log(message: str) -> None:
 
 
 def ssh(port: int, command: str, timeout: int = 30, host: str | None = None,
-        user: str | None = None, password: str | None = None) -> tuple[int, str]:
+        user: str | None = None, password: str | None = None,
+        key: str | None = None) -> tuple[int, str]:
     """Run one command in the guest. Returns (exit status, combined output).
 
     `host` IS HOW THE "ANOTHER CONTAINER" PROOF IS MADE. Everything in this repository
@@ -110,40 +111,99 @@ def ssh(port: int, command: str, timeout: int = 30, host: str | None = None,
     travels with that distribution's file: the walk's `ssh_user` var reaches the `ssh:` steps
     through this parameter. See linux/popos/steps/ssh.yaml.
 
-    NO KEY, NO TERMINAL. The password is the one every image here uses, and sshpass is
-    what supplies it - there is no tty to prompt at.
+    A PASSWORD IS THE DEFAULT AND A KEY IS THE EXCEPTION, AND THE EXCEPTION IS ANDROID. Every
+    image here is installed with a known account and password, and sshpass supplies it with no
+    tty to prompt at. Android cannot check a password at all - bionic has no `getspnam`, so sshd
+    there cannot read /etc/shadow - so the one guest that authenticates by key passes `key=` and
+    the two options below flip. Measured on BlissOS: a correct `$6$` hash in /etc/shadow was
+    ignored and the login was refused until the key was installed.
 
     StrictHostKeyChecking=off and UserKnownHostsFile=/dev/null because this is a fresh
     guest on a forwarded port every run: a known-hosts file would either grow without
     bound or refuse the connection, and neither is a fact about the disk.
     """
-    if not shutil.which("sshpass"):
-        return 127, "sshpass is not installed"
-    argv = [
-        "sshpass", "-p", password or SSH_PASSWORD,
-        "ssh", "-p", str(port),
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "GlobalKnownHostsFile=/dev/null",
-        "-o", "LogLevel=ERROR",
-        "-o", "ConnectTimeout=10",
-        "-o", "PreferredAuthentications=password",
-        "-o", "PubkeyAuthentication=no",
-        f"{user or SSH_USER}@{host or SSH_HOST}",
-        command,
-    ]
-    try:
-        result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return 124, f"the command did not finish in {timeout}s"
-    except OSError as exc:
-        return 126, str(exc)
-    return result.returncode, (result.stdout + result.stderr).strip()
+    if key:
+        # KEY AUTHENTICATION, WITH NO PASSWORD AND NO sshpass. `IdentitiesOnly` stops ssh from
+        # also offering the runner's own ~/.ssh keys, which would make a failure depend on
+        # whether the machine running this happens to have one.
+        argv = [
+            "ssh", "-p", str(port), "-i", key,
+            "-o", "IdentitiesOnly=yes",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "GlobalKnownHostsFile=/dev/null",
+            "-o", "LogLevel=ERROR",
+            "-o", "ConnectTimeout=10",
+            "-o", "PreferredAuthentications=publickey",
+            "-o", "BatchMode=yes",
+            f"{user or SSH_USER}@{host or SSH_HOST}",
+            command,
+        ]
+    else:
+        if not shutil.which("sshpass"):
+            return 127, "sshpass is not installed"
+        argv = [
+            "sshpass", "-p", password or SSH_PASSWORD,
+            "ssh", "-p", str(port),
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "GlobalKnownHostsFile=/dev/null",
+            "-o", "LogLevel=ERROR",
+            "-o", "ConnectTimeout=10",
+            "-o", "PreferredAuthentications=password",
+            "-o", "PubkeyAuthentication=no",
+            f"{user or SSH_USER}@{host or SSH_HOST}",
+            command,
+        ]
+    # ONE RETRY, AND ONLY FOR A CONNECTION THAT NEVER OPENED.
+    #
+    # `ssh` ANSWERS 255 FOR EVERYTHING IT CANNOT DO, and a `255` is three very different facts:
+    #
+    #     banner exchange / connect / reset     the connection did not happen
+    #     Permission denied                      it happened and the account was refused
+    #     a command's own non-zero status        it happened and the command said so
+    #
+    # Only the FIRST is worth repeating: nothing ran, so trying again cannot run anything twice.
+    # The other two are answers, and retrying an answer is how a wrong password becomes a
+    # ten-minute timeout that reads like a network problem.
+    #
+    # MEASURED ON RUN 5e91ea1'S GhostBSD STAGE, which is what this is for:
+    #
+    #     ssh: ... sysrc hostname="easyvm-362eab0f" ... -> 255
+    #         Connection timed out during banner exchange
+    #
+    # one flaky second between two healthy commands, and the stage was over. The guest had
+    # answered sshd 18 seconds earlier and answered everything after it.
+    CONNECTION_FAILURES = (
+        "banner exchange",
+        "Connection timed out",
+        "Connection refused",
+        "Connection reset",
+        "Connection closed",
+        "No route to host",
+        "Broken pipe",
+    )
+
+    def _attempt() -> tuple[int, str]:
+        try:
+            done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return 124, f"the command did not finish in {timeout}s"
+        except OSError as exc:
+            return 126, str(exc)
+        return done.returncode, (done.stdout + done.stderr).strip()
+
+    status, output = _attempt()
+    if status == 255 and any(text in output for text in CONNECTION_FAILURES):
+        import time as _time
+        _time.sleep(2)
+        status, output = _attempt()
+    return status, output
 
 
 def scp(local: str, remote: str, *, port: int = 2222, timeout: int = 300,
         user: str | None = None, host: str | None = None,
-        password: str | None = None) -> tuple[int, str]:
+        password: str | None = None, key: str | None = None) -> tuple[int, str]:
     """Copy one local file to the guest. Returns (exit status, combined output).
 
     WHY THIS IS IN session.py AND NOT IN A STAGE. windows/11/devtools.py had its own `scp_to`
@@ -156,21 +216,26 @@ def scp(local: str, remote: str, *, port: int = 2222, timeout: int = 300,
     the disk may not be the default one, and the "another container" proof needs an address
     that is not the bridge's.
     """
-    if not shutil.which("sshpass"):
-        return 127, "sshpass is not installed"
-    argv = [
-        "sshpass", "-p", password or SSH_PASSWORD,
-        "scp",
+    common = [
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
         "-o", "GlobalKnownHostsFile=/dev/null",
         "-o", "LogLevel=ERROR",
         "-o", "ConnectTimeout=10",
-        "-o", "PreferredAuthentications=password",
-        "-o", "PubkeyAuthentication=no",
         "-P", str(port),
         local, f"{user or SSH_USER}@{host or SSH_HOST}:{remote}",
     ]
+    if key:
+        # THE KEY FORM, for the same reason ssh() has one: the Android guest cannot check a
+        # password, so a copy of a file there has to authenticate by key too.
+        argv = ["scp", "-i", key, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
+                "-o", "PreferredAuthentications=publickey"] + common
+    else:
+        if not shutil.which("sshpass"):
+            return 127, "sshpass is not installed"
+        argv = ["sshpass", "-p", password or SSH_PASSWORD, "scp",
+                "-o", "PreferredAuthentications=password",
+                "-o", "PubkeyAuthentication=no"] + common
     try:
         result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -266,7 +331,8 @@ def wait_for_port_down(port: int, seconds: int, note=log, settle: float = 2.0,
 
 def wait_for_ssh(port: int, seconds: int, note=log, settle: int = 10,
                  probe: str = "true", user: str | None = None,
-                 password: str | None = None, host: str | None = None) -> bool:
+                 password: str | None = None, host: str | None = None,
+                 key: str | None = None) -> bool:
     """Wait until sshd answers and the account can log in.
 
     A BANNER IS NOT ENOUGH - this runs a command, because a socket that accepts a
@@ -309,7 +375,8 @@ def wait_for_ssh(port: int, seconds: int, note=log, settle: int = 10,
     beat = 60.0
     next_beat = started + beat
     while time.time() < deadline:
-        status, out = ssh(port, probe, timeout=20, user=user, password=password, host=host)
+        status, out = ssh(port, probe, timeout=20, user=user, password=password, host=host,
+                          key=key)
         if status == 0:
             note(f"ssh answers after {time.time() - started:.0f}s")
             return True
@@ -333,12 +400,13 @@ def wait_for_ssh(port: int, seconds: int, note=log, settle: int = 10,
     # failed connection or credential; 124 is this function's timeout; 127 is a missing client.
     note(f"  last status: {status}")
     note(f"  last output: {out[:300]}")
-    explain(port, probe, note, user=user, password=password, host=host)
+    explain(port, probe, note, user=user, password=password, host=host, key=key)
     return False
 
 
 def explain(port: int, probe: str, note=log, user: str | None = None,
-            password: str | None = None, host: str | None = None) -> None:
+            password: str | None = None, host: str | None = None,
+            key: str | None = None) -> None:
     """One last attempt with ssh's own account of why, printed in full.
 
     THIS IS NOT A SECOND CHECK, IT IS THE EXPLANATION FOR THE FIRST ONE. Everything the run
@@ -361,12 +429,15 @@ def explain(port: int, probe: str, note=log, user: str | None = None,
     `user` IS THE ACCOUNT THE CALLER MEANT, because the retry has to name the same one the
     probe did - explaining a failure against a different account explains nothing.
     """
-    if not shutil.which("sshpass"):
+    if not key and not shutil.which("sshpass"):
         return
-    argv = [
-        "timeout", "30",
-        "sshpass", "-p", password or SSH_PASSWORD,
-        "ssh", "-vvv", "-p", str(port),
+    prefix = ["timeout", "30"]
+    if key:
+        prefix += ["ssh", "-vvv", "-p", str(port), "-i", key, "-o", "IdentitiesOnly=yes"]
+    else:
+        prefix += ["sshpass", "-p", password or SSH_PASSWORD,
+                   "ssh", "-vvv", "-p", str(port)]
+    argv = prefix + [
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
         "-o", "GlobalKnownHostsFile=/dev/null",

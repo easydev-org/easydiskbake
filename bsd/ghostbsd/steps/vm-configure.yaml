@@ -95,12 +95,31 @@ steps:
     ssh: echo "this machine will be named '{{ hostname }}'"
     timeout: 60
 
-  - name: set the machine's name
+  # THE KNOB AND THE RUNNING NAME ARE TWO STEPS, AND RUN 5e91ea1 IS WHY.
+  #
+  # They were one `sh -c` and the connection died inside it:
+  #
+  #     ssh: printf '%s\n' 'admin' | sudo -S -p '' sh -c '
+  #       sysrc hostname="easyvm-362eab0f"
+  #       hostname "easyvm-362eab0f"'
+  #      -> 255
+  #         Connection timed out during banner exchange
+  #
+  # A `banner exchange` timeout is the CONNECT phase, not the command - so sshd was not answering
+  # at that moment, and one command in one connection means one flaky second costs the stage. The
+  # eleven Linux files set the name with `hostnamectl`, one command over systemd's own bus; this
+  # one writes rc.conf and then calls `hostname`, which is two acts on two different subsystems.
+  #
+  # SPLIT, so a failure names which half and a retry is cheap.
+  - name: set the machine's name in rc.conf
     ssh: |
-      printf '%s\n' '{{ password }}' | sudo -S -p '' sh -c '
-        sysrc hostname="{{ hostname }}"
-        hostname "{{ hostname }}"'
+      printf '%s\n' '{{ password }}' | sudo -S -p '' sysrc hostname="{{ hostname }}"
     timeout: 120
+
+  - name: set the running name
+    ssh: |
+      printf '%s\n' '{{ password }}' | sudo -S -p '' hostname "{{ hostname }}"
+    timeout: 180
 
   - name: point the loopback line at that name
     ssh: |
