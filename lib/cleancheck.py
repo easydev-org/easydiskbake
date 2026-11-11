@@ -129,7 +129,13 @@ EXPECTED = {
     # shape windows-11.yml had before its ssh stage existed. A trim is a thing done over a
     # connection, and a row that claims one before there is a daemon to connect to is the
     # "a job with no sshd has a clean step" half of this check's own warning.
-    "blissos16.yml": {"install": None, "launch": None},
+    # AND ITS `ssh` JOB IS `None` FOR A REASON WORTH WRITING DOWN: the trim would have to run
+    # over the connection that job creates. `ssh: true` would assert that the disk it publishes
+    # already has the sshd this stage installs, and a clean step placed BEFORE it would boot a
+    # disk with no sshd and wait out its timeout. When a clean belongs on this artifact it goes
+    # AFTER the ssh job, over the port that job leaves working - which is a fourth job, not a
+    # flag here.
+    "blissos16.yml": {"install": None, "launch": None, "ssh": None},
 }
 
 

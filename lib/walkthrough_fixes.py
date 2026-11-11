@@ -420,6 +420,44 @@ def main() -> int:
           ".github/workflows/blissos16.yml",
           "./easyvm android/blissos16/steps/install.yaml" in bliss_wf
           and "./easyvm android/blissos16/steps/launch.yaml" in bliss_wf)
+    # --- THE THIRD ANDROID STAGE: sshd INSIDE THE GUEST -------------------------------
+    #
+    # THE CLAIM IS "THE DISK HAS AN SSH SERVER", NOT "A PORT ANSWERS". A forward on the host is
+    # not a machine with an sshd, and the artifact is downloaded and started by somebody else.
+    # Three things have to hold and each was a way it could silently not:
+    #
+    #     the account exists        Android's /etc/passwd is EMPTY and `/` is read-only
+    #     the key is installed      bionic has no getspnam, so a password cannot be checked
+    #     the daemon starts at boot a process does not survive a power-off
+    bliss_ssh_yaml = read("android/blissos16/steps/ssh.yaml")
+    check("the blissos ssh stage installs a key, not a password",
+          "android/blissos16/steps/ssh.yaml",
+          "install the login key" in bliss_ssh_yaml
+          and "PasswordAuthentication no" not in bliss_ssh_yaml)
+    check("the blissos ssh stage starts the daemon at boot",
+          "android/blissos16/steps/ssh.yaml",
+          "bliss_ssh:install_boot_hook" in bliss_ssh_yaml)
+    check("the blissos ssh stage proves the answer is the guest's own",
+          "android/blissos16/steps/ssh.yaml",
+          "SSHD_IS_THE_GUESTS_OWN" in bliss_ssh_yaml)
+    # AND THE BOOT HOOK IS ON A FILESYSTEM THAT SURVIVES A POWER-OFF. `/data/local/tmp` is a
+    # tmpfs; the first version pointed init at a script there and init reported the service
+    # `stopped` with a boottime, which reads like a crash and is an empty filesystem.
+    check("the boot wrapper is not on a tmpfs", "android/blissos16/steps/bliss_ssh.py",
+          "service blissos_sshd /system/bin/start-sshd.sh" in read(
+              "android/blissos16/steps/bliss_ssh.py"))
+    # AND THAT THE PAYLOAD'S LIBRARIES ARE CHECKED RATHER THAN LISTED. Seven were missing, one per
+    # nine-minute boot, each producing "sshd binds the port and closes the connection".
+    check("the ssh payload is checked for unreachable libraries",
+          "lib/android_ssh.py",
+          "def missing_libraries(" in read("lib/android_ssh.py")
+          and "the payload links libraries it does not ship"
+          in read("lib/android_ssh.py"))
+    # AND THE WORKFLOW RUNS IT.
+    check("the blissos workflow runs the ssh stage",
+          ".github/workflows/blissos16.yml",
+          "./easyvm android/blissos16/steps/ssh.yaml" in read(
+              ".github/workflows/blissos16.yml"))
 
     win_ssh = read("windows/11/ssh.py")
     win_dev = read("windows/11/devtools.py")

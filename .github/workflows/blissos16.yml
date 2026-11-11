@@ -73,6 +73,10 @@ on:
         description: "launch: start that disk and photograph its launcher (~10 minutes)"
         type: boolean
         default: true
+      ssh_run:
+        description: "ssh: put sshd INSIDE Android, prove it answers, and publish (~20 minutes)"
+        type: boolean
+        default: true
 
       # --- where each stage starts ------------------------------------------------------
       install_from:
@@ -81,6 +85,12 @@ on:
       launch_from:
         description: "launch: a published tag to start instead of the install stage's disk"
         default: ""
+      ssh_from:
+        description: "ssh: a published tag to add sshd to instead of the install stage's disk"
+        default: ""
+      ssh_publish_tag:
+        description: "ssh: tag to publish under; empty for android-13-blissos-ssh"
+        default: "android-13-blissos-ssh"
 
       # --- the disk --------------------------------------------------------------------
       disk_gb:
@@ -341,3 +351,109 @@ jobs:
             out/launch/work/shots/*
           if-no-files-found: warn
           retention-days: 14
+
+  # ===========================================================================
+  # SSH - an sshd that runs INSIDE Android, proven from outside the guest.
+  # ===========================================================================
+  #
+  # THE sshd IS THE GUEST'S OWN, NOT A FORWARD. A port on the host is not a machine with an ssh
+  # server: the disk this job publishes is one somebody else downloads, and it has to answer on
+  # 8022 by itself. `lib/android_ssh.py` explains why the server is Termux's openssh (bionic, not
+  # glibc) and why a key rather than a password (no `getspnam` on Android at all).
+  #
+  # IT NEEDS /dev/kvm AND NOTHING ELSE. `os: android` starts an installed disk with `-netdev user`
+  # and forwards 5555 (adb) and 8022 (sshd) to the loopback of the container that started qemu.
+  ssh:
+    needs: install
+    if: |
+      always() && inputs.ssh_run
+      && (inputs.ssh_from != '' || needs.install.outputs.tag != '')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --device /dev/kvm
+    permissions:
+      contents: read
+      checks: write
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: prepare the runner
+        uses: easydev-org/easyactions/runner-check@main
+        with:
+          kvm: true
+          # the pulled disk, the payload tree, and the compressed artifact beside it
+          disk-gb: '40'
+          token: ${{ github.token }}
+
+      - name: pull the disk
+        uses: easydev-org/easyactions/oci-pull@main
+        with:
+          tag: ${{ inputs.ssh_from || needs.install.outputs.tag }}
+          dest: out
+          token: ${{ github.token }}
+
+      - name: take the pulled disk
+        run: |
+          set -euo pipefail
+          DISK=$(ls out/*.qcow2 | head -1)
+          echo "DISK=$DISK" >> "$GITHUB_ENV"
+          qemu-img info "$DISK" | grep -E 'virtual size|disk size'
+
+      # THE KEY IS GENERATED PER RUN AND NEVER COMMITTED. A key in the repository is a key
+      # everybody reading the repository holds; the artifact is published under a tag people can
+      # pull, so the account it carries has to be one this run made.
+      #
+      # IT IS UPLOADED AS AN ARTIFACT because the sshd in the published disk accepts it, and
+      # without the private half a disk that answers is a disk nobody can log into.
+      - name: make this run's login key
+        run: |
+          set -euo pipefail
+          mkdir -p out/ssh
+          ssh-keygen -t ed25519 -N '' -q -C "blissos16-ssh-${{ github.run_id }}" -f out/ssh/id_ed25519
+          chmod 600 out/ssh/id_ed25519
+          echo "key ${{ github.run_id }} ready"
+
+      - name: put sshd inside Android
+        uses: easydev-org/easyactions/log-stream@main
+        with:
+          token: ${{ github.token }}
+          name: blissos-ssh
+          interval: "20"
+          command: |
+            set -euo pipefail
+            ./easyvm android/blissos16/steps/ssh.yaml \
+              --boot-disk "$DISK" \
+              --work out/ssh/work \
+              --out out/ssh/blissos16-ssh.qcow2 \
+              --public-key out/ssh/id_ed25519.pub \
+              --boot-timeout "${{ inputs.launch_seconds || '600' }}"
+
+      - name: keep the key and the verdict
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blissos16-ssh-key
+          path: |
+            out/ssh/id_ed25519
+            out/ssh/id_ed25519.pub
+            out/ssh/work/console.log
+          if-no-files-found: warn
+          retention-days: 30
+
+      # THE RECORDING IS NOT MADE HERE: this stage reads no frame after the boot, so a video of
+      # it would be a video of a black screen. What proves it is the ssh connection, in the log.
+      - name: push the disk
+        if: success()
+        id: publish_ssh
+        uses: easydev-org/easyactions/oci-push@main
+        with:
+          path: out/ssh/blissos16-ssh.qcow2
+          kind: android-13-blissos-ssh
+          tag: ${{ inputs.ssh_publish_tag || 'android-13-blissos-ssh' }}
+          token: ${{ github.token }}
