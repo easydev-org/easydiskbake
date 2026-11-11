@@ -45,8 +45,7 @@ def tag(name: str) -> str:
 
     The prefix says what kind of artifact it is, because the tag namespace is shared:
 
-        iso-<name>          an installer image (Windows, Linux)
-        sysimg-<name>       an Android system image
+        iso-<name>          an installer image (Windows, Linux, BlissOS)
         macos-recovery-<n>  a macOS recovery image
         <nothing>           the bake image itself, at :latest
 
@@ -409,42 +408,6 @@ MACOS_ASSETS = {
 }
 
 
-# Android system images. Not an installer and not an ISO: Google ships a zip whose
-# contents are the disks themselves (system.img, vendor.img, userdata.img) plus the
-# kernel and ramdisk the emulator boots them with.
-#
-# WHY THIS IS IN THE TABLE AT ALL
-#
-# The system image is the only input an Android bake has. Fetching it from
-# dl.google.com at bake time would be the same mistake the Windows ISO had: an
-# unpinned dependency fetched on the critical path, where an upstream change surfaces
-# as a guest that does not boot rather than as a version that changed.
-#
-# The sha1 is Google's own, from sys-img2-3.xml. It is a 32-bit hash and weaker than
-# the sha256 used for Windows; it is what the publisher provides, and it still catches
-# a truncated or replaced download, which is what the check is for.
-ANDROID = {
-    "sysimg:android-15-aosp": {
-        "url": "https://dl.google.com/android/repository/sys-img/android/"
-               "x86_64-35_r02.zip",
-        "sha1": "2d857d170c0d1b827149565da34b3383e5306f7f",
-        "sha256": None,
-        # 782_336_000 WAS WRONG BY 66 KiB and made every download fail:
-        #
-        #     attempt 1/5 ended short: 746 MiB of 746 MiB
-        #     discarding an oversized part (782404023 > 782336000)
-        #
-        # Five attempts, five full downloads of 746 MiB, thrown away each time. The
-        # right number is in Google's own sys-img2-3.xml beside the checksum, which had
-        # been copied correctly - only the size was stale.
-        "size": 782_404_023,
-        # api-level, not marketing version: 35 is Android 15.
-        "api": 35,
-        "abi": "x86_64",
-        "flavour": "default",
-    },
-}
-
 # BlissOS: Android-x86, and the only Android in this repository that a stock qemu boots.
 #
 # IT IS DELIBERATELY NOT IN all_images(). That function decides which tags
@@ -487,7 +450,7 @@ BLISSOS = {
 def all_images() -> dict:
     """Every pinned image, keyed by the tag it is published under."""
     merged = {}
-    for table in (WINDOWS, VIRTIO, LINUX, DESKTOP, BSD, ANDROID):
+    for table in (WINDOWS, VIRTIO, LINUX, DESKTOP, BSD):
         for name, pin in table.items():
             merged[tag(name)] = pin
     return merged

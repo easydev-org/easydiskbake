@@ -7,14 +7,13 @@
 
 WHY THIS EXISTS
 
-Four workflows published upstream files to ghcr and each was a near-copy of the others:
+Three workflows published upstream files to ghcr and each was a near-copy of the others:
 
     iso-publish                the installer images        lib/publish_iso.py
     macos-assets-publish       OpenCore, firmware, vars    lib/publish_macos_assets.py
     macos-recovery-publish     Apple's recovery images     lib/macos_recovery.py
-    android-15_aosp-publish    an AVD from Google's image  lib/publish_android.py
 
-All four download a pinned URL, verify it and push it to this repository's package. The
+All three download a pinned URL, verify it and push it to this repository's package. The
 differences are which table the pins come from and how the file is fetched; two of them
 (publish_iso and publish_macos_assets) were so close that their main() bodies differed only
 by the table's name.
@@ -28,9 +27,10 @@ cost the other nineteen" keep-going behaviour.
 NOT SHARED, AND THIS FILE DOES NOT TRY: how each artifact is obtained. An installer image is
 one HTTP GET against a pinned URL. A macOS recovery image is a session cookie, a POST with
 five opaque fields, a token exchange and then a GET - it cannot be one request because Apple
-will not serve it as one. An AVD is not a file at all: it is a directory of raw images built
-by Google's system-image tooling and packed into a tar. Forcing those into one function would
-make the common case unreadable to serve the uncommon ones.
+will not serve it as one. An AVD used to be a third kind - not a file at all but a directory of
+raw images packed into a tar - and that publisher is gone with the emulator route. BlissOS is
+an ordinary ISO from SourceForge, pinned by sha256 in lib/images.py and fetched by
+android/blissos16/fetch_iso.py, so Android no longer needs a publisher of its own.
 
 So this is a DISPATCHER: it owns the selection - which tag belongs to which publisher, what
 "all" means, and the order - and each publisher keeps the code that only it can have.
@@ -65,7 +65,6 @@ GROUPS = {
     "iso":       {"prefix": "iso-",         "module": "publish_iso"},
     "macos":     {"prefix": "macos-asset-", "module": "publish_macos_assets"},
     "recovery":  {"prefix": "macos-recovery-", "module": "macos_recovery"},
-    "android":   {"prefix": "sysimg-",      "module": "publish_android"},
 }
 
 # `macos-recovery-` ALSO STARTS WITH `macos-`, so the prefixes are tested longest-first.
@@ -105,13 +104,6 @@ def catalogue() -> dict[str, str]:
     for name in ("14", "15", "26"):
         tag = f"macos-recovery-{images.MACOS_RELEASES and _recovery_name(name)}"
         found[tag] = "recovery"
-    for tag in images.ANDROID:
-        # `sysimg:android-15-aosp` in the table, `sysimg-android-15-aosp` on ghcr - the
-        # colon is not a legal tag character.
-        published = tag.replace(":", "-")
-        group = group_of(published)
-        if group:
-            found[published] = group
     return found
 
 
@@ -138,14 +130,6 @@ def publish_one(tag: str, group: str, repository: str, *, keep: bool) -> bool:
         number = macos_recovery.ALIASES.get(name, name)
         return module.main(["--release", number, "--publish",
                             "--repository", repository]) == 0
-
-    if group == "android":
-        # The image spec is the table's key with the colon put back.
-        spec = tag.replace("sysimg-", "sysimg:", 1)
-        argv = ["--image", spec, "--repository", repository]
-        if keep:
-            argv.append("--keep")
-        return module.main(argv) == 0
 
     # iso and macos-asset: both take a tag positionally.
     argv = [tag, "--repository", repository]

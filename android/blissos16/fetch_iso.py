@@ -4,14 +4,13 @@
 
 WHY BLISSOS AND NOT AOSP
 
-This is the second Android path in this repository and it is here because the first one
-is boxed in by the emulator. android/15 boots Google's AOSP system image through the
-`emulator` binary, which means goldfish/ranchu:
-`kernel-ranchu` is not a bzImage (its first 497 bytes are 0xff and the boot flag is
-missing), `-system` does not publish GPT partition uevents so the disks have to be split
-into three that must stay paired, /data comes up metadata-encrypted on nosuid dm-42, and
-`su` refuses every uid but root and shell. mkdisks.py is 1400 lines of workarounds for
-those four facts.
+This is the only Android path in this repository, and it is the only one there can be. An
+earlier route booted Google's AOSP system image through the SDK's `emulator` binary, which
+means goldfish/ranchu: `kernel-ranchu` is not a bzImage (its first 497 bytes are 0xff and
+the boot flag is missing), `-system` does not publish GPT partition uevents so the disks
+have to be split into three that must stay paired, /data comes up metadata-encrypted on
+nosuid dm-42, and `su` refuses every uid but root and shell. That was 1400 lines of
+workarounds, and the one thing it could not do was produce a disk that starts itself.
 
 BlissOS is Android-x86: a standard bzImage, an initrd that assembles the root from a
 ramdisk, and /data as a plain ext4 file. Stock qemu boots it with -kernel and -initrd,

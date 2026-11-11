@@ -6,22 +6,24 @@ name: artifacts-publish
 #     ghcr.io/easydev-org/easydiskbake:iso-windows11
 #     ghcr.io/easydev-org/easydiskbake:macos-asset-opencore
 #     ghcr.io/easydev-org/easydiskbake:macos-recovery-sequoia
-#     ghcr.io/easydev-org/easydiskbake:sysimg-android-15-aosp
 #
-# ONE WORKFLOW, FOUR GROUPS. This replaces iso-publish, macos-assets-publish,
-# macos-recovery-publish and android-15_aosp-publish. All four downloaded a pinned URL,
-# verified it and pushed it to the same package; the differences were which table the pins
-# came from and how the file is obtained, and neither of those needs a workflow of its own.
+# ONE WORKFLOW, THREE GROUPS. This replaces iso-publish, macos-assets-publish and
+# macos-recovery-publish. All three downloaded a pinned URL, verified it and pushed it to the
+# same package; the differences were which table the pins came from and how the file is
+# obtained, and neither of those needs a workflow of its own.
 #
 #     iso        the installer images every bake starts from           (20 artifacts)
 #     macos      OpenCore, its template, and the two OVMF blobs        ( 4)
 #     recovery   Apple's recovery images, one per macOS release        ( 3)
-#     android    an AVD built from Google's AOSP system image          ( 1)
+#
+# BLISSOS IS NOT HERE. Its ISO is pinned by sha256 in lib/images.py and fetched by
+# android/blissos16/fetch_iso.py inside the install job, because 2.2 GiB of Android installer is
+# used by one workflow - unlike the twenty Linux ISOs, which is why those are mirrored.
 #
 # lib/publish_artifacts.py is the dispatcher: it owns the tag-to-group table, the ordering
 # and the keep-going behaviour, and each publisher keeps the code only it can have. See its
 # docstring for why the fetching is NOT shared - a macOS recovery image is a session cookie,
-# a five-field POST and a token exchange, and an AVD is a directory rather than a file.
+# a five-field POST and a token exchange.
 #
 # MANUAL ONLY. These are pinned inputs: they change when a version is deliberately bumped, so
 # running this is a decision rather than a side effect of a commit.
@@ -37,7 +39,6 @@ on:
           - iso
           - macos
           - recovery
-          - android
         default: all
       which:
         description: >-
@@ -54,104 +55,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # ===========================================================================
-  # ANDROID - a job of its own, on the runner, because it needs a DIFFERENT image.
-  # ===========================================================================
-  #
-  # avdmanager refuses to create an AVD unless the SDK's `emulator` package is present, and
-  # the bake image does not carry the SDK - by the time a bake runs, the AVD already exists
-  # and was published to ghcr. Shipping 1.5 GB of JDK, sdkmanager and system image into
-  # every Windows and Linux bake to use it once is the trade android/15/Containerfile.builder
-  # exists to avoid.
-  #
-  # So this cannot share the `publish` job below, which runs INSIDE the bake image (and a
-  # container job cannot start another container). It runs on the runner and starts the
-  # builder image with docker, which is what the workflow this replaced did. That is also
-  # why the failure was "emulator package must be installed": the group was routed through
-  # the bake image, where it never could have worked.
-  android:
-    # `all` and `android` both include it; a `which` includes it only when it names a
-    # sysimg- tag, because every other tag belongs to the job below.
-    if: |
-      inputs.group == 'all'
-      || inputs.group == 'android'
-      || startsWith(inputs.which, 'sysimg-')
-    runs-on: ubuntu-24.04
-    timeout-minutes: 90
-    permissions:
-      contents: read
-      checks: write
-      packages: write
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: prepare the runner
-        uses: easydev-org/easyactions/runner-check@main
-        with:
-          # The AVD is built and packed here; nothing is booted for that, but the emulator's
-          # first start is, so KVM is required.
-          kvm: true
-          disk-gb: '20'
-          token: ${{ github.token }}
-
-      - name: prepare
-        uses: easydev-org/easyactions/log-stream@main
-        with:
-          token: ${{ github.token }}
-          name: android-prepare
-          interval: "10"
-          command: |
-            set -euo pipefail
-            mkdir -p out
-            python3 lib/ci.py install-oras
-            python3 lib/ci.py login --registry ghcr.io
-            python3 lib/android_pin.py
-
-      - name: build the AVD and publish it
-        uses: easydev-org/easyactions/log-stream@main
-        with:
-          token: ${{ github.token }}
-          name: android-avd
-          interval: "20"
-          command: |
-            set -euo pipefail
-            # THE BUILDER IMAGE, NOT THE BAKE ONE. See the job's comment.
-            docker run --rm \
-              --device /dev/kvm \
-              --volume "$PWD:/repo:ro" \
-              --volume "$PWD/out:/out" \
-              --workdir /out \
-              --env GITHUB_TOKEN="${{ github.token }}" \
-              --env GITHUB_ACTOR="${{ github.actor }}" \
-              --env GITHUB_REPOSITORY="${{ github.repository }}" \
-              ghcr.io/${{ github.repository }}:android-builder \
-              python3 /repo/lib/publish_android.py \
-                --image sysimg:android-15-aosp \
-                --artifacts /out \
-                --repository "${{ github.repository }}"
-
-      - name: keep the recording
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-recording
-          path: |
-            out/install.mp4
-            out/last-frame.png
-            out/emulator.log
-          if-no-files-found: warn
-          retention-days: 14
-
   publish:
-    # THE `iso`, `macos` AND `recovery` GROUPS; android is the job above.
-    #
-    # A `which` THAT NAMES A sysimg- TAG BELONGS TO THE ANDROID JOB TOO - `which` overrides
-    # `group`, so `--which sysimg-android-15-aosp` with group=all would otherwise reach this
-    # job and fail on the emulator package the same way.
-    if: |
-      !startsWith(inputs.which, 'sysimg-')
-      && (inputs.which != '' || inputs.group != 'android')
+    # THE `iso`, `macos` AND `recovery` GROUPS.
+    if: inputs.which != '' || inputs.group != 'android' 
     runs-on: ubuntu-latest
     # A full run fetches twenty installer images and three recovery images - a few hours of
     # downloads. A single group is well under this.
@@ -238,4 +144,3 @@ jobs:
             set -euo pipefail
             python3 lib/ci.py tags --prefix iso-
             python3 lib/ci.py tags --prefix macos-
-            python3 lib/ci.py tags --prefix sysimg-

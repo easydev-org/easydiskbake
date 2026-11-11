@@ -1,33 +1,31 @@
 """Build the bake image, the Android images and the macOS appliance, and push them all.
 
-    python3 lib/build_image.py                 # the three tooling images
+    python3 lib/build_image.py                 # both images
     python3 lib/build_image.py --only appliance  # just the macOS appliance
     python3 lib/build_image.py --only bake     # just the bake image
 
-FOUR IMAGES, FOUR PURPOSES
+TWO IMAGES, TWO PURPOSES
 
     <repo>:latest           the bake image: qemu, xorriso, swtpm, OVMF, ffmpeg,
                             wimlib, aria2, oras, python3
-    <repo>:android-builder  cmdline-tools, a JRE, unzip, zstd - and nothing that boots
-    <repo>:android-qemu     the emulator, adb, lz4, e2fsprogs and a system image - the
-                            tools that turn an AOSP system image into bootable disks
     <repo>:macos15-appliance a bootable macOS 15 VM: the baked macos15-ssh disk, the
                             recovery image and the OpenCore assets, all inside the image
 
-They are separate because the second is 1.5 GB of SDK and JDK that only one workflow
-calls, and the bake image is pulled by every bake. Combining them would make every
-Windows bake carry an Android SDK it never opens.
+macos15-appliance is separate because it is 16 GiB of disk that only someone who wants to
+run macOS pulls, so it must not be a layer of the image every bake starts from. It is also
+the one image here that needs a registry credential DURING the build - it pulls six
+artifacts from this repository's own package - which is a `--secret` mount rather than a
+build argument, so the token never lands in the image history.
 
-macos15-appliance is separate for the opposite reason: it is 16 GiB of disk that only
-someone who wants to run macOS pulls, so it must not be a layer of the image every bake
-starts from. It is also the one image here that needs a registry credential DURING the
-build - it pulls six artifacts from this repository's own package - which is a `--secret`
-mount rather than a build argument, so the token never lands in the image history.
+THE TWO ANDROID IMAGES ARE GONE, AND SO IS THE ROUTE THEY EXISTED FOR.
 
-android-qemu is separate for a measured reason rather than a tidy one: the bake image has
-no `lz4`, and mkdisks.py needs it to append an fstab to the SDK ramdisk as a third legacy
-LZ4 stream. Adding lz4 to the bake image would put a tool every other platform's bake
-never calls into the image they all pull.
+The two Android images that used to be built here carried cmdline-tools, a JRE, the
+emulator and adb, so `avdmanager` could assemble an AVD from Google's AOSP system image and
+the goldfish machine could boot it. That was the SDK's way of turning a system image into
+disks, and Android is the one platform here that a STOCK qemu boots as an ordinary PC:
+android/blissos16 installs onto a GPT disk with an ESP and starts it through UEFI, which
+needs nothing the bake image does not already have. One Android route, and it is the one
+with no SDK in it.
 
 WHY THE BUILD IS A SCRIPT
 
@@ -84,65 +82,6 @@ BAKE_CHECKS = [
     # Windows 11 will not install without it and its absence reads as a broken ISO.
     ["ls", "-l", "/usr/share/OVMF/OVMF_CODE_4M.fd", "/usr/share/OVMF/OVMF_VARS_4M.fd"],
 ]
-
-# What the Android builder carries. avdmanager is the one tool the workflow cannot do
-# without, and it fails with a Java stack trace when the JRE is missing rather than
-# saying so.
-#
-# avdmanager --help exits non-zero and writes to stderr, so `sdkmanager --version` is
-# the version check and avdmanager is checked by its mere existence - see the `command
-# -v` style entry below, which is why this list is not only version flags.
-BUILDER_CHECKS = [
-    ["python3", "--version"],
-    ["unzip", "-v"],
-    ["zstd", "--version"],
-    ["java", "-version"],
-    ["sdkmanager", "--version"],
-    ["sh", "-c", "command -v avdmanager"],
-]
-
-# What android-qemu carries. EVERY ENTRY IS A TOOL android/15/mkdisks.py OR
-# android/15/run_qemu.py CALLS BY NAME, and the list exists because the reason this image
-# exists at all is a tool the bake image turned out not to have:
-#
-#     $ command -v lz4        in ghcr.io/easydev-org/easydiskbake:latest
-#     lz4: MISSING
-#
-# A build that installs the wrong package name still starts, still pushes, and fails
-# twenty minutes into the workflow with `FileNotFoundError: lz4`. Asking each binary for
-# its version at build time turns that into a failed image build.
-QEMU_CHECKS = [
-    ["python3", "--version"],
-    ["lz4", "--version"],
-    ["unzip", "-v"],
-    ["mkfs.ext4", "-V"],
-    ["debugfs", "-V"],
-    ["zstd", "--version"],
-    # BY ABSOLUTE PATH, BECAUSE THE SDK IS NO LONGER ON PATH. See the note in Containerfile:
-    # putting it there made a bare `qemu-img` resolve to the emulator's 2018 build in every
-    # platform's bake. This image (android-qemu) still has the binaries; it just names them.
-    ["/opt/android-sdk/emulator/emulator", "-version"],
-    ["/opt/android-sdk/platform-tools/adb", "version"],
-    # THE NETWORK TOOLS, WHICH lib/net.py SHELLS OUT TO AND WHICH THE IMAGE WAS MISSING.
-    #
-    # They are installed in the same apt line as lz4, and a check that asked only
-    # `command -v` inside the Dockerfile's RUN passed while the runtime image did not have
-    # them - the box that ran the emulator answered `ip: command not found` and the guest
-    # came up with no network. `_verify` runs each of these in a container of the built
-    # image, which is the thing that would have caught it.
-    ["ip", "-V"],
-    ["iptables", "--version"],
-    ["dnsmasq", "--version"],
-    ["pkill", "--version"],
-    ["ping", "-V"],
-    ["nc", "-h"],
-    # The qemu the emulator embeds is a FILE, not a binary on PATH, so it is asked for
-    # directly. mkdisks.py and run_qemu.py never call it by name - the emulator does -
-    # which is exactly why a PATH-only check would pass without it.
-    ["ls", "-l", "/opt/android-sdk/emulator/qemu/linux-x86_64/qemu-system-x86_64"],
-    ["ls", "-d", "/opt/android-sdk/emulator/lib64"],
-]
-
 
 # What the macOS appliance carries. EVERY ENTRY IS SOMETHING THE BOOT NEEDS, and the point
 # of checking here rather than at first start is that a missing asset otherwise shows up as a
@@ -217,8 +156,8 @@ def _push(image: str, tags: list[str]) -> None:
 
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--only", choices=["bake", "android", "qemu", "appliance"], default=None,
-                   help="build one image instead of all four")
+    p.add_argument("--only", choices=["bake", "appliance"], default=None,
+                   help="build one image instead of both")
     p.add_argument("--ghcr-token-file", default="",
                    help="file holding a ghcr token for the appliance build; written to a "
                         "temporary file when empty and pushed out of the image afterwards")
@@ -239,16 +178,6 @@ def main(argv: list[str]) -> int:
             _build(image, "latest", "Containerfile", stamp=stamp)
             _verify(image, "latest", BAKE_CHECKS)
             _push(image, ["latest", stamp])
-
-        if args.only in (None, "android"):
-            _build(image, "android-builder", "android/15/Containerfile.builder", stamp=None)
-            _verify(image, "android-builder", BUILDER_CHECKS)
-            _push(image, ["android-builder"])
-
-        if args.only in (None, "qemu"):
-            _build(image, "android-qemu", "android/15/Containerfile.qemu", stamp=None)
-            _verify(image, "android-qemu", QEMU_CHECKS)
-            _push(image, ["android-qemu"])
 
         if args.only in (None, "appliance"):
             # NO STAMP. A 16 GiB image is not something to redeploy by accident, and its

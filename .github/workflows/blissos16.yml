@@ -9,10 +9,10 @@ name: blissos16
 # `install` is `steps/install.yaml` and `launch` is `steps/launch.yaml`, which is the shape
 # `easyvm` exists for and what windows/11/steps/ssh.yaml already does.
 #
-# WHY THERE IS AN android/blissos16 AT ALL, WITH android/15 ALREADY HERE
+# THIS IS THE ONLY ANDROID ROUTE, AND WHY IT REPLACED THE OTHER ONE
 #
-# android/15 boots Google's AOSP image through the SDK's `emulator` binary, and that binary is
-# the whole problem: it means goldfish/ranchu, and goldfish makes four things true that nothing
+# There was an emulator route: Google's AOSP system image booted through the SDK's `emulator`
+# binary, which means goldfish/ranchu - and goldfish makes four things true that nothing
 # downstream can fix from the guest side.
 #
 #     kernel-ranchu is not a bzImage    measured: 497 bytes of 0xff, HdrS at 514, no 0xAA55.
@@ -21,9 +21,14 @@ name: blissos16
 #     /data is encrypted, on nosuid      measured: dm-42 ext4 (rw,seclabel,nosuid,...).
 #     su accepts root and shell only     measured: an app uid gets "not allowed".
 #
-# This path has none of them. BlissOS is Android-x86: a real bzImage, an initrd that assembles
-# the root itself, and a plain ext4 for /data. What it needs instead is what a PC needs - a
-# partition table, an ESP and a bootloader - and that is what these two stages produce.
+# It also cost two images (android-builder, android-qemu), two workflows and five lib modules,
+# and the one thing it could never do was produce a disk that starts itself - the image already
+# WAS the disks, and the emulator was what booted them.
+#
+# BlissOS is Android-x86 and has none of those four problems: a real bzImage, an initrd that
+# assembles the root itself, and a plain ext4 for /data. What it needs instead is what a PC
+# needs - a partition table, an ESP and a bootloader - and that is what these two stages
+# produce, so the launch stage is a real boot of a real disk.
 #
 # WHY 16.9.7 IS ANDROID 13, AND WHY THAT IS STILL THE NEWEST
 #

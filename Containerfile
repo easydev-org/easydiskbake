@@ -172,91 +172,22 @@ RUN set -eux; \
     ssh -V; \
     python3 -c "import yaml; print('yaml', yaml.__version__)"
 
-# ---------------------------------------------------------------------------
-# The Android emulator and adb.
+# NO ANDROID SDK IN THIS IMAGE, AND THAT IS NOW A FACT RATHER THAN A PATH FIX.
 #
-# WHY THEY ARE HERE AND cmdline-tools IS NOT
+# It used to carry cmdline-tools, the emulator and adb, because one route booted Google's AOSP
+# system image through the emulator. android/blissos16 replaced it: BlissOS is Android-x86, a
+# stock qemu boots it, and it installs onto a GPT disk with an ESP that UEFI starts - so nothing
+# in this image needs to know what an AVD is.
 #
-# A bake pulls a finished AVD from ghcr and starts the emulator on it. It never calls
-# avdmanager, so it never needs the JDK or cmdline-tools - those live in the separate
-# android-builder image (android/15/Containerfile.builder), which one workflow uses
-# once and discards.
+# The reason to say so here is what the SDK cost when it WAS present: an `ENV PATH` that put the
+# emulator's directory ahead of /usr/bin put the emulator's own qemu-img (2.12, a 2018 build with
+# no zstd) in front of the real one for EVERY
+# platform's bake, and this repository compressed a disk with /usr/bin/qemu-img 11.1 and then
+# failed to open its own output:
 #
-# What it does need is `/opt/android-sdk/emulator` and `/opt/android-sdk/platform-tools`,
-# because that is where the emulator looks for its system images and where adb comes
-# from. Both are fetched with the SDK's own package manager here rather than by
-# copying binaries, so the licences are accepted in the image and no workflow has to
-# answer a prompt.
-ARG CMDLINE_TOOLS=commandlinetools-linux-16111833_latest.zip
-
-RUN set -eux; \
-    apt-get update; \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        unzip \
-        openjdk-21-jre-headless \
-        libx11-6 libx11-xcb1 libxcb1 libxau6 libxdmcp6 libbsd0 \
-        libpulse0 libasound2t64 libnss3 libnspr4 \
-        libgl1 libglx-mesa0 libegl1 libgles2 \
-        libgtk-3-0t64 libxcb-render0 libxcb-shape0 libxcb-xfixes0 libxcb-randr0 \
-        ; \
-    rm -rf /var/lib/apt/lists/*
-
-ENV ANDROID_SDK_ROOT=/opt/android-sdk \
-    ANDROID_HOME=/opt/android-sdk \
-    ANDROID_AVD_HOME=/opt/android-avd
-
-RUN set -eux; \
-    mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools" "$ANDROID_AVD_HOME"; \
-    curl -fsSL -o /tmp/cmdtools.zip \
-        "https://dl.google.com/android/repository/${CMDLINE_TOOLS}"; \
-    unzip -q /tmp/cmdtools.zip -d "$ANDROID_SDK_ROOT/cmdline-tools"; \
-    rm -f /tmp/cmdtools.zip; \
-    mv "$ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools" \
-       "$ANDROID_SDK_ROOT/cmdline-tools/latest"; \
-    yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true; \
-    "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
-        "platform-tools" "emulator" >/dev/null; \
-    rm -rf "$ANDROID_SDK_ROOT/cmdline-tools" /root/.android/cache
-
-# THE SDK DIRECTORIES ARE *NOT* ON PATH, AND THAT IS THE FIX FOR A WHOLE CLASS OF BUG.
-#
-# This line used to be
-#
-#     ENV PATH="$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/emulator:$PATH"
-#
-# and every container built from this image got it - macOS, Windows, BSD, Linux, all of them -
-# because they all run `ghcr.io/.../easydiskbake:latest`. The Android emulator ships its own
-# qemu-img (2.12, a 2018 build) and having it ahead of /usr/bin meant that a bare `qemu-img`
-# in ANY bake resolved to it:
-#
-#     qemu-img: Invalid parameter 'compression_type'          (2018 build, no zstd)
+#     qemu-img: Invalid parameter 'compression_type'
 #     qemu-img: Could not open '...': Unsupported qcow2 feature(s): compression type
 #
-# The second message is from run 42775862720: this repository compressed a disk with
-# /usr/bin/qemu-img (11.1, zstd), then failed to open its own output with the Android one.
-# lib/compress.py and lib/overlay.py already worked around it by naming /usr/bin/qemu-img
-# explicitly, and android/15/run_qemu.py already named the emulator's copy explicitly -
-# so the PATH entry was buying nothing and costing every other platform.
-#
-# WHAT USES THE ABSOLUTE PATHS INSTEAD: lib/emulator.py (emulator, adb), lib/build_image.py's
-# version checks, and android/15/run_qemu.py's own qemu-img. See ANDROID_SDK_ROOT below.
-ENV ANDROID_BIN="$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/emulator"
+# Removing the SDK removes the trap. If an Android tool ever needs to come back, it comes back by
+# ABSOLUTE PATH and never by prepending to PATH.
 
-# BY ABSOLUTE PATH, BECAUSE THE SDK IS NOT ON PATH. This RUN used the bare names and broke the
-# moment they left PATH:
-#
-#     + emulator -version
-#     /bin/sh: 1: emulator: not found
-#
-# which the image build reported as a warning and then published anyway - `verify` afterwards
-# confirmed the fix it was built for (`qemu-img --version: 11.1.0`, no longer the emulator's 2018
-# build), so the push was right and this line was the only casualty. It is still a broken check in
-# the file that documents the mistake, and it should not survive a second build.
-RUN set -eux; \
-    "$ANDROID_SDK_ROOT/platform-tools/adb" version | head -1; \
-    "$ANDROID_SDK_ROOT/emulator/emulator" -version 2>&1 | head -1
-
-# GitHub Actions runs a container job as `docker run <image> <entrypoint>`; this base's
-# entrypoint starts a VM, which is not what a job wants.
-ENTRYPOINT []
-CMD ["/bin/bash"]

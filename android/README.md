@@ -2,87 +2,84 @@
 
 ```
 android/
-  15/    Android 15 (API 35), AOSP - the `default` flavour, no GMS
+  blissos16/    BlissOS 16.9.7 (Android 13, x86_64) - Android-x86, installed onto a GPT disk
 ```
+
+## Two stages, four files, no program
+
+```
+blissos16/
+  fetch_iso.py             download the pinned ISO, verify its sha256, unpack the three members
+  steps/install.yaml       make the disk, boot the installer, answer ten panes, place Grub2,
+                           read the ESP back, publish
+  steps/launch.yaml        boot the installed disk with no -kernel and no cdrom, wait for
+                           Android's own UI, photograph it
+  steps/bliss_esp.py       the two `python:` extensions: edit the ESP's FAT, read it back
+```
+
+`./easyvm android/blissos16/steps/install.yaml` and `.../launch.yaml` are the whole stage. There
+is no `install.py` and no `launch.py` - what used to be in them is either a step (`disk:` with
+`disk_gb:`, `boot:` with `os: android`, `compress:`) or a `python:` extension for the one act that
+is not an action on a screen: editing a FAT filesystem at a byte offset inside a qcow2.
+
+## Why 16.9.7, and why it is Android 13 rather than 15
+
+It is the newest publicly published BlissOS image. The project's own pages say "Public images are
+paused" with no ETA; the BlissOS17 (Android 14) and Voyager/18 (Android 15) directories on
+SourceForge exist and contain no ISO; `BlissOS/stable_releases` v17.8.3 pins `android-14.0.0_r53`;
+and Android 15 exists only as source in `platform_manifest`'s `voyager-qpr2-x86` tree, which has to
+be **built** - 350 GB and hours, not a download.
 
 ## Why this is a root and not a `linux/` distribution
 
-Android does not have an installer that writes a disk. Google ships a system image
-whose contents *are* the disks - `system.img`, `vendor.img`, `userdata.img` - plus a
-kernel and ramdisk that boot them. There is no partition table to create, no installer
-to drive, and nothing to watch for half an hour.
+Android-x86 is *almost* a PC, and the parts where it is not are the whole of this directory:
 
-So the stages line up differently, and it is worth being exact about which ones are
-shared:
-
-| stage | Windows / macOS / Linux | Android |
+| stage | Windows / macOS / Linux | Android-x86 |
 |---|---|---|
-| fetch | an ISO from ghcr | a **system image** from ghcr, published by `artifacts-publish.yml` |
-| install | an installer writes a disk | **none** - the image already is the disk |
-| boot | `lib/vm.py` builds a qemu argv | `lib/emulator.py` builds an emulator argv |
-| drive | QMP: `lib/qmp.py`, `lib/ocr.py` | **the same** - the emulator speaks QMP |
+| fetch | an ISO from ghcr | an ISO from SourceForge, pinned by sha256 (`lib/images.py`) |
+| install | an installer writes a disk | **the same** - `boot: os: android` with an ISO, then ten panes |
+| boot an installed disk | firmware, ESP, bootloader | **the same**, and this is the point of the launch stage |
+| drive | QMP: `lib/qmp.py`, `lib/ocr.py` | **the same** |
 | record | `lib/snapshots.py` over QMP | **the same** |
-| prove | serial console, RDP, a greeter | `adb getprop sys.boot_completed` |
-| publish | `lib/publish_disk.py` | **the same** |
+| prove | ssh, RDP, a greeter | `desktop: android` - a frame, read by `lib/desktop.py` |
+| publish | `lib/compress.py` | **the same** |
 
-Five of seven stages are the same code. The two that differ are the launcher and the
-arrival check, and both differ for a reason rather than by preference.
+The differences are all facts the file states rather than a second pipeline:
 
-## Why the emulator and not `qemu-system-x86_64`
+    -vga std FOR THE INSTALLER, virtio-vga FOR THE INSTALLED SYSTEM
+        The installer's TUI draws on a plain framebuffer. The installed system runs Android's
+        HWC with `HWC=drm_minigbm`, which needs a DRM/KMS node; `-vga std` gives a framebuffer
+        and no DRM device, and the screen then stops on initrd's last line for as long as you
+        wait - measured at 240 s, 600 s and 600 s again before the cause was found.
 
-The system image is built for Google's `ranchu` machine and its `goldfish` device
-family - framebuffer, pipe, audio, battery. Upstream qemu does not implement them.
-Booting a ranchu image on a `q35` machine stops in the kernel: no display device, no
-`goldfish_pipe`, and `/system` never mounts.
+    NO console=ttyS0 ON THE INSTALLER
+        With it the TUI moves to the serial line and the keys the walkthrough sends go to a
+        console nobody is drawing on. Measured, four runs.
 
-The emulator *is* qemu - Google's fork, with those devices. So the alternative to the
-emulator is not "plain qemu", it is "build a qemu with goldfish support", which is the
-same work Google already did.
+    THE BOOTLOADER HAS TO BE AT /EFI/BOOT
+        `install_grub_efi` writes /EFI/BLISSOS and registers its entry with `efibootmgr`, which
+        lands in the VARS image and not on the disk. A disk started with any other NVRAM falls
+        into the firmware's own shell. `lib/esp.py` copies the loaders to the removable-media
+        path and replaces the config's `search.fs_uuid` - a UUID the installer recorded BEFORE
+        it formatted the partition, so it names a filesystem that does not exist.
 
-What makes this acceptable is that the emulator speaks QMP. `lib/qmp.py`,
-`lib/ocr.py` and `lib/snapshots.py` drive it exactly as they drive a qemu guest, so the
-driver and recording code is shared even though the launcher is not.
+All three live in `lib/vm_session.py`'s android branch and in `steps/install.yaml`, beside the
+numbers they were measured from.
 
-## What is published, and why it is an AVD rather than a qcow2
+## Why there is no emulator route any more
 
-```
-ghcr.io/easydev-org/easydiskbake:sysimg-android-15-aosp    the AVD input  (artifacts-publish.yml)
-ghcr.io/easydev-org/easydiskbake:android-15-aosp           the baked AVD  (android-15_aosp-bake.yml)
-```
+There was: `android/15` booted Google's AOSP system image through the SDK's `emulator` binary,
+with two workflows (`android.yml`, `android-qemu.yml`), two images (`android-builder`,
+`android-qemu`) and five lib modules. It is gone, and the four facts that made it expensive are
+why BlissOS replaced it rather than joined it:
 
-The runtime consumes `emulator -avd sandbox`, so the artifact is an AVD directory
-tarred with zstd (`--sparse`, because the 4 GiB data partition is mostly holes). A
-qcow2 of an ext4 system image is not something the emulator can boot.
+    kernel-ranchu is not a bzImage     measured: 497 bytes of 0xff, HdrS at 514, no 0xAA55
+    -system publishes no GPT uevents   measured: first-stage init waits in /sys forever, so the
+                                       disks had to be split into three and kept paired
+    /data is encrypted, on nosuid      measured: dm-42 ext4 (rw,seclabel,nosuid,...)
+    su accepts root and shell only     measured: an app uid gets "not allowed"
 
-Two artifacts rather than one because creating an AVD needs `cmdline-tools` and a JDK.
-Doing that once in `artifacts-publish.yml` means the bake image carries neither - it
-carries only the emulator and adb, and pulls a finished AVD.
-
-## The system image, and what it is pinned to
-
-| | |
-|---|---|
-| package | `system-images;android-35;default;x86_64` |
-| API | 35 (Android 15) |
-| flavour | `default` - AOSP, no Google services |
-| url | `dl.google.com/android/repository/sys-img/android/x86_64-35_r02.zip` |
-| sha1 | `2d857d170c0d1b827149565da34b3383e5306f7f` (Google's own, from `sys-img2-3.xml`) |
-
-The `gms` flavour (`google_apis`) is a different package and is not published here.
-Adding it is one entry in `lib/images.py`, not a change to any workflow.
-
-## The sandbox shape
-
-The AVD is configured as a 1024x768 landscape desktop with a hardware mouse, matching
-the Windows, macOS and Linux sandboxes so a viewer sees the same shape whichever
-platform they are driving. Those entries are written explicitly in `lib/avd.py`
-because the `pixel_6` device profile is a phone in portrait, and the emulator reads
-some of them from the config in preference to the command line.
-
-## What is not here yet
-
-| | why |
-|---|---|
-| **GMS / Play** | a different system image; one entry in `lib/images.py` when it is wanted |
-| **input** | the QMP path supports it, but nothing drives the guest yet - a sandbox is view-and-adb |
-| **a persistent /data** | `-wipe-data` is unconditional; a bake must start cold and a snapshot would hide a broken image |
+BlissOS has none of them - a real bzImage, an initrd that assembles the root itself, and a plain
+ext4 for /data - and it needs what a PC needs, which is a partition table, an ESP and a
+bootloader. That is a disk this repository installs and then boots, which is the one claim the
+emulator route could never make: it never had a disk of its own to start.

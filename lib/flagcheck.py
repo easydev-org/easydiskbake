@@ -144,7 +144,7 @@ def calls_in(text: str) -> list[tuple[str, str]]:
     flat = flat.replace("\\\n", " ")
     # 3. THE SEPARATORS. `;` `&&` `||` end a command, AND SO DOES A NEWLINE - a step
     #    frequently runs several commands one per line (artifacts-publish's prepare runs
-    #    `ci.py install-oras`, `ci.py login` and `android_pin.py` that way). Splitting on
+    #    `ci.py install-oras` and `ci.py login` that way). Splitting on
     #    separators alone kept only the first of those, which is how this checker first
     #    reported 74 calls where the workflows contain 84.
     commands = re.split(r"(?:;|&&|\|\||\n)\s*", flat)

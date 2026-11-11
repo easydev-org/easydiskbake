@@ -118,19 +118,17 @@ EXPECTED = {
     # sshd is a documented fact rather than an omission: its installer's template has the
     # openssh line commented out.
     "nixos.yml":    {"bake": None, "launch": None, "ssh": False},
-    # android.yml BAKE MAKES AN AVD, not a disk: a directory of raw images driven by the
-    # emulator, which has no sshd and is not something fstrim or trim or ReTrim can reach.
-    "android.yml":     {"bake": None},
-    # android-qemu.yml BUILDS DISKS BUT NOBODY LOGS IN TO THEM. Its guest is Android with
-    # the emulator's root console on ttyS0, not sshd, and the disk set is written by
-    # mkdisks.py rather than by an installer - there is no filesystem to trim that this
-    # repository would then be booting to check.
-    "android-qemu.yml": {"sysimg": None, "disks": None, "ssh": None, "dev": None},
-    # blissos16.yml IS ANDROID-X86, AND IT IS THE ONE ANDROID PATH HERE THAT NEEDS NO
-    # sshd AT ALL. Its guest is a desktop that boots on a stock qemu; what proves it is the
-    # painted frame, read by the same lib/desktop.py test the macOS and Windows launches use.
-    # A trim stage has nothing to reach either: /data is a plain ext4 file this repository
-    # creates, not a disk an installer laid down with unused blocks in it.
+    # blissos16.yml IS THE ANDROID PATH, AND IT NEEDS NO CLEAN STEP YET.
+    #
+    # Its guest is Android-x86 on a disk this repository's own installer wrote - a 32 GiB
+    # partition with a system image copied into it, not a disk an installer laid down with
+    # unused blocks. There is also no sshd to reach it by: the launch stage proves the machine
+    # with a frame, read by lib/desktop.py's android test.
+    #
+    # WHEN THE ssh STAGE ARRIVES, THIS ROW GAINS `"ssh": False` UNTIL sshd ANSWERS - the same
+    # shape windows-11.yml had before its ssh stage existed. A trim is a thing done over a
+    # connection, and a row that claims one before there is a daemon to connect to is the
+    # "a job with no sshd has a clean step" half of this check's own warning.
     "blissos16.yml": {"install": None, "launch": None},
 }
 

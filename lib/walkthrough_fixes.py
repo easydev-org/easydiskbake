@@ -2252,13 +2252,56 @@ def main() -> int:
         android_env = [line for line in containerfile.splitlines()
                        if line.startswith("ENV PATH=") and "android" in line.lower()]
         check("the Android SDK is not on the shared PATH", "Containerfile", not android_env)
-        # AND WHAT NEEDS IT NAMES IT, so removing the PATH entry did not just move the breakage.
-        check("the emulator resolves its binaries from the SDK", "lib/emulator.py",
-              "sdk_binary(" in read("lib/emulator.py"))
-        check("android/15 resolves adb from the SDK", "android/15/run_qemu.py",
-              "_adb_binary(" in read("android/15/run_qemu.py"))
-        check("the image build checks the SDK by path", "lib/build_image.py",
-              "/opt/android-sdk/emulator/emulator" in read("lib/build_image.py"))
+        # AND NOW IT IS NOT IN THE IMAGE AT ALL, which is the stronger statement and the one that
+        # cannot regress: there is no SDK directory to put on a PATH, no emulator binary to run,
+        # and no second qemu-img to shadow /usr/bin. The emulator route is gone - see
+        # android/README.md for the four measured reasons it never paid for itself.
+        check("the image carries no Android SDK at all", "Containerfile",
+              "/opt/android-sdk" not in containerfile)
+        # THE CHECK IS ON THE BUILD CALLS, NOT ON THE WORD: the docstring explains what the two
+        # images were, which is the part worth keeping, so a `"android-builder" not in body` test
+        # fails on the explanation of the property it is checking.
+        image_src = read("lib/build_image.py")
+        check("the image builds no Android images", "lib/build_image.py",
+              "_build(image, \"android-builder\"" not in image_src
+              and "_build(image, \"android-qemu\"" not in image_src)
+        # --- ONE ANDROID ROUTE, AND IT IS THE ONE WITH NO SDK IN IT ----------------------
+        #
+        # There were two: an emulator route (android/15, two workflows, two images, five lib
+        # modules) and android/blissos16. Two routes to the same platform is two things to keep
+        # in step, and they had already diverged - the emulator one could not produce a disk that
+        # starts itself, because its image WAS the disks.
+        #
+        # DELETED FILES ARE CHECKED AS FILES. A grep over the tree would find the names in this
+        # comment, in android/README.md's history and in lib/build_image.py's explanation, so
+        # "does the file exist" is the question that actually has one answer.
+        for gone in ("android/15", "lib/avd.py", "lib/emulator.py", "lib/launch_android.py",
+                     "lib/publish_android.py", "lib/android_pin.py",
+                     ".github/workflows/android.yml", ".github/workflows/android-qemu.yml"):
+            check(f"{gone} is gone with the emulator route", gone,
+                  not os.path.exists(os.path.join(REPO, gone)))
+        # AND THE ONE ROUTE IS THE YAML ONE: no program beside the files, both stages naming the
+        # machine with one word.
+        check("the android route has no program in it", "android/blissos16",
+              not os.path.exists(os.path.join(REPO, "android/blissos16/install.py"))
+              and not os.path.exists(os.path.join(REPO, "android/blissos16/launch.py")))
+        # AND lib/images.py NO LONGER PINS A SYSTEM IMAGE. The BlissOS ISO is pinned there and
+        # is fetched by fetch_iso.py; a `sysimg:` entry would be a pin for a route that is gone.
+        check("nothing pins an Android system image", "lib/images.py",
+              "sysimg:" not in read("lib/images.py"))
+        # AND `all_images()` STILL RETURNS THE OTHER TABLES. Dropping ANDROID from that tuple is
+        # a one-word change that would silently stop publishing every mirror, so it is checked.
+        try:
+            import images as _images
+            check("the pin tables still all publish", "lib/images.py",
+                  len(_images.all_images()) >= 15)
+        except Exception as exc:                      # noqa: BLE001
+            check(f"lib/images.py loads ({exc})", "lib/images.py", False)
+        # AND THE APK-FREE CLAIM: the bake image carries no SDK, so a bare `qemu-img` cannot
+        # resolve to an emulator's 2018 build. Already checked above; this is the one that says
+        # the whole section is gone rather than merely off PATH.
+        check("the image has no Android SDK directory", "Containerfile",
+              "/opt/android-sdk" not in containerfile)
         # AND THE COMPRESSION AND CLEAN STEPS STILL NAME THEIR BINARY, which is right on its own
         # merits: four independent call sites re-derived this mistake and two of them failed with
         # a message that named neither the binary nor the disk.
