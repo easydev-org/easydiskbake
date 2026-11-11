@@ -1704,7 +1704,10 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
                  "linux": getattr(deskmod, "is_linux_desktop", None)}[family]
         if judge is None:
             raise StepError(f"{step.name}: lib/desktop.py has no is_{family}_desktop")
-        seconds = float(step.get("timeout", 900))
+        # `timeout:` ON THE STEP WINS, because a file that names a number for this wait means it.
+        # Otherwise `{{ boot_timeout }}` from the command line, otherwise the step's own 900.
+        raw = step.get("timeout") or 900
+        seconds = float(str(raw).strip() or 900)
         poll = float(step.get("poll", 5))
         deadline = time.time() + seconds
         started = time.time()
@@ -1801,6 +1804,15 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
         source = str(step.get("disk_from") or "") or str(
             getattr(getattr(driver, "session", None), "source_disk", "") or "")
         if not source:
+            # TWO WAYS TO HAVE NO INPUT, AND THEY WANT DIFFERENT MESSAGES.
+            #
+            # No session means the file has no `boot:` - so nothing will use a prepared disk, and
+            # the step is in the wrong file. A session that EXISTS but was given nothing means
+            # the command line forgot `--boot-disk`. Reporting "no disk_from" for both sends the
+            # reader to the wrong file.
+            if getattr(driver, "session", None) is None:
+                raise StepError(
+                    f"{step.name}: `disk:` prepares a disk for `boot:`, and this file has none")
             raise StepError(
                 f"{step.name}: `disk:` needs `disk_from:`, or a --boot-disk to read from")
         if not os.path.isabs(source):
@@ -3060,6 +3072,11 @@ def main(argv: list[str]) -> int:
     p.add_argument("--boot-share", default=None,
                    help="host directory to serve on the bridge; omit for ~/shared")
     p.add_argument("--boot-mem", type=int, default=0)
+    # HOW LONG THE GUEST MAY TAKE TO REACH ITS DESKTOP, for a file whose wait uses it. It is a
+    # run fact - the same disk is slower on a loaded runner - so it arrives here and a step reads
+    # it as `{{ boot_timeout }}` rather than the file naming a number that was measured once.
+    p.add_argument("--boot-timeout", type=int, default=0,
+                   help="seconds a `desktop:` wait may take; 0 uses the step's own timeout")
     p.add_argument("--boot-cpus", type=int, default=4)
     # WHERE A `compress:` STEP SHOULD PUT THE RESULT, when the file says `compress: "{{ out }}"`.
     # It is a fact about this run - the workflow names the artifact path - so it arrives here
@@ -3134,7 +3151,8 @@ def main(argv: list[str]) -> int:
     try:
         ok, ran = walk(driver, steps,
                        overrides={"args.user": args.user, "args.password": args.password,
-                                  "args.out": args.out or ""},
+                                  "args.out": args.out or "",
+                                  "args.boot_timeout": str(args.boot_timeout or "")},
                        start_at=args.start_at, stop_before=args.stop_before,
                        ssh_port=args.ssh_port, session=session)
     except StepError as exc:

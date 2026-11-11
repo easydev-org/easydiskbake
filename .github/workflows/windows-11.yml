@@ -341,11 +341,19 @@ jobs:
           interval: "20"
           command: |
             set -euo pipefail
-            python3 windows/11/ssh.py \
-              --gold out/windows11-gold.qcow2 \
+            # ONE ENTRY POINT, AND THE FILE IS THE STAGE.
+            #
+            # This used to be `python3 windows/11/ssh.py`, where the walkthrough was one call
+            # inside a program that also prepared the disk, started the machine, waited for a
+            # desktop and compressed the result. All four are steps in the file now -.  disk:,
+            #   boot:, desktop:, compress: - so the stage is the YAML and this line only says
+            # where to put the output.
+            ./easyvm windows/11/steps/ssh.yaml \
+              --boot-disk out/windows11-gold.qcow2 \
               --out out/windows11-ssh.qcow2 \
-              --boot-timeout "${{ inputs.boot_timeout || '900' }}" \
-              --no-clean
+              --work out/ssh-work \
+              --boot-mem 6144 \
+              --boot-timeout "${{ inputs.boot_timeout || '900' }}"
 
       # THE SSH STAGE'S OWN VIDEO, WHICH DID NOT EXIST UNTIL NOW.
       #

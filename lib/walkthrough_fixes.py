@@ -1289,6 +1289,30 @@ def main() -> int:
         check(f"{f} compresses after the machine is stopped", f,
               body.index("compress: \"{{ out }}\"") > body.index("record: false")
               or body.index("compress: \"{{ out }}\"") > body.index("shutdown:"))
+    # AND THE WINDOWS WORKFLOW RUNS THE FILE, NOT A PROGRAM.
+    #
+    # `install ssh` used to be `python3 windows/11/ssh.py`, where the walkthrough was one call
+    # inside a program that also prepared the disk, started the machine, waited for a desktop and
+    # compressed the result. All four are steps in the file now - `disk:`, `boot:`, `desktop:`,
+    # `compress:` - so the step names the file and where its output goes.
+    win_wf = read(".github/workflows/windows-11.yml")
+    check("the windows ssh stage runs its workflow file",
+          ".github/workflows/windows-11.yml",
+          "./easyvm windows/11/steps/ssh.yaml" in win_wf)
+    # AND THE BUDGET ARRIVES AS A VARIABLE. The same disk is slower on a loaded runner, so the
+    # wait reads `{{ boot_timeout }}` rather than a number measured once - and the var is declared,
+    # because a template that names an undeclared key fails at load.
+    win_ssh = read("windows/11/steps/ssh.yaml")
+    check("the desktop wait reads the run's budget", "windows/11/steps/ssh.yaml",
+          'timeout: "{{ boot_timeout }}"' in win_ssh
+          and "from: args.boot_timeout" in win_ssh)
+    # AND `--boot-timeout` EXISTS ON THE CLI, or the workflow line is a flag that is not there.
+    check("the boot budget is a command-line argument", "lib/steps.py",
+          '"--boot-timeout"' in st)
+    # AND A `disk:` STEP IN A FILE WITH NO `boot:` SAYS SO, rather than "no disk_from" - those
+    # send the reader to two different files.
+    check("a disk step without a boot is explained", "lib/steps.py",
+          "prepares a disk for `boot:`, and this file has none" in st)
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))

@@ -51,6 +51,11 @@ vars:
   out:
     from: args.out
     default: out/windows11-ssh.qcow2
+  # HOW LONG THE GUEST MAY TAKE TO REACH A DESKTOP. `--boot-timeout` on the command line, because
+  # the same disk is slower on a loaded runner; 900 is what this stage measured on its own.
+  boot_timeout:
+    from: args.boot_timeout
+    default: "900"
 
 # The account the answer file creates, and the port the host's forward points at.
 # lib/vm.build_args() forwards host 2222 -> guest 22, so sshd has to be on 22.
@@ -97,7 +102,9 @@ steps:
   # uses, which is why it is not repeated here.
   - name: wait for the desktop
     desktop: windows
-    timeout: 900
+    # FROM THE COMMAND LINE, because the same disk is slower on a loaded runner and a number
+    # measured once is a number that will be wrong on somebody else's machine.
+    timeout: "{{ boot_timeout }}"
 
   # --- 1. THE KEYBOARD, WHICH IS THE ONLY CHANNEL UNTIL SSHD EXISTS --------------------
   #
