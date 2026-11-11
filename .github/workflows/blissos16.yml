@@ -404,7 +404,14 @@ jobs:
     permissions:
       contents: read
       checks: write
-      packages: read
+      # WRITE, BECAUSE THIS JOB PUBLISHES TOO. It was `read` while the stage only pulled - and the
+      # first run that reached `push the disk` answered
+      #
+      #     Error response from registry: denied: installation not allowed to Write
+      #     organization package
+      #
+      # after seventeen steps had succeeded and 2071 MiB had been compressed.
+      packages: write
     steps:
       - uses: actions/checkout@v4
 
