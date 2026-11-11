@@ -52,6 +52,17 @@ sys.path.insert(0, REPO)
 sys.path.insert(0, os.path.join(REPO, "lib"))
 
 
+def _os_of(step, default: str = "") -> str:
+    """Which operating system a `boot:`/`shutdown:` step names, under either spelling.
+
+    `os:` IS THE NAME THAT SAYS WHAT IT IS. `family:` came first and is still accepted, because a
+    dozen workflow files say it and a rename that breaks them is a rename nobody can check. One
+    function, so there is one answer to "which key wins" rather than three `step.get(...)` calls
+    that each decide separately.
+    """
+    return str(step.get("os") or step.get("family") or default)
+
+
 def log(message: str) -> None:
     print(f"[steps {time.strftime('%H:%M:%S')}] {message}", flush=True)
 
@@ -151,10 +162,18 @@ STEP_KEYS = {    "name",        # required: what the log calls this step
     "record",      # start/stop a video of the screen; see the `record` step below
     "desktop",     # WAIT FOR A DESKTOP of `desktop_family`: windows, macos
     "desktop_family",
+    "compress",    # write the working disk to this path as a compressed qcow2
     "disk",        # PREPARE A DISK BEFORE `boot:` - move, copy or overlay an input qcow2
     "disk_from",   # the input this step prepares; required with `disk:`
     "disk_copy",   # keep the input (true) or move it (false, the default)
-    "family",      # for boot/shutdown: macos, windows, linux, android
+    "os",          # for boot/shutdown: macos, windows, linux, android.
+                   # WHAT THIS REPLACES: a stage used to build the qemu command line itself, and
+                   # the twelve arguments that make a machine a Windows one (UEFI, OVMF vars, a
+                   # virtio disk, a TPM, a fallback loader) or a macOS one (OpenCore, Apple SMC
+                   # with its OSK, an APFS driver, a Skylake model) were listed per stage. Naming
+                   # the OS is the same statement in one word, and `lib/vm_session.py` is the one
+                   # place where a name becomes hardware.
+    "family",      # the older spelling of `os`; kept so existing files keep loading
                    #            `android` is Android-x86: -kernel/-initrd and two files,
                    #            so `disk` names a DIRECTORY of kernel, initrd.img and
                    #            system.efs, not one qcow2. No sshd to wait for.
@@ -1383,7 +1402,7 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
     if step["boot"]:
         if session is None:
             raise StepError(f"{step.name}: boot needs a session; run this file through run_file")
-        family = str(step.get("family") or "macos")
+        family = _os_of(step, "macos")
         # `boot:` IS OVER WHEN QEMU IS RUNNING. Nothing else.
         #
         # AN SSHD INSIDE THE GUEST IS A DIFFERENT FACT, AND `require_ssh:` IS THE STEP THAT ASKS
@@ -1672,6 +1691,8 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
     # and needs no QMP of its own.
     if step["desktop"]:
         family = str(step.get("desktop_family") or step["desktop"] or "")
+        # `desktop: windows` OR `os: windows` - the second for a file that names the machine once.
+        family = family or _os_of(step)
         if family not in ("windows", "macos", "linux"):
             raise StepError(f"{step.name}: no desktop test for family {family!r}")
         if not hasattr(driver, "screen") or driver.screen is None:
@@ -1699,6 +1720,51 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
             time.sleep(poll)
         raise StepError(
             f"{step.name}: no {family} desktop in {seconds:.0f}s (last frame {shot or 'none'})")
+
+    # --- compress: THE STAGE'S OUTPUT, AND THE LAST THING A STAGE DOES ------------------
+    #
+    #     - name: publish the disk
+    #       compress: "{{ out }}"
+    #
+    # THIS WAS THE LAST PIECE OF PYTHON EVERY STAGE KEPT. `windows/11/ssh.py` ended with
+    #
+    #     if ok:
+    #         compress.compress(disk, args.out)
+    #         log(f"BAKED {args.out} ...")
+    #
+    # and `macos/15/ssh.py`, `desktop.py`, `dev.py`, `vm_configure.py` each ended with the same
+    # three lines in their own `finally`. That is not a fact about a machine or a screen - it is
+    # "write the disk where the workflow will look for it", which is exactly what a step is.
+    #
+    # IT RUNS ON THE DISK `boot:` STARTED, not on a path the file has to repeat: `session.disk`
+    # is the file this stage wrote, and `disk:` already pointed it at the prepared copy.
+    #
+    # NOT WRITTEN FROM INSIDE A `finally`. A compress after a failed walk is compressing a disk
+    # that the failed steps may have left half-configured, and publishing it is worse than
+    # publishing nothing. A step after the last real one only runs when the ones before it
+    # succeeded, which is the ordering this needs.
+    if step["compress"]:
+        dest = str(step["compress"])
+        session = getattr(driver, "session", None)
+        if session is None or not getattr(session, "disk", ""):
+            raise StepError(f"{step.name}: `compress:` needs a `boot:` before it")
+        if not os.path.isabs(dest):
+            dest = os.path.join(getattr(driver, "work", "") or ".", dest)
+        source = session.disk
+        if os.path.abspath(source) == os.path.abspath(dest):
+            raise StepError(
+                f"{step.name}: `compress:` would write onto its own input ({dest}); "
+                f"a qemu-img convert cannot read and write one file")
+        import compress as compressmod
+
+        log(f"  compress: {os.path.basename(source)} -> {dest}")
+        compressmod.compress(source, dest)
+        log(f"  BAKED {dest} ({os.path.getsize(dest) >> 20} MiB)")
+        # THE STAGE'S OUTPUT, SO A `python:` EXTENSION AFTER THIS READS THE RIGHT FILE rather than
+        # guessing which of the two qcow2 files in the work directory is the artifact.
+        session.disk = dest
+        driver.disk_path = dest
+        return
 
     # --- disk: PUT THE INPUT WHERE `boot:` WILL USE IT ---------------------------------
     #
@@ -2790,7 +2856,7 @@ def driver_for(qmp_path: str, *, work: str = "", width: int = 1920, height: int 
 
 def walk_with(steps: Walk, driver: "Driver", *, values: dict[str, str] | None = None,
               ssh_port: int = 2222, user: str = "vmuser",
-              password: str = "admin", frames: str = "",
+              password: str = "admin", frames: str = "", out: str = "",
               start_at: str = "", stop_before: str = "") -> tuple[bool, list[str]]:
     """Walk `steps` against `driver` - the half of run_file that does not open a connection.
 
@@ -2801,6 +2867,8 @@ def walk_with(steps: Walk, driver: "Driver", *, values: dict[str, str] | None = 
     setattr(driver, "release", str(steps.document.get("release", "15")))
     setattr(driver, "frames_dir", frames or "")
     overrides = {"args.user": user, "args.password": password}
+    if out:
+        overrides["args.out"] = out
     if values:
         overrides.update(values)
     setattr(driver, "values", steps.values(overrides))
@@ -2852,7 +2920,7 @@ def run_file(walkthrough: str, qmp_path: str, *, work: str = "",
     owns_machine = any(s["boot"] for s in steps.steps) and session is None
     if session is None and owns_machine:
         first = next(s for s in steps.steps if s["boot"])
-        family = str(first.get("family") or "macos")
+        family = _os_of(first, "macos")
         opts = dict(boot_options or {})
         session = MachineSession(
             family, disk_path or "", here,
@@ -2993,6 +3061,10 @@ def main(argv: list[str]) -> int:
                    help="host directory to serve on the bridge; omit for ~/shared")
     p.add_argument("--boot-mem", type=int, default=0)
     p.add_argument("--boot-cpus", type=int, default=4)
+    # WHERE A `compress:` STEP SHOULD PUT THE RESULT, when the file says `compress: "{{ out }}"`.
+    # It is a fact about this run - the workflow names the artifact path - so it arrives here
+    # rather than being written into the file, which is the same rule `args.user` follows.
+    p.add_argument("--out", default="", help="the path a `compress: \"{{ out }}\"` step writes")
     p.add_argument("--list", action="store_true", help="print the steps and exit")
     p.add_argument("--check", action="store_true",
                    help="validate the file and print what it would do, without a guest")
@@ -3053,7 +3125,7 @@ def main(argv: list[str]) -> int:
     if boots:
         first = next(s for s in steps.steps if s["boot"])
         session = MachineSession(
-            str(first.get("family") or "macos"), args.boot_disk, work,
+            _os_of(first, "macos"), args.boot_disk, work,
             share=args.boot_share, mem_mb=args.boot_mem, cpus=args.boot_cpus)
         # THE DRIVER CAN REACH THE SESSION, so a `disk:` step can say which file `boot:` should
         # start. Without this the two would need a third mechanism - an output the file cannot
@@ -3061,7 +3133,8 @@ def main(argv: list[str]) -> int:
         driver.session = session
     try:
         ok, ran = walk(driver, steps,
-                       overrides={"args.user": args.user, "args.password": args.password},
+                       overrides={"args.user": args.user, "args.password": args.password,
+                                  "args.out": args.out or ""},
                        start_at=args.start_at, stop_before=args.stop_before,
                        ssh_port=args.ssh_port, session=session)
     except StepError as exc:

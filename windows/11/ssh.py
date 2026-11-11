@@ -56,6 +56,7 @@ sys.path.insert(0, REPO)
 sys.path.insert(0, os.path.join(REPO, "lib"))
 
 import net  # noqa: E402
+import swtpm as swtpmmod  # noqa: E402
 import qmp as qmpmod  # noqa: E402
 import vm  # noqa: E402
 
@@ -355,7 +356,7 @@ def main(argv: list[str]) -> int:
     # NO TPM BY DEFAULT - see the note in bake.py's swtpm(). A published Windows disk
     # from this repository is installed with the answer file's BypassTPMCheck keys, so it
     # boots without one, and a TPM makes the disk and its state an inseparable pair.
-    tpm = start_swtpm(work) if args.tpm else ""
+    tpm = swtpmmod.start(work) if args.tpm else ""
 
     shape = vm.Shape(
         cpus=args.cpus, mem_mb=args.mem, machine="q35",
@@ -454,7 +455,7 @@ def main(argv: list[str]) -> int:
         kb.close()
 
         if args.tpm:
-            stop_swtpm(work)
+            swtpmmod.stop(work)
         if ok:
             log(f"exporting {args.out}")
             # compress.compress(), NOT A HAND-WRITTEN qemu-img CONVERT.
@@ -746,88 +747,12 @@ def wait_for_ssh(port: int = 2222, timeout: int = 120) -> bool:
         time.sleep(5)
     return False
 
-
-def start_swtpm(work: str) -> str:
-    """Windows 11 will not boot without a TPM, and the disk remembers the one it was
-    installed against, so this has to be a TPM that persists across the two stages.
-
-    NO --daemon, AND THE OUTPUT IS KEPT.
-
-    With --daemon, swtpm forks and the parent's exit status says only that the fork
-    worked. If the state directory cannot be loaded, the CHILD prints the reason and
-    dies - and the caller sees nothing until qemu fails to talk to it:
-
-        qemu-system-x86_64: tpm-emulator: TPM result for CMD_INIT: 0x9 operation failed
-        qemu exited during the boot
-        0 frames captured over 12s
-
-    which is what launch-windows report on runs 41501928264, 41503681324 and 41516552206.
-    Running it in the foreground with its log captured means a bad state is reported as a
-    bad state, by swtpm, in its own words.
-
-    The socket is waited for rather than assumed: swtpm creates it when it is ready to
-    serve, and qemu connecting a moment early is the same failure seen from the other
-    side.
-    """
-    state = os.path.join(work, "tpm")
-    os.makedirs(state, exist_ok=True)
-    sock = os.path.join(state, "swtpm.sock")
-    if not shutil.which("swtpm"):
-        raise SystemExit("swtpm is not installed; Windows 11 will not boot without a TPM")
-
-    log_path = os.path.join(work, "swtpm.log")
-    handle = open(log_path, "wb")
-    proc = subprocess.Popen(
-        ["swtpm", "socket", "--tpmstate", f"dir={state}",
-         "--ctrl", f"type=unixio,path={sock}", "--tpm2",
-         "--log", "level=5"],
-        stdout=handle, stderr=subprocess.STDOUT,
-    )
-
-    deadline = time.time() + 30
-    while time.time() < deadline:
-        if proc.poll() is not None:
-            break
-        if os.path.exists(sock):
-            return sock
-        time.sleep(0.2)
-
-    handle.close()
-    try:
-        with open(log_path, "rb") as fh:
-            tail = fh.read().decode("utf-8", "replace").splitlines()[-10:]
-    except OSError:
-        tail = []
-    if proc.poll() is not None:
-        raise SystemExit(
-            "swtpm exited before its socket appeared (exit %s).\n  %s"
-            % (proc.returncode, "\n  ".join(tail))
-        )
-    raise SystemExit("swtpm did not create its socket in 30s.\n  " + "\n  ".join(tail))
-
-
-def stop_swtpm(work: str) -> None:
-    """Stop swtpm on this work directory so its state reaches the disk.
-
-    pkill on the state directory, then wait: swtpm flushes tpm2-00.permall on SIGTERM,
-    and a state file read before that flush is a state file that fails to initialise on
-    the next start. Silently doing nothing when there is no TPM is right - this is called
-    on paths where one never started.
-    """
-    marker = os.path.join(work, "tpm")
-    subprocess.run(["pkill", "-f", marker], check=False)
-    for _ in range(40):
-        time.sleep(0.25)
-        check = subprocess.run(["pgrep", "-f", marker], capture_output=True, text=True)
-        if not check.stdout.strip():
-            return
-
-
 if __name__ == "__main__":
     # THIS STAGE IS BEING MIGRATED INTO ITS WORKFLOW FILE. Until every caller says `easyvm`, the
     # old form still runs - but it says so, and EASYVM_STRICT=1 makes it a refusal. See
     # lib/entrypoint.py for why the seam exists rather than a deletion.
     import entrypoint  # noqa: E402
 
-    entrypoint.note_stage("windows/11/ssh.py", "windows/11/steps/ssh.yaml", extra="--boot-disk out/windows11-gold.qcow2")
+    entrypoint.note_stage("windows/11/ssh.py", "windows/11/steps/ssh.yaml",
+                          extra="--boot-disk out/windows11-gold.qcow2")
     raise SystemExit(main(sys.argv[1:]))

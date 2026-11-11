@@ -47,7 +47,7 @@ steps:
   # an operating system has no sshd to wait for.
   - name: boot the disk
     boot: true
-    family: macos
+    os: macos
     timeout: 900
 
   # THE ONLY STEP THAT WAITS FOR A SHELL. Its own timeout, visible here.

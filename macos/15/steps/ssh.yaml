@@ -75,6 +75,10 @@ vars:
   password:
     from: args.password
     default: admin
+  # WHERE THIS STAGE'S DISK GOES - a fact about the run, so it arrives on the command line.
+  out:
+    from: args.out
+    default: out/macos15-ssh.qcow2
   # THE SHUTDOWN METHOD, BECAUSE IT IS A FACT ABOUT THE RUN AND NOT ABOUT THE SCREEN.
   #
   # `kill` when the stage handed this file a throwaway overlay (nothing it wrote survives), `ssh`
@@ -114,7 +118,7 @@ steps:
 
   - name: boot the disk
     boot: true
-    family: macos
+    os: macos
     timeout: 900
 
   # THE ACCOUNT'S PASSWORD, INTO THE LOGIN WINDOW.
@@ -485,5 +489,15 @@ steps:
   # - the encoder does one last pass - so the recording ends at the shutdown rather than wherever
   # the process happened to exit. It is a no-op when nothing is recording, which is what makes it
   # safe for a stage that chose not to film.
+  # THE OUTPUT, AND THE LAST REASON THIS STAGE KEEPS A `finally:` IN PYTHON.
+  #
+  # `macos/15/ssh.py` ended with `compress.compress(disk, args.out)`. That is not a fact about a
+  # machine or a screen; it is "write the disk where the workflow looks for it".
+  #
+  # AFTER THE LAST REAL STEP, not in a `finally`: a failed walk leaves a disk the failed steps may
+  # have half-configured, and compressing it publishes that.
+  - name: publish the disk
+    compress: "{{ out }}"
+
   - name: stop recording
     record: false

@@ -129,7 +129,7 @@ steps:
   # the way out of a failed walk.
   - name: boot the disk
     boot: true
-    family: macos
+    os: macos
     timeout: 900
   # --- the panes that only need the footer ------------------------------------------------
   #

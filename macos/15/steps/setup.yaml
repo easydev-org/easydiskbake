@@ -90,7 +90,7 @@ steps:
   # this stage was given, and `boot:` is the step that reads it.
   - name: boot the recovery image
     boot: true
-    family: macos
+    os: macos
     timeout: 900
   # =======================================================================================
   # 1. THE RECOVERY MENU, WHICH IS DRAWN - NOT LOADED

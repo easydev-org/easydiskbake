@@ -46,7 +46,7 @@ ssh_port: 2222
 steps:
   - name: boot the disk
     boot: true
-    family: macos
+    os: macos
     timeout: 900
 
   - name: wait for sshd

@@ -1258,6 +1258,37 @@ def main() -> int:
           "def start(" in read("lib/swtpm.py") and "def stop(" in read("lib/swtpm.py"))
     check("the machine honours boot_options['tpm']", "lib/vm_session.py",
           'boot_options.get("tpm")' in read("lib/vm_session.py"))
+    # AND THE OUTPUT IS A STEP TOO, WHICH WAS THE LAST PIECE OF PYTHON EVERY STAGE KEPT.
+    #
+    # `windows/11/ssh.py` ended with
+    #
+    #     if ok:
+    #         compress.compress(disk, args.out)
+    #         log(f"BAKED {args.out} ...")
+    #
+    # inside a `finally`, and `macos/15/ssh.py`, `desktop.py`, `dev.py` and `vm_configure.py` each
+    # had the same three lines in their own. That is not a machine fact or a screen fact - it is
+    # "write the disk where the workflow looks for it", which is a step.
+    #
+    # IT IS A STEP AFTER THE LAST REAL ONE, NOT A `finally`: a failed walk leaves a disk that the
+    # failed steps may have half-configured, and compressing it publishes that.
+    check("a disk can be published by a step", "lib/steps.py",
+          "compressmod.compress(source, dest)" in st)
+    check("the compress refuses to write over its input", "lib/steps.py",
+          "would write onto its own input" in st)
+    for f in ("macos/15/steps/ssh.yaml", "windows/11/steps/ssh.yaml"):
+        body = read(f)
+        check(f"{f} publishes its own disk", f, "compress: \"{{ out }}\"" in body)
+        # AND THE OUTPUT NAME IS A RUN FACT, from the command line - not baked into the file.
+        check(f"{f} takes the output path as a variable", f,
+              "from: args.out" in body)
+        # AND IT COMES AFTER THE LAST REAL STEP. A `compress:` before `shutdown:` would publish a
+    # disk the guest is still writing to, which is the failure the ordering exists to prevent.
+    for f in ("macos/15/steps/ssh.yaml", "windows/11/steps/ssh.yaml"):
+        body = read(f)
+        check(f"{f} compresses after the machine is stopped", f,
+              body.index("compress: \"{{ out }}\"") > body.index("record: false")
+              or body.index("compress: \"{{ out }}\"") > body.index("shutdown:"))
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))

@@ -46,6 +46,11 @@ vars:
   password:
     from: args.password
     default: admin
+  # WHERE THIS STAGE'S DISK GOES. It arrives on the command line because the workflow names the
+  # artifact path; writing it into the file would bake one job's output name into every run.
+  out:
+    from: args.out
+    default: out/windows11-ssh.qcow2
 
 # The account the answer file creates, and the port the host's forward points at.
 # lib/vm.build_args() forwards host 2222 -> guest 22, so sshd has to be on 22.
@@ -65,6 +70,34 @@ steps:
   - name: start recording
     record: install.mp4
     poll: 20
+
+  # --- 0. THE MACHINE, WHICH USED TO BE `ssh.py`'S JOB --------------------------------
+  #
+  # Three steps that every stage wrote in Python and that are properties of THE RUN, not of the
+  # screen: which disk to write, which guest to start it on, and how to know the guest is up.
+  #
+  # `disk:` MOVES THE INPUT HERE. The default is to move rather than copy because the disk came
+  # from ghcr and the registry still has it - `lib/working_copy.py` documents the 28 GiB copy
+  # that protected a file which was never at risk.
+  - name: take the input disk
+    disk: disk.qcow2
+
+  # `os:` IS THE FACT THAT DECIDES THE MACHINE. A Windows guest is a UEFI firmware, a virtio
+  # disk, an OVMF variable store, optionally a TPM, and a fallback loader at \EFI\BOOT\BOOTX64.EFI
+  # so the disk does not depend on a bootstate archive. A macOS guest is OpenCore on its own boot
+  # image, the Apple SMC with an OSK, an APFS driver and a Skylake CPU model. Naming the OS is a
+  # shorter way of saying the same thing than listing twelve qemu arguments, and there is one
+  # place (`lib/vm_session.py`) where each name is expanded.
+  - name: boot the disk
+    boot: true
+    os: windows
+    timeout: 900
+
+  # AND THE GUEST IS UP WHEN ITS DESKTOP IS, judged by lib/desktop.py - the same test the bake
+  # uses, which is why it is not repeated here.
+  - name: wait for the desktop
+    desktop: windows
+    timeout: 900
 
   # --- 1. THE KEYBOARD, WHICH IS THE ONLY CHANNEL UNTIL SSHD EXISTS --------------------
   #
@@ -264,5 +297,16 @@ steps:
   # AND CLOSED HERE, so the file ends at the stage's last step rather than wherever the process
   # exited. `record: false` finalises through the same encoder and is a no-op when nothing is
   # recording.
+  # THE OUTPUT, AND THE REASON THIS STAGE NEEDS NO PYTHON AT ALL.
+  #
+  # `ssh.py` ended with `compress.compress(disk, args.out)` inside a `finally`, and every other
+  # stage had the same three lines. It is not a fact about a machine or a screen - it is "write
+  # the disk where the workflow looks for it", which is a step.
+  #
+  # AFTER THE LAST REAL STEP, not in a `finally`: a failed walk leaves a disk that the failed
+  # steps may have half-configured, and compressing it publishes that.
+  - name: publish the disk
+    compress: "{{ out }}"
+
   - name: stop recording
     record: false
