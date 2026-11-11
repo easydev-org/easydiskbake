@@ -317,6 +317,9 @@ steps:
           cp /tmp/smb.conf /root/.smb/smb.conf
           cp /tmp/smbnetfs.conf /root/.smb/smbnetfs.conf
           chmod 600 /root/.smb/smb.conf /root/.smb/smbnetfs.conf
+          echo \"--- the conf smbnetfs will read ---\"
+          cat -A /root/.smb/smbnetfs.conf
+          echo \"--- end ---\"
           smbnetfs -o allow_other \"$MOUNT\" 2>&1 | tail -6
           sleep 5"
         echo "--- what appeared ---"

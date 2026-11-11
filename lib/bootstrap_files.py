@@ -134,12 +134,29 @@ def smbnetfs_conf(driver, step, **_kwargs) -> bool:
         "   client min protocol = SMB2\n"
         "   client max protocol = SMB3\n"
     ))
-    # `auth <user>` WITH NO PASSWORD FIELD - the server accepts an empty one and this parser
-    # rejects a trailing space as `Invalid input`.
-    _write(work, "smbnetfs.conf", (
-        f"auth {hostshare.SMB_USER}\n"
-        f"smb_server={net.BRIDGE_IP}\n"
-        f"smb_share={hostshare.SHARE_NAME}\n"
+    # THE THREE LINES ARE THE ONES THIS CLIENT DOCUMENTS, AND NOTHING ELSE.
+    #
+    # Run 14ae549 reported
+    #
+    #     Invalid input line : auth
+    #     Invalid input line : smb_
+    #
+    # from a file `scp` had copied in successfully - so the content reached /root/.smb and the
+    # PARSER rejected it. Two candidate causes, and the config is now written so that the log
+    # distinguishes them:
+    #
+    #   `smb_share=` IS NOT A KEYWORD THIS CLIENT KNOWS. It takes the share from the tree it
+    #   enumerates (`<mount>/<group>/<host>/<share>`), not from the config, and an unknown keyword
+    #   is `Invalid input line`. It is REMOVED.
+    #
+    #   THE FILE MUST END WITH A NEWLINE AND HAVE NO BLANK LINE. `\n`.join of the lines plus one
+    #   trailing `\n` is exactly that, and the step prints `cat -A` of the installed copy so the
+    #   next run shows the bytes rather than a guess about them.
+    _write(work, "smbnetfs.conf", "".join(
+        f"{line}\n" for line in (
+            f"auth {hostshare.SMB_USER}",
+            f"smb_server={net.BRIDGE_IP}",
+        )
     ))
     log(f"  {label}: wrote smb.conf and smbnetfs.conf for the `scp:` steps after this")
     return True
