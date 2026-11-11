@@ -329,8 +329,11 @@ steps:
           echo \"--- the conf smbnetfs will read ---\"
           cat -e /root/.smb/smbnetfs.conf
           echo \"--- end ---\"
-          rm -f /tmp/smbnetfs.log
-          smbnetfs -o allow_other \"$MOUNT\" 2>&1 | tail -6"
+          rm -f /tmp/smbnetfs.log /tmp/smbnetfs.out
+          smbnetfs -o allow_other \"$MOUNT\" >/tmp/smbnetfs.out 2>&1
+          sleep 2"
+        echo "--- what smbnetfs said on its own streams ---"
+        printf "%s\\n" "{{ password }}" | sudo -S -p "" tail -12 /tmp/smbnetfs.out 2>&1 || true
         echo "--- waiting for the tree ---"
         n=0
         while [ $n -lt 30 ]; do
@@ -343,8 +346,36 @@ steps:
         done
         echo "--- what appeared ---"
         ls -la "$MOUNT" 2>&1 | head -10
-        find "$MOUNT" -maxdepth 3 -type d 2>/dev/null | head -12'
+        find "$MOUNT" -maxdepth 3 -type d 2>/dev/null | head -12
+        # TOUCH THE SHARE, NOT JUST THE TREE. `stat` is fabricated by smbnetfs (it answers 0777
+        # for any name in its own tree without asking the server), so only a readdir or a write
+        # can provoke the session setup. Doing it HERE means the refusal, if there is one, lands
+        # while this step is running - and the witness step after it can then read smbd's log.
+        echo "--- a first attempt at the share itself ---"
+        ls "$MOUNT"/{{ host }}/{{ share_name }} 2>&1 | head -5 || true'
+    # THE MOUNT IS BEST EFFORT; THE PROOF IS THE JUDGE. Marked optional so that a refusal does
+    # not stop the walk before the server's own log is read - the step after this one exists for
+    # exactly that, and a step that stops the walk cannot be witnessed.
+    optional: true
     timeout: 600
+
+  # THE SERVER'S SIDE, READ BEFORE THE VERDICT IS GIVEN.
+  #
+  # `lib/steps.py` prints smbd's log whenever a `share_mount:` is refused, because the client says
+  # one sentence and the server says which half refused it - the dialect, the auth type offered,
+  # the nt status returned. This file cannot use `share_mount:` (smbnetfs needs two config files,
+  # so the mount is an `ssh:` step with `scp:` before it), and that is the whole reason twenty runs
+  # have been argued from the client alone.
+  #
+  # IT SITS HERE, AFTER THE MOUNT TOUCHED THE SHARE, AND BEFORE THE PROOF - so it runs even when
+  # the proof is about to fail, which is the only time its output is worth anything.
+  #
+  # `optional: true`: it is a witness, not a judge.
+  - name: print the server's account of the session
+    python: bootstrap_files:smbd_log
+    python_screen: false
+    optional: true
+    timeout: 60
 
   # THE ROUND TRIP IS THE VERDICT, AND THE LOG IS TAKEN AFTER THE ATTEMPT THAT FAILED.
   #
@@ -390,10 +421,12 @@ steps:
           cat /tmp/write.err 2>/dev/null | head -3
           rc=1
         fi
-        echo "--- the client log, taken AFTER the attempt ---"
+        echo "--- the client log, taken AFTER the attempt (unfiltered) ---"
         printf "%s\n" "{{ password }}" | sudo -S -p "" \
-          grep -iE "nt_status|smb_conn_srv_(auth|opendir)|tree connect|error|denied|eacces" \
-            /tmp/smbnetfs.log 2>&1 | tail -25
+          tail -50 /tmp/smbnetfs.log 2>&1
+        echo "--- smbnetfs's own streams ---"
+        printf "%s\n" "{{ password }}" | sudo -S -p "" \
+          tail -20 /tmp/smbnetfs.out 2>&1
         echo "--- round trip rc=$rc ---"
         [ $rc -eq 0 ] && echo "round trip ok"
         exit $rc'

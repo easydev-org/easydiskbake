@@ -186,25 +186,30 @@ def smbnetfs_conf(driver, step, **_kwargs) -> bool:
     #
     #     host 172.30.0.1 visible=true        documented on line 335 of the project's own sample
     #
-    # `smb_debug_level` IS SAMBA'S OWN LEVEL, AND RUN b43b65a IS WHY IT IS HERE. The tree is now
-    # correct and the guest got as far as
+    # `smb_debug_level` IS SAMBA'S OWN LEVEL, AND THE LOG IS TAKEN HERE FOR A REASON.
     #
-    #     ls: /home/vmuser/shared/172.30.0.1/shared: Permission denied
+    # Runs b43b65a and 3ce95d1 both ended at
     #
-    # WITH `total 0` BESIDE IT, WHICH PROVES NOTHING: `function_stat()` in smbnetfs FABRICATES
-    # 0040777 for anything in its own tree without asking the server, so a stat that succeeds says
-    # only that the name exists. The failing call is `samba_opendir()` - libsmbclient - and its
-    # reason goes to this log only when SAMBA's debug level is raised; `smbnetfs_debug` sets a
-    # different level in a different component.
+    #     /home/vmuser/shared/172.30.0.1/shared
+    #     total 0
+    #     ls: ...: Permission denied
     #
-    # THE AUTH IS ALSO NAMED PER SHARE NOW, WHICH IS THE FORM THE SAMPLE DOCUMENTS:
+    # and the log printed just before that had not one line about the share - because it was tailed
+    # at the end of the MOUNT step, six seconds BEFORE the opendir that fails. That was a
+    # measurement bug and it cost three commits of reasoning from an error message instead of from
+    # libsmbclient's own words. Run 7c3062d moved it and immediately produced:
     #
-    #     auth [computer[/share]] [domain_or_workgroup/]user password
+    #     smb_conn_srv_auth_fn: url=smb://172.30.0.1/shared, ..., user=guest, passwd=********
     #
-    # `auth "guest" ""` registers a DEFAULT (server empty, share empty) and that is what carried the
-    # IPC$ session in b43b65a. The failure is one level further in - opening the SHARE rather than
-    # the server - so an entry keyed to exactly `172.30.0.1/shared` is added beside the default one
-    # rather than replacing it: the default is what lets the host be enumerated at all.
+    # SO THE CREDENTIALS DO REACH THE SHARE CONNECT. `smb_conn_srv_auth_fn` is the callback
+    # libsmbclient makes when it needs a password, it was made FOR THE SHARE and not only for IPC$,
+    # and the session setup still failed - which means the server refused the pair, not that the
+    # client failed to offer it.
+    #
+    # THE UNFILTERED TAIL IS KEPT NOW. The first version of this dump filtered on
+    # `nt_status|auth|opendir|...` and produced only the four callback lines: libsmbclient's own
+    # explanation is a line this filter did not anticipate, and a grep written before the answer is
+    # a grep that can hide it.
     _write(work, "smbnetfs.conf", "".join(
         f"{line}\n" for line in (
             f'auth "{hostshare.SMB_USER}" ""',
@@ -217,6 +222,25 @@ def smbnetfs_conf(driver, step, **_kwargs) -> bool:
         )
     ))
     log(f"  {label}: wrote smb.conf and smbnetfs.conf for the `scp:` steps after this")
+    return True
+
+
+def smbd_log(_driver, step, **_kwargs) -> bool:
+    """Print smbd's own account of what it refused, from the HOST side.
+
+    `lib/steps.py` ALREADY DOES THIS FOR `share_mount:` - the comment there says the client's
+    message is one sentence and the server's log says which half refused. GhostBSD cannot use
+    `share_mount:` (its client needs two config files, so the mount is an `ssh:` step with `scp:`
+    before it), and that is why this stage has been reading only the CLIENT's side for twenty runs.
+
+    THE HOST PATH IS NOT VISIBLE FROM THE GUEST, which is the mistake this step corrects: an
+    `ssh:` body cannot `cat /tmp/easydiskbake-smbd.log`, because that file is in this container and
+    the guest is a different machine. A `python:` step runs HERE.
+    """
+    import hostshare
+
+    log(f"  {getattr(step, 'name', 'smbd')}: the server's account of the last session")
+    hostshare.log_tail(60)
     return True
 
 
