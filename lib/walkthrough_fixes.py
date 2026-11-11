@@ -1695,6 +1695,38 @@ def main() -> int:
                   not names.get(must_fail, {}).get("optional", False))
         check("'do not blank the screen' keeps its read-back", "windows/11/steps/ssh.yaml",
               names.get("do not blank the screen", {}).get("optional", False))
+    # AND `--override` TAKES WINGET'S OWN SWITCHES WITH IT, WHICH THE FILE SAID AND I DID NOT READ.
+    #
+    # Eight hundred lines above the step:
+    #
+    #     "a package with an --override also cannot take --accept-package-agreements - override
+    #      replaces winget's own switch set"
+    #
+    # I wrote `--quiet --wait --norestart` beside `--override` anyway, and run 42965954028
+    # answered in fifteen seconds:
+    #
+    #     Argument name was not recognized for the current command: '--quiet'
+    #
+    # The override string is handed to the Visual Studio bootstrapper, so the switches that would
+    # have controlled winget belong INSIDE it. This is the second time in this thread that a
+    # failure was already documented in the file it happened in.
+    import yaml as _y4
+    dev2 = _y4.safe_load(read("windows/11/steps/dev.yaml"))
+    buildtools = next((x for x in dev2["steps"]
+                       if x["name"] == "install the build tools"), {})
+    # CODE, NOT PROSE. The note above the command explains the trap by naming the switches, so a
+    # grep over the whole script finds them in a comment - which is exactly how the first version
+    # of this check reported both halves as failing on a correct file.
+    body = "\n".join(l for l in str(buildtools.get("script") or "").splitlines()
+                      if not l.lstrip().startswith("#"))
+    override_line = next((l for l in body.splitlines() if "--override" in l), "")
+    check("the build tools override carries its own quiet/wait",
+          "windows/11/steps/dev.yaml",
+          "--quiet" in override_line and "--wait" in override_line)
+    # THE OUTSIDE OF THE COMMAND MUST NOT ALSO CARRY THEM - winget rejects the whole invocation.
+    outside = " ".join(l for l in body.splitlines() if "--override" not in l)
+    check("no winget switch is passed beside --override", "windows/11/steps/dev.yaml",
+          "--quiet" not in outside and "--wait" not in outside)
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))

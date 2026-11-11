@@ -139,10 +139,23 @@ steps:
       # `--override` string carries spaces, quotes and a comma-free workload list, and by the
       # time it has been through ssh and cmd the quotes are gone. windows/11/devtools.py holds
       # the measurements that chose 17.14.44 over 17.9.7 and over the aka.ms bootstrapper.
+      # `--quiet`, `--wait` AND `--norestart` ARE NOT ALLOWED BESIDE `--override`, and the file
+      # already said so eight hundred lines up: "a package with an --override also cannot take
+      # --accept-package-agreements - override replaces winget's own switch set". Run 42965954028
+      # proved it for three more of them:
+      #
+      #     Argument name was not recognized for the current command: '--quiet'
+      #
+      # The override string is passed to the Visual Studio bootstrapper itself, so the switches
+      # that would have controlled winget are carried INSIDE it instead:
+      #
+      #     --quiet --wait --norestart
+      #
+      # and `--disable-interactivity` is winget's own and stays outside, because it is what stops
+      # a first-run agreement prompt from waiting for a console that does not exist.
       & $winget install --id Microsoft.VisualStudio.2022.BuildTools --exact --source winget `
         --scope machine --version 17.14.44 --accept-source-agreements --disable-interactivity `
-        --quiet --wait --norestart `
-        --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+        --override "--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
       exit $LASTEXITCODE
     script_shell: powershell
     script_name: install-buildtools.ps1
