@@ -58,17 +58,43 @@ def _log(message: str) -> None:
 
 
 def probe_ssh(port: int = 2222, *, user: str = "vmuser", password: str = "admin",
-              timeout: int = 5) -> tuple[bool, str]:
-    """Does a shell answer on this port, over the same channel the `ssh:` step uses?"""
+              timeout: int = 5, retries: int = 3) -> tuple[bool, str]:
+    """Does a shell answer on this port, over the same channel the `ssh:` step uses?
+
+    RETRIED, BECAUSE THE FIRST `echo ok` ON A WINDOWS GUEST CAN TAKE LONGER THAN FIVE SECONDS.
+
+    Run 42954262213's vm-configure failed here, on the SECOND copy step, having just succeeded on
+    the first:
+
+        copy the driver's payload in: a capability this step declares is missing
+          ssh: ssh on port 2222 answered 124: the command did not finish in 5s
+
+    The command that "did not finish" was `echo ok`. The guest was fine - the previous step's scp
+    had just landed - and five seconds is not a timeout for a Windows shell that is starting
+    PowerShell, loading the profile and answering under Defender. A capability check that fails
+    because a healthy guest was slow is a check that refuses work for no reason.
+
+    So: the first attempt keeps the short timeout it was measured with, and a `124` (timed out, as
+    opposed to a refusal or a network error) is retried with a longer one. A guest that is really
+    gone still reports "nothing answered", because every attempt fails the same way.
+    """
     try:
         import session
     except ImportError as exc:
         return False, f"no session module ({exc})"
-    status, output = session.ssh(port, "echo ok", timeout=timeout,
-                                 user=user, password=password)
-    if status == 0:
-        return True, ""
-    return False, f"ssh on port {port} answered {status}: {(output or '').strip()[:120]}"
+    last = ""
+    for attempt in range(1, retries + 1):
+        status, output = session.ssh(port, "echo ok", timeout=timeout * attempt,
+                                     user=user, password=password)
+        if status == 0:
+            return True, ""
+        last = f"ssh on port {port} answered {status}: {(output or '').strip()[:120]}"
+        # 124 IS "THE COMMAND DID NOT FINISH", AND THAT IS A SLOW GUEST, NOT A MISSING ONE.
+        # 255 is a connection failure and 127 an absent client - neither is worth another five
+        # seconds, and retrying them would turn a real problem into a slow one.
+        if status != 124:
+            break
+    return False, last
 
 
 def probe_qga(socket_path: str, *, timeout: float = 10.0) -> tuple[bool, str]:

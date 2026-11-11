@@ -1428,6 +1428,26 @@ def main() -> int:
           "subprocess.Popen(" in wc and "note(f\"    {text[:180]}\")" in wc)
     check("its deadline covers the whole command", "lib/winclean.py",
           "proc.wait(timeout=timeout)" in wc and "threading.Thread" in wc)
+    # AND A CAPABILITY CHECK IS RETRIED WHEN THE GUEST IS SLOW RATHER THAN ABSENT.
+    #
+    # Run 42954262213's vm-configure failed on its SECOND copy step, having just succeeded on the
+    # first:
+    #
+    #     copy the driver's payload in: a capability this step declares is missing
+    #       ssh: ssh on port 2222 answered 124: the command did not finish in 5s
+    #
+    # The command that "did not finish" was `echo ok`, on a guest whose scp had landed a second
+    # earlier. Five seconds is not a timeout for a Windows shell starting PowerShell under
+    # Defender - and a check that refuses work because a healthy guest was slow is worse than no
+    # check, because it looks like a diagnosis.
+    #
+    # 124 (did not finish) is retried with a longer budget; 255 (connection failed) and 127
+    # (client missing) are not, because retrying those turns a real problem into a slow one.
+    cap = read("lib/capabilities.py")
+    check("a slow ssh capability probe is retried", "lib/capabilities.py",
+          "for attempt in range(1, retries + 1):" in cap)
+    check("only a timeout is retried", "lib/capabilities.py",
+          "if status != 124:" in cap)
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))
