@@ -1412,6 +1412,22 @@ def main() -> int:
     rec = st[st.index('if step["record"] is not None:'):]
     check("the sampler stops before the encoder", "lib/steps.py",
           rec.index("sampler.terminate()") < rec.index("recorder.stop(final=True)"))
+    # AND THE WINDOWS CLEAN STREAMS, BECAUSE TWENTY SILENT MINUTES LOOK LIKE A HANG.
+    #
+    # `subprocess.run(capture_output=True)` holds every line until the process exits, so a clean
+    # spending twenty minutes in `Optimize-Volume -ReTrim` is indistinguishable from one that
+    # hung - and the only verdict available was the 3600-second budget expiring. Run 42954262213
+    # sat in `cleaning the guest` long enough for that to be the whole question.
+    #
+    # `clean.ps1` already prints a timestamped `Step` line per section; this is what lets those
+    # lines out as they happen. The deadline is enforced by `proc.wait(timeout=...)` over the
+    # WHOLE command, not by reading the pipe to EOF first - that loop would have waited for the
+    # guest to finish talking before the clock even started.
+    wc = read("lib/winclean.py")
+    check("the windows clean streams its steps", "lib/winclean.py",
+          "subprocess.Popen(" in wc and "note(f\"    {text[:180]}\")" in wc)
+    check("its deadline covers the whole command", "lib/winclean.py",
+          "proc.wait(timeout=timeout)" in wc and "threading.Thread" in wc)
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))

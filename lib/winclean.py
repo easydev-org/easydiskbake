@@ -150,15 +150,54 @@ def clean(*, port: int, user: str = "vmuser", note=print, timeout: int = 3600,
     # (90 minutes for this stage) is the real ceiling; this number only has to be larger than the
     # work.
     try:
-        result = subprocess.run(
+        # STREAMED, NOT CAPTURED, BECAUSE TWENTY MINUTES OF SILENCE IS NOT A PROGRESS REPORT.
+        #
+        # `subprocess.run(capture_output=True)` holds every line until the process exits, so a
+        # clean that spends twenty minutes in `Optimize-Volume -ReTrim` looks exactly like a clean
+        # that hung - and the only way to tell was to wait out the 3600-second budget. Run
+        # 42954262213 spent that long in `cleaning the guest` with nothing to look at.
+        #
+        # `clean.ps1` already emits a timestamped `Step` line per section (added with the same
+        # complaint); this is what lets those lines out as they happen.
+        seen: list[str] = []
+        proc = subprocess.Popen(
             ["sshpass", "-p", SSH_PASSWORD, "ssh",
              "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
              "-o", "ConnectTimeout=20",
              "-o", "ServerAliveInterval=60",
              "-p", str(port), f"{user}@{SSH_HOST}",
              f"powershell -NoProfile -ExecutionPolicy Bypass -File {remote}"],
-            capture_output=True, text=True, timeout=timeout,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            bufsize=1,
         )
+        # A DEADLINE, NOT A `for line in stdout`.
+        #
+        # Reading the pipe to EOF blocks for as long as the guest talks, so a `wait(timeout=...)`
+        # AFTER that loop would never bound anything - the loop itself already waited. The clock
+        # starts here and the reader is a daemon thread, so the budget applies to the whole
+        # command rather than to whatever is left after the last line.
+        import threading
+
+        def _drain() -> None:
+            for raw in proc.stdout or []:
+                text = raw.rstrip()
+                if text:
+                    seen.append(text)
+                    note(f"    {text[:180]}")
+
+        reader = threading.Thread(target=_drain, daemon=True)
+        reader.start()
+        try:
+            code = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=30)
+            raise
+        reader.join(timeout=10)
+        # A `CompletedProcess` SHELL, so the code below that reads `.stdout`/`.stderr`/`.returncode`
+        # keeps working: this change is about WHEN the output arrives, not about its shape.
+        result = subprocess.CompletedProcess(
+            args=[], returncode=code, stdout="\n".join(seen), stderr="")
     except subprocess.TimeoutExpired:
         # SAID, NOT RAISED. An uncaught TimeoutExpired produces a forty-line traceback whose last
         # line is `subprocess.TimeoutExpired: Command ... timed out after 3600 seconds`, and it
