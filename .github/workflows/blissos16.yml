@@ -176,13 +176,15 @@ jobs:
           dest: out
           token: ${{ github.token }}
 
-      - name: unpack the disk
+      - name: say what was pulled
         if: inputs.install_from != ''
         run: |
           set -euo pipefail
-          mkdir -p out/bliss
-          tar -xf out/blissos16.tar.zst -C out/bliss
-          ls -la out/bliss
+          # `oci-pull` WRITES THE TAG'S OWN NAME, so there is nothing to unpack and no path to
+          # hard-code - see the note above `push the disk`.
+          DISK=$(ls out/*.qcow2 | head -1)
+          echo "pulled $DISK"
+          qemu-img info "$DISK" | grep -E 'virtual size|disk size'
 
       # ---- THE INSTALL ---------------------------------------------------------------
       # THE STAGE IS THE FILE. It makes the disk and its GPT (`disk:`), boots the ISO's installer
@@ -193,6 +195,10 @@ jobs:
       # `--boot-iso` IS A RUN FACT and arrives here for the same reason `--boot-disk` does: the
       # workflow knows where the download landed, and the file must not bake that path in.
       - name: install to a disk
+        # A RUN THAT WAS GIVEN A PUBLISHED TAG DOES NOT INSTALL ONE. `install_from` is the "start
+        # from this disk" input, and without this guard the job would download 2.2 GiB of ISO,
+        # partition the blank disk it just pulled over, and write a second one beside it.
+        if: inputs.install_from == ''
         uses: easydev-org/easyactions/log-stream@main
         with:
           token: ${{ github.token }}
@@ -219,31 +225,28 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      # WHAT A TAG HOLDS: THE DISK. kernel and initrd.img are on the disk already, so only the
-      # disk matters for starting it.
-      - name: pack the disk
-        if: success() && inputs.install_from == ''
-        uses: easydev-org/easyactions/log-stream@main
-        with:
-          token: ${{ github.token }}
-          name: blissos-pack
-          interval: "15"
-          command: |
-            set -euo pipefail
-            cd out/install
-            mv blissos16-out.qcow2 blissos16.qcow2
-            tar -cf ../blissos16.tar blissos16.qcow2
-            cd ..
-            zstd -19 -f blissos16.tar -o blissos16.tar.zst
-            rm -f blissos16.tar
-            ls -la blissos16.tar.zst
-
+      # WHAT A TAG HOLDS: THE DISK, AND NOTHING ELSE.
+      #
+      # IT IS PUSHED AS THE QCOW2 AND NOT AS A TARBALL, and the first complete run of this
+      # workflow is why. `compress:` already produced a 2 GiB zstd qcow2, and the pack step put
+      # that inside a tar so `oci-push` had one file - but `oci-pull` names what it writes after
+      # the TAG, not after the file it came from, so the launch job pulled
+      #
+      #     out/android-13-blissos.qcow2        (the whole disk, already unpacked)
+      #
+      # while `unpack the disk` looked for `out/blissos16.tar.zst` and failed with
+      #
+      #     tar: out/blissos16.tar.zst: Cannot open: No such file or directory
+      #
+      # A tarball is one more name to keep in step for a file that is already compressed. The
+      # other workflows push the qcow2 for the same reason.
       - name: push the disk
         if: success() && inputs.install_from == ''
         id: publish
         uses: easydev-org/easyactions/oci-push@main
         with:
-          path: out/blissos16.tar.zst
+          # THE STAGE'S OWN `compress:` TARGET, named once, in the step above.
+          path: out/install/blissos16-out.qcow2
           kind: android-13-blissos
           tag: ${{ inputs.publish_tag || 'android-13-blissos' }}
           token: ${{ github.token }}
@@ -293,12 +296,15 @@ jobs:
           dest: out
           token: ${{ github.token }}
 
-      - name: unpack the disk
+      - name: take the pulled disk
         run: |
           set -euo pipefail
-          mkdir -p out/bliss
-          tar -xf out/blissos16.tar.zst -C out/bliss
-          qemu-img info out/bliss/blissos16.qcow2 | grep -E 'virtual size|disk size'
+          # THE TAG'S OWN NAME, WHICH IS WHAT `oci-pull` WROTE. A hard-coded path is a second
+          # place that has to agree with the publisher - and the first complete run of this
+          # workflow failed exactly there, on `tar: out/blissos16.tar.zst: Cannot open`.
+          DISK=$(ls out/*.qcow2 | head -1)
+          echo "DISK=$DISK" >> "$GITHUB_ENV"
+          qemu-img info "$DISK" | grep -E 'virtual size|disk size'
 
       # ---- LAUNCH --------------------------------------------------------------------
       # No --boot-iso and no --kernel: the firmware starts the disk, GRUB loads the disk's own
@@ -314,7 +320,7 @@ jobs:
             set -euo pipefail
             mkdir -p out/launch
             ./easyvm android/blissos16/steps/launch.yaml \
-              --boot-disk out/bliss/blissos16.qcow2 \
+              --boot-disk "$DISK" \
               --work out/launch/work \
               --boot-mem "${{ inputs.launch_mem_mb || '8192' }}" \
               --boot-timeout "${{ inputs.launch_seconds || '600' }}"
