@@ -343,56 +343,60 @@ steps:
         done
         echo "--- what appeared ---"
         ls -la "$MOUNT" 2>&1 | head -10
-        find "$MOUNT" -maxdepth 3 -type d 2>/dev/null | head -12
-        echo "--- the client log, if it wrote one ---"
-        printf "%s\n" "{{ password }}" | sudo -S -p "" tail -40 /tmp/smbnetfs.log 2>&1 || true'
+        find "$MOUNT" -maxdepth 3 -type d 2>/dev/null | head -12'
     timeout: 600
 
-  # THE MOUNT POINT IS ITSELF NAMED `shared`, SO `find -name shared` FINDS THE MOUNT POINT.
+  # THE ROUND TRIP IS THE VERDICT, AND THE LOG IS TAKEN AFTER THE ATTEMPT THAT FAILED.
   #
-  # Run 7cb7a8f is the one where the tree finally appeared - `visible=true` was the missing word,
-  # and the client log shows real sessions for the first time:
+  # Runs b43b65a and 3ce95d1 both ended with
   #
-  #     smb_conn_srv_auth_fn: url=smb://172.30.0.1/IPC$, grp=WORKGROUP, user=guest
-  #     function_readdir: (/172.30.0.1)
-  #     function_stat: (/172.30.0.1/shared)
-  #
-  # and the tree is exactly `<mount>/<host>/<share>`:
-  #
-  #     /home/vmuser/shared
-  #     /home/vmuser/shared/172.30.0.1
   #     /home/vmuser/shared/172.30.0.1/shared
+  #     total 0
+  #     ls: ...: Permission denied
   #
-  # BUT THE PROOF NAMED THE WRONG ONE:
+  # and the client log printed just before it had NOT ONE line about the share - only the IPC$
+  # session and the readdir that produced the tree. That is a MEASUREMENT ERROR, not evidence:
+  # the log was tailed at the end of the MOUNT step, and the opendir that fails happens six seconds
+  # later in THIS step. So the reason was never in the output, and every fix since has been reasoned
+  # from an error message instead of from libsmbclient's own words.
   #
-  #     --- the share ---
-  #     /home/vmuser/shared                      <- the mount point
-  #     sh: cannot create /home/vmuser/shared/from-guest.txt: Is a directory
+  # IT IS TAKEN HERE NOW, AFTER the failed `ls` and write, with `set +e` so a failure cannot skip it.
+  # `smb_debug_level 7` is in the config the client was given, so libsmbclient's NT_STATUS for a
+  # refused tree connect is in this file - and `grep -i` keeps it to the lines that matter.
   #
-  # `find <mount> -name shared` matches the MOUNT POINT first, because the mount point is
-  # `/home/vmuser/shared` and `head -1` takes the first hit. So the path is tried directly first
-  # (the client's own log states the shape), and the search - if it is still needed - starts at
-  # depth 1 so it cannot return the mount point again.
+  # `total 0` AND A SUCCESSFUL `stat` PROVE NOTHING, which is worth stating where the next reader
+  # will look: `function_stat()` in smbnetfs FABRICATES `0040777` for anything in its own tree
+  # without asking the server. Only the readdir/write below touch the share.
   - name: prove the share is readable and writable
     ssh: |
       sh -c '
-        set -e
+        set +e
         MOUNT="$HOME/shared"
         echo "--- the tree smbnetfs built ---"
         find "$MOUNT" -mindepth 1 -maxdepth 4 -type d 2>/dev/null | head -12
         SHARE="$MOUNT/{{ host }}/{{ share_name }}"
         [ -d "$SHARE" ] || \
           SHARE=$(find "$MOUNT" -mindepth 1 -maxdepth 4 -type d -name {{ share_name }} 2>/dev/null | head -1)
-        if [ -z "$SHARE" ] || [ ! -d "$SHARE" ]; then
-          echo "=== NO DIRECTORY NAMED {{ share_name }} UNDER $MOUNT ==="
-          exit 1
-        fi
         echo "--- the share ---"
         echo "$SHARE"
-        ls -la "$SHARE" | head -20
-        printf "written-by-the-guest\n" > "$SHARE/from-guest.txt"
-        test "$(cat "$SHARE/from-guest.txt")" = "written-by-the-guest"
-        echo "round trip ok"'
+        rc=0
+        echo "--- ls ---"
+        ls -la "$SHARE" 2>&1 | head -20 || rc=1
+        echo "--- write ---"
+        if printf "written-by-the-guest\n" > "$SHARE/from-guest.txt" 2>/tmp/write.err; then
+          cat "$SHARE/from-guest.txt" 2>&1 | head -3
+          [ "$(cat "$SHARE/from-guest.txt" 2>/dev/null)" = "written-by-the-guest" ] || rc=1
+        else
+          cat /tmp/write.err 2>/dev/null | head -3
+          rc=1
+        fi
+        echo "--- the client log, taken AFTER the attempt ---"
+        printf "%s\n" "{{ password }}" | sudo -S -p "" \
+          grep -iE "nt_status|smb_conn_srv_(auth|opendir)|tree connect|error|denied|eacces" \
+            /tmp/smbnetfs.log 2>&1 | tail -25
+        echo "--- round trip rc=$rc ---"
+        [ $rc -eq 0 ] && echo "round trip ok"
+        exit $rc'
     timeout: 180
 
   # =======================================================================================
