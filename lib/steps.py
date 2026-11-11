@@ -99,6 +99,19 @@ STEP_KEYS = {    "name",        # required: what the log calls this step
     "key",         # a qemu qcode, or a + combo: "ret", "ctrl+alt+t"
     "run",         # a shell line, typed into the guest's own terminal
     "ssh",         # a command run over ssh IN THE GUEST - see _do_action
+    # --- ANDROID'S OWN CHANNEL ------------------------------------------------------------
+    #
+    # `ssh:` is how every guest here is reached, and it works because their installers put sshd
+    # on the disk. Android's does not: its remote access is adbd, and there is no sshd until a
+    # stage installs one - which cannot be done over ssh, because ssh is what does not exist.
+    #
+    # These three are the same shape as `ssh:`/`require_ssh:` with a different transport, and
+    # they exist so android/blissos16/steps/ssh.yaml can say what it does instead of a stage
+    # script doing it in Python. See lib/adb.py for the measured facts they rest on.
+    "adb",         # a command run over adb IN THE GUEST - exit status is the verdict
+    "adb_root",    # `adb root`, then wait for adbd to come back - uid 0, no `su` needed
+    "adb_connect", # attach to the guest's adbd on its forwarded port, and prove it answers
+    "adb_serial",  # the serial to use; default 127.0.0.1:<ssh_port + 3333 is not a rule>
     "require_ssh", # wait for sshd before the steps that use it
     "ssh_probe",   # the command that wait runs; 'true' is not a Windows command
     # `ssh_after_reboot: true` ON A `require_ssh:` MEANS "WAIT OUT THE OLD DAEMON FIRST". See the
@@ -183,6 +196,7 @@ STEP_KEYS = {    "name",        # required: what the log calls this step
     # same bytes every time" true: `move` consumes the input, `copy` duplicates 28 GiB, and
     # neither can promise the base is unchanged afterwards. See lib/overlay.py.
     "os",          # for boot/shutdown: macos, windows, linux, android.
+    "cpu",         # the guest's -cpu model, when the disk needs a fixed one.
                    # WHAT THIS REPLACES: a stage used to build the qemu command line itself, and
                    # the twelve arguments that make a machine a Windows one (UEFI, OVMF vars, a
                    # virtio disk, a TPM, a fallback loader) or a macOS one (OpenCore, Apple SMC
@@ -224,6 +238,8 @@ WAIT_STEPS = {"until", "until_any", "wait", "wait_for_change", "until_dark", "di
 ACTION_KEYS = {"at", "double", "type", "key", "run", "ssh", "scp", "script", "share_serve",
                "share_mount", "screenshot", "record",
                "require_ssh", "sweep",
+               # ANDROID'S TRANSPORT - see the note in STEP_KEYS.
+               "adb", "adb_root", "adb_connect",
                "at_window", "at_bottom",
                # THE MACHINE'S OWN LIFECYCLE. A file may own its guest - see LIFECYCLE below.
                "boot", "reboot", "shutdown"}
@@ -332,6 +348,29 @@ class Walk:
         self.notes = document.get("notes") or ""
         self.vars = document.get("vars") or {}
         self.resolution = document.get("resolution") or [1920, 1080]
+
+        # THE ACCOUNT AND THE PORT A FILE DECLARES, READ ONCE AND HONOURED.
+        #
+        # Twenty-one files carry `ssh_user:` and `ssh_port:` at the top level, and until now
+        # NOTHING READ EITHER ONE. The account happened to work because each file also spells the
+        # name in its own `ssh:` commands, and the port worked because every file wanted 2222 -
+        # the CLI default. The first file that wants a different port is
+        # android/blissos16/steps/ssh.yaml, whose Termux sshd listens on 8022, and it was silently
+        # ignored:
+        #
+        #     [steps]   adb: connecting to 127.0.0.1:1        <- a different bug, same run
+        #     ssh_port: 8022 in the file, 2222 on the wire
+        #
+        # So both are stated facts now. `ssh_port` is a DEFAULT for the run rather than an
+        # override of the command line: `--ssh-port` still wins, because a caller with a port
+        # conflict has to be able to say so.
+        self.ssh_user = str(document.get("ssh_user") or "")
+        try:
+            self.ssh_port = int(document.get("ssh_port") or 0)
+        except (TypeError, ValueError):
+            raise StepError(
+                f"{path or 'the walkthrough'}: ssh_port is "
+                f"{document.get('ssh_port')!r}, which is not a port number")
 
         # ANCHORS ARE YAML ALIASES' NAMED COUSIN, AND THEY ARE WHY A FOOTER IS WRITTEN ONCE.
         # `&continue [1306, 727]` / `*continue` is YAML's own mechanism and needs nothing from
@@ -917,6 +956,26 @@ class DeferredDriver(Driver):
         self.q = self.screen.q
 
 
+def _ssh_host_for(guest) -> str:
+    """The address this guest's forwarded ports answer on - bridge or loopback.
+
+    WRITTEN BECAUSE `net: "none"` BROKE THE ASSUMPTION EVERY CALLER HAD. lib/session.py dials
+    net.FORWARD_HOST (172.30.0.1), which is the bridge lib/net.py creates - and a guest started
+    with qemu's own `-netdev user` has no bridge at all. Its `hostfwd` ports land on the loopback
+    of the process that started qemu, so 127.0.0.1 is right there and 172.30.0.1 is a black hole:
+
+        ssh: connect to host 172.30.0.1 port 8022: Connection timed out
+
+    measured on android/blissos16/steps/ssh.yaml, whose sshd was listening and whose port WAS
+    forwarded - to the address nobody was dialling.
+    """
+    import session as sessmod
+    shape = getattr(guest, "shape", None)
+    if shape is not None and str(getattr(shape, "net", "tap")) == "none":
+        return sessmod.USER_MODE_HOST
+    return sessmod.SSH_HOST
+
+
 class MachineSession:
     """The guest a walkthrough owns, when the file declares `boot:`.
 
@@ -976,6 +1035,11 @@ class MachineSession:
         # `shutdown:` later in the file does not have to guess.
         self.login = ""
         self.password = "admin"
+        # WHICH ADDRESS THIS GUEST'S FORWARDED PORTS ARE ON. Every family before now used the
+        # bridge, so lib/session.py's default was the answer everywhere; `net: "none"` gives the
+        # guest qemu's user-mode NAT instead, whose `hostfwd` ports land on THIS process's
+        # loopback. Filled in by `boot()`, because that is when the shape exists.
+        self.ssh_host = ""
 
     def boot(self, family: str, *, ssh_port: int = 2222, log=print) -> None:
         if self.guest is not None:
@@ -1043,6 +1107,7 @@ class MachineSession:
         if overlay is not None:
             self.flatten_from = overlay
         self.qmp_path = guest.paths.drive
+        self.ssh_host = _ssh_host_for(guest)
         if not reached:
             raise StepError(
                 f"the machine started but never answered on ssh port {ssh_port}; "
@@ -1577,6 +1642,12 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
     # client already carries", so a file that does not name one is unchanged.
     login = (getattr(driver, "values", {}) or {}).get("ssh_user") or None
 
+    # AND WHERE TO DIAL. The session knows, because it started the machine and saw the shape -
+    # the bridge for every family that has one, this process's loopback for `net: "none"`.
+    # Every `ssh:`/`scp:`/`require_ssh:` below passes it, or the one guest with user-mode
+    # networking gets a timeout against an address that has nothing on it.
+    ssh_host = getattr(session, "ssh_host", "") or ""
+
     # --- require_ssh: WAIT FOR THE GUEST'S OWN SSHD BEFORE USING IT -------------------
     #
     # THE STAGE THAT TURNS REMOTE LOGIN ON IS A GUI STAGE; EVERYTHING AFTER IT IS NOT. So a
@@ -1610,7 +1681,7 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
                         f"did not reboot")
         log(f"  waiting up to {seconds}s for sshd on port {ssh_port}")
         if not session.wait_for_ssh(ssh_port, seconds, user=login, probe=probe,
-                                    password=password):
+                                    password=password, host=ssh_host or None):
             # A FRAME BEFORE FAILING, because the question that follows is always "what was
             # on screen". The ssh stage's first failures had nothing to look at, and the
             # answer - a lock screen, an empty terminal, a sudo prompt - was only visible in
@@ -1636,12 +1707,86 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
     # the two measured details - SSH_HOST is the bridge and not 127.0.0.1 (DNAT does not
     # rewrite the source, so a loopback connection is answered to the guest's own loopback and
     # hangs), and sshpass because there is no tty to prompt at.
+    # --- ANDROID'S TRANSPORT: adb, WHICH IS ssh FOR A GUEST THAT HAS NO sshd --------------
+    #
+    # THE SAME THREE FACTS AS THE `ssh:` BLOCK BELOW, ON A DIFFERENT CHANNEL:
+    #
+    #     adb_connect:  attach, and prove it answers  (the `require_ssh:` shape)
+    #     adb_root:     obtain uid 0                   (there is no `su` on this guest)
+    #     adb:          one command, exit status is the verdict
+    #
+    # WHY THEY ARE NOT `ssh:` WITH A FLAG. A stage installing sshd on Android cannot use ssh to
+    # do it - ssh is the thing being installed - so the file needs a channel that exists before
+    # the daemon does. That is adb, and naming it is honest about what the guest actually has.
+    #
+    # THE SERIAL IS `127.0.0.1:<port>` AND THE PORT IS THE RUN'S. lib/vm.py forwards host 2222 to
+    # guest 22 for every family; an Android guest's adbd is on 5555, and the port that reaches it
+    # is the run's choice - so it arrives as `adb_serial:` or from `adb_port` in the file's vars,
+    # never as a constant here.
+    if step["adb_connect"]:
+        import adb as adbmod
+        # `adb_connect: true` IS A BOOLEAN-SPELLED STEP, SO THE VALUE IS `True` AND NOT A PORT.
+        # Reading it as one produced `int(True)` == 1 and a five-minute wait on 127.0.0.1:1 -
+        # measured on the first run of this file. The port comes from the walkthrough's own
+        # `adb_port` var; the step only says "connect".
+        raw = step.get("adb_connect")
+        port = int(raw) if isinstance(raw, int) and not isinstance(raw, bool) else 0
+        if not port:
+            port = int(str((getattr(driver, "values", {}) or {}).get("adb_port") or "5555") or 5555)
+        log(f"  adb: connecting to 127.0.0.1:{port}")
+        status, output = adbmod.connect(port, timeout=int(step.get("timeout", 120)))
+        for line in (output or "").splitlines()[:20]:
+            log(f"    {line}")
+        if status != 0 and not step["optional"]:
+            raise StepError(f"{step.name}: adb could not attach to the guest's adbd")
+        return
+
+    if step["adb_root"]:
+        import adb as adbmod
+        serial = str(step.get("adb_serial") or "") or str(
+            (getattr(driver, "values", {}) or {}).get("adb_serial") or "")
+        if not serial:
+            port = int(str((getattr(driver, "values", {}) or {}).get("adb_port") or "5555") or 5555)
+            serial = f"127.0.0.1:{port}"
+        log(f"  adb root on {serial}")
+        status, output = adbmod.as_root(serial, timeout=int(step.get("timeout", 120)))
+        for line in (output or "").splitlines()[:20]:
+            log(f"    {line}")
+        # AND THE PROOF IS THE UID, NOT THE COMMAND'S EXIT STATUS. `adb root` answers 0 on a
+        # build whose adbd cannot elevate (a user build) and the next command then runs as
+        # `shell` - which is a failure four steps later, in a step that looks unrelated.
+        status2, who = adbmod.shell(serial, "id", timeout=60)
+        log(f"    id -> {who.splitlines()[0] if who else '(no answer)'}")
+        if status2 != 0 or "uid=0(" not in who:
+            if not step["optional"]:
+                raise StepError(
+                    f"{step.name}: adbd did not come back as root ({who.splitlines()[0] if who else 'no answer'})")
+        return
+
+    if step["adb"]:
+        import adb as adbmod
+        command = str(step["adb"])
+        serial = str(step.get("adb_serial") or "") or str(
+            (getattr(driver, "values", {}) or {}).get("adb_serial") or "")
+        if not serial:
+            port = int(str((getattr(driver, "values", {}) or {}).get("adb_port") or "5555") or 5555)
+            serial = f"127.0.0.1:{port}"
+        status, output = adbmod.shell(serial, command, timeout=int(step.get("timeout", 120)))
+        log(f"  adb: {command} -> {status}")
+        for line in (output or "").splitlines()[:40]:
+            log(f"    {line}")
+        # AN EXIT STATUS IS THE VERDICT, for the same reason as `ssh:`: the guest's own shell
+        # said whether it worked, and a word on a screen is a weaker answer.
+        if status != 0 and not step["optional"]:
+            raise StepError(f"{step.name}: the command exited {status}")
+        return
+
     if step["ssh"]:
         import session
         command = str(step["ssh"])
         timeout = int(step.get("timeout", 120))
         status, output = session.ssh(ssh_port, command, timeout=timeout, user=login,
-                                     password=password)
+                                     password=password, host=ssh_host or None)
         log(f"  ssh: {command} -> {status}")
         for line in (output or "").splitlines()[:40]:
             log(f"    {line}")
@@ -1694,7 +1839,7 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
             remote = f"/tmp/{name}"
         timeout = int(step.get("timeout", 1800))
         status, output = session.scp(local, remote, port=ssh_port, timeout=300, user=login,
-                                     password=password)
+                                     password=password, host=ssh_host or None)
         if status != 0:
             log(f"  scp: {name} -> {remote} -> {status}")
             if not step["optional"]:
@@ -1713,7 +1858,7 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
             # is fine; it is the mode that is not.
             command = f"bash {remote}"
         status, output = session.ssh(ssh_port, command, timeout=timeout, user=login,
-                                     password=password)
+                                     password=password, host=ssh_host or None)
         log(f"  script {name} ({shell}) -> {status}")
         for line in (output or "").splitlines()[:40]:
             log(f"    {line[:150]}")
@@ -2163,7 +2308,7 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
                                           login_password=password or "admin")[family]
         timeout = int(step.get("timeout", 180))
         status, output = session.ssh(ssh_port, command, timeout=timeout, user=login,
-                                    password=password)
+                                    password=password, host=ssh_host or None)
         log(f"  mount: {command[:100]} -> {status}")
         for line in (output or "").splitlines()[:10]:
             log(f"    {line[:150]}")
@@ -2217,7 +2362,7 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
                 local = os.path.join(REPO, local)
         timeout = int(step.get("timeout", 300))
         status, output = session.scp(local, remote, port=ssh_port, timeout=timeout,
-                                     user=login)
+                                     user=login, password=password, host=ssh_host or None)
         log(f"  scp: {local} -> {remote} -> {status}")
         for line in (output or "").splitlines()[:10]:
             log(f"    {line}")
@@ -3327,7 +3472,11 @@ def main(argv: list[str]) -> int:
     p.add_argument("--password", default="admin")
     p.add_argument("--disk", default=None,
                    help="the target qcow2; a setup pane watches it for growth")
-    p.add_argument("--ssh-port", type=int, default=2222)
+    # 0 MEANS "THE FILE DECIDES", because twenty-one files already say `ssh_port:` and only the
+    # one with an 8022 sshd has ever needed a different answer from this flag. A caller with a
+    # port conflict passes one and it wins.
+    p.add_argument("--ssh-port", type=int, default=0,
+                   help="the forwarded ssh port; 0 uses the walkthrough's own ssh_port (2222)")
     p.add_argument("--start-at", default="")
     p.add_argument("--stop-before", default="")
     # A FILE THAT DECLARES `boot:` NEEDS THE DISK AND NOT A SOCKET, so these two are the mirror
@@ -3345,6 +3494,15 @@ def main(argv: list[str]) -> int:
     p.add_argument("--boot-timeout", type=int, default=0,
                    help="seconds a `desktop:` wait may take; 0 uses the step's own timeout")
     p.add_argument("--boot-cpus", type=int, default=4)
+    # THE GUEST'S CPU MODEL, WHEN THE DISK'S PACKAGES REQUIRE A FIXED ONE.
+    #
+    # Empty is `-cpu host`, which is right for every disk whose packages are not built for a
+    # specific microarchitecture level. cachyos' ARE, and the failure it produces on a runner with
+    # a different host is a kernel panic in the first second - see the note in
+    # vm_session._start_machine. A file can also say `cpu:` on its `boot:` step, which is the
+    # better place for a fact about THAT disk rather than about the run.
+    p.add_argument("--boot-cpu", default="",
+                   help="the guest's -cpu model; empty means -cpu host")
     # WHERE A `compress:` STEP SHOULD PUT THE RESULT, when the file says `compress: "{{ out }}"`.
     # It is a fact about this run - the workflow names the artifact path - so it arrives here
     # rather than being written into the file, which is the same rule `args.user` follows.
@@ -3359,6 +3517,16 @@ def main(argv: list[str]) -> int:
     except StepError as exc:
         log(f"FAILED: {exc}")
         return 1
+
+    # THE FILE'S PORT, THEN THE COMMAND LINE'S. A port conflict is a fact about the runner, so a
+    # caller who names one means it; a file that names one is describing the guest.
+    if not args.ssh_port:
+        args.ssh_port = steps.ssh_port or 2222
+    if not args.user or args.user == "vmuser":
+        # THE FILE'S ACCOUNT IS A DEFAULT TOO, for the same reason and with the same precedence:
+        # `--user` wins, and every file that names `ssh_user:` gets what it named.
+        if steps.ssh_user:
+            args.user = steps.ssh_user
 
     log(f"walkthrough {steps.name}: {len(steps.steps)} step(s), {steps.path}")
     if steps.notes:
@@ -3408,6 +3576,13 @@ def main(argv: list[str]) -> int:
         # --boot-disk follows. `os: android` reads it to decide which shape it is starting
         # (installer, live, or an installed disk) and to find the kernel and initrd beside it.
         boot_opts: dict = {}
+        # THE GUEST'S ADB PORT, for a family whose only way in before sshd is adbd. It is a run
+        # fact like every other port here: the file's `adb_port` var says what the guest listens
+        # on, and this says whether the host forwards it.
+        _vals = steps.values({"args.user": args.user, "args.password": args.password})
+        adb_port = int(str(_vals.get("adb_port") or "0") or 0)
+        if adb_port:
+            boot_opts["adb_port"] = adb_port
         if args.boot_iso:
             # A DIRECTORY IS AS GOOD AS A FILE, AND IT IS THE HONEST ARGUMENT.
             #
@@ -3430,6 +3605,15 @@ def main(argv: list[str]) -> int:
                 candidate = os.path.join(candidate, found[0])
             boot_opts["iso"] = candidate
             boot_opts["disk"] = os.path.abspath(args.boot_disk)
+        # `cpu:` ON THE `boot:` STEP WINS OVER --boot-cpu, because it is a fact about THAT DISK
+        # and the command line is a fact about this run.
+        step_cpu = str(first.get("cpu") or "")
+        if step_cpu:
+            boot_opts["cpu"] = step_cpu
+        elif args.boot_cpu:
+            boot_opts["cpu"] = args.boot_cpu
+        if boot_opts.get("cpu"):
+            log(f"boot: cpu {boot_opts['cpu']} (fixed, not -cpu host)")
         session = MachineSession(
             _os_of(first, "macos"), args.boot_disk, work,
             share=args.boot_share, mem_mb=args.boot_mem, cpus=args.boot_cpus,

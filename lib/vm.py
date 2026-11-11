@@ -100,6 +100,50 @@ def log(msg: str) -> None:
     print(f"[vm] {msg}", flush=True)
 
 
+# THE CPU EVERY GUEST GETS UNLESS IT ASKS FOR ANOTHER ONE, AND WHY IT IS NOT `host`.
+#
+# `-cpu host` PASSES THE RUNNER'S OWN FEATURE SET THROUGH, so THE SAME DISK IS A DIFFERENT MACHINE
+# ON EVERY RUNNER. That stays invisible until something inside the guest depends on it, and then it
+# is not a warning - it is this, in the guest's first second:
+#
+#     KERNEL PANIC!
+#     Attempted to kill init! exitcode=0x00000004        <- 4 is SIGILL
+#
+# CachyOS is where it was found. It ships every package as a `v3` build (AVX2 floor) and a `v4`
+# build (AVX-512 floor) and its installer picks one from the CPUs it can see. Installed on an
+# Intel Xeon with AVX-512 it takes `v4`; booted on an AMD EPYC 7763 - Zen 3, AVX2 and NO AVX-512 -
+# the disk panics. One disk, three cpu models, measured in a local pod:
+#
+#     -cpu Skylake-Client    no AVX-512    PANIC
+#     -cpu Skylake-Server    AVX-512       boots to SDDM
+#     -cpu host (Xeon 8336C) AVX-512       boots to SDDM
+#
+# `-cpu` CANNOT REPAIR THIS AFTERWARDS. It hides or reveals CPUID bits; the instructions still run
+# on the host's silicon, so asking for AVX-512 on EPYC makes qemu print
+#
+#     qemu-system-x86_64: warning: host doesn't support requested feature: ...
+#
+# and the guest panics exactly as before. A DISK THAT DEPENDS ON THE HOST IS NOT PORTABLE, and the
+# only way to publish one that is, is to make every machine the same machine.
+#
+# SO THERE IS ONE MODEL FOR ALL OF THEM. `Skylake-Client-v4`:
+#
+#     - x86-64-v3 LEVEL: AVX2, BMI1/2, FMA, XSAVE. That is the floor both runners here satisfy
+#       (a Xeon 8336C and an EPYC 7763), and it is what the `v3`/`v4` split is drawn on.
+#     - `-v4` IS QEMU'S OWN MODEL VERSION, NOT THE MICROARCHITECTURE LEVEL. v1..v4 are successive
+#       revisions of the same Skylake-Client definition (IBRS, then no-TSX, then XSAVES). The
+#       family has NO AVX-512 - that is `Skylake-Server` - so the name is not a contradiction.
+#     - INVARIANT ON EVERY RUNNER. A disk installed under it and booted under it sees the same
+#       CPU both times, and an installer that reads the CPU reads the same answer.
+#
+# MEASURED ON A PUBLISHED DISK: fedora under `Skylake-Client-v4` answers sshd in 20s. And a
+# control, because one model change deserves one: manjaro's own `-ssh` disk fails to boot under
+# `host` as well, so that disk's problem is its own and not this model.
+#
+# A GUEST THAT NEEDS SOMETHING ELSE SAYS SO WITH `cpu=`. macOS does, and must.
+DEFAULT_CPU = "Skylake-Client-v4"
+
+
 @dataclass
 class Shape:
     """The machine the guest is given.
@@ -177,12 +221,12 @@ class Shape:
     # Passing None is still allowed for a caller that genuinely wants the firmware
     # default - Windows setup's own graphics are drawn at whatever the adapter reports.
     resolution: tuple[int, int] | None = (1920, 1080)
-    # The CPU model, and "" means "-cpu host".
+    # The CPU model. "" MEANS `DEFAULT_CPU` - NOT `-cpu host`; see the constant above for the
+    # panic that made that the answer.
     #
-    # macOS cannot use "host": its kernel reads the CPU's family and model and refuses
-    # to boot on anything it does not recognise, so the guest has to be given a model
-    # Apple shipped in real hardware (Penryn, Haswell, ...) with the feature flags the
-    # kernel expects. Every other guest here is happy with "host" and gets it.
+    # macOS overrides this entirely: its kernel reads the CPU's family and model and refuses to
+    # boot on anything it does not recognise, so it is given a model Apple shipped in real
+    # hardware with the feature flags the kernel expects (macos/15/machine.py).
     cpu: str = ""
     # The -smp value, when a guest needs a topology rather than a count. macOS is the
     # one that does: dockur/macos describes cores as sockets=1,dies=1,cores=N,threads=1
@@ -391,7 +435,9 @@ def build_args(work: str, extra: list[str] | None = None,
     # have KVM. lib/ci.py checks for it before any of this is reached.
     args: list[str] = [
         QEMU,
-        "-enable-kvm", "-cpu", shape.cpu or "host",
+        # `DEFAULT_CPU` AND NOT "host": see the constant above. A guest that needs a
+        # different model sets `shape.cpu`, and macOS does.
+        "-enable-kvm", "-cpu", shape.cpu or DEFAULT_CPU,
         "-smp", shape.smp_topology or str(shape.cpus), "-m", str(shape.mem_mb),
         "-display", "none",
         "-vnc", f"{shape.vnc_bind}:{shape.vnc_display}",

@@ -513,9 +513,20 @@ def _android_installed(disk: str, work: str, ssh_port: int, cpus: int, mem_mb: i
     # that wants an address says `net: "tap"` explicitly.
     net = str(opts.get("net") or "none")
 
+    # THE PORTS THIS GUEST HAS TO BE REACHABLE ON, whichever network it is given.
+    #
+    # `adb_port` IS HOW A STAGE GETS IN BEFORE THERE IS AN sshd. A published Android disk has one
+    # channel that exists on a fresh install - adbd - and android/blissos16/steps/ssh.yaml uses it
+    # to put sshd there. It arrives from the file's `adb_port` var, defaulting to adb's own 5555.
+    #
+    # THE SSH PORT IS THE RUN'S, NOT 22: a Termux sshd listens on 8022 and the file names that as
+    # `ssh_port:`, so forwarding 2222 -> 22 would reach nothing. Forwarding the port to itself is
+    # the one rule that cannot disagree with the guest.
+    adb_port = int(opts.get("adb_port") or 0)
+
     shape = vm.Shape(
         cpus=cpus, mem_mb=mem_mb or 8192, machine="q35",
-        vga="none", net=net, ssh_port=ssh_port,
+        vga="none", net=net, ssh_port=ssh_port, adb_port=adb_port,
         firmware_code=code, firmware_vars=vars_image,
     )
     shape.extra_args = [
@@ -716,6 +727,24 @@ def _start_machine(family: str, disk: str, work: str, ssh_port: int, cpus: int,
     # on `boot_options.get("tpm")`. The parameter has a `| None = None` default, so the body has
     # to treat None as "no options" rather than assume the default was dict.
     boot_options = boot_options or {}
+    # WHY A CALLER MAY PIN THE CPU MODEL, AND WHICH DISK NEEDS IT
+    #
+    # `-cpu host` EXPOSES WHATEVER THE RUNNER IS, so the SAME DISK BEHAVES DIFFERENTLY ON
+    # DIFFERENT RUNNERS. cachyos compiles its packages for a microarchitecture level and the init
+    # it installs executes those instructions - so a disk built on an Intel Xeon with AVX-512 and
+    # booted on an AMD EPYC without it dies in the first second with
+    #
+    #     KERNEL PANIC!
+    #     Attempted to kill init! exitcode=0x00000004
+    #
+    # 4 IS SIGILL. That comment was in this repository since 5063caf, which reproduced it on the
+    # same disk with `-cpu qemu64` and proved the disk was fine by booting it with `-cpu host` -
+    # and then the packet came back on a runner whose host was DIFFERENT, which is the case that
+    # commit could not see from one machine.
+    #
+    # A FIXED MODEL IS THE ANSWER, NOT A NEWER ONE. Pinning `Skylake-Client` (or any x86-64-v3
+    # model) makes the guest identical on every runner, so a disk either runs everywhere or fails
+    # on the first run instead of on some other machine weeks later.
     tpm_socket = ""
     if boot_options.get("tpm"):
         import swtpm as swtpmmod
@@ -723,8 +752,13 @@ def _start_machine(family: str, disk: str, work: str, ssh_port: int, cpus: int,
         if not tpm_socket:
             log("=== A TPM WAS ASKED FOR AND swtpm DID NOT START ===")
             log("  Windows 11 will stop at the hardware check with a dialog nobody can click")
+    # `cpu` IS A PROPERTY OF THE DISK'S PACKAGES, NOT OF THIS RUNNER - see the note below.
+    cpu_model = str(boot_options.get("cpu") or "")
+    if cpu_model:
+        log(f"  cpu: {cpu_model} (the disk's packages were built for a fixed microarchitecture)")
     shape = vm.Shape(
         cpus=cpus, mem_mb=mem_mb or 6144, machine="q35",
+        cpu=cpu_model,
         firmware_code=firmware_code, firmware_vars=firmware_vars,
         tpm_socket=tpm_socket, vga="std", ssh_port=ssh_port,
         qga_socket=qga_socket, qga_transport=qga_transport,

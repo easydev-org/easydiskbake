@@ -144,6 +144,31 @@ class Bakery:
     desktop: DesktopWhen | None = None
     mem_mb: int = 4096
     cpus: int = 4
+    # THE CPU MODEL THIS INSTALLER SEES, AND FOR ONE DISTRIBUTION IT IS NOT `host`.
+    #
+    # `-cpu host` EXPOSES THE RUNNER'S OWN FEATURES, so an installer that picks packages by
+    # microarchitecture picks a DIFFERENT SET ON EVERY MACHINE. cachyos does exactly that: given
+    # AVX-512 it installs its `v4` repository, and the disk then dies on any host without AVX-512
+    #
+    #     KERNEL PANIC!
+    #     Attempted to kill init! exitcode=0x00000004        <- 4 is SIGILL
+    #
+    # Measured on one disk, three cpu models, in a local pod:
+    #
+    #     -cpu Skylake-Client   no AVX-512   PANIC
+    #     -cpu Skylake-Server   AVX-512      boots to SDDM
+    #     -cpu host (Xeon 8336C) AVX-512     boots to SDDM
+    #
+    # AND `-cpu` CANNOT BE USED TO FIX IT AFTERWARDS. It only hides or reveals CPUID bits; the
+    # instructions still execute on the host's silicon. Asking for AVX-512 on an AMD EPYC makes
+    # qemu print `host doesn't support requested feature` and mask it off, and the guest panics
+    # exactly as before. So the level has to be fixed WHERE THE PACKAGES ARE CHOSEN - at install
+    # time - and the only way to guarantee it is to make the installer see a model that stops at
+    # what every runner has.
+    #
+    # Empty is `-cpu host`, which is right for the eleven distributions whose packages do not
+    # depend on the host's feature set.
+    cpu: str = ""
     disk_size: str = "64G"
     # THE INSTALL'S TOTAL BUDGET - the `--timeout` the workflows pass.
     timeout: int = 5400
@@ -348,6 +373,8 @@ def _second_boot(bakery: Bakery, args, work: str, disk: str, walk_path: str,
         shape=uefi.shape_with_uefi(
             vm.Shape(
                 cpus=args.cpus, mem_mb=args.mem, machine="q35", vga="std",
+                # THE INSTALLER'S CPU DECIDES WHICH REPOSITORY IT INSTALLS FROM - see `cpu`.
+                cpu=bakery.cpu,
                 vnc_bind=os.environ.get("VNC_BIND", "127.0.0.1"),
             ),
             disk_work, f"{bakery.name}-disk",
@@ -473,6 +500,8 @@ def run_bake(bakery: Bakery, args) -> int:
         shape=uefi.shape_with_uefi(
             vm.Shape(
                 cpus=args.cpus, mem_mb=args.mem, machine="q35", vga="std",
+                # THE INSTALLER'S CPU DECIDES WHICH REPOSITORY IT INSTALLS FROM - see `cpu`.
+                cpu=bakery.cpu,
                 vnc_bind=os.environ.get("VNC_BIND", "127.0.0.1"),
             ),
             work, bakery.name,

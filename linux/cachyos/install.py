@@ -38,6 +38,36 @@ BAKE = livebake.Bakery(
     # still exists.
     after=livebake.After(seconds=230),
     mem_mb=4096,
+    # THE INSTALLER MUST NOT SEE AVX-512, OR THE DISK IS NOT PORTABLE.
+    #
+    # CachyOS SHIPS TWO REPOSITORIES PER PACKAGE, `v3` AND `v4`, and the installer picks one from
+    # the CPU it is running on. `v4` requires AVX-512; `v3` requires AVX2. A `v4` disk boots only
+    # on hosts with AVX-512, and the CI runner is an AMD EPYC 7763 - Zen 3, which has AVX2 and no
+    # AVX-512 at all. The disk it produced panics in the first second:
+    #
+    #     KERNEL PANIC!
+    #     Attempted to kill init! exitcode=0x00000004
+    #
+    # 4 is SIGILL. Measured on ONE disk (linux-cachyos-ssh, 7190 MiB) in a local pod:
+    #
+    #     -cpu Skylake-Client   no AVX-512   PANIC
+    #     -cpu Skylake-Server   AVX-512      boots to SDDM
+    #     -cpu host (Xeon 8336C) AVX-512     boots to SDDM
+    #
+    # SO THE FIX IS HERE AND NOT IN `-cpu` ON A LATER STAGE. `-cpu` hides CPUID bits; it does not
+    # add silicon. A later stage asking for AVX-512 on EPYC gets
+    #
+    #     qemu-system-x86_64: warning: host doesn't support requested feature: ...
+    #
+    # and the guest panics exactly as before. The level has to be decided where the packages are
+    # CHOSEN, which is this install - so the installer is given a model every runner satisfies.
+    #
+    # `Skylake-Client` IS x86-64-v3: AVX2, BMI1/2, FMA, no AVX-512. Both the EPYC and the Xeon have
+    # every one of those, so the disk installs `v3` packages on either and boots on both.
+    # AND IT IS NOW ALSO `lib/vm.py`'s DEFAULT_CPU, so this line is a STATEMENT RATHER THAN AN
+    # EXCEPTION: every distribution installs under the same model, and cachyos is the one whose
+    # packages would visibly break if that ever changed back.
+    cpu="Skylake-Client-v4",
 )
 
 
