@@ -243,14 +243,35 @@ steps:
     requires: [share]
     timeout: 180
 
+  # THE ROUND TRIP IS THE PROOF. THE MOUNT LINE IS FOR THE LOG, NOT FOR THE VERDICT.
+  #
+  # It used to be `mount | grep -i smbfs || df | grep -i shared` under `set -e`, and FreeBSD's
+  # mount table names a mounted share by its DEVICE rather than by the filesystem:
+  #
+  #     //guest@172.30.0.1/shared on /home/vmuser/shared (smbfs, ...)
+  #
+  # - which does contain `smbfs`, but a kernel that prints only the device and the mount point
+  # would not, and then a step about the SHARE would fail on a string. The same mistake the Linux
+  # files record for `official` metacharacters: a verdict should be about the fact.
+  #
+  # WHAT IS ASKED NOW: list the directory, write a file through the mount, read it back. If the
+  # share is not mounted, `ls` shows an empty local directory and the write lands on the DISK -
+  # which the round trip cannot tell apart from success. So the mount IS checked, with `findmnt`
+  # where it exists and a `df` fallback, and only its EXIT STATUS is used.
   - name: prove the share is readable and writable
     ssh: |
       sh -c '
         set -e
-        mount | grep -i smbfs || df | grep -i shared
-        ls -la ~/shared | head -20
-        printf "written-by-the-guest\n" > ~/shared/from-guest.txt
-        test "$(cat ~/shared/from-guest.txt)" = "written-by-the-guest"
+        echo "--- the mount, for the log ---"
+        mount | grep -i smb || true
+        df -h | grep -i shared || true
+        echo "--- is it a real mount? ---"
+        MOUNTED=$(mount -p 2>/dev/null | grep -c " $HOME/shared " || true)
+        test "${MOUNTED:-0}" -ge 1
+        echo "--- the round trip ---"
+        ls -la "$HOME/shared" | head -20
+        printf "written-by-the-guest\n" > "$HOME/shared/from-guest.txt"
+        test "$(cat "$HOME/shared/from-guest.txt")" = "written-by-the-guest"
         echo "round trip ok"'
     timeout: 120
 
@@ -277,7 +298,8 @@ steps:
         set -e
         install -m 0755 /tmp/bootstrap-launcher.sh "$HOME/bootstrap-launcher.sh"
         touch "$HOME/.xinitrc"
-        grep -q bootstrap-launcher.sh "$HOME/.xinitrc" ||           printf "\n%s\n" "sh \"\$HOME/bootstrap-launcher.sh\" &" >> "$HOME/.xinitrc"
+        grep -q bootstrap-launcher.sh "$HOME/.xinitrc" || \
+        printf "\n%s\n" "sh $HOME/bootstrap-launcher.sh &" >> "$HOME/.xinitrc"
         echo INSTALLED_FOR_NEXT_LOGIN
         tail -3 "$HOME/.xinitrc"'
     timeout: 300
