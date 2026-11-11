@@ -262,21 +262,32 @@ steps:
   # ever proving the disk answers, which is the one thing it exists to prove. What changed instead
   # is that `start` now prints sshd's OWN log the moment the daemon binds - so when this fails,
   # the server's reason is already in the log above it.
-  # THE SERVER'S SIDE OF THE CONVERSATION, TAKEN WHILE THE DAEMON IS STILL WARM AND BEFORE THE
-  # WAIT DECIDES ANYTHING.
+  # THE WAIT IS THE THING THAT SHOULD FAIL, AND THE DIAGNOSTIC HAS TO SURVIVE IT.
   #
-  # IT HAS TO COME FIRST, and that is the whole point of it being a step: a failing `require_ssh:`
-  # ENDS THE WALKTHROUGH, so a diagnostic after it never runs - which is exactly the shape of the
-  # five runs that reported `Permission denied (publickey)` with no server-side line beside it.
+  # A failing `require_ssh:` ENDS the walkthrough, so anything after it never runs. That is why
+  # this is a SEQUENCE and not the usual `require_ssh:`-then-`ssh:` pair:
   #
-  # `-E` captures the parent sshd; the authentication happens in `sshd-session`, and its opinion
-  # is what this reads, from the same file the wrapper appends to:
+  #     require_ssh: optional      <- polls, and does not stop the walk
+  #     adb: the daemon's log      <- reads sshd.err, which now holds the child's opinion
+  #     ssh: echo ...              <- THE VERDICT. A failure here fails the stage.
   #
-  #     trying public key file /data/local/home/.ssh/authorized_keys
-  #     Authentication refused: bad ownership or modes for directory /data
+  # The verdict is not weakened by moving it: `ssh:` fails the step on a non-zero exit, and a
+  # guest that refuses every key never reaches the read-only remount or the publish.
+  - name: wait for sshd on the forwarded port
+    require_ssh: true
+    ssh_probe: echo ok
+    timeout: 300
+    optional: true
+
+  # `-E` CAPTURED ONLY THE PARENT, AND THE AUTHENTICATION HAPPENS IN A CHILD. sshd 10.6 forks
+  # `sshd-session` per connection and that child is what refuses a key - so for six runs this file
+  # held two lines, "Server listening", and nothing about the login a second later.
+  #
+  # `-e` with a shell redirect keeps the parent and every child in one file. This read happens
+  # AFTER a connection has been attempted, which is the only time the reason exists.
   - name: say what the daemon logged
     adb: |
-      echo "--- sshd.err ---"
+      echo "--- sshd.err (last 40) ---"
       tail -40 /data/local/tmp/sshd.err 2>/dev/null || echo "(no log)"
       echo "--- authorized_keys ---"
       ls -la /data/local/home/.ssh/ 2>/dev/null
@@ -289,10 +300,11 @@ steps:
     timeout: 120
     optional: true
 
-  - name: wait for sshd on the forwarded port
-    require_ssh: true
-    ssh_probe: echo ok
-    timeout: 300
+  # THE VERDICT, AND IT IS AN `ssh:` BECAUSE THAT IS THE CLAIM: a command the guest's own shell
+  # ran, over the forwarded port, with this run's key.
+  - name: the account answers over the port
+    ssh: echo SSHD_IS_UP_AND_THE_ACCOUNT_WORKS
+    timeout: 180
 
   # AND THE SHELL IS ANDROID'S. `uname -a` says `Toybox` and `id` says `u:r:su:s0`; a forward from
   # the host would say neither. That is the difference between "a port answers" and "this machine
