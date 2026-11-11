@@ -1832,9 +1832,20 @@ def main() -> int:
           len(plain) == 6)
     for step in plain:
         body3 = str(step.get("script") or "")
-        check(f"{step['name']} treats winget 43 as success",
+        # AND THE COMPARISON IS ON THE LOW BYTE, BECAUSE $LASTEXITCODE IS AN HRESULT.
+        #
+        # Three attempts compared `$rc -eq 43` and all three failed, and the printed value is what
+        # finally explained it:
+        #
+        #     WINGET_EXIT=-1978335189
+        #
+        # -1978335189 is 0x8A15002B - winget's APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE as a
+        # signed int32 - and `& 0xFF` is the 43 that `lib/steps.py` logs as `-> 43`. The exit
+        # status in the log and the value in the variable were the same fact spelled two ways,
+        # and the branch compared one against the other.
+        check(f"{step['name']} compares the low byte, not the HRESULT",
               "windows/11/steps/dev.yaml",
-              "$rc -eq 43" in body3 and "ALREADY_PRESENT" in body3)
+              "$low = $rc -band 0xFF" in body3 and "$low -eq 43" in body3)
         # ANY OTHER NON-ZERO STILL FAILS - the rule must not become "ignore winget".
         check(f"{step['name']} still fails on any other code",
               "windows/11/steps/dev.yaml", "exit $rc" in body3)

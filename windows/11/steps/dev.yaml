@@ -221,8 +221,27 @@ steps:
       # puts on a script's output. One line removes the ambiguity, and it is cheap enough to
       # keep: the next reader should not have to reconstruct this from an exit code.
       Write-Output ("WINGET_EXIT=" + $rc)
-      if ($rc -eq 43) {
-        Write-Output 'ALREADY_PRESENT (winget 43: no upgrade applicable)'
+      # COMPARED ON THE LOW BYTE, BECAUSE $LASTEXITCODE IS NOT THE NUMBER THE SHELL REPORTS.
+      #
+      # Three attempts failed here on `$rc -eq 43`. The printed value, added this time, is what
+      # finally said why:
+      #
+      #     WINGET_EXIT=-1978335189
+      #
+      # -1978335189 is 0x8A15002B: winget's HRESULT for APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE,
+      # as PowerShell carries it (signed 32-bit). `-1978335189 & 0xFF` is 0x2B, which is 43 - the
+      # number a POSIX shell would have reported, and the number `lib/steps.py` logs as `-> 43`.
+      #
+      # So the exit status in the log and the value in the variable are the same fact spelled two
+      # ways, and the branch compared one against the other. `0x8A15002B` AND `43` are not equal
+      # and never were.
+      #
+      # THE MASK IS THE RULE, NOT A WORKAROUND FOR THIS ONE CODE: `$LASTEXITCODE` in PowerShell is
+      # an int32 carrying an HRESULT when the program returns one, and every winget error would
+      # have hit the same trap.
+      $low = $rc -band 0xFF
+      if ($low -eq 43) {
+        Write-Output 'ALREADY_PRESENT (winget 0x8A15002B: no upgrade applicable)'
         exit 0
       }
       exit $rc
@@ -290,8 +309,27 @@ steps:
       # puts on a script's output. One line removes the ambiguity, and it is cheap enough to
       # keep: the next reader should not have to reconstruct this from an exit code.
       Write-Output ("WINGET_EXIT=" + $rc)
-      if ($rc -eq 43) {
-        Write-Output 'ALREADY_PRESENT (winget 43: no upgrade applicable)'
+      # COMPARED ON THE LOW BYTE, BECAUSE $LASTEXITCODE IS NOT THE NUMBER THE SHELL REPORTS.
+      #
+      # Three attempts failed here on `$rc -eq 43`. The printed value, added this time, is what
+      # finally said why:
+      #
+      #     WINGET_EXIT=-1978335189
+      #
+      # -1978335189 is 0x8A15002B: winget's HRESULT for APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE,
+      # as PowerShell carries it (signed 32-bit). `-1978335189 & 0xFF` is 0x2B, which is 43 - the
+      # number a POSIX shell would have reported, and the number `lib/steps.py` logs as `-> 43`.
+      #
+      # So the exit status in the log and the value in the variable are the same fact spelled two
+      # ways, and the branch compared one against the other. `0x8A15002B` AND `43` are not equal
+      # and never were.
+      #
+      # THE MASK IS THE RULE, NOT A WORKAROUND FOR THIS ONE CODE: `$LASTEXITCODE` in PowerShell is
+      # an int32 carrying an HRESULT when the program returns one, and every winget error would
+      # have hit the same trap.
+      $low = $rc -band 0xFF
+      if ($low -eq 43) {
+        Write-Output 'ALREADY_PRESENT (winget 0x8A15002B: no upgrade applicable)'
         exit 0
       }
       exit $rc
@@ -359,8 +397,27 @@ steps:
       # puts on a script's output. One line removes the ambiguity, and it is cheap enough to
       # keep: the next reader should not have to reconstruct this from an exit code.
       Write-Output ("WINGET_EXIT=" + $rc)
-      if ($rc -eq 43) {
-        Write-Output 'ALREADY_PRESENT (winget 43: no upgrade applicable)'
+      # COMPARED ON THE LOW BYTE, BECAUSE $LASTEXITCODE IS NOT THE NUMBER THE SHELL REPORTS.
+      #
+      # Three attempts failed here on `$rc -eq 43`. The printed value, added this time, is what
+      # finally said why:
+      #
+      #     WINGET_EXIT=-1978335189
+      #
+      # -1978335189 is 0x8A15002B: winget's HRESULT for APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE,
+      # as PowerShell carries it (signed 32-bit). `-1978335189 & 0xFF` is 0x2B, which is 43 - the
+      # number a POSIX shell would have reported, and the number `lib/steps.py` logs as `-> 43`.
+      #
+      # So the exit status in the log and the value in the variable are the same fact spelled two
+      # ways, and the branch compared one against the other. `0x8A15002B` AND `43` are not equal
+      # and never were.
+      #
+      # THE MASK IS THE RULE, NOT A WORKAROUND FOR THIS ONE CODE: `$LASTEXITCODE` in PowerShell is
+      # an int32 carrying an HRESULT when the program returns one, and every winget error would
+      # have hit the same trap.
+      $low = $rc -band 0xFF
+      if ($low -eq 43) {
+        Write-Output 'ALREADY_PRESENT (winget 0x8A15002B: no upgrade applicable)'
         exit 0
       }
       exit $rc
@@ -428,8 +485,27 @@ steps:
       # puts on a script's output. One line removes the ambiguity, and it is cheap enough to
       # keep: the next reader should not have to reconstruct this from an exit code.
       Write-Output ("WINGET_EXIT=" + $rc)
-      if ($rc -eq 43) {
-        Write-Output 'ALREADY_PRESENT (winget 43: no upgrade applicable)'
+      # COMPARED ON THE LOW BYTE, BECAUSE $LASTEXITCODE IS NOT THE NUMBER THE SHELL REPORTS.
+      #
+      # Three attempts failed here on `$rc -eq 43`. The printed value, added this time, is what
+      # finally said why:
+      #
+      #     WINGET_EXIT=-1978335189
+      #
+      # -1978335189 is 0x8A15002B: winget's HRESULT for APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE,
+      # as PowerShell carries it (signed 32-bit). `-1978335189 & 0xFF` is 0x2B, which is 43 - the
+      # number a POSIX shell would have reported, and the number `lib/steps.py` logs as `-> 43`.
+      #
+      # So the exit status in the log and the value in the variable are the same fact spelled two
+      # ways, and the branch compared one against the other. `0x8A15002B` AND `43` are not equal
+      # and never were.
+      #
+      # THE MASK IS THE RULE, NOT A WORKAROUND FOR THIS ONE CODE: `$LASTEXITCODE` in PowerShell is
+      # an int32 carrying an HRESULT when the program returns one, and every winget error would
+      # have hit the same trap.
+      $low = $rc -band 0xFF
+      if ($low -eq 43) {
+        Write-Output 'ALREADY_PRESENT (winget 0x8A15002B: no upgrade applicable)'
         exit 0
       }
       exit $rc
@@ -497,8 +573,27 @@ steps:
       # puts on a script's output. One line removes the ambiguity, and it is cheap enough to
       # keep: the next reader should not have to reconstruct this from an exit code.
       Write-Output ("WINGET_EXIT=" + $rc)
-      if ($rc -eq 43) {
-        Write-Output 'ALREADY_PRESENT (winget 43: no upgrade applicable)'
+      # COMPARED ON THE LOW BYTE, BECAUSE $LASTEXITCODE IS NOT THE NUMBER THE SHELL REPORTS.
+      #
+      # Three attempts failed here on `$rc -eq 43`. The printed value, added this time, is what
+      # finally said why:
+      #
+      #     WINGET_EXIT=-1978335189
+      #
+      # -1978335189 is 0x8A15002B: winget's HRESULT for APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE,
+      # as PowerShell carries it (signed 32-bit). `-1978335189 & 0xFF` is 0x2B, which is 43 - the
+      # number a POSIX shell would have reported, and the number `lib/steps.py` logs as `-> 43`.
+      #
+      # So the exit status in the log and the value in the variable are the same fact spelled two
+      # ways, and the branch compared one against the other. `0x8A15002B` AND `43` are not equal
+      # and never were.
+      #
+      # THE MASK IS THE RULE, NOT A WORKAROUND FOR THIS ONE CODE: `$LASTEXITCODE` in PowerShell is
+      # an int32 carrying an HRESULT when the program returns one, and every winget error would
+      # have hit the same trap.
+      $low = $rc -band 0xFF
+      if ($low -eq 43) {
+        Write-Output 'ALREADY_PRESENT (winget 0x8A15002B: no upgrade applicable)'
         exit 0
       }
       exit $rc
@@ -566,8 +661,27 @@ steps:
       # puts on a script's output. One line removes the ambiguity, and it is cheap enough to
       # keep: the next reader should not have to reconstruct this from an exit code.
       Write-Output ("WINGET_EXIT=" + $rc)
-      if ($rc -eq 43) {
-        Write-Output 'ALREADY_PRESENT (winget 43: no upgrade applicable)'
+      # COMPARED ON THE LOW BYTE, BECAUSE $LASTEXITCODE IS NOT THE NUMBER THE SHELL REPORTS.
+      #
+      # Three attempts failed here on `$rc -eq 43`. The printed value, added this time, is what
+      # finally said why:
+      #
+      #     WINGET_EXIT=-1978335189
+      #
+      # -1978335189 is 0x8A15002B: winget's HRESULT for APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE,
+      # as PowerShell carries it (signed 32-bit). `-1978335189 & 0xFF` is 0x2B, which is 43 - the
+      # number a POSIX shell would have reported, and the number `lib/steps.py` logs as `-> 43`.
+      #
+      # So the exit status in the log and the value in the variable are the same fact spelled two
+      # ways, and the branch compared one against the other. `0x8A15002B` AND `43` are not equal
+      # and never were.
+      #
+      # THE MASK IS THE RULE, NOT A WORKAROUND FOR THIS ONE CODE: `$LASTEXITCODE` in PowerShell is
+      # an int32 carrying an HRESULT when the program returns one, and every winget error would
+      # have hit the same trap.
+      $low = $rc -band 0xFF
+      if ($low -eq 43) {
+        Write-Output 'ALREADY_PRESENT (winget 0x8A15002B: no upgrade applicable)'
         exit 0
       }
       exit $rc
