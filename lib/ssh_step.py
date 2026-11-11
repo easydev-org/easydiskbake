@@ -188,25 +188,27 @@ def main(argv: list[str]) -> int:
         except OSError:
             pass
 
+    # THE VERDICT IS DECIDED HERE AND THE DISK IS COPIED LATER - see the `finally` below.
+    #
+    # THE COPY USED TO HAPPEN IN THIS FUNCTION, WHICH RUNS WHILE QEMU IS STILL UP. `return
+    # finish(0)` is inside the `try`, and `guest.stop()` is in the `finally`: so the disk was
+    # copied out from under a RUNNING guest, with its filesystem still holding writes in the page
+    # cache.
+    #
+    # That is what made three distributions look like they had a broken sshd. Their ssh stage
+    # proved `id -un` over port 22, `is-enabled sshd` answered `enabled`, the symlink
+    # /etc/systemd/system/multi-user.target.wants/sshd.service existed in the guest - and the
+    # PUBLISHED disk booted to a login screen with nothing on port 22, reproduced twice in a local
+    # pod. The link was written, acknowledged by systemd, and not yet on the disk.
+    verdict = 1
+
     def finish(code: int) -> int:
+        # THE ANSWER IS KEPT WHERE THE `finally` CAN SEE IT, because the copy has to happen after
+        # the guest is stopped and `return` cannot wait for that.
+        nonlocal verdict
+        verdict = code
         note(f"VERDICT {'PASS' if code == 0 else 'FAIL'} kind={args.kind} "
              f"tag={args.tag or args.disk}")
-        # THE DISK LEAVES WITH THE VERDICT, AND ONLY WITH A PASS.
-        #
-        # A disk from a failed stage is not published - that is the rule every other stage here
-        # already follows, and the reason is the same: whatever is wrong with it would be discovered
-        # by the next stage, a long way from the failure that caused it.
-        if code == 0 and args.publish_out:
-            try:
-                import shutil
-                os.makedirs(os.path.dirname(os.path.abspath(args.publish_out)) or ".",
-                            exist_ok=True)
-                note(f"copying the configured disk -> {args.publish_out}")
-                shutil.copyfile(disk, args.publish_out)
-                note(f"{args.publish_out}: {os.path.getsize(args.publish_out) >> 20} MiB")
-            except Exception as exc:                   # noqa: BLE001
-                note(f"=== COULD NOT WRITE {args.publish_out}: {exc} ===")
-                return 1
         return code
 
     def shot(q, name: str) -> str:
@@ -469,6 +471,32 @@ def main(argv: list[str]) -> int:
         except Exception:                          # noqa: BLE001
             pass
         guest.stop(acpi_first=False)
+
+        # THE DISK LEAVES WITH THE VERDICT, AND ONLY AFTER THIS GUEST HAS LET GO OF IT.
+        #
+        # A disk from a failed stage is not published - that is the rule every other stage here
+        # follows, and the reason is the same: whatever is wrong with it would be discovered by
+        # the next stage, a long way from the failure that caused it.
+        #
+        # `guest.stop()` HAS TO COME FIRST, AND THAT IS THE WHOLE REASON THIS IS HERE. qemu holds
+        # the qcow2 open for writing until it exits, and the guest's own writes sit in its page
+        # cache until it syncs. A copy taken before that is a copy of a filesystem mid-write -
+        # which is exactly the artifact that made cachyos, manjaro and opensuse look like they had
+        # a broken sshd while their own stages proved otherwise.
+        #
+        # `verdict` IS SET BY `finish()`, WHICH RETURNS THE CODE THE PROCESS EXITS WITH, so this
+        # block can see the answer without returning early.
+        if verdict == 0 and args.publish_out:
+            try:
+                import shutil
+                os.makedirs(os.path.dirname(os.path.abspath(args.publish_out)) or ".",
+                            exist_ok=True)
+                note(f"copying the configured disk -> {args.publish_out}")
+                shutil.copyfile(disk, args.publish_out)
+                note(f"{args.publish_out}: {os.path.getsize(args.publish_out) >> 20} MiB")
+            except Exception as exc:                   # noqa: BLE001
+                note(f"=== COULD NOT WRITE {args.publish_out}: {exc} ===")
+
         # AFTER guest.stop(), so the last frames are in the recording before it is closed.
         try:
             snap.terminate()

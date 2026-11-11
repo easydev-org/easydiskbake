@@ -272,3 +272,26 @@ steps:
   # a Debian/Fedora/Arch/suse desktop needs; FreeBSD has no sudo, and NixOS' rebuild must run
   # as root by design. This step is `optional` so on a disk where the first one worked its only
   # effect is one harmless line in the same terminal.
+
+  # WHAT THE BOOT ACTUALLY DID, FROM THE JOURNAL, BECAUSE THE SYMLINK IS NOT THE WHOLE STORY.
+  #
+  # Run 8bd7746 proved `is-enabled: enabled` AND that the symlink exists, and the published disk
+  # still booted to a login screen with NOTHING on port 22 - measured twice in a local pod, on the
+  # artifact itself, with the account `vmuser` visible on the greeter. So "enabled" is true and
+  # "running after a boot" is false, and the difference is in what the unit said when it tried.
+  #
+  # `--boot` READ FROM THE JOURNAL IS THE ONLY PLACE THAT ANSWER IS WRITTEN. A host key that could
+  # not be generated, a port already held, a unit ordered before the network it needs - all three
+  # look identical from outside (a refused port) and different in one line of `journalctl`.
+  - name: read what sshd said at the last boot
+    ssh: |
+      echo "--- is-enabled / is-active ---"
+      systemctl is-enabled sshd; systemctl is-active sshd
+      echo "--- host keys ---"
+      ls -l /etc/ssh/ssh_host_*_key 2>&1 | head -6
+      echo "--- the unit's own account of its start ---"
+      journalctl -b -u sshd --no-pager 2>&1 | tail -20
+      echo "--- and whether it failed ---"
+      systemctl --failed --no-pager 2>&1 | head -10
+    timeout: 120
+    optional: true
