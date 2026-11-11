@@ -1021,11 +1021,23 @@ def mount_commands(host: str = "", user: str = "vmuser",
         #
         # `HOME` IS READ BEFORE `sudo` AND PASSED IN, which is the same fix every Linux file here
         # gets for free because `mount -t cifs` is not run through a second `sh -c`.
+        # THE URL FORM AND THE `-I` FORM ARE DIFFERENT, AND FREEBSD WANTS THE SECOND.
+        #
+        # Run 58cf56c got past the shell and then:
+        #
+        #     mount_smbfs: can't get server address: syserr = Operation timed out
+        #
+        # "can't get server address" is the RESOLVE step, not the connect - so the address in the
+        # URL was never parsed as an address. `//guest:@172.30.0.1/shared` relies on the client
+        # splitting `user:password@host` itself, and with an EMPTY password the split is ambiguous.
+        #
+        # `-I` NAMES THE SERVER AND `-U` NAMES THE ACCOUNT, so nothing has to be parsed out of a
+        # URL at all. `-N` still says "do not prompt", which is what makes this work over ssh.
         "bsd": (
             f"SHARED=$HOME/shared; mkdir -p \"$SHARED\" && "
             f"printf '%s\\n' {shlex.quote(login_password)} | sudo -S -p '' "
             f"sh -c \"kldload smbfs 2>/dev/null || true; "
-            f"mount_smbfs -N //{SMB_USER}:@{host}/{SHARE_NAME} $SHARED\""
+            f"mount_smbfs -N -I {host} -U {SMB_USER} //{host}/{SHARE_NAME} $SHARED\""
         ),
     }
 

@@ -232,9 +232,32 @@ steps:
       printf '%s\n' '{{ password }}' | sudo -S -p '' sh -c 'kldload smbfs 2>&1; kldstat | grep -c smbfs'
     timeout: 120
 
+  # CAN THIS GUEST REACH THE SERVER AT ALL? ASKED BEFORE THE MOUNT, BECAUSE "CAN'T GET SERVER
+  # ADDRESS" IS A DIFFERENT SENTENCE FROM "THE MOUNT FAILED".
+  #
+  # Run 58cf56c's only diagnostic was
+  #
+  #     mount_smbfs: can't get server address: syserr = Operation timed out
+  #
+  # which is the RESOLVE step - so the question "is 445 reachable from inside this guest" was never
+  # answered, and every change to the mount command after it was a guess.
   - name: serve the host share
     share_serve: true
     timeout: 60
+
+  - name: prove the guest can reach the server on 445
+    ssh: |
+      sh -c '
+        echo "--- the address this guest has ---"
+        ifconfig | grep "inet " | head -4
+        echo "--- the route to the host ---"
+        route -n get {{ host }} 2>&1 | head -6
+        echo "--- can it open 445 ---"
+        timeout 10 nc -z -v {{ host }} 445 2>&1 || timeout 10 nc {{ host }} 445 </dev/null 2>&1 || true
+        echo "--- and can it resolve nothing? (the mount takes an address, not a name) ---"
+        getent hosts {{ host }} 2>&1 || true'
+    timeout: 120
+    optional: true
 
   # `share_family: bsd` IS THE smbnetfs COMMAND, not the cifs one the twelve Linux files use.
   - name: mount the host share
