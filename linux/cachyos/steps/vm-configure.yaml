@@ -155,13 +155,14 @@ steps:
   # is inside the command - `test ... || exit 1` is what makes a wrong name a failed step.
   - name: prove the name
     ssh: |
-      set -e
-      echo "static: $(hostnamectl --static)"
-      echo "kernel: $(hostname)"
-      echo "hosts:  $(grep -c '{{ hostname }}' /etc/hosts) line(s)"
-      test "$(hostnamectl --static)" = "{{ hostname }}"
-      test "$(hostname)" = "{{ hostname }}"
-      grep -q '{{ hostname }}' /etc/hosts
+      sh -c '
+        set -e
+        echo "static: $(hostnamectl --static)"
+        echo "kernel: $(hostname)"
+        echo "hosts:  $(grep -c "{{ hostname }}" /etc/hosts) line(s)"
+        test "$(hostnamectl --static)" = "{{ hostname }}"
+        test "$(hostname)" = "{{ hostname }}"
+        grep -q "{{ hostname }}" /etc/hosts'
     timeout: 60
 
   # =======================================================================================
@@ -238,8 +239,9 @@ steps:
   # that it is writable - a read-only mount answers `ls` happily.
   - name: prove the share is readable and writable
     ssh: |
+      sh -c '
       set -e
-      mount | grep ' on ' | grep shared
+      mount | grep " on " | grep shared
       ls -la ~/shared | head -20
       # THE FILE'S CONTENT IS A FIXED WORD, NOT THE MACHINE'S NAME.
       #
@@ -251,9 +253,9 @@ steps:
       #
       # What has to be proven here is that a file written on the guest is readable back through
       # the mount. The word in it only has to come back unchanged.
-      printf 'written-by-the-guest\n' > ~/shared/from-guest.txt
+      printf "written-by-the-guest\n" > ~/shared/from-guest.txt
       test "$(cat ~/shared/from-guest.txt)" = "written-by-the-guest"
-      echo "round trip ok"
+      echo "round trip ok"'
     timeout: 120
 
   # =======================================================================================
@@ -280,37 +282,60 @@ steps:
     scp: ["bootstrap-launcher.sh", "/tmp/bootstrap-launcher.sh"]
     timeout: 300
 
+  # THIS SHELL IS FISH, AND A HEREDOC IS NOT FISH.
+  #
+  # cachyos logs the account in with /usr/bin/fish, and `ssh:` sends a command to that shell - so
+  #
+  #     cat > ~/.config/systemd/user/org.vm.bootstrap.service <<'UNIT'
+  #
+  # answers
+  #
+  #     fish: Expected a string, but found a redirection
+  #
+  # and the step exits 127. The other ten Linux files type the same heredoc into bash or zsh, where
+  # it works; this is the only one whose shell is fish, which is why only this one failed.
+  #
+  # `sh -c '...'` IS THE FIX AND NOT A WORKAROUND: it names the interpreter instead of inheriting
+  # whatever the login shell happens to be, so the body below is POSIX whatever fish thinks. The
+  # single-quoted string is not touched by fish at all - it is one argument to `sh`.
+  #
+  # THE UNIT IS WRITTEN WITH `printf`, NOT A HEREDOC, for the same reason one layer down: a heredoc
+  # inside `sh -c '...'` is valid, but the nested quoting is where the next reader loses an hour.
   - name: install the launcher
     ssh: |
-      set -e
-      install -m 0755 /tmp/bootstrap-launcher.sh ~/bootstrap-launcher.sh
-      mkdir -p ~/.config/systemd/user
-      cat > ~/.config/systemd/user/org.vm.bootstrap.service <<'UNIT'
-      [Unit]
-      Description=Run ~/shared/bootstrap.sh at login
-
-      [Service]
-      Type=oneshot
-      ExecStart=%h/bootstrap-launcher.sh
-
-      [Install]
-      WantedBy=default.target
-      UNIT
-      systemctl --user daemon-reload
-      systemctl --user enable org.vm.bootstrap.service
-      echo INSTALLED_FOR_NEXT_LOGIN
+      sh -c '
+        set -e
+        install -m 0755 /tmp/bootstrap-launcher.sh "$HOME/bootstrap-launcher.sh"
+        mkdir -p "$HOME/.config/systemd/user"
+        UNIT="$HOME/.config/systemd/user/org.vm.bootstrap.service"
+        printf "%s\n" \
+          "[Unit]" \
+          "Description=Run ~/shared/bootstrap.sh at login" \
+          "" \
+          "[Service]" \
+          "Type=oneshot" \
+          "ExecStart=%h/bootstrap-launcher.sh" \
+          "" \
+          "[Install]" \
+          "WantedBy=default.target" > "$UNIT"
+        systemctl --user daemon-reload
+        systemctl --user enable org.vm.bootstrap.service
+        echo INSTALLED_FOR_NEXT_LOGIN'
     timeout: 300
 
   # THE UNIT HAS TO BE ENABLED AND HAS TO NAME THE LAUNCHER. A unit file that is well formed and
   # points at nothing is found at the next boot, on a published disk - which is the failure this
   # catches while the disk is still here.
+  # `sh -c` FOR THE SAME REASON AS THE STEP ABOVE: this account's shell is fish, and `set -e`,
+  # `test` and `$(...)` are not fish syntax.
   - name: prove the launcher is installed
     ssh: |
-      set -e
-      ls -l ~/bootstrap-launcher.sh ~/.config/systemd/user/org.vm.bootstrap.service
-      grep -q bootstrap-launcher.sh ~/.config/systemd/user/org.vm.bootstrap.service
-      systemctl --user is-enabled org.vm.bootstrap.service
-      test "$(systemctl --user is-enabled org.vm.bootstrap.service)" = "enabled"
+      sh -c '
+        set -e
+        ls -l "$HOME/bootstrap-launcher.sh" "$HOME/.config/systemd/user/org.vm.bootstrap.service"
+        grep -q bootstrap-launcher.sh "$HOME/.config/systemd/user/org.vm.bootstrap.service"
+        systemctl --user is-enabled org.vm.bootstrap.service
+        test "$(systemctl --user is-enabled org.vm.bootstrap.service)" = "enabled"'
     timeout: 60
 
   # =======================================================================================
