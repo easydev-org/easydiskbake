@@ -195,17 +195,56 @@ def wait_for_port_down(port: int, seconds: int, note=log, settle: float = 2.0,
     target = host or SSH_HOST
     deadline = time.time() + seconds
     started = time.time()
+    # TWO FAILURES IN A ROW, SO ONE LOST PACKET IS NOT A REBOOT. The cost is one extra probe -
+    # `settle` seconds - and it is the difference between "the machine went down" and "the network
+    # hiccuped once while it was still serving".
+    misses = 0
     while time.time() < deadline:
         try:
             with socket.create_connection((target, port), timeout=3):
-                pass
-        except (ConnectionRefusedError, OSError) as exc:
-            # REFUSED, NOT "ANY ERROR". A timeout is a firewall and proves nothing about sshd.
-            if isinstance(exc, ConnectionRefusedError) or getattr(exc, "errno", None) in (
-                    111,  # ECONNREFUSED
-            ):
-                note(f"the old daemon stopped answering after {time.time() - started:.0f}s")
+                # STILL ANSWERING. Not a verdict yet, and a run of misses is now broken.
+                misses = 0
+                time.sleep(settle)
+                continue
+        except ConnectionRefusedError:
+            misses += 1
+            if misses >= 2:
+                note(f"the old daemon stopped answering after {time.time() - started:.0f}s "
+                     f"(the port refuses)")
                 return True
+            time.sleep(settle)
+            continue
+        except socket.timeout:
+            # A TIMEOUT IS ALSO "NOT ANSWERING", AND CACHYOS IS WHY.
+            #
+            # Run 9e7d0dd measured the reboot working and this wait failing:
+            #
+            #     === restart the machine
+            #       -> 255
+            #          Connection to 172.30.0.1 closed by remote host.
+            #     === NOTHING STOPPED ANSWERING ON PORT 2222 IN 900s
+            #
+            # The machine DID go down - ssh said so - but the port does not refuse on the way
+            # down: the DNAT rule that forwards 2222 still exists while the guest is off, so
+            # packets to it are DROPPED and a probe times out rather than being refused. Both
+            # messages mean "nothing is serving this port"; only their reason differs, and the
+            # caller asks the first question.
+            misses += 1
+            if misses >= 2:
+                note(f"the old daemon stopped answering after {time.time() - started:.0f}s "
+                     f"(the port times out)")
+                return True
+            time.sleep(settle)
+            continue
+        except OSError as exc:
+            # NO ROUTE, HOST UNREACHABLE, AND THE LIKE: the guest is not on the network.
+            misses += 1
+            if misses >= 2:
+                note(f"the old daemon stopped answering after {time.time() - started:.0f}s "
+                     f"({exc.__class__.__name__})")
+                return True
+            time.sleep(settle)
+            continue
         time.sleep(settle)
     note(f"=== NOTHING STOPPED ANSWERING ON PORT {port} IN {seconds}s ===")
     return False
