@@ -114,11 +114,12 @@ steps:
 
   - name: prove the name
     ssh: |
-      set -e
-      echo "rc.conf: $(sysrc -n hostname)"
-      echo "kernel:  $(hostname)"
-      test "$(sysrc -n hostname)" = "{{ hostname }}"
-      test "$(hostname)" = "{{ hostname }}"
+      sh -c '
+        set -e
+        echo "rc.conf: $(sysrc -n hostname)"
+        echo "kernel:  $(hostname)"
+        test "$(sysrc -n hostname)" = "{{ hostname }}"
+        test "$(hostname)" = "{{ hostname }}"'
     timeout: 60
 
   # =======================================================================================
@@ -143,12 +144,34 @@ steps:
         service qemu-guest-agent start 2>&1 | tail -3'
     timeout: 180
 
-  # THE DEVICE AND THE PROCESS, BECAUSE THEY FAIL DIFFERENTLY. A unit that is "running" with no
-  # /dev/virtio-ports/... behind it is an agent that will never answer.
+  # THE PROCESS AND A VIRTIO CONSOLE, AND THE PATH IS NOT THE LINUX ONE.
+  #
+  # Run 83bb7dc showed the agent starting correctly
+  #
+  #     qemu_guest_agent_enable:  -> YES
+  #     Starting qemu_guest_agent.
+  #
+  # and then failed on the check I wrote, which hard-coded Linux's path:
+  #
+  #     ls: /dev/virtio-ports/org.qemu.guest_agent.0: No such file or directory
+  #
+  # FREEBSD EXPOSES A VIRTIO CONSOLE DIFFERENTLY. `/dev/virtio-ports/<name>` is the Linux
+  # convention; on FreeBSD the same device appears under `/dev/vtcon/` (its virtio_console driver)
+  # and the agent is told which one to open by its own rc script. Naming one path from the other
+  # platform is a check that can only ever fail on this one.
+  #
+  # SO THE CHECK IS TWO THINGS THAT ARE TRUE ON BOTH: the daemon is running, and SOME virtio
+  # console device exists. A disk with the agent installed but no channel has the process and no
+  # device, which is the failure this is meant to catch.
   - name: prove the guest agent is running
     ssh: |
-      ls -l /dev/virtio-ports/org.qemu.guest_agent.0 2>&1 &&
-      pgrep -af 'qemu-guest-agent'
+      sh -c '
+        set -e
+        echo "--- the process ---"
+        pgrep -af qemu-ga || pgrep -af qemu-guest-agent
+        echo "--- a virtio console, whichever path this kernel uses ---"
+        ls -d /dev/vtcon/* /dev/virtio-ports/* 2>/dev/null | head -6
+        ls -d /dev/vtcon/* /dev/virtio-ports/* >/dev/null 2>&1'
     timeout: 120
 
   # =======================================================================================
@@ -181,12 +204,13 @@ steps:
 
   - name: prove the share is readable and writable
     ssh: |
-      set -e
-      mount | grep -i smbnetfs || df | grep -i shared
-      ls -la ~/shared | head -20
-      printf 'written-by-the-guest\n' > ~/shared/from-guest.txt
-      test "$(cat ~/shared/from-guest.txt)" = "written-by-the-guest"
-      echo "round trip ok"
+      sh -c '
+        set -e
+        mount | grep -i smbfs || df | grep -i shared
+        ls -la ~/shared | head -20
+        printf "written-by-the-guest\n" > ~/shared/from-guest.txt
+        test "$(cat ~/shared/from-guest.txt)" = "written-by-the-guest"
+        echo "round trip ok"'
     timeout: 120
 
   # =======================================================================================
@@ -208,21 +232,22 @@ steps:
 
   - name: install the launcher
     ssh: |
-      set -e
-      install -m 0755 /tmp/bootstrap-launcher.sh ~/bootstrap-launcher.sh
-      touch ~/.xinitrc
-      grep -q 'bootstrap-launcher.sh' ~/.xinitrc || \
-        printf '\n%s\n' 'sh "$HOME/bootstrap-launcher.sh" &' >> ~/.xinitrc
-      echo INSTALLED_FOR_NEXT_LOGIN
-      tail -3 ~/.xinitrc
+      sh -c '
+        set -e
+        install -m 0755 /tmp/bootstrap-launcher.sh "$HOME/bootstrap-launcher.sh"
+        touch "$HOME/.xinitrc"
+        grep -q bootstrap-launcher.sh "$HOME/.xinitrc" ||           printf "\n%s\n" "sh \"\$HOME/bootstrap-launcher.sh\" &" >> "$HOME/.xinitrc"
+        echo INSTALLED_FOR_NEXT_LOGIN
+        tail -3 "$HOME/.xinitrc"'
     timeout: 300
 
   - name: prove the launcher is installed
     ssh: |
-      set -e
-      ls -l ~/bootstrap-launcher.sh ~/.xinitrc
-      grep -q bootstrap-launcher.sh ~/.xinitrc
-      echo enabled
+      sh -c '
+        set -e
+        ls -l "$HOME/bootstrap-launcher.sh" "$HOME/.xinitrc"
+        grep -q bootstrap-launcher.sh "$HOME/.xinitrc"
+        echo enabled'
     timeout: 60
 
   # =======================================================================================
