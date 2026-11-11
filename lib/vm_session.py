@@ -540,6 +540,15 @@ def _start_machine(family: str, disk: str, work: str, ssh_port: int, cpus: int,
     # failure is the installer's own dialog, which a stage cannot read. `boot_options["tpm"]`
     # is the statement; the socket is started here so a stage that says "this guest has a TPM"
     # does not also have to know what swtpm is.
+    # `boot_options` IS OPTIONAL ON THIS FUNCTION AND EVERY CALLER THAT OMITS IT PASSES None -
+    # `clean_step.py` is one, and it is the one that caught this: the clean booted the disk the
+    # ssh stage had just published and crashed with
+    #
+    #     AttributeError: 'NoneType' object has no attribute 'get'
+    #
+    # on `boot_options.get("tpm")`. The parameter has a `| None = None` default, so the body has
+    # to treat None as "no options" rather than assume the default was dict.
+    boot_options = boot_options or {}
     tpm_socket = ""
     if boot_options.get("tpm"):
         import swtpm as swtpmmod

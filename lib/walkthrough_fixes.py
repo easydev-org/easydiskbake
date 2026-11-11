@@ -1365,6 +1365,35 @@ def main() -> int:
     # have moved this failure one step later instead of removing it.
     check("an overlay owed to compress survives the shutdown", "lib/steps.py",
           'getattr(self, "flatten_from", None) is None' in st)
+    # AND THE FLATTEN FINALLY COMPLETED - run 42952160130, the first time it ever did:
+    #
+    #     [overlay] flattening session-overlay.qcow2 -> windows11-ssh.qcow2
+    #     [overlay]   out/windows11-ssh.qcow2 (10050 MiB)
+    #     [overlay] released the overlay (1664 MiB written this run)
+    #     [steps]     BAKED out/windows11-ssh.qcow2 (10050 MiB)
+    #     [steps] === WALKTHROUGH COMPLETE: 29 step(s) ran ===
+    #
+    # 1664 MiB of writes became a 10050 MiB standalone disk from a 10543 MiB read-only base. The
+    # three faults before it are the reason the assertions above exist.
+    #
+    # WHAT THAT RUN ALSO FOUND, one step later: `clean_step` calls `vm_session.start` with no
+    # `boot_options`, and `_start_machine` then read `boot_options.get("tpm")` on None -
+    #
+    #     AttributeError: 'NoneType' object has no attribute 'get'
+    #
+    # because the parameter's default is `| None = None`. Two fixes: the body treats None as "no
+    # options", and a Windows clean now asks for the TPM its disk was installed against.
+    vs = read("lib/vm_session.py")
+    check("_start_machine tolerates no boot_options", "lib/vm_session.py",
+          "boot_options = boot_options or {}" in vs)
+    cl = read("lib/clean_step.py")
+    check("a windows clean boots with its TPM", "lib/clean_step.py",
+          '"tpm": True' in cl)
+    # AND `tpm` IS NOT `bootstate`. They are different facts - a saved firmware archive versus a
+    # TPM the installed system refuses to boot without - and reusing one for the other would have
+    # been a coincidence that reads as a design.
+    check("tpm is its own key, not bootstate", "lib/clean_step.py",
+          '"bootstate": True, "tpm": True' in cl)
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))

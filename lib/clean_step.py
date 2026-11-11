@@ -132,7 +132,9 @@ def _install_signal_reporting() -> None:
 # WHAT EACH SYSTEM NEEDS TO BE STARTED AND CLEANED. Only the differences, so a fourth system
 # is one entry. `clean` is passed straight to clean_disk.clean_running().
 SYSTEMS = {
-    "windows": {"ssh_port": 2222, "clean": "windows", "bootstate": True},
+    # `tpm` IS TRUE FOR WINDOWS AND ONLY WINDOWS: the disk was installed against a TPM and a boot
+    # without one stops at the hardware check.
+    "windows": {"ssh_port": 2222, "clean": "windows", "bootstate": True, "tpm": True},
     "linux": {"ssh_port": 2222, "clean": "linux", "bootstate": False},
     "freebsd": {"ssh_port": 2222, "clean": "freebsd", "bootstate": False},
     # macOS FORWARDS 2223, not 2222, because the number is per stage and a macOS run and a
@@ -302,6 +304,15 @@ def main(argv: list[str]) -> int:
         ssh_port=spec["ssh_port"], boot_timeout=args.boot_timeout,
         copy=False, share=hostshare.DEFAULT_DIR,
         cpus=args.cpus, mem_mb=args.mem, log=note,
+        # A WINDOWS DISK REMEMBERS THE TPM IT WAS INSTALLED AGAINST, and a clean that boots it
+        # without one is a different machine: the guest stops at the hardware check and the
+        # symptom is a 900-second wait that reads as a hung guest.
+        #
+        # `tpm` IS ITS OWN KEY, NOT `bootstate`. They are two different facts - `bootstate` is
+        # "this disk needs a saved firmware-variable archive to find its loader", and `tpm` is
+        # "this guest was installed with a TPM and refuses to boot without one". Reusing the
+        # first for the second would have been a coincidence that read as a design.
+        boot_options={"tpm": True} if spec.get("tpm") else None,
         # NO DISCARD, BECAUSE THIS DISK IS ALREADY COMPRESSED AND WE ARE STILL READING IT.
         #
         # `discard=unmap` frees clusters as the guest TRIMs them. That is right for a stage that
