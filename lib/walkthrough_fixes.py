@@ -1045,6 +1045,28 @@ def main() -> int:
                     and try_block.body[0].lineno <= n.lineno <= last]
     check("the clean's success path is not an early return", "lib/clean_step.py",
           not zero_returns)
+    # AND A CLEAN THAT HAS ALREADY DONE ITS WORK SURVIVES ONE INTERRUPTION.
+    #
+    # Five runs were killed in the same window: after `the guest powered off`, with the disk
+    # cleaned, before the record and the re-compress. Every candidate for the sender was excluded -
+    # `hostshare.stop()` now logs what it signals, refuses a pid that is this process, re-checks
+    # the cmdline immediately before, and sends from a child in its own session that is measured
+    # not to be able to reach the parent. It is still arriving.
+    #
+    # What is established: the WORK IS DONE when it arrives. Dying there throws away a cleaned disk
+    # and produces the same record as a clean that never ran. So one SIGTERM is survived when the
+    # disk is clean, and a second is obeyed - a supervisor that repeats itself is not asking.
+    #
+    # A signal before the work is done is obeyed immediately, which is the case that must not
+    # become tolerant.
+    clean2 = read("lib/clean_step.py")
+    check("a cleaned disk survives one SIGTERM", "lib/clean_step.py",
+          "the clean is finished; recording it and continuing" in clean2)
+    check("a second signal is obeyed", "lib/clean_step.py",
+          "obeying it" in clean2 and "signum == signal.SIGTERM and state == 1" in clean2)
+    check("the cleaned flag is set before the shutdown", "lib/clean_step.py",
+          clean2.index('_ARTIFACTS["cleaned"] = True')
+          < clean2.index('vm_session.stop(guest, acpi_first=ok'))
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))

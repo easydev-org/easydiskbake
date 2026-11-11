@@ -87,6 +87,38 @@ def _install_signal_reporting() -> None:
                 fh.write(f"{signal.Signals(signum).name} ({signum}){sender}\n")
         except OSError:
             pass
+        # AND THE FIRST ONE IS SURVIVED. THE WORK IS DONE BY THE TIME THIS ARRIVES.
+        #
+        # Five runs have now been killed here, every one of them AFTER `the guest powered off`,
+        # with the disk cleaned and only the record and the re-compress left:
+        #
+        #     42913402988   395/395      42922887078   378/378
+        #     42919582582   419/418      42931268207   392/392
+        #     42933089148   365/365      <- and this one with the signal sent from a child in its
+        #                                    own session, which is measured not to be able to reach
+        #                                    the parent
+        #
+        # The sender is not established, and every candidate has been excluded by measurement or
+        # by the log. What IS established is that the work is finished when it arrives, so dying
+        # here throws away a cleaned disk for no reason - and a clean that leaves its record and
+        # its re-compress undone is indistinguishable from one that failed.
+        #
+        # A second signal is obeyed: a supervisor that repeats itself is not asking a question.
+        # ONLY SIGTERM, AND ONLY WHEN THE DISK IS ALREADY CLEANED AND SHUT DOWN.
+        #
+        # SIGHUP and SIGINT mean the runner is going away and continuing would be rude; a SIGTERM
+        # before the work is done means there is nothing to save. The tolerant case is exactly the
+        # one this stage keeps dying in: a finished clean whose teardown is interrupted.
+        state = _ARTIFACTS.setdefault("signals", 0) + 1  # type: ignore[arg-type]
+        _ARTIFACTS["signals"] = state  # type: ignore[assignment]
+        already_cleaned = bool(_ARTIFACTS.get("cleaned"))
+        if signum == signal.SIGTERM and state == 1 and already_cleaned:
+            print("[clean-step]   the clean is finished; recording it and continuing", flush=True)
+            return
+        print(f"[clean-step]   signal {state}"
+              f"{'' if already_cleaned else ', and the clean has NOT finished'}; obeying it",
+              flush=True)
+        print(f"[clean-step]   signal {state}; obeying it", flush=True)
         signal.signal(signum, signal.SIG_DFL)
         os.kill(os.getpid(), signum)
 
@@ -382,6 +414,12 @@ def main(argv: list[str]) -> int:
         if not ok:
             note("=== THE CLEAN DID NOT FINISH ===")
             return 1
+        # THE DISK IS CLEAN AT THIS LINE, BEFORE THE SHUTDOWN.
+        #
+        # The shutdown runs in `finally`, so a signal that arrives during it lands while `ok` is
+        # already true but `CLEANED` has not been written - which is the window every one of the
+        # five killed runs died in. Recording it here is honest: the guest has been cleaned.
+        _ARTIFACTS["cleaned"] = True
         # NO `return 0` HERE. THE SUCCESS PATH HAS TO LEAVE THE `try` TO REACH THE REST.
         #
         # It used to return here, and that made everything below this block unreachable: the
@@ -436,6 +474,8 @@ def main(argv: list[str]) -> int:
     # now true at the moment it is written - the guest has been cleaned and powered off above -
     # and the compress cannot take it back.
     note(f"CLEANED {args.disk} (marker written before the re-compress)")
+    # FROM HERE ON THE DISK IS PUBLISHABLE, AND A SIGNAL MUST NOT THROW IT AWAY.
+    _ARTIFACTS["cleaned"] = True
     note("compressing the cleaned disk")
     import compress
 
