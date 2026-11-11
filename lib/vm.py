@@ -311,6 +311,13 @@ class Shape:
     # Only meaningful together with those two flags in `extra`; qemu ignores -append
     # otherwise, so an empty value is the normal case and changes nothing.
     kernel_append: str = ""
+    # NO TAP, WHEN THE CALLER HAS NO USE FOR AN ADDRESS.
+    #
+    # lib/net.py raises SystemExit when dnsmasq will not start, and every guest here defaults to
+    # a tap because every other stage is reached over ssh. A stage that only reads the screen -
+    # android/blissos16/steps/launch.yaml, whose frames come over QMP - has nothing to do with
+    # dependency, and qemu's own `-netdev user` cannot fail the way a bridge can.
+    net: str = "tap"
 
     @classmethod
     def from_env(cls) -> "Shape":
@@ -477,10 +484,28 @@ def build_args(work: str, extra: list[str] | None = None,
     # a value there would be read as a path to a firmware image. `mtu_arg` begins with a
     # comma so it appends as another device property (`romfile=,host_mtu=1450`).
     mtu_arg = f",host_mtu={net_mtu}" if net_mtu else ""
-    args += [
-        "-netdev", f"tap,id=n0,ifname={tap},script=no,downscript=no",
-        "-device", f"virtio-net-pci,netdev=n0,mac={mac},romfile={mtu_arg}",
-    ]
+    #
+    # `shape.net = "none"` USES QEMU'S OWN NAT INSTEAD OF THE TAP, AND THIS IS THE HALF THAT
+    # MAKES IT TRUE. Guest.start() already skips net.up() for that value, but build_args put a
+    # tap on the command line anyway - so a guest that asked for no network still got
+    # `-netdev tap,ifname=qemutap0`, and a container without /dev/net/tun had qemu exit before
+    # the first QMP message:
+    #
+    #     ConnectionResetError: [Errno 104] Connection reset by peer
+    #     File "lib/qmp.py", line 150, in _read_message
+    #
+    # - measured on android/blissos16/steps/launch.yaml, which reads the screen over QMP and has
+    # for an address. `-netdev user` needs no privileges, no helper and no tap.
+    if shape.net == "none":
+        args += [
+            "-netdev", "user,id=n0",
+            "-device", f"virtio-net-pci,netdev=n0,mac={mac},romfile={mtu_arg}",
+        ]
+    else:
+        args += [
+            "-netdev", f"tap,id=n0,ifname={tap},script=no,downscript=no",
+            "-device", f"virtio-net-pci,netdev=n0,mac={mac},romfile={mtu_arg}",
+        ]
 
     if shape.machine:
         args += ["-machine", shape.machine]
@@ -594,6 +619,25 @@ class Guest:
         # cause.
         #
         # net.up() is idempotent: the second and later calls find what is already there.
+        if self.shape.net == "none":
+            # THE MACHINE, NOT THE NETWORK. The caller reads the screen over QMP and has no use
+            # for an address, so it does not get one: lib/net.py raises SystemExit when dnsmasq
+            # will not start, and that is a dependency with nothing to do with such a stage -
+            # measured, the first run of android/blissos16/steps/launch.yaml died on
+            # "dnsmasq: bad command line options" before qemu was even reached.
+            args = build_args(self.work, self.extra, self.shape)
+            log(f"vnc    {self.shape.vnc_bind}:{5900 + self.shape.vnc_display}")
+            log("net    user-mode (this stage reads the screen, not the network)")
+            self.proc = subprocess.Popen(
+                args,
+                stdin=subprocess.DEVNULL,
+                stdout=open(self.stdout, "ab"),
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            log(f"qemu pid {self.proc.pid}")
+            return self
+
         net = _net()
 
         # THE DEFAULTS ARE FILLED BEFORE `up()`, BECAUSE `up()` NOW NEEDS THE MAC.

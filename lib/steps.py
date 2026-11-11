@@ -172,6 +172,11 @@ STEP_KEYS = {    "name",        # required: what the log calls this step
     "disk",        # PREPARE A DISK BEFORE `boot:` - move, copy or overlay an input qcow2
     "disk_from",   # the input this step prepares; required with `disk:`
     "disk_copy",   # keep the input (true) or move it (false, the default)
+    # `disk_gb` MAKES THE DISK INSTEAD OF COPYING ONE. See the step: a stage that installs onto
+    # a blank disk used to write six lines of Python for this, and none of them was about a screen.
+    "disk_gb",     # create a blank qcow2 of this many GiB, and make it this run's disk
+    "disk_gpt",    # ...and give it a GPT with one ESP and one data partition
+    "disk_esp_mib",  # the ESP's size for `disk_gpt:` (default 260)
     "disk_overlay",  # start from a READ-ONLY base in a throwaway diff - see lib/overlay.py
     # `disk_overlay: true` STARTS FROM A READ-ONLY BASE AND WRITES INTO A THROWAWAY DIFF. It is
     # the third way to prepare a disk, and it is the one that makes "this run started from the
@@ -1911,6 +1916,46 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
     # specific CPU model or a second disk is expressing a fact about a MACHINE, and inventing a
     # YAML key per qemu argument would be a worse language than the one qemu already has. Those
     # stay in `lib/vm.py`, chosen by `boot:`'s `family:`.
+    # --- `disk:` WITH NO INPUT AT ALL MAKES ONE ---------------------------------------------
+    #
+    # EVERY INSTALL-ONTO-A-DISK STAGE STARTED WITH THE SAME six lines of Python: create a blank
+    # qcow2, unpack it because a partition table can only be written to a regular file, run
+    # sfdisk with a fixed script, and encode it back. That is not a fact about a screen and not a
+    # fact about this distribution - it is "give me a disk an installer can be pointed at", which
+    # is exactly what this step already means.
+    #
+    #     - name: give the installer a disk
+    #       disk: blissos16.qcow2
+    #       disk_gb: 32
+    #       disk_gpt: true
+    #
+    # NO `disk_from:` IS THE WHOLE STATEMENT. The other forms read one when the caller gave it
+    # (`--boot-disk`); this form says there is nothing to read and nothing to protect, so the
+    # file it makes IS the run's disk. `boot:` then starts it, and `compress:` publishes it.
+    #
+    # `disk_gpt:` IS OFF UNLESS ASKED FOR. An installer that partitions the disk itself must find
+    # it EMPTY; writing a table first is right for a dual-boot-shaped install, where the ESP
+    # already exists and the installer should list the partitions it found rather than create
+    # them, and wrong for one that runs `auto_partition`.
+    if step["disk"] and step.get("disk_gb"):
+        dest = str(step["disk"])
+        work = getattr(driver, "work", "") or os.path.dirname(dest) or "."
+        if not os.path.isabs(dest):
+            dest = os.path.join(work, dest)
+        import diskgen
+
+        diskgen.blank(dest, int(step["disk_gb"]))
+        if step.get("disk_gpt"):
+            diskgen.gpt(dest, esp_mib=int(step.get("disk_esp_mib") or 260), log=log)
+        session = getattr(driver, "session", None)
+        if session is not None:
+            session.disk = dest
+            # IT IS THIS RUN'S TO WRITE. There is no base to protect - the file was made a line
+            # ago - so an overlay would be a diff nobody flattens.
+            session.boot_options["copy"] = False
+        driver.disk_path = dest
+        return
+
     if step["disk"]:
         dest = str(step["disk"])
         # `disk_from` DEFAULTS TO THE --boot-disk ARGUMENT, because that IS the input: the whole
@@ -2888,6 +2933,42 @@ def _walk_panes_loop(driver: Driver, steps: Walk, values: dict[str, str], *,
         time.sleep(10)
 
 
+def _needs_screen(steps) -> bool:
+    """Does this walkthrough need a QMP connection, or can it run headless?
+
+    ONE ANSWER, IN ONE PLACE, because the two call sites drifted: `run_file` learned about
+    `until_dark`, `wait_for_change` and `sweep` and the CLI's copy did not, and both were missing
+    `desktop:` and `screenshot:` entirely.
+
+    THE FAILURE EACH MISS PRODUCES IS THE SAME ONE, AND IT HAS HAPPENED AT LEAST FOUR TIMES:
+
+        run:        AttributeError: 'HeadlessDriver' object has no attribute 'key'
+        python:     waited out its own timeout against an empty QMP path
+        desktop:    StepError: waiting for a desktop needs a screen
+        screenshot: a screenshot needs a screen; this walkthrough was driven headless
+
+    measured on run 42555862172 (the first), and on the first run of
+    android/blissos16/steps/launch.yaml (the third) - a four-step file whose only job is to look
+    at a screen was given a driver with no screen in it.
+    """
+    if steps.panes:
+        return True
+    return any(
+        s["at"] or s["double"] or s["expect"] or s["expect_any"] or s["until"]
+        or s["until_any"] or s["disk_settle"] or s["until_dark"] or s["wait_for_change"]
+        or s["sweep"] or s["when"] or s["unless"]
+        # `python:` IS CONSERVATIVE ON PURPOSE: most extensions drive the GUI through the
+        # driver's own QMP connection, so an extension is assumed to need one unless it says
+        # `python_screen: false`.
+        or (s["python"] and s.get("python_screen") is not False)
+        or s["run"] or s["key"]
+        # THE THREE THAT READ THE FRAMEBUFFER WITHOUT CLICKING OR TYPING.
+        or s["desktop"] or s["screenshot"]
+        # `reboot:` REBUILDS THE SCREEN, so it needs the driver that holds it.
+        or s["reboot"]
+        for s in steps.steps)
+
+
 def walk(driver: Driver, steps: Walk, *, overrides: dict[str, str] | None = None,
          password: str | None = None,
          start_at: str = "", stop_before: str = "",
@@ -3105,7 +3186,7 @@ def walk_with(steps: Walk, driver: "Driver", *, values: dict[str, str] | None = 
     #     UnboundLocalError: cannot access local variable 'driver' where it is not associated
     #     with a value
     #
-    # - measured on the first run of android/blissos16/install.py once it started calling
+    # - measured on the first run of the BlissOS install once it started calling
     # run_file. Nothing exercised the combination before: the macOS stages that pass a session
     # do so from a `python:` extension, and those build their own Driver.
     #
@@ -3166,41 +3247,9 @@ def run_file(walkthrough: str, qmp_path: str, *, work: str = "",
             # that should not have happened.
             ssh_port=ssh_port, boot_options=opts)
 
-    needs_screen = bool(steps.panes) or any(
-        s["at"] or s["double"] or s["expect"] or s["expect_any"] or s["until"]
-        or s["until_any"] or s["disk_settle"] or s["until_dark"] or s["wait_for_change"]
-        or s["sweep"] or s["when"] or s["unless"]
-        # `run:` AND `key` NEED A SCREEN TOO, AND FORGETTING THEM WAS A CRASH.
-        #
-        # `run:` presses ctrl+alt+t to open the guest's own terminal and types into it; `key`
-        # sends a keystroke. Both need the QMP connection that a Driver has and a
-        # HeadlessDriver does not. The ssh stage's walk is nothing but `run:`, `require_ssh:`
-        # and `ssh:`, so it was classified headless and died on the first step with
-        #
-        #     AttributeError: 'HeadlessDriver' object has no attribute 'key'
-        #
-        # - measured on run 42555862172, which is the run that found this.
-        #
-        # AND `python:` NEEDS ONE, WHICH IS THE SAME MISTAKE A THIRD TIME. An extension like
-        # ssh_panes:enable_remote_login drives the GUI through the driver's own QMP connection;
-        # classified headless it gets a driver with no socket, and the function waits out its
-        # 120-second "no QMP socket at " (with an empty path) before giving up. A walkthrough
-        # that delegates to an extension cannot be known to be headless.
-        # AND A `python:` STEP MAY SAY IT DOES NOT. The conservative default is right - most
-        # extensions drive the GUI - but macos/15/steps/dev.yaml's two extensions fetch and copy
-        # a file over ssh and never look at the screen. Declaring `python_screen: false` is how
-        # a pure-ssh walkthrough stops being refused a HeadlessDriver it does not need:
-        #
-        #     StepError: macos/15/steps/dev.yaml has GUI steps and no --qmp was given
-        #
-        # which run 42632192846 raised before its first step.
-        or (s["python"] and s.get("python_screen") is not False) or s["run"] or s["key"]
-        # `reboot:` NEEDS THE SCREEN BECAUSE IT REBUILDS IT; `boot:` AND `shutdown:` DO NOT -
-        # they act on the machine, and a file of nothing but boot/shutdown/ssh is headless.
-        or s["reboot"]
-        for s in steps.steps)
+    needs_screen = _needs_screen(steps)
 
-    # THE SOCKET MAY NOT EXIST YET, AND THAT IS NOT ONLY TRUE WHEN THIS FUNCTION STARTS THEMACHINE.
+    # THE SOCKET MAY NOT EXIST YET, AND THAT IS NOT ONLY TRUE WHEN THIS FUNCTION STARTS THE MACHINE.
     #
     # `boot:` MAKES the socket, so a Driver built the normal way would wait out its socket_timeout
     # for a file nothing has written - 180 seconds, on a file that was about to work. The original
@@ -3285,6 +3334,8 @@ def main(argv: list[str]) -> int:
     # image of --qmp: one of them is required by whichever shape the file is.
     p.add_argument("--boot-disk", default="",
                    help="the disk a `boot:` step should start; required by such a file")
+    p.add_argument("--boot-iso", default="",
+                   help="an installer medium the `boot:` step hands the guest; android-x86 reads")
     p.add_argument("--boot-share", default=None,
                    help="host directory to serve on the bridge; omit for ~/shared")
     p.add_argument("--boot-mem", type=int, default=0)
@@ -3326,11 +3377,7 @@ def main(argv: list[str]) -> int:
     os.makedirs(work, exist_ok=True)
     # A FILE WITH NO PANES AND NO `at` NEEDS NO SCREEN, and starting one would make the ssh
     # half of a walkthrough untestable anywhere but a running guest. See HeadlessDriver.
-    needs_screen = bool(steps.panes) or any(
-        s["at"] or s["double"] or s["expect"] or s["expect_any"] or s["until"]
-        or s["until_any"] or s["disk_settle"] or s["when"] or s["unless"]
-        or (s["python"] and s.get("python_screen") is not False)
-        or s["run"] or s["key"] for s in steps.steps)
+    needs_screen = _needs_screen(steps)
     boots = any(s["boot"] for s in steps.steps)
     if needs_screen and not args.qmp and not boots:
         log("FAILED: this walkthrough has GUI steps; --qmp is required")
@@ -3357,9 +3404,17 @@ def main(argv: list[str]) -> int:
     session = None
     if boots:
         first = next(s for s in steps.steps if s["boot"])
+        # AN ISO IS A RUN FACT, SO IT ARRIVES HERE RATHER THAN IN THE FILE - the same rule
+        # --boot-disk follows. `os: android` reads it to decide which shape it is starting
+        # (installer, live, or an installed disk) and to find the kernel and initrd beside it.
+        boot_opts: dict = {}
+        if args.boot_iso:
+            boot_opts["iso"] = os.path.abspath(args.boot_iso)
+            boot_opts["disk"] = os.path.abspath(args.boot_disk)
         session = MachineSession(
             _os_of(first, "macos"), args.boot_disk, work,
-            share=args.boot_share, mem_mb=args.boot_mem, cpus=args.boot_cpus)
+            share=args.boot_share, mem_mb=args.boot_mem, cpus=args.boot_cpus,
+            boot_options=boot_opts)
         # THE DRIVER CAN REACH THE SESSION, so a `disk:` step can say which file `boot:` should
         # start. Without this the two would need a third mechanism - an output the file cannot
         # name - and every stage would keep doing its own `working_copy()` in Python.

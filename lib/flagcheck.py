@@ -67,6 +67,17 @@ def log(message: str) -> None:
 # has already stripped of expressions and continuations.
 CALL = re.compile(r"python3[ \t]+([A-Za-z0-9_./-]+\.py)")
 
+# `./easyvm some/steps/file.yaml --flag ...` - THE ONE SUPPORTED ENTRY POINT, and it was not
+# checked at all. `easyvm` has no argparse of its own: it hands the whole argument list to
+# lib/steps.py, whose parser is where every option actually lives. So the call is recognised here
+# and `accepted_flags` is pointed at that file rather than at the program.
+#
+# THIS MATTERED THE MOMENT A WORKFLOW MOVED TO `easyvm`: windows-11.yml's ssh job names it, and a
+# flag it did not accept would have been a usage message after a 12 GiB pull - the exact cost
+# this checker exists to prevent.
+EASYVM = re.compile(r"(?:^|[\s;&|])\.?/?easyvm[ \t]+([A-Za-z0-9_./-]+\.yaml)")
+EASYVM_PARSER = "lib/steps.py"
+
 # A literal long option: starts with --, then word characters and dashes. Not `--` alone
 # (argument separator) and not `--flag=value` (see the docstring).
 FLAG = re.compile(r"(?<![\w$])--[A-Za-z][A-Za-z0-9_-]*")
@@ -142,6 +153,11 @@ def calls_in(text: str) -> list[tuple[str, str]]:
         m = CALL.search(command)
         if m:
             found.append((m.group(1), command[m.end():]))
+            continue
+        # `easyvm file.yaml --flag` HAS ITS FLAGS IN lib/steps.py, NOT IN `easyvm`.
+        easy = EASYVM.search(command)
+        if easy:
+            found.append((EASYVM_PARSER, command[easy.end():]))
     return found
 
 

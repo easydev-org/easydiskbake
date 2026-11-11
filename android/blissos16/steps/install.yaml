@@ -1,0 +1,291 @@
+# BlissOS 16.9.7 installs itself onto a disk this file also makes, under real UEFI.
+#
+#     easyvm android/blissos16/steps/install.yaml \
+#         --boot-disk out/bliss/blissos16.qcow2 \
+#         --boot-iso  out/bliss/bliss16.iso \
+#         --work      out/install \
+#         --out       out/blissos16.qcow2
+#
+# THERE IS NO PYTHON STAGE BESIDE THIS FILE, AND THAT IS THE POINT.
+#
+# Everything the stage used to do in `install.py` is one of four steps that already existed:
+#
+#     make the disk and its partition table    `disk:` with `disk_gb:` and `disk_gpt:`
+#     start the ISO's installer under OVMF     `boot:` with `os: android` and an ISO
+#     answer its ten panes                     `key:` + `settle:` (this file)
+#     copy Grub2 to the fallback path          `python: bliss_esp:fallback`
+#     read the ESP back as the verdict          `python: bliss_esp:verify`
+#     publish                                   `compress:`
+#
+# Only the two ESP steps are Python, and they are `python:` EXTENSIONS rather than a stage: they
+# open the qcow2 with `qemu-io` at byte offsets and edit 260 MiB of it. That is not an action on a
+# screen and it is not a decision about this run - it is a fact about a FAT filesystem - which is
+# exactly what `lib/esp.py` is, and steps/esp.py is the two-line adapter.
+#
+# THIS FILE IS A SEQUENCE, NOT A PANE FILE, AND THE DIFFERENCE IS THE POINT.
+#
+# lib/steps.py offers two shapes. A PANE matches the screen (`when:`) before it acts, so it needs
+# a reader that can tell one dialog from another. A SEQUENCE sends keys and waits (`key:` +
+# `settle:`), and asks the screen nothing at all.
+#
+# THIS INSTALLER FORCED THE SECOND, AND THE REASON IS MEASURED RATHER THAN PREFERRED.
+#
+# A pane version of this file was written first and failed for five runs. The blocker is that two
+# DIFFERENT dialogs read back identically to tesseract on a whole frame:
+#
+#     Please select a filesystem to format vda1:   ->  ... | format | udal:
+#     Please select a filesystem to format vda2:   ->  ... | format | udaz:
+#
+# and on a CROPPED read the two are distinguishable but the other panes are not, because the crop
+# that captures a one-line question loses the body of a confirm dialog:
+#
+#     You chose to format vda1 to fat32 (CAREFUL).   ->  (empty)
+#
+# No single crop separates all ten panes, and a pane that cannot be told from another answers the
+# wrong screen - which is exactly what happened: one run answered BOTH partitions' label and
+# format confirmations before either had been formatted.
+#
+# A `dialog` TUI does not need to be searched for. Its rows never move, its focus order is fixed,
+# and its accelerators are one letter each. What it needs is the keys a person would press, with
+# enough time between them, which is what this file is.
+#
+# EVERY SETTLE IS A MEASUREMENT
+#
+# The numbers are not padding. They are the time each pane took to appear and to be answered on a
+# live guest, read off the timestamps of a run that worked: a format of 260 MiB is seconds, a
+# format of 32 GiB and the 2.2 GiB copy behind it are minutes.
+#
+# WHAT THE SEQUENCE IS, AND WHAT EACH STEP'S SCREEN LOOKED LIKE AFTER IT
+#
+#    1  Return              Choose Partition: vda1 already selected (0.25GB)
+#    2  f, Return           Choose filesystem: Fat32 highlighted, Do not re-format was default
+#    3  Return              "customize the formatted drive name?" - field already holds ESP
+#    4  Left, Return        "Are you sure to format the partition vda1?" - default is No
+#    5  Down, Return        Choose Partition again, now for the system: vda2
+#    6  e, Return           Choose filesystem: ext4 highlighted
+#    7  Return              "customize ... drive name?" - field holds BlissOS
+#    8  Left, Return        "Are you sure to format the partition vda2?"
+#    9  Right, Return       "prepare for OTA update?" - default is Yes, Right selects No
+#   10  Return              Choose EFI Boot: Grub2 preselected - THIS WRITES BOOTX64.EFI
+#
+# `AUTO_INSTALL` IS ABSENT ON PURPOSE, AND SO IS ITS PARTNER
+#
+# install_process guards its search for the EF00 partition with
+#
+#     [ -z "$AUTO_INSTALL" -o -n "$AUTO_UPDATE" ] && for i in `list_disks`; do
+#
+# so with AUTO_INSTALL set the search is skipped, `esp` stays empty, "Choose EFI Boot" (step 10)
+# never appears, and install_grub_efi is never called. Measured on two runs of that path: both
+# produced FAT32 ESPs labelled EFI with no BOOTX64.EFI, and both disks booted to the UEFI shell.
+#
+# THE DISK IS PARTITIONED BY `disk:` BEFORE QEMU STARTS, which is what makes step 1 possible: the
+# installer lists the partitions it finds instead of offering to create them. That is a dual-boot
+# user's path - their ESP already exists.
+#
+# `-vga std`, NOT virtio: the INSTALLER's own TUI draws on a plain framebuffer, and it is the
+# installed system (steps/launch.yaml) that needs a DRM node. lib/vm_session.py holds both facts.
+
+name: blissos 16.9.7 - install onto a disk this file makes
+resolution: [1280, 800]
+
+vars:
+  # WHERE THE DISK GOES. A run fact, from the command line, because the workflow names the
+  # artifact path and the file must not bake one job's output name into every run.
+  out:
+    from: args.out
+    default: out/blissos16.qcow2
+  # HOW BIG THE DISK IS. 32 GiB holds the 2.2 GiB system plus a 64 GiB /data it will grow into;
+  # the artifact is about 4 GiB on disk because a qcow2 is sparse.
+  disk_gb: "32"
+  # THE ESP. 260 MiB is what `sgdisk --new=1::+260M` produces and what every pane below was
+  # measured against - the installer draws it as 0.25GB.
+  esp_mib: "260"
+
+steps:
+  # =======================================================================================
+  # 1. THE DISK, BEFORE THE MACHINE
+  # =======================================================================================
+  #
+  # A GPT with a 260 MiB ESP typed EF00 and Linux on the rest. `disk_gpt:` writes it with sfdisk
+  # on a raw view of the qcow2 (/dev/nbd0 is not available in this container), which is
+  # lib/diskgen.py's whole job.
+  #
+  # THE FILESYSTEM IS NOT MADE HERE. The installer's own `make_esp` runs mkdosfs on the partition
+  # the walkthrough selects, and doing it twice only rewrites what this wrote.
+  - name: give the installer a disk
+    disk: blissos16.qcow2
+    disk_gb: "{{ disk_gb }}"
+    disk_gpt: true
+    disk_esp_mib: "{{ esp_mib }}"
+
+  # =======================================================================================
+  # 2. THE MACHINE
+  # =======================================================================================
+  #
+  # `os: android` IS THREE MACHINES IN ONE WORD, chosen by what the caller handed it:
+  #
+  #     --boot-iso + a qcow2 target    the INSTALLER  -kernel/-initrd out of the ISO's own
+  #                                                    directory, the ISO as a cdrom, this file's
+  #                                                    disk as target
+  #     a directory of three files      the LIVE boot  (steps/desktop.yaml)
+  #     a qcow2 with no ISO             the INSTALLED disk (steps/launch.yaml)
+  #
+  # UEFI IS PART OF WHAT THE WORD MEANS. The installer branches on it - init reads
+  # /sys/firmware/efi/fw_platform_size, and that is what makes it write a GPT with an ESP instead
+  # of an MBR - so lib/vm_session.py finds OVMF and makes a fresh variable store itself rather
+  # than requiring two keys the file cannot know.
+  #
+  # NO `console=ttyS0`. With it the TUI moves to the serial line and the keys this file sends go
+  # to a console nobody is drawing on. Measured, four runs.
+  - name: boot the installer
+    boot: true
+    os: android
+    timeout: 600
+
+  # 50 s is initrd, the hardware probe and the first pane. The `boot:` step is over when qemu is
+  # running, which is well before that, so the wait is explicit here.
+  - name: let the installer draw its first pane
+    wait: 50
+
+  # =======================================================================================
+  # 3. THE ESP IS THE FIRST ROW AND ALREADY SELECTED
+  # =======================================================================================
+  #
+  # "Choose Partition / UEFI System detected ! Please select a partition as EFI System
+  # Partition (ESP)" with vda1 drawn on a solid bar and 0.25GB beside it.
+  - name: open the ESP's filesystem question
+    key: ret
+    settle: 15
+
+  # =======================================================================================
+  # 4. FAT32, THE ONLY FILESYSTEM AN ESP CAN HAVE
+  # =======================================================================================
+  #
+  # "Please select a filesystem to format vda1: Do not re-format / Fat32 (CAREFUL)". The default
+  # is Do not re-format, which would leave sfdisk's bytes with no filesystem on them. `f` is
+  # Fat32's accelerator and the only row that starts with it.
+  - name: choose FAT32
+    key: [f]
+    settle: 3
+
+  - name: confirm the filesystem
+    key: ret
+    settle: 10
+
+  # The label field already holds ESP; Return keeps it.
+  - name: keep the ESP label
+    key: ret
+    settle: 12
+
+  # "Are you sure to format the partition vda1?" with <Yes> <No> and NO preselected.
+  - name: select Yes for the ESP format
+    key: left
+    settle: 2
+
+  - name: format the ESP
+    key: ret
+    settle: 30
+
+  # =======================================================================================
+  # 5. THE SYSTEM GOES ON vda2
+  # =======================================================================================
+  #
+  # The same window, now listing the formatted ESP as vfat/ESP and asking for the system
+  # partition. vda2 is the row under the ESP.
+  - name: move to the system partition
+    key: down
+    settle: 3
+
+  - name: open vda2
+    key: ret
+    settle: 15
+
+  # Six rows: Do not re-format / ext4 / ntfs / fat32 / exfat / f2fs. `e` selects ext4 - it is
+  # the first row starting with e, and dialog takes the first match.
+  - name: choose ext4
+    key: [e]
+    settle: 3
+
+  - name: confirm the filesystem for vda2
+    key: ret
+    settle: 10
+
+  - name: keep the system volume label
+    key: ret
+    settle: 12
+
+  - name: select Yes for the system format
+    key: left
+    settle: 2
+
+  # THE LONGEST SETTLE IN THIS FILE. This formats 32 GiB and then copies 2.2 GB into it; on the
+  # disk that produced the measured run it took a little over four minutes.
+  - name: format vda2 and copy the system
+    key: ret
+    settle: 300
+
+  # "This operation will double the system size" - declining keeps one copy.
+  - name: decline the OTA preparation
+    key: right
+    settle: 3
+
+  - name: confirm the OTA answer
+    key: ret
+    settle: 30
+
+  # =======================================================================================
+  # 6. THE BOOTLOADER - THE STEP THAT MAKES THE DISK STARTABLE
+  # =======================================================================================
+  #
+  # "Choose EFI Boot / Since you are using UEFI, we offer two boot options for the OS: rEFInd
+  # Boot Manager or Grub2 EFI Bootloader." Grub2 is the first row and preselected.
+  #
+  # THIS PANE IS WHY `AUTO_INSTALL` IS NOT SET. On that path it never appears and the ESP is
+  # left empty.
+  - name: write Grub2 into the ESP
+    key: ret
+    settle: 120
+
+  # =======================================================================================
+  # 7. THE DISK IS STOPPED BEFORE IT IS READ
+  # =======================================================================================
+  #
+  # `shutdown: kill` RATHER THAN A GRACEFUL ONE, AND IT IS THE HONEST CHOICE HERE. This guest
+  # was started from an ISO and its disk is the artifact; the installer has already written
+  # everything and returned to its menu. It has no sshd, no agent, and ACPI on an installer
+  # leaves the TUI up. `lib/esp.py` opens the qcow2 with qemu-img, which needs the write lock
+  # qemu would still hold - measured: reading it while qemu ran failed with "Failed to get
+  # shared write lock", and the first version reported that as "the ESP has no bootloader",
+  # a wrong verdict for a disk that was fine.
+  - name: stop the installer
+    shutdown: kill
+
+  # =======================================================================================
+  # 8. THE FALLBACK LOADER - WHAT MAKES IT START WITHOUT THE INSTALLER'S NVRAM
+  # =======================================================================================
+  #
+  # `install_grub_efi` writes Grub2 into /EFI/BLISSOS and registers a boot entry with
+  # `efibootmgr`, which lands in the VARIABLES image and not on the disk. A disk started with a
+  # fresh NVRAM therefore has nothing pointing at it and the firmware sits in its own shell.
+  #
+  # UEFI's removable-media path is exactly one location - \EFI\BOOT\BOOTX64.EFI on the ESP - and
+  # lib/esp.py copies the loaders there and rewrites the config's `search.fs_uuid`, which names a
+  # filesystem UUID the installer recorded BEFORE it formatted the partition.
+  - name: put Grub2 at the fallback path
+    python: bliss_esp:fallback
+    timeout: 600
+
+  # =======================================================================================
+  # 9. THE VERDICT, READ OFF THE DISK
+  # =======================================================================================
+  #
+  # The installer's own window is not on the console: the TUI draws to tty0 and the serial line
+  # gets kernel messages only - measured, a whole successful run wrote 224 bytes there - so
+  # "installed successfully" can never be grepped for. An ESP holding BOOTX64.EFI or grubx64.EFI
+  # is what a finished install leaves behind and what a failed one cannot.
+  - name: read the ESP back
+    python: bliss_esp:verify
+    timeout: 300
+
+  - name: publish the disk
+    compress: "{{ out }}"

@@ -1,0 +1,107 @@
+# BlissOS 16.9.7 starts itself from the disk the install stage made.
+#
+#     easyvm android/blissos16/steps/launch.yaml \
+#         --boot-disk out/blissos16.qcow2 \
+#         --work      out/launch
+#
+# THIS IS THE CLAIM THE INSTALL STAGE CANNOT MAKE.
+#
+# `steps/install.yaml` ends by reading the ESP and asserting BOOTX64.EFI is in it. That is a claim
+# about bytes. This is the claim about the machine: the firmware finds the ESP, GRUB runs, the
+# INSTALLED kernel boots the INSTALLED system, and a launcher is drawn. A disk that needs the host
+# to supply its kernel is not an installed system, so **there is no `-kernel` and no cdrom here** -
+# `os: android` sees a qcow2 with no ISO and takes the installed-disk branch of
+# lib/vm_session.py, which is one drive and a bootindex.
+#
+# WHY THIS IS ITS OWN FILE AND NOT THE SECOND HALF OF THE INSTALL
+#
+# Because it is the only stage that can fail for a reason the install cannot see. The install's
+# verdict is a directory entry; a disk with a correct directory entry and a broken kernel command
+# line passes it and fails here. kubuntu splits its bake and its launch for the same reason.
+#
+# `bootindex=0` IS WHAT PUTS THE DISK FIRST, and without it an empty NVRAM boots the NIC:
+#
+#     BdsDxe: failed to load Boot0001 "UEFI Misc Device" ... Not Found
+#     >>Start PXE over IPv4.   PXE-E16: No valid offer received.
+#
+# measured. lib/vm_session.py's installed branch sets it, because a published disk must not depend
+# on the NVRAM of the machine that happens to start it.
+#
+# `-netdev user`, NOT A TAP. This guest has no sshd - Android's remote access is adb - and the
+# screenshot comes over QMP, which is a unix socket on this side. lib/net.py raises SystemExit when
+# dnsmasq will not start, and that is a dependency with nothing to do with a stage that only looks
+# at a screen. Measured on this stage's first run: it died on "dnsmasq: bad command line options"
+# before qemu was reached.
+#
+# `-vga virtio` IS REQUIRED AND `-vga std` IS NOT ENOUGH. The installed system runs Android's HWC
+# with `HWC=drm_minigbm`, which needs a DRM/KMS node (/dev/dri/card0). `-vga std` provides a
+# framebuffer and no DRM device, so Android brings up no display at all and the screen stops on
+# initrd's last line for as long as you are willing to wait - measured three times (240 s, 600 s,
+# 600 s again) before the cause was found. lib/vm_session.py's installed branch declares
+# `virtio-vga` through extra_args, because `resolution:` in lib/vm.py mints a standard VGA device.
+
+name: blissos 16.9.7 - start the installed disk
+resolution: [1280, 800]
+
+vars:
+  # HOW LONG THE INSTALLED SYSTEM MAY TAKE TO PAINT ITS UI. A run fact: the same disk is slower on
+  # a loaded runner, and 600 is what this stage measured with room to spare.
+  boot_timeout:
+    from: args.boot_timeout
+    default: "600"
+
+steps:
+  # =======================================================================================
+  # 1. THE MACHINE, FROM THE DISK AND NOTHING ELSE
+  # =======================================================================================
+  #
+  # `--boot-iso` IS ABSENT ON PURPOSE. Its presence is what selects the installer shape; its
+  # absence with a qcow2 is the installed-disk shape. Two different machines from one word, and
+  # the difference is a fact about this run rather than a second vocabulary.
+  - name: boot the installed disk
+    boot: true
+    os: android
+    timeout: 300
+
+  # =======================================================================================
+  # 2. THE VERDICT: ANDROID'S OWN UI IS ON THE SCREEN
+  # =======================================================================================
+  #
+  # `desktop: android` is lib/desktop.py's `is_android_desktop`, and it is NOT a painted-frame
+  # test. Android paints the boot animation and the recovery text too, so structure is not enough;
+  # the test reads the frame for one of four word groups - the home-app chooser, the lock screen,
+  # Taskbar, or Smart Dock.
+  #
+  # THE FRAME GOES THROUGH A GREYSCALE STRETCH FIRST, AND WITHOUT IT THIS IS BLIND. Measured on
+  # the very frame that showed the launcher:
+  #
+  #     tesseract frame.ppm --psm 6          ->  9:27 | or
+  #     greyscale + normalise, same frame    ->  9:27 | my | Select | a | Home | app | ...
+  #
+  # `Select a Home app` is in the second reading and absent from the first, which is why a launch
+  # that HAD reached the desktop reported "NO LAUNCHER INSIDE 600s" for five runs. The verdict was
+  # a property of the reader, not of the guest.
+  #
+  # THE LOCK SCREEN IS A SUCCESS. Once a home app has been chosen, the SAME disk boots past the
+  # chooser to the lock screen ("Unlock for all features and data"), and a test that only looked
+  # for the chooser called that a failure for ten minutes while the guest sat on a perfectly drawn
+  # Android lock screen. Both mean "Android is running from this disk".
+  - name: wait for Android's own UI
+    desktop: android
+    timeout: "{{ boot_timeout }}"
+    poll: 10
+
+  # ONE PICTURE, KEPT. It is the evidence a run passed, and it cannot be produced without the
+  # guest being up.
+  - name: photograph the screen
+    screenshot: screen.png
+
+  # =======================================================================================
+  # 3. STOPPED, NOT ASKED
+  # =======================================================================================
+  #
+  # There is no sshd and no guest agent on this disk, so there is no method that asks the guest
+  # anything - and the disk is read-only to this stage. `kill` is the honest name for what
+  # happens, and `shutdown:` refuses to hide it behind a fallback chain.
+  - name: stop the machine
+    shutdown: kill

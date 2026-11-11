@@ -709,6 +709,92 @@ def is_linux_desktop(path: str, *, explain: bool = False) -> bool:
     return painted
 
 
+# WHAT COUNTS AS "ANDROID IS RUNNING", AND WHY IT IS NOT THE LINUX TEST.
+#
+# Android-x86 also paints something, so `is_linux_desktop` would accept it - but it would also
+# accept the boot animation, the recovery text and the chromeless first frame. Android has a
+# marker no earlier screen carries, and this is it.
+#
+# THE FRAME HAS TO GO THROUGH A GREYSCALE STRETCH BEFORE TESSERACT, AND WITHOUT IT THIS IS BLIND.
+# Measured on the very frame that showed the launcher:
+#
+#     tesseract frame.ppm --psm 6          ->  9:27 | or
+#     greyscale + normalise, same frame    ->  9:27 | my | Select | a | Home | app | ...
+#
+# `Select a Home app` is in the second reading and absent from the first, which is why a launch
+# that HAD reached the desktop reported "NO LAUNCHER INSIDE 600s". The verdict was a property of
+# the reader, not of the guest.
+ANDROID_DESKTOP_WORDS = (
+    # the first boot's home-app chooser
+    ("select", "home", "app"),
+    # the lock screen, which is what every boot AFTER a home app was chosen shows. Both are
+    # "Android is running from this disk"; treating the second as a failure is what made a
+    # stage watch a perfectly drawn lock screen for ten minutes and then report a broken disk.
+    ("unlock", "features", "data"),
+    ("taskbar", "bliss"),
+    ("smart", "dock"),
+)
+
+
+def _android_frame_words(path: str) -> set[str]:
+    """The frame's words, lowercased and stripped, after a contrast stretch.
+
+    THE STRETCH IS THE WHOLE TRICK AND IT IS ONE LINE OF ARITHMETIC. BlissOS' launcher is a dark
+    wallpaper with mid-grey text, so raw tesseract returns two tokens. Mapping the frame's own
+    min..max to 0..255 makes the text and the wallpaper maximally far apart, which is what the
+    decoder needs.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        return set()
+    if not os.path.exists(path):
+        return set()
+    tmp = path + ".android.txt.png"
+    try:
+        image = Image.open(path).convert("L")
+        lo, hi = image.getextrema()
+        if hi > lo:
+            image = image.point(lambda v: (v - lo) * 255 // (hi - lo))
+        image.save(tmp)
+    except Exception:                                  # noqa: BLE001 - unreadable frame
+        return set()
+    words: set[str] = set()
+    for psm in ("6", "3"):
+        try:
+            proc = subprocess.run(["tesseract", tmp, "stdout", "--psm", psm],
+                                  capture_output=True, text=True, timeout=120)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        words |= {w.lower() for w in proc.stdout.split() if w.strip()}
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    return words
+
+
+def is_android_desktop(path: str, *, explain: bool = False) -> bool:
+    """Is this frame an Android-x86 system that reached its own UI?
+
+    A GROUP OF WORDS, NOT A SENTENCE. The comparison is `all(word in words for word in group)`,
+    so a group written as `["Select a Home app"]` becomes the single token `selectahomeapp` after
+    the frame is tokenised and can never match. Measured: the frame plainly reading
+    `Unlock | for | all | features | and | data` scored False on every group for exactly that
+    reason. See ANDROID_DESKTOP_WORDS.
+    """
+    if not os.path.exists(path):
+        return False
+    words = _android_frame_words(path)
+    passed = any(all(w in words for w in group) for group in ANDROID_DESKTOP_WORDS)
+    if explain:
+        hit = next((group for group in ANDROID_DESKTOP_WORDS
+                    if all(w in words for w in group)), None)
+        log(f"{os.path.basename(path)}: android reads {sorted(words)[:10]}, "
+            f"match={hit} -> {'ANDROID DESKTOP' if passed else 'not an android desktop'}")
+    return passed
+
+
 # THE DEFAULT FOR reached_desktop(), AND THE ONLY THING A CALLER NORMALLY SETS.
 #
 #   "macos"    the menu-bar test - macos/15/desktop.py and macos/15/ssh.py
@@ -718,6 +804,7 @@ KINDS = {"windows": is_windows_desktop, "macos": is_macos_desktop,
          # LINUX AND BSD ARE ONE ENTRY, because they are one measurement - see is_linux_desktop.
          "linux": is_linux_desktop, "bsd": is_linux_desktop, "freebsd": is_linux_desktop,
          "ghostbsd": is_linux_desktop,
+         "android": is_android_desktop,
          "any": is_desktop}
 
 

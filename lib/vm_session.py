@@ -204,6 +204,39 @@ def _discard_overlay(run_overlay, log) -> None:
         log(f"  {exc}")
 
 
+def _android_firmware(work: str, opts: dict, log):
+    """OVMF's CODE image and a FRESH variable store for an android-x86 guest.
+
+    UEFI IS PART OF WHAT `os: android` MEANS. The installer branches on it - init reads
+    /sys/firmware/efi/fw_platform_size, and that is what makes it write a GPT with an ESP instead
+    of an MBR - and an installed disk is started BY the firmware reading the ESP's GRUB.
+
+    IT USED TO BE TWO REQUIRED KEYS in `boot_options` (`firmware_code`, `firmware_vars`) indexed
+    with [], which made `os: android` an incomplete statement and a KeyError for every caller
+    that was not the one Python stage. Naming the OS is now enough, the same way it is for
+    Windows and Linux.
+
+    THE STORE IS ALWAYS A FRESH COPY, never a leftover: a previous run's NVRAM carries boot
+    entries that name a disk which may no longer have a system on it.
+    """
+    import uefi
+
+    code = opts.get("firmware_code") or ""
+    template = opts.get("firmware_vars_template") or ""
+    if not code or not template:
+        code, template = uefi.firmware_paths(code, template)
+    for path in (code, template):
+        if not os.path.isfile(path):
+            log(f"=== UEFI FIRMWARE NOT FOUND: {path} ===")
+            log("  an android-x86 guest writes a GPT with an ESP only under UEFI, and an")
+            log("  installed disk is started by the firmware reading that ESP")
+            return "", ""
+    vars_image = os.path.join(work, "OVMF_VARS.fd")
+    shutil.copyfile(template, vars_image)
+    log(f"firmware: {os.path.basename(code)} + a fresh NVRAM")
+    return code, vars_image
+
+
 def _android_x86(disk: str, work: str, ssh_port: int, cpus: int, mem_mb: int, log,
                  options: dict | None = None):
     """Start an Android-x86 guest: -kernel, -initrd, and two disks.
@@ -238,7 +271,7 @@ def _android_x86(disk: str, work: str, ssh_port: int, cpus: int, mem_mb: int, lo
     TWO CALLERS, TWO SHAPES, AND `options` IS THE DIFFERENCE.
 
     Without options this is the LIVE boot: three extracted files and a scratch /data, which is
-    what android/blissos16/launch.py photographs. With `options["iso"]` and `options["disk"]`
+    what android/blissos16/steps/launch.yaml photographs. With `options["iso"]` and `options["disk"]`
     it is the INSTALLER: the same kernel and initrd, plus the ISO as a cdrom and a blank qcow2
     as the target, and the walkthrough in steps/install.yaml answers the TUI.
 
@@ -278,24 +311,67 @@ def _android_x86(disk: str, work: str, ssh_port: int, cpus: int, mem_mb: int, lo
 
     opts = dict(options or {})
     iso = opts.get("iso") or ""
-    target = opts.get("disk") or ""
 
-    if opts.get("installed"):
+    # WHICH OF THE THREE SHAPES THIS IS, DECIDED BY WHAT THE CALLER HANDED US.
+    #
+    #     an ISO and a qcow2 target     the INSTALLER   -kernel/-initrd, the ISO as a cdrom,
+    #                                                   steps/install.yaml answers the TUI
+    #     a DIRECTORY, no ISO           the LIVE boot   the three extracted members and a scratch
+    #                                                   /data; steps/desktop.yaml photographs it
+    #     a FILE, no ISO                the INSTALLED DISK  no -kernel, no cdrom - the firmware
+    #                                                   reads the ESP's GRUB, which loads the
+    #                                                   disk's own kernel. steps/launch.yaml.
+    #
+    # THE SHAPE IS DECIDED FROM THE ISO AND FROM WHAT `disk` IS, and the target is always `disk`.
+    #
+    # `disk` IS THE DISK THIS RUN PREPARED, not the path the run was started with. A `disk:` step
+    # may have made it (a blank qcow2 with a partition table) or moved the input somewhere else -
+    # and THE FIRST RUN OF THE YAML-ONLY INSTALL failed exactly here, because this module still
+    # read `opts["disk"]`, which held `--boot-disk`, while the prepared file was one directory
+    # down:
+    #
+    #     qemu-system-x86_64: -drive file=/a/yt2/blissos16.qcow2,if=virtio,format=qcow2:
+    #     Could not open '/a/yt2/blissos16.qcow2': No such file or directory
+    #
+    # It is the same statement `MachineSession.disk` already makes for every other family - the
+    # session points at the file this run writes, and `boot:` reads the session.
+    installer = bool(iso)
+    if not installer and (opts.get("installed") or os.path.isfile(disk)):
         return _android_installed(disk, work, ssh_port, cpus, mem_mb, log, opts)
+
+    # THE MEMBERS COME OUT OF THE ISO'S OWN DIRECTORY. `android/blissos16/fetch_iso.py --out X`
+    # leaves kernel, initrd.img and system.efs beside the ISO in X, so the ISO names the set and
+    # a second argument pointing at the same place would be one fact written twice.
+    members = os.path.dirname(os.path.abspath(iso)) if installer else disk
+    target = disk
 
     # THE INSTALLER SHAPE NEEDS ONLY THE KERNEL AND THE INITRD: system.efs stays inside the
     # ISO, and there is no /data to create because the target disk is partitioned by the
     # walkthrough itself.
-    needed = ("kernel", "initrd.img") if (iso and target) else ("kernel", "initrd.img", "system.efs")
+    needed = ("kernel", "initrd.img") if installer else ("kernel", "initrd.img", "system.efs")
     for name in needed:
-        path = os.path.join(disk, name)
+        path = os.path.join(members, name)
         if not os.path.isfile(path):
             log(f"=== {path} IS MISSING ===")
             log("  android/blissos16/fetch_iso.py unpacks these from the ISO")
             return None
 
-    if iso and target:
+    if installer:
         log(f"installer: {os.path.basename(iso)} -> {os.path.basename(target)}")
+        # UEFI IS PART OF WHAT `os: android` MEANS, NOT AN OPTION THE CALLER MUST REMEMBER.
+        #
+        # The installer BRANCHES ON IT: init reads /sys/firmware/efi/fw_platform_size, and that is
+        # what makes it write a GPT with an ESP instead of an MBR. Installed under SeaBIOS the
+        # disk it leaves behind is a different disk, and not the one this repository tests.
+        #
+        # It used to be two required keys in `boot_options` (`firmware_code`, `firmware_vars`)
+        # indexed with [], which made `os: android` an incomplete statement and a KeyError for any
+        # caller that did not happen to be a Python stage. Naming an OS is now enough: the
+        # firmware is found and a FRESH variable store is made here, which is what
+        # `boot_files`/`VM_FIRMWARE_*` already give every Windows and Linux guest.
+        code, vars_image = _android_firmware(work, opts, log)
+        if not code:
+            return None
         shape = vm.Shape(
             cpus=cpus, mem_mb=mem_mb or 4096, machine="q35", vga="std",
             ssh_port=ssh_port,
@@ -309,8 +385,8 @@ def _android_x86(disk: str, work: str, ssh_port: int, cpus: int, mem_mb: int, lo
             # /sys/firmware/efi/fw_platform_size and that is what makes it write a GPT with an
             # ESP instead of an MBR; installed under SeaBIOS the disk it leaves behind is a
             # different disk, and not the one this repository tests.
-            firmware_code=opts["firmware_code"],
-            firmware_vars=opts["firmware_vars"],
+            firmware_code=code,
+            firmware_vars=vars_image,
             # NO `console=ttyS0`. With it the TUI moves to the serial line and the keys the
             # walkthrough sends go to a console nobody is drawing on - measured, four runs.
             # `auto_install` IS THE CALLER'S CHOICE, AND IT IS A REAL ONE.
@@ -347,8 +423,8 @@ def _android_x86(disk: str, work: str, ssh_port: int, cpus: int, mem_mb: int, lo
         return vm.Guest(
             work,
             extra=[
-                "-kernel", os.path.join(disk, "kernel"),
-                "-initrd", os.path.join(disk, "initrd.img"),
+                "-kernel", os.path.join(members, "kernel"),
+                "-initrd", os.path.join(members, "initrd.img"),
                 "-drive", f"file={iso},media=cdrom,readonly=on",
                 "-drive", f"file={target},if=virtio,format=qcow2",
             ],
@@ -427,13 +503,9 @@ def _android_installed(disk: str, work: str, ssh_port: int, cpus: int, mem_mb: i
     """
     import vm
 
-    code = opts.get("firmware_code") or ""
-    vars_image = opts.get("firmware_vars") or ""
-    for path in (code, vars_image):
-        if not path or not os.path.isfile(path):
-            log(f"=== UEFI FIRMWARE NOT FOUND: {path or '(not given)'} ===")
-            log("  an installed Android-x86 disk boots through the ESP, so it needs OVMF")
-            return None
+    code, vars_image = _android_firmware(work, opts, log)
+    if not code:
+        return None
 
     # NO TAP BY DEFAULT FOR THIS SHAPE. Nothing here is reached over ssh - `wait_for_ssh` is False
     # for this family - and lib/net.py raises SystemExit when dnsmasq will not start, which is a

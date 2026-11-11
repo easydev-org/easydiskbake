@@ -5,6 +5,10 @@ name: blissos16
 #     install   the ISO's own installer writes a disk, under real UEFI
 #     launch    that disk boots itself, with no -kernel and no cdrom
 #
+# BOTH JOBS RUN A WORKFLOW FILE. There is no `android/blissos16/install.py` and no `launch.py`:
+# `install` is `steps/install.yaml` and `launch` is `steps/launch.yaml`, which is the shape
+# `easyvm` exists for and what windows/11/steps/ssh.yaml already does.
+#
 # WHY THERE IS AN android/blissos16 AT ALL, WITH android/15 ALREADY HERE
 #
 # android/15 boots Google's AOSP image through the SDK's `emulator` binary, and that binary is
@@ -37,15 +41,18 @@ name: blissos16
 #   writes BOOTX64.EFI - is never called. Two runs of that path produced FAT32 ESPs labelled EFI
 #   with no BOOTX64.EFI, and disks that booted to the UEFI shell.
 #
-#   `-vga virtio` IS REQUIRED FOR THE INSTALLED SYSTEM. It runs Android's HWC with
-#   `HWC=drm_minigbm`, which needs a DRM/KMS node; `-vga std` gives a framebuffer and no DRM
-#   device, and the screen then stops on initrd's last line for as long as you wait.
+#   `-vga virtio` IS REQUIRED FOR THE INSTALLED SYSTEM, AND `-vga std` IS NOT ENOUGH. It runs
+#   Android's HWC with `HWC=drm_minigbm`, which needs a DRM/KMS node; `-vga std` gives a
+#   framebuffer and no DRM device, and the screen then stops on initrd's last line for as long as
+#   you wait. The INSTALLER is the opposite and gets `-vga std` - its TUI draws on a plain
+#   framebuffer. Both facts live in lib/vm_session.py's three android shapes.
 #
 #   THE BOOTLOADER HAS TO BE AT /EFI/BOOT. install_grub_efi writes /EFI/BLISSOS and registers its
 #   entry with efibootmgr, which lands in the VARS image and not on the disk - so a disk started
-#   with any other NVRAM falls into the firmware's shell. install.py copies the loaders to the
-#   removable-media path and replaces the config's `search.fs_uuid` (a UUID taken before the
-#   formatting, so it names a filesystem that does not exist) with a `--file` search.
+#   with any other NVRAM falls into the firmware's shell. steps/install.yaml's last python step
+#   copies the loaders to the removable-media path and replaces the config's `search.fs_uuid`
+#   (a UUID taken before the formatting, so it names a filesystem that does not exist) with a
+#   `--file` search.
 #
 # MANUAL ONLY: a 2.2 GB download, a full install and a boot.
 
@@ -104,7 +111,7 @@ jobs:
     container:
       # THE SAME IMAGE THE WINDOWS AND macOS STAGES USE, and the right one because it carries
       # no Android SDK: this path never touches `emulator`, `avdmanager` or `kernel-ranchu`. It
-      # has qemu, 7z, sfdisk, mtools, OVMF and python3, which is everything install.py needs.
+      # has qemu, 7z, sfdisk, mtools, OVMF and python3, which is everything the file needs.
       image: ghcr.io/${{ github.repository }}:latest
       credentials:
         username: ${{ github.actor }}
@@ -124,8 +131,8 @@ jobs:
         uses: easydev-org/easyactions/runner-check@main
         with:
           kvm: true
-          # the disk is 32 GiB virtual, ~4 GiB on disk, plus the ISO and a raw view of the disk
-          # while install_boot_fallback runs
+          # the disk is 32 GiB virtual, ~4 GiB on disk, plus the ISO and the raw view `disk:`
+          # takes while it writes the partition table
           disk-gb: '40'
           token: ${{ github.token }}
 
@@ -158,7 +165,7 @@ jobs:
           command: |
             set -euo pipefail
             # --drop-iso is NOT used: the installer unpacks /src/install.img out of the ISO at
-            # run time, so the ISO has to be beside the kernel when install.py starts.
+            # run time, so the ISO has to be beside the kernel when the walkthrough starts.
             python3 android/blissos16/fetch_iso.py --out out/bliss
 
       - name: pull the disk
@@ -178,9 +185,13 @@ jobs:
           ls -la out/bliss
 
       # ---- THE INSTALL ---------------------------------------------------------------
-      # install.py partitions the blank qcow2 with sfdisk, boots the ISO's installer under OVMF,
-      # answers its nine panes with the key sequence measured by hand, copies the bootloaders to
-      # /EFI/BOOT, and verifies the ESP. It says VERDICT PASS only when all of that happened.
+      # THE STAGE IS THE FILE. It makes the disk and its GPT (`disk:`), boots the ISO's installer
+      # under OVMF (`boot:` with `os: android`), answers its ten panes with the key sequence
+      # measured by hand, places the fallback loader, reads the ESP back as the verdict, and
+      # publishes the compressed disk (`compress:`).
+      #
+      # `--boot-iso` IS A RUN FACT and arrives here for the same reason `--boot-disk` does: the
+      # workflow knows where the download landed, and the file must not bake that path in.
       - name: install to a disk
         uses: easydev-org/easyactions/log-stream@main
         with:
@@ -190,14 +201,12 @@ jobs:
           command: |
             set -euo pipefail
             mkdir -p out/install
-            python3 android/blissos16/install.py \
-              --dir out/bliss \
-              --iso out/bliss/bliss16.iso \
-              --disk out/bliss/blissos16.qcow2 \
-              --work out/install \
-              --artifacts out/install \
-              --disk-gb "${{ inputs.disk_gb || '32' }}" \
-              --mem "${{ inputs.mem_mb || '4096' }}"
+            ./easyvm android/blissos16/steps/install.yaml \
+              --boot-disk out/install/blissos16.qcow2 \
+              --boot-iso out/bliss/bliss16.iso \
+              --work out/install/work \
+              --out out/install/blissos16-out.qcow2 \
+              --boot-mem "${{ inputs.mem_mb || '4096' }}"
 
       - name: keep the verdict
         if: always()
@@ -205,16 +214,13 @@ jobs:
         with:
           name: blissos-install
           path: |
-            out/install/install.txt
-            out/install/console.log
+            out/install/work/console.log
+            out/install/work/shots/*.png
           if-no-files-found: warn
           retention-days: 14
 
-      # WHAT A TAG HOLDS: THE DISK, AND THE TWO FILES THE INSTALLER READS FROM THE ISO.
-      #
-      # kernel and initrd.img are on the disk already, so only the disk matters for starting it.
-      # They are packed anyway because `--dir` is what install.py expects, and a tag that cannot
-      # be re-installed from is a tag nobody can debug.
+      # WHAT A TAG HOLDS: THE DISK. kernel and initrd.img are on the disk already, so only the
+      # disk matters for starting it.
       - name: pack the disk
         if: success() && inputs.install_from == ''
         uses: easydev-org/easyactions/log-stream@main
@@ -224,7 +230,8 @@ jobs:
           interval: "15"
           command: |
             set -euo pipefail
-            cd out/bliss
+            cd out/install
+            mv blissos16-out.qcow2 blissos16.qcow2
             tar -cf ../blissos16.tar blissos16.qcow2
             cd ..
             zstd -19 -f blissos16.tar -o blissos16.tar.zst
@@ -245,9 +252,9 @@ jobs:
   # LAUNCH - the disk starts itself, with no ISO and no -kernel.
   # ===========================================================================
   #
-  # THE STAGE THAT PROVES THE ARTEFACT. install.py reads the ESP to check that BOOTX64.EFI is on
-  # it; that is a claim about bytes. This is the claim about the machine: the firmware finds the
-  # ESP, GRUB runs, the installed kernel boots the installed system, and a launcher is drawn.
+  # THE STAGE THAT PROVES THE ARTEFACT. The install's verdict is a directory entry on the ESP;
+  # that is a claim about bytes. This is the claim about the machine: the firmware finds the ESP,
+  # GRUB runs, the installed kernel boots the installed system, and Android's own UI is drawn.
   launch:
     needs: install
     if: |
@@ -260,10 +267,10 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-      # /dev/kvm ONLY. launch.py sets Shape.net="none", and lib/vm.py's build_args gives such a
-      # guest `-netdev user` instead of a tap - measured: with the tap still on the command line
-      # but no /dev/net/tun in the pod, qemu exited before the first QMP message and the stage
-      # died on ConnectionResetError. The frames come over QMP, so the guest needs no address.
+      # /dev/kvm ONLY. `os: android` starts an installed disk with `-netdev user`, because the
+      # frames come over QMP and the guest never needs an address - measured: with a tap on the
+      # command line and no /dev/net/tun in the pod, qemu exited before the first QMP message and
+      # the stage died on ConnectionResetError.
       options: --device /dev/kvm
     permissions:
       contents: read
@@ -294,9 +301,9 @@ jobs:
           qemu-img info out/bliss/blissos16.qcow2 | grep -E 'virtual size|disk size'
 
       # ---- LAUNCH --------------------------------------------------------------------
-      # No --iso and no --kernel: the firmware starts the disk. `launch.py` waits for the
-      # launcher (or the lock screen, which is what a second boot shows), wakes it if it is the
-      # lock screen, and keeps screen.png.
+      # No --boot-iso and no --kernel: the firmware starts the disk, GRUB loads the disk's own
+      # kernel, and `desktop: android` waits for Android's own UI (the launcher, the home-app
+      # chooser, or the lock screen - all three mean the same thing).
       - name: start the disk and photograph it
         uses: easydev-org/easyactions/log-stream@main
         with:
@@ -306,12 +313,11 @@ jobs:
           command: |
             set -euo pipefail
             mkdir -p out/launch
-            python3 android/blissos16/launch.py \
-              --disk out/bliss/blissos16.qcow2 \
-              --work out/launch \
-              --artifacts out/launch \
-              --mem "${{ inputs.launch_mem_mb || '8192' }}" \
-              --seconds "${{ inputs.launch_seconds || '600' }}"
+            ./easyvm android/blissos16/steps/launch.yaml \
+              --boot-disk out/bliss/blissos16.qcow2 \
+              --work out/launch/work \
+              --boot-mem "${{ inputs.launch_mem_mb || '8192' }}" \
+              --boot-timeout "${{ inputs.launch_seconds || '600' }}"
 
       - name: keep the screen and the verdict
         if: always()
@@ -319,9 +325,8 @@ jobs:
         with:
           name: blissos-launch
           path: |
-            out/launch/launch.txt
-            out/launch/console.log
-            out/launch/screen.png
-            out/launch/desktop.ppm
+            out/launch/work/shots/screen.png
+            out/launch/work/console.log
+            out/launch/work/shots/*
           if-no-files-found: warn
           retention-days: 14

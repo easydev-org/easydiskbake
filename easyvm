@@ -44,12 +44,20 @@ being migrated - the workflow files call it - but it says so on stderr, and
 
 USAGE
 
-    easyvm WORKFLOW [--boot-disk PATH] [--out PATH] [--work DIR] [--ssh-port N]
-                    [--user NAME] [--password PW] [--list] [--check]
+    easyvm WORKFLOW [--boot-disk PATH] [--boot-iso PATH] [--out PATH] [--work DIR]
+                    [--boot-mem MB] [--boot-cpus N] [--boot-timeout S]
+                    [--ssh-port N] [--user NAME] [--password PW] [--list] [--check]
 
 `--boot-disk` is required by a file that declares `boot:`; a file that drives an ALREADY RUNNING
 guest takes `--qmp SOCKET` instead. That is the rule lib/steps.py documents, and this program does
 not add a second one.
+
+`--boot-iso` IS THE OTHER RUN FACT A FILE CANNOT HOLD. It is the installer medium, and only some
+families read it: `os: android` uses its presence to choose between the INSTALLER shape (this ISO
+as a cdrom, `-kernel`/`-initrd` out of the ISO's own directory) and the INSTALLED-DISK shape (one
+drive, no kernel, the firmware reads the ESP's GRUB). A file that installs names it; the same file
+with it omitted starts the system it produced, which is why the two android stages are two files
+and not one with a flag in it.
 """
 
 from __future__ import annotations
