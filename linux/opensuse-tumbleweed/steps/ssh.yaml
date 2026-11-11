@@ -162,6 +162,25 @@ steps:
   #
   # NO FIXED `wait:` - the number would be a guess about a package install and a
   # `nixos-rebuild` that share nothing. `require_ssh` asks the only question that matters.
+  - name: open the firewall for ssh
+    run: echo {{ password }} | sudo -S sh -c "firewall-cmd --add-service=ssh --permanent; firewall-cmd --reload; firewall-cmd --list-services" 2>&1 | tail -5
+    terminal_wait: 0
+    settle: 8
+
+  # THE FIREWALL IS OPENED BEFORE THE PORT IS WAITED ON, BECAUSE THE PORT IS WHAT IT CLOSES.
+  #
+  # Run bdd7913 is the measurement. cachyos' stage sat on this for the whole ten minutes:
+  #
+  #     still waiting after 370s of 600s (last status 255: ssh: connect to host 172.30.0.1
+  #                                                    port 2222: Connection timed out)
+  #
+  # `timed out` AND NOT `refused` IS THE TELL. A refused port is a host saying no; a timed out one
+  # is a packet being DROPPED, and ufw's default incoming policy does exactly that. The daemon was
+  # listening the whole time - the step that allows it was thirty lines further down, after the
+  # `require_ssh:` that needed the answer first.
+  #
+  # This is the same shape as the ssh-step ordering fixed in 8bd7746: a step that needs a channel
+  # cannot be written after the step that opens it.
   - name: wait for sshd
     require_ssh: true
     timeout: 600
@@ -208,10 +227,6 @@ steps:
       test -L /etc/systemd/system/multi-user.target.wants/sshd.service
     timeout: 120
 
-  - name: open the firewall for ssh
-    run: echo {{ password }} | sudo -S sh -c "firewall-cmd --add-service=ssh --permanent; firewall-cmd --reload; firewall-cmd --list-services" 2>&1 | tail -5
-    terminal_wait: 0
-    settle: 8
 
   # WHAT THE BOOT ACTUALLY DID, FROM THE JOURNAL, BECAUSE THE SYMLINK IS NOT THE WHOLE STORY.
   #
