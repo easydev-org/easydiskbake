@@ -53,6 +53,19 @@ ssh_user: vmuser
 ssh_port: 2222
 
 steps:
+  # THE VIDEO IS A STEP, SO THE FILE SAYS WHETHER THIS STAGE IS FILMED.
+  #
+  # `windows/11/ssh.py` used to start `lib/snapshots.py` and `lib/live.py` itself, which meant the
+  # recording lived in Python while every other part of the walkthrough lived here - and the
+  # macOS stage had the same pair written a second time. `record:` is an atomic step shared by
+  # every family (lib/steps.py), so the driver only has to be a driver.
+  #
+  # STARTED BEFORE ANYTHING ELSE, because the sampler waits for the record socket and the boot is
+  # the part that used to be invisible when a stage failed early.
+  - name: start recording
+    record: install.mp4
+    poll: 20
+
   # --- 1. THE KEYBOARD, WHICH IS THE ONLY CHANNEL UNTIL SSHD EXISTS --------------------
   #
   # Windows blanks its display after a minute of no input, and lib/desktop.py cannot tell a
@@ -247,3 +260,9 @@ steps:
   - name: prove the build
     ssh: powershell -Command "[System.Environment]::OSVersion.Version.ToString()"
     timeout: 60
+
+  # AND CLOSED HERE, so the file ends at the stage's last step rather than wherever the process
+  # exited. `record: false` finalises through the same encoder and is a no-op when nothing is
+  # recording.
+  - name: stop recording
+    record: false

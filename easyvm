@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""The one entry point for a workflow file - and the reason a stage is not a program.
+
+    easyvm macos/15/steps/ssh.yaml --boot-disk out/macos15-desktop.qcow2 --out out/macos15-ssh.qcow2
+
+WHY THIS EXISTS
+
+Every stage of this repository used to be a Python program with its own `main()`, its own argument
+list, and its own copy of "copy the disk, start qemu, run the walkthrough, stop the machine,
+compress the result". There are twenty-four such programs and about ten thousand lines between
+them, and the part that differs between two stages is almost never the part that was written twice:
+
+    macos/15/ssh.py     852 lines   OpenCore bootstrapping + a YAML walkthrough + a recording
+    windows/11/ssh.py   827 lines   the same shape again
+
+A workflow file already says what a stage DOES - atomic steps, one act each. What it could not say
+until recently was that it also OWNS A MACHINE. `boot:` and `record:` are steps now, so it can, and
+this program is what is left to run: read the file, give it a disk, get out of the way.
+
+WHAT STILL LIVES IN PYTHON, STATED PLAINLY
+
+Some of a stage is not a step and cannot become one:
+
+    building the qemu command line     lib/vm.py, per family - OpenCore, OSK, virtio-serial, smc
+    preparing the disk                 an overlay, a copy, or a move - lib/working_copy.py
+    publishing                         compress, digest, push - different programmes
+
+Those are facts about MACHINES, not actions on a SCREEN, and `click:` cannot express them. They
+belong in `lib/` and this program calls them. That migration is happening one stage at a time: a
+repository that cannot run is a repository that cannot be verified, and ten thousand lines is not a
+change anybody can check in one go.
+
+HOW THE RULE IS ENFORCED
+
+`easyvm` is the only entry point that is supported. A stage's own `main()` still works while it is
+being migrated - the workflow files call it - but it says so on stderr, and
+`EASYVM_STRICT=1` turns that into a refusal:
+
+    $ EASYVM_STRICT=1 python3 macos/15/ssh.py --disk x
+    === THIS STAGE IS NOT AN ENTRY POINT ===
+      run it through its workflow file instead:
+        easyvm macos/15/steps/ssh.yaml --boot-disk x
+      EASYVM_STRICT is set, so this is a refusal rather than a warning.
+
+USAGE
+
+    easyvm WORKFLOW [--boot-disk PATH] [--out PATH] [--work DIR] [--ssh-port N]
+                    [--user NAME] [--password PW] [--list] [--check]
+
+`--boot-disk` is required by a file that declares `boot:`; a file that drives an ALREADY RUNNING
+guest takes `--qmp SOCKET` instead. That is the rule lib/steps.py documents, and this program does
+not add a second one.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+
+REPO = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, REPO)
+sys.path.insert(0, os.path.join(REPO, "lib"))
+
+
+def main(argv: list[str]) -> int:
+    if not argv:
+        print(__doc__, file=sys.stderr)
+        return 2
+    if argv[0] in ("-h", "--help"):
+        print(__doc__)
+        return 0
+
+    # `--list` AND `--check` ARE QUESTIONS ABOUT THE FILE and pass straight through - same parser,
+    # so a second implementation of "what keys does a step accept" cannot drift from the first.
+    import steps
+
+    return steps.main(argv)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

@@ -849,4 +849,10 @@ def wait_for_ssh(port: int, timeout: int = 180) -> bool:
 
 
 if __name__ == "__main__":
+    # THIS STAGE IS BEING MIGRATED INTO ITS WORKFLOW FILE. Until every caller says `easyvm`, the
+    # old form still runs - but it says so, and EASYVM_STRICT=1 makes it a refusal. See
+    # lib/entrypoint.py for why the seam exists rather than a deletion.
+    import entrypoint  # noqa: E402
+
+    entrypoint.note_stage("macos/15/ssh.py", "macos/15/steps/ssh.yaml", extra="--boot-disk out/macos15-desktop.qcow2")
     raise SystemExit(main(sys.argv[1:]))

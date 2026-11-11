@@ -99,6 +99,19 @@ steps:
   # already running, and this is the step that starts one - so asking before it runs can only
   # ever fail. The stage that made (or did not make) the overlay is the one that knows, and it
   # says so in `shutdown:` at the bottom of this file.
+  # THE VIDEO IS A STEP, NOT A LINE IN `ssh.py`.
+  #
+  # It is started BEFORE the boot and stopped AFTER the shutdown, so the file contains the boot
+  # itself - which is the part that used to be invisible when a stage failed early. `lib/live.py`
+  # re-encodes every `poll` seconds, so a run killed at any point still leaves something playable.
+  #
+  # THIS IS WHY IT IS HERE RATHER THAN IN THE DRIVER: `record:` is an atomic step (lib/steps.py),
+  # shared by every family, and the file is what says whether a stage is filmed. A stage that
+  # wants no video omits the step; one that wants it names the file.
+  - name: start recording
+    record: install.mp4
+    poll: 20
+
   - name: boot the disk
     boot: true
     family: macos
@@ -467,3 +480,10 @@ steps:
   - name: stop the machine
     shutdown: "{{ shutdown }}"
     timeout: 300
+
+  # AND THE VIDEO IS CLOSED BY THE SAME FILE THAT OPENED IT. `record: false` finalises the file
+  # - the encoder does one last pass - so the recording ends at the shutdown rather than wherever
+  # the process happened to exit. It is a no-op when nothing is recording, which is what makes it
+  # safe for a stage that chose not to film.
+  - name: stop recording
+    record: false

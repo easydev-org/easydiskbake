@@ -55,7 +55,6 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, REPO)
 sys.path.insert(0, os.path.join(REPO, "lib"))
 
-import live as livelib  # noqa: E402
 import net  # noqa: E402
 import qmp as qmpmod  # noqa: E402
 import vm  # noqa: E402
@@ -376,39 +375,8 @@ def main(argv: list[str]) -> int:
     # The firmware could not find a boot loader because there was no Windows disk to
     # find it on: BLK0 was the firmware's own variable store. bake.py passes its drives
     # through `extra`, and this stage never did.
-    # THE STAGE RECORDS ITSELF, AND IT NEVER DID.
-    #
-    # macos/15/ssh.py starts lib/snapshots.py and lib/live.py; this file created `shots` and then
-    # sampled nothing, so every Windows ssh run was a black box with a keyboard on it. That is why
-    # "why is install ssh taking an hour" could only be answered by reading timestamps of `===`
-    # markers - the frames that would have shown the screen were never captured.
-    #
-    # THE SAMPLER GOES BEFORE THE MACHINE. `lib/snapshots.py` waits for the record socket to
-    # appear (60 x 2s), so starting it first means the boot, the lock screen and the first
-    # PowerShell window are all in the video rather than only what came after a handshake.
-    record_socket = vm.Paths(work).record
-    frames = os.path.join(work, "frames")
-    os.makedirs(frames, exist_ok=True)
-    snap = subprocess.Popen(
-        [sys.executable, os.path.join(REPO, "lib", "snapshots.py"),
-         record_socket, frames,
-         os.environ.get("SNAPSHOT_INTERVAL", "1")],
-        stdout=open(os.path.join(frames, "snapshots.log"), "wb"),
-        stderr=subprocess.STDOUT,
-    )
-
     drives = ["-drive", f"file={disk},if=virtio,format=qcow2"]
     guest = vm.Guest(work, extra=drives, shape=shape, stdout=console).start()
-
-    # THE ENCODER IS KEPT CURRENT, SO A RUN THAT FAILS STILL HAS A VIDEO. Same call the bakes
-    # make: it re-encodes every LIVE_ARTIFACT_SECONDS, so a stage killed at any point leaves a
-    # playable file instead of an empty one.
-    live = livelib.start(
-        [shots, frames],
-        os.path.join(work, "install.mp4"),
-        os.path.join(work, "last-frame.png"),
-        every=float(os.environ.get("LIVE_ARTIFACT_SECONDS", "20")),
-    )
 
     kb = Keyboard(guest.paths.drive, shots)
     ok = False
@@ -484,18 +452,7 @@ def main(argv: list[str]) -> int:
     finally:
         guest.stop(acpi_first=ok)
         kb.close()
-        # THE FINAL ENCODE HAPPENS WHATEVER THE OUTCOME - a failed stage is the one whose video
-        # is worth watching. The sampler goes first so the last frames are on disk before the
-        # encoder reads them.
-        try:
-            snap.terminate()
-            snap.wait(timeout=15)
-        except (OSError, subprocess.SubprocessError):
-            pass
-        try:
-            live.stop(final=True)
-        except (OSError, RuntimeError) as exc:
-            log(f"  the recording could not be finalised: {exc}")
+
         if args.tpm:
             stop_swtpm(work)
         if ok:
@@ -867,4 +824,10 @@ def stop_swtpm(work: str) -> None:
 
 
 if __name__ == "__main__":
+    # THIS STAGE IS BEING MIGRATED INTO ITS WORKFLOW FILE. Until every caller says `easyvm`, the
+    # old form still runs - but it says so, and EASYVM_STRICT=1 makes it a refusal. See
+    # lib/entrypoint.py for why the seam exists rather than a deletion.
+    import entrypoint  # noqa: E402
+
+    entrypoint.note_stage("windows/11/ssh.py", "windows/11/steps/ssh.yaml", extra="--boot-disk out/windows11-gold.qcow2")
     raise SystemExit(main(sys.argv[1:]))

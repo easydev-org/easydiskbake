@@ -1190,18 +1190,44 @@ def main() -> int:
     # same reason - a stage that fails must still leave a video - and its artifact proves it
     # (run 42874167311: macos15-ssh-recording, 3789241 bytes). The Windows stage gets the same
     # pair, started before the machine so the boot and the lock screen are in the file.
+    # IT IS A `record:` STEP NOW, NOT A PAIR OF SUBPROCESSES IN THE DRIVER. The driver started
+    # the sampler and the encoder itself for one commit; `record:` is an atomic step shared by
+    # every family, so the file says whether a stage is filmed and the driver only drives.
+    wssh_yaml = read("windows/11/steps/ssh.yaml")
+    check("the windows ssh stage records through its file", "windows/11/steps/ssh.yaml",
+          "record: install.mp4" in wssh_yaml and "record: false" in wssh_yaml)
+    # AND THE DRIVER NO LONGER STARTS ONE, because two encoders writing the same file is worse
+    # than none: whichever finishes second wins and the other's frames are lost.
     wssh = read("windows/11/ssh.py")
-    check("the windows ssh stage samples frames", "windows/11/ssh.py",
-          "snapshots.py" in wssh and "snap = subprocess.Popen(" in wssh)
-    check("the windows ssh stage encodes a video", "windows/11/ssh.py",
-          "livelib.start(" in wssh)
-    check("the sampler starts before the machine", "windows/11/ssh.py",
-          wssh.index("snap = subprocess.Popen(") < wssh.index("vm.Guest(work, extra=drives"))
-    check("the video is finalised whatever the outcome", "windows/11/ssh.py",
-          "live.stop(final=True)" in wssh)
+    check("the windows driver does not record twice", "windows/11/ssh.py",
+          "livelib.start(" not in wssh)
     wf = read(".github/workflows/windows-11.yml")
     check("the windows ssh recording is uploaded", ".github/workflows/windows-11.yml",
           "windows11-ssh-recording" in wf and "out/ssh-work/install.mp4" in wf)
+    # --- ONE ENTRY POINT, AND STAGES ARE NOT PROGRAMS ---------------------------------
+    #
+    # Every stage used to be a program with its own `main()`, its own argument list and its own
+    # copy of "copy the disk, start qemu, run the walkthrough, stop it, compress" - twenty-four of
+    # them, about ten thousand lines, and the part that differs between two stages is almost never
+    # the part that was written twice (`macos/15/ssh.py` 852 lines and `windows/11/ssh.py` 827 are
+    # the same shape).
+    #
+    # `easyvm` is the one supported way to run a workflow file. The old entry points still work
+    # while their callers are migrated - a repository that cannot run cannot be verified - but
+    # they say so, and `EASYVM_STRICT=1` refuses.
+    check("there is one entry point for a workflow file", "easyvm",
+          "def main(argv" in read("easyvm") and "import steps" in read("easyvm"))
+    ep = read("lib/entrypoint.py")
+    check("a bypassing stage says so", "lib/entrypoint.py",
+          "this stage is not an entry point" in ep)
+    check("a bypassing stage can be refused", "lib/entrypoint.py",
+          "EASYVM_STRICT" in ep and "raise SystemExit(2)" in ep)
+    # AND THE SUGGESTED PATH IS CHECKED BEFORE IT IS PRINTED. A guard that points at a file which
+    # does not exist is worse than no guard: it is confidently wrong.
+    check("the guard verifies the file it names", "lib/entrypoint.py",
+          "os.path.isfile(path)" in ep)
+    for stage in ("windows/11/ssh.py", "macos/15/ssh.py"):
+        check(f"{stage} is guarded", stage, "entrypoint.note_stage(" in read(stage))
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))
