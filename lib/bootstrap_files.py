@@ -170,19 +170,30 @@ def smbnetfs_conf(driver, step, **_kwargs) -> bool:
     # THE LAST THREE LINES ARE THE CLIENT'S OWN DIAGNOSTICS, AND THEY ARE `key value`, NOT
     # `key=value`. Run b5267d9 finally got a config it ACCEPTED - no `Invalid input line` at all -
     # and the mount point still listed nothing while its link count said one subdirectory existed.
-    # That is the state where guessing produces another fifteen runs, so the client is asked:
     #
-    #     smbnetfs_debug 7          its own trace, into a file root can read
-    #     log_file "/tmp/smbnetfs.log"
-    #     smb_query_browsers "false"  use the static `host` line and do not go looking for browsers
+    # AND `visible=true` IS NOT COSMETIC - IT IS WHY NOTHING APPEARED. From
+    # `reconfigure_parse_host_option()` in the same source:
     #
-    # The last one matters here: this bridge has no WINS server, and a client that scans for
-    # browsers before showing a host it was already told about is a client that shows nothing
-    # for a while.
+    #     if (visibility == -1) visibility = 0;
+    #     return smbitem_mkhost(value[0], parent_group, !visibility, SMBITEM_USER_TREE);
+    #                                                 ^^^^^^^^^^^^  is_hidden
+    #
+    # A `host` line with no `visible=` is HIDDEN BY DEFAULT, and a hidden host is not returned by
+    # readdir - which is exactly the state b5267d9 and 8cd494e were in: a link count of 3 (one real
+    # subdirectory) and `ls` showing only `.` and `..`. And because readdir never reached the item,
+    # smbnetfs never forked the smbclient context for it, so its own log had not one connection
+    # line in it. The tree was not slow; it was invisible.
+    #
+    #     host 172.30.0.1 visible=true        documented on line 335 of the project's own sample
+    #
+    # `smbnetfs_debug 7` and `log_file` stay: the next failure should still be able to explain
+    # itself. `smb_query_browsers "false"` stays too - this bridge has no WINS server, and the
+    # sample states that with browsing off the client shows *only* static host/group/link, which is
+    # precisely the one host named here.
     _write(work, "smbnetfs.conf", "".join(
         f"{line}\n" for line in (
             f'auth "{hostshare.SMB_USER}" ""',
-            f"host {net.BRIDGE_IP}",
+            f"host {net.BRIDGE_IP} visible=true",
             "smbnetfs_debug 7",
             'log_file "/tmp/smbnetfs.log"',
             'smb_query_browsers "false"',
