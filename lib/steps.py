@@ -1815,7 +1815,11 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
         import session
         command = str(step["ssh"])
         timeout = int(step.get("timeout", 120))
-        command = "sh -c " + shlex.quote(command)
+        # NO `sh -c` HERE ON PURPOSE. An `ssh:` body is a SCRIPT the walkthrough wrote, and the
+        # files that need a POSIX shell wrap it themselves (`sh -c '...'`, which every Linux and
+        # BSD file now does). Wrapping it again here would nest one inside the other and change
+        # nothing except the quoting.
+        #
         status, output = session.ssh(ssh_port, command, timeout=timeout, user=login,
                                      password=password, host=ssh_host or None, key=ssh_key or None)
         log(f"  ssh: {command} -> {status}")
@@ -2352,6 +2356,10 @@ def _do_action(driver: Driver, step: Step, *, ssh_port: int = 2222,
         command = hostshare.mount_commands(user=login or "vmuser",
                                           login_password=password or "admin")[family]
         timeout = int(step.get("timeout", 180))
+        # THE ONE COMMAND THAT NEEDS `sh -c` HERE: it was BUILT by `mount_commands()` in Python, so
+        # there is no walkthrough file to put the wrap in. `ssh:` bodies are wrapped by the files
+        # themselves, which is why that branch does not do it.
+        command = "sh -c " + shlex.quote(command)
         status, output = session.ssh(ssh_port, command, timeout=timeout, user=login,
                                     password=password, host=ssh_host or None, key=ssh_key or None)
         log(f"  mount: {command[:100]} -> {status}")
