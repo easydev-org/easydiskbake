@@ -864,6 +864,40 @@ def test_capabilities_and_new_primitives() -> None:
     check(doc.steps[0]["shutdown"] == "guest_agent", "shutdown accepts a named method")
 
 
+def test_every_sh_c_body_parses() -> None:
+    """An `ssh:` body that opens a `sh -c '...'` must survive a POSIX shell.
+
+    THE BUG THIS EXISTS FOR IS A COMMENT WITH AN APOSTROPHE IN IT. Every BSD and the one fish
+    image wrap their bodies in `sh -c '...'`, and a comment inside that quoted body saying
+    `smbd's log` CLOSES THE QUOTE - which the guest reports two lines later as
+
+        fish: Expected a command, but found an incomplete token
+        sh: Syntax error: Unterminated quoted string
+
+    Three of those were written in one evening, each in a COMMENT that looked inert, and each cost
+    a full run to find because the message points at the wrong line. `sh -n` is the whole check.
+    """
+    import glob
+    import subprocess
+
+    bad = []
+    for path in sorted(glob.glob("linux/*/steps/*.yaml") + glob.glob("bsd/*/steps/*.yaml")):
+        try:
+            doc = steps.load(path)
+        except Exception:
+            continue
+        values = doc.values({"args.user": "vmuser", "args.password": "admin"})
+        for one in doc.steps:
+            body = one.spec.get("ssh")
+            if not isinstance(body, str) or not body.lstrip().startswith("sh -c"):
+                continue
+            rendered = doc.substitute(one.spec, values).get("ssh")
+            done = subprocess.run(["sh", "-n", "-c", rendered], capture_output=True, text=True)
+            if done.returncode != 0:
+                bad.append(f"{path}: {one.spec.get('name')}: {done.stderr.strip()[:80]}")
+    check(not bad, f"every `sh -c` body parses, got {bad}")
+
+
 def main() -> int:
     test_expect_failure()
     test_optional_expect()
@@ -889,6 +923,7 @@ def main() -> int:
     test_scp_and_script_steps()
     test_share_mount_step()
     test_capabilities_and_new_primitives()
+    test_every_sh_c_body_parses()
 
     print()
     if FAILED:

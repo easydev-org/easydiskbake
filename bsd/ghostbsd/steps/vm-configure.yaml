@@ -350,9 +350,13 @@ steps:
         # TOUCH THE SHARE, NOT JUST THE TREE. `stat` is fabricated by smbnetfs (it answers 0777
         # for any name in its own tree without asking the server), so only a readdir or a write
         # can provoke the session setup. Doing it HERE means the refusal, if there is one, lands
-        # while this step is running - and the witness step after it can then read smbd's log.
+        # while this step is running, so the witness step after it can read the server log.
+        #
+        # NO APOSTROPHE IN THESE FOUR LINES, AND THAT IS NOT STYLE. They sit INSIDE the single
+        # quoted body of `sh -c`, and one possessive closed that quote early - which is what fish
+        # reported as `Expected a command, but found an incomplete token`, one line from the end.
         echo "--- a first attempt at the share itself ---"
-        ls "$MOUNT"/{{ host }}/{{ share_name }} 2>&1 | head -5 || true'
+        ls "$MOUNT"/{{ host }}/{{ share_name }} 2>&1 | head -5'
     # THE MOUNT IS BEST EFFORT; THE PROOF IS THE JUDGE. Marked optional so that a refusal does
     # not stop the walk before the server's own log is read - the step after this one exists for
     # exactly that, and a step that stops the walk cannot be witnessed.
@@ -424,7 +428,7 @@ steps:
         echo "--- the client log, taken AFTER the attempt (unfiltered) ---"
         printf "%s\n" "{{ password }}" | sudo -S -p "" \
           tail -50 /tmp/smbnetfs.log 2>&1
-        echo "--- smbnetfs's own streams ---"
+        echo "--- the streams smbnetfs wrote ---"
         printf "%s\n" "{{ password }}" | sudo -S -p "" \
           tail -20 /tmp/smbnetfs.out 2>&1
         echo "--- round trip rc=$rc ---"
