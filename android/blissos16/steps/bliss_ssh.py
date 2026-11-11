@@ -230,7 +230,15 @@ def install_boot_hook(driver, step) -> bool:
         "mkdir -p /data/data/com.termux/files/usr/var/empty 2>/dev/null\n"
         "chmod 755 /data/data/com.termux/files/usr/var/empty 2>/dev/null\n"
         "T=/data/data/com.termux/files/usr\n"
-        "mkdir -p $T/libexec 2>/dev/null\n"
+        "mkdir -p $T/libexec $T/bin 2>/dev/null\n"
+        # sshd's compiled-in default login shell, as a wrapper that sets LD_LIBRARY_PATH. See
+        # `start()`: a copy of the binary cannot link.
+        "printf '%s\\n' '#!/system/bin/sh' \\\n"
+        "  'export LD_LIBRARY_PATH=$P/lib' \\\n"
+        "  'exec $P/bin/bash \"$@\"' > $T/bin/bash 2>/dev/null\n"
+        "chmod 755 $T/bin/bash 2>/dev/null\n"
+        "mkdir -p /data/data/com.termux/files/home 2>/dev/null\n"
+        "chmod 700 /data/data/com.termux/files/home 2>/dev/null\n"
         # sshd execs these for each connection, from the path it was BUILT with. See `start()`.
         "for f in $P/libexec/*; do\n"
         "  [ -f \"$f\" ] && [ ! -e \"$T/libexec/$(basename $f)\" ] && "
@@ -249,6 +257,13 @@ def install_boot_hook(driver, step) -> bool:
         #
         # `-D` keeps sshd in the foreground and `exec` makes it the service's own process, so the
         # thing init supervises IS the daemon. The wait for the framework stays above it.
+        # AND THE WRAPPER REFUSES TO START FROM AN EMPTY CONFIG. If the file is missing or has no
+        # content, sshd would run with every default - `StrictModes yes` against a /data that can
+        # never satisfy it - and refuse every login while looking healthy:
+        f"if [ ! -s {PREFIX}/etc/ssh/sshd_config.installed ]; then\n"
+        f"  echo \"no persistent sshd config; refusing to start with defaults\"\n"
+        f"  exit 1\n"
+        f"fi\n"
         f"exec $P/bin/sshd -D -e -f {PREFIX}/etc/ssh/sshd_config.installed "
         f">> /data/local/tmp/sshd.err 2>&1\n"
     )
@@ -402,10 +417,43 @@ def start(driver, step) -> bool:
     if status != 0:
         print(f"  could not push the config: {output[-300:]}", flush=True)
         return False
+
+    # THE DIRECTORY HAS TO EXIST BEFORE THE PUSH, AND `adb push` DOES NOT SAY WHEN IT DOES NOT.
+    #
+    # This is the bug that cost the most runs, and it was invisible because `adb push` into a
+    # missing directory CREATES A ZERO-BYTE FILE and answers 0:
+    #
+    #     $ ls -la /data/local/sshd/etc/ssh/
+    #     -rw------- 1 root root      0 ... ssh_host_rsa_key
+    #     -rw-rw-rw- 1 root root      0 ... sshd_config.installed
+    #
+    # So the persistent config the boot wrapper reads was EMPTY, sshd fell back to every default
+    # (`StrictModes yes`, `AuthorizedKeysFile .ssh/authorized_keys`), and every login was refused
+    # while `sshd -T` - run against the TEMPFS copy, which was written correctly - showed a config
+    # that was right. Two files, one written before its directory existed, and six CI runs.
+    mkdir = (f"mkdir -p {PREFIX}/etc/ssh; "
+             f"chmod 755 {PREFIX}/etc/ssh; "
+             f"ls -ld {PREFIX}/etc/ssh")
+    status, output = adb.shell(serial, mkdir, timeout=60)
+    if status != 0:
+        print(f"  could not create {PREFIX}/etc/ssh: {output[-300:]}", flush=True)
+        return False
+
     # AND A COPY THE BOOT WRAPPER CAN RESTORE, because /data/local/tmp is a tmpfs and the
     # artifact is rebooted on a machine this stage never sees.
-    adb.run("push", local, f"{PREFIX}/etc/ssh/sshd_config.installed",
-            timeout=120, serial=serial)
+    status, output = adb.run("push", local, f"{PREFIX}/etc/ssh/sshd_config.installed",
+                             timeout=120, serial=serial)
+    if status != 0:
+        print(f"  could not push the persistent config: {output[-300:]}", flush=True)
+        return False
+    # A ZERO-BYTE FILE IS THE FAILURE THIS CHECK EXISTS FOR, so it is measured rather than
+    # assumed: `adb push` answering 0 means "the transfer was attempted".
+    status, size = adb.shell(
+        serial, f"wc -c < {PREFIX}/etc/ssh/sshd_config.installed", timeout=60)
+    if status != 0 or not size.strip().isdigit() or int(size.strip()) < 50:
+        print(f"  the persistent config is {size.strip() or 'missing'} bytes; "
+              f"the boot wrapper would start sshd with defaults", flush=True)
+        return False
 
     # KEYS, THE PRIVILEGE SEPARATION DIRECTORY, THEN THE DAEMON. `-E` sends its log to a file this
     # step reads back, because a daemon that fails to start prints to nowhere anybody is watching.
@@ -444,7 +492,37 @@ def start(driver, step) -> bool:
         # measured. So the two files sshd needs at that path are placed there, one at a time, and
         # everything else stays where root can write freely.
         f"T=/data/data/com.termux/files/usr; "
-        f"mkdir -p $T/libexec 2>/dev/null; "
+        f"mkdir -p $T/libexec $T/bin 2>/dev/null; "
+        # AND A `bash` AT THE PATH sshd DEMANDS, WHICH IS NOT THE ONE IN /etc/passwd.
+        #
+        # This is the last thing standing between the key and a shell, and it says so plainly:
+        #
+        #     User root not allowed because shell /data/data/com.termux/files/usr/bin/bash
+        #     does not exist
+        #
+        # /etc/passwd says `/data/local/sshd/bin/bash` - this stage writes it there - and sshd
+        # still names the Termux path, because the DEFAULT login shell is compiled in and used
+        # when the account is resolved before the passwd entry is honoured. Putting the same
+        # binary at the compiled-in path satisfies both readers at once.
+        # A WRAPPER, NOT A COPY, BECAUSE bash NEEDS ITS LIBRARIES AND THE COMPILED-IN PREFIX IS
+        # NOT WHERE THEY ARE. Copying the binary produced the next failure in the chain:
+        #
+        #     CANNOT LINK EXECUTABLE "bash": library "libandroid-support.so" not found
+        #     needed by main executable
+        #
+        # and the same would be true of every library it needs. A three-line script that sets
+        # `LD_LIBRARY_PATH` and execs the real one satisfies sshd's "this path is executable"
+        # check and gives bash what it needs to link.
+        f"printf '%s\\n' '#!/system/bin/sh' "
+        f"'export LD_LIBRARY_PATH={PREFIX}/lib' "
+        f"'exec {PREFIX}/bin/bash \"$@\"' > $T/bin/bash 2>/dev/null; "
+        f"chmod 755 $T/bin/bash 2>/dev/null; "
+        # AND THE HOME sshd DEFAULTS TO, so the login does not start with a chdir failure:
+        #
+        #     Could not chdir to home directory /data/data/com.termux/files/home:
+        #     No such file or directory
+        f"mkdir -p /data/data/com.termux/files/home 2>/dev/null; "
+        f"chmod 700 /data/data/com.termux/files/home 2>/dev/null; "
         # THE WHOLE libexec DIRECTORY, NOT THE ONE HELPER THAT COMPLAINED FIRST.
         #
         # `sshd-session` was the first name to appear in an error and copying it exposed the
@@ -459,9 +537,16 @@ def start(driver, step) -> bool:
         f"for f in $P/libexec/*; do "
         f"[ -f \"$f\" ] && cp \"$f\" $T/libexec/ 2>/dev/null; done; "
         f"chmod 755 $T/libexec/* 2>/dev/null; "
-        f"[ -f $P/etc/ssh/ssh_host_rsa_key ] || "
-        f"$P/bin/ssh-keygen -t rsa -b 2048 -f $P/etc/ssh/ssh_host_rsa_key -N '' -q; "
-        f"test -f $P/etc/ssh/ssh_host_rsa_key || {{ echo NO_HOST_KEY; exit 1; }}; "
+        # `-s` AND NOT `-f`: A ZERO-BYTE KEY PASSES `[ -f ]` AND IS THE FORMAT sshd REFUSES.
+        #
+        #     Unable to load host key ".../ssh_host_rsa_key": invalid format
+        #     sshd: no hostkeys available -- exiting.
+        #
+        # which is what an `adb push` into a directory that did not exist leaves behind.
+        f"[ -s $P/etc/ssh/ssh_host_rsa_key ] || "
+        f"{{ rm -f $P/etc/ssh/ssh_host_rsa_key $P/etc/ssh/ssh_host_rsa_key.pub; "
+        f"$P/bin/ssh-keygen -t rsa -b 2048 -f $P/etc/ssh/ssh_host_rsa_key -N '' -q; }}; "
+        f"test -s $P/etc/ssh/ssh_host_rsa_key || {{ echo NO_HOST_KEY; exit 1; }}; "
         f"[ -f /data/local/tmp/sshd.pid ] && kill \"$(cat /data/local/tmp/sshd.pid)\" 2>/dev/null; "
         # `-e` AND A REDIRECT, NOT `-E`, BECAUSE THE AUTHENTICATION HAPPENS IN A CHILD.
         #
@@ -475,8 +560,26 @@ def start(driver, step) -> bool:
         #
         # `-e` writes to stderr, and the shell redirects BOTH the parent and every child into the
         # same file, which is the only way the reason reaches the log this stage reads.
-        f"$P/bin/sshd -e -f {SSHD_CONFIG} >> /data/local/tmp/sshd.err 2>&1; "
-        f"sleep 2; "
+        # `setsid ... &` AND NOT A BARE `&`, BECAUSE `adb shell` KILLS ITS CHILDREN ON EXIT.
+        #
+        # `adb shell "cmd &"` returns as soon as the shell exits, and the guest's adbd then sends
+        # SIGHUP to the process group - so a daemon started that way is gone before the next adb
+        # command arrives. `setsid` puts it in its own session with no controlling terminal, which
+        # is what survives; the `&` then lets the same shell go on to check the socket.
+        #
+        # AND `-e` GOES TO A FILE THIS SHELL OWNS. `-e` writes to stderr, so the redirect has to be
+        # on the sshd process itself; wrapping it in `sh -c '... 2>&1'` gives the parent AND the
+        # per-connection children one destination, which `-E file` could not do.
+        # `$P` IS EXPANDED HERE, NOT INSIDE THE INNER SHELL. A single-quoted `sh -c '...$P...'`
+        # passes the dollar through to a shell that has no `P` in it - measured:
+        #
+        #     sh: /bin/sshd: inaccessible or not found
+        #
+        # because `$P` had become the empty string and the path collapsed to `/bin/sshd`. The
+        # prefix is known now, so it is written out.
+        f"setsid sh -c '{PREFIX}/bin/sshd -D -e -f {SSHD_CONFIG}' "
+        f">> /data/local/tmp/sshd.err 2>&1 & "
+        f"sleep 3; "
         f"tail -5 /data/local/tmp/sshd.err 2>/dev/null; "
         f"grep -q ':1F56' /proc/net/tcp && echo SSHD_LISTENING"
     )
