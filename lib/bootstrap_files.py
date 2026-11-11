@@ -186,15 +186,32 @@ def smbnetfs_conf(driver, step, **_kwargs) -> bool:
     #
     #     host 172.30.0.1 visible=true        documented on line 335 of the project's own sample
     #
-    # `smbnetfs_debug 7` and `log_file` stay: the next failure should still be able to explain
-    # itself. `smb_query_browsers "false"` stays too - this bridge has no WINS server, and the
-    # sample states that with browsing off the client shows *only* static host/group/link, which is
-    # precisely the one host named here.
+    # `smb_debug_level` IS SAMBA'S OWN LEVEL, AND RUN b43b65a IS WHY IT IS HERE. The tree is now
+    # correct and the guest got as far as
+    #
+    #     ls: /home/vmuser/shared/172.30.0.1/shared: Permission denied
+    #
+    # WITH `total 0` BESIDE IT, WHICH PROVES NOTHING: `function_stat()` in smbnetfs FABRICATES
+    # 0040777 for anything in its own tree without asking the server, so a stat that succeeds says
+    # only that the name exists. The failing call is `samba_opendir()` - libsmbclient - and its
+    # reason goes to this log only when SAMBA's debug level is raised; `smbnetfs_debug` sets a
+    # different level in a different component.
+    #
+    # THE AUTH IS ALSO NAMED PER SHARE NOW, WHICH IS THE FORM THE SAMPLE DOCUMENTS:
+    #
+    #     auth [computer[/share]] [domain_or_workgroup/]user password
+    #
+    # `auth "guest" ""` registers a DEFAULT (server empty, share empty) and that is what carried the
+    # IPC$ session in b43b65a. The failure is one level further in - opening the SHARE rather than
+    # the server - so an entry keyed to exactly `172.30.0.1/shared` is added beside the default one
+    # rather than replacing it: the default is what lets the host be enumerated at all.
     _write(work, "smbnetfs.conf", "".join(
         f"{line}\n" for line in (
             f'auth "{hostshare.SMB_USER}" ""',
+            f'auth "{net.BRIDGE_IP}/{hostshare.SHARE_NAME}" "{hostshare.SMB_USER}" ""',
             f"host {net.BRIDGE_IP} visible=true",
             "smbnetfs_debug 7",
+            "smb_debug_level 7",
             'log_file "/tmp/smbnetfs.log"',
             'smb_query_browsers "false"',
         )
