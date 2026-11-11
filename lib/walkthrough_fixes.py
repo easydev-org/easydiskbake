@@ -1156,6 +1156,29 @@ def main() -> int:
     stray = stray[:stray.index("def stop() -> None:")]
     check("the stray-smbd kill is isolated too", "lib/hostshare.py",
           "start_new_session=True" in stray and "os.setsid()" in stray)
+    # AND THE COMPONENT STORE IS COMPACTED WITHOUT `/ResetBase`, SO IT CANNOT EAT THE STAGE.
+    #
+    # Two runs spent their entire `install ssh` step inside this one command, which reads as a
+    # hang because the step boundary is an hour wide:
+    #
+    #     42937358029   <- the clean was later killed at 1800s
+    #     42943833902   <- `compact the component store` started 02:21:17 and never reported
+    #
+    # Every other step of that walkthrough totalled about seven minutes, so this is the whole
+    # cost. `/StartComponentCleanup` removes superseded components; `/ResetBase` additionally
+    # discards every superseded version of everything - un-uninstallable updates afterwards - and
+    # nothing in this repository reads the component store or uninstalls an update from it.
+    #
+    # It is also `optional: true`, and `session.ssh` returns 124 on a timeout, which takes the
+    # same `status != 0` path that `optional` exempts. Verified here rather than assumed.
+    win_steps = read("windows/11/steps/ssh.yaml")
+    check("the component store is not ResetBase'd", "windows/11/steps/ssh.yaml",
+          "StartComponentCleanup /ResetBase" not in win_steps
+          and "Cleanup-Image /StartComponentCleanup\n" in win_steps)
+    check("the component store cannot fail the stage", "windows/11/steps/ssh.yaml",
+          "optional: true" in win_steps.split("name: compact the component store", 1)[1][:400])
+    check("a step timeout is exempted by optional", "lib/session.py",
+          "return 124" in read("lib/session.py"))
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))

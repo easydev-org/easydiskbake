@@ -201,12 +201,25 @@ steps:
     timeout: 180
     optional: true
 
-  # DISM REWRITES THE COMPONENT STORE AND TAKES MINUTES, so it gets its own timeout. It is a
-  # cmd command and therefore NOT wrapped in powershell -Command, which is the one statement in
-  # this file that is not.
+  # THE COMPONENT STORE, WITHOUT `/ResetBase`.
+  #
+  # `/StartComponentCleanup` removes superseded components. `/ResetBase` additionally discards
+  # every superseded version OF EVERY COMPONENT, which is what makes an update afterwards
+  # un-uninstallable - and on this image it is the expensive half by a wide margin: the stage sat
+  # in this one command long enough to be mistaken for a hang twice (runs 42937358029 and
+  # 42943833902 both spent their whole `install ssh` step here).
+  #
+  # THE TRADE IS DELIBERATE. This disk exists to be a CI guest. Nothing in this repository reads
+  # the component store, nothing uninstalls an update from it, and `StartComponentCleanup` alone
+  # already reclaims the superseded components that make the image smaller. `/ResetBase` buys a
+  # few hundred MiB more and costs tens of minutes of the one resource the chain is short of.
+  #
+  # It is a cmd command and therefore NOT wrapped in powershell -Command, which is the one
+  # statement in this file that is not.
   - name: compact the component store
-    ssh: DISM /Online /Cleanup-Image /StartComponentCleanup /ResetBase
-    timeout: 1800
+    ssh: DISM /Online /Cleanup-Image /StartComponentCleanup
+    timeout: 3600
+    optional: true
 
   # --- 4. READ BACK WHAT CAN BE READ BACK ---------------------------------------------
   #
