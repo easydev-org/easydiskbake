@@ -1015,6 +1015,36 @@ def main() -> int:
           "New-NetFirewallRule -Name sshd-22" in win_ssh)
     check("the firewall step reports its own result", "windows/11/steps/ssh.yaml",
           "STEP4" in win_ssh)
+    # AND THE SUCCESS PATH LEAVES THE `try`, OR THE MARKER AND THE COMPRESS ARE DEAD CODE.
+    #
+    # `clean_step.main()` ends its clean in a `try` whose `finally` does the shutdown, and BOTH
+    # the re-compress and the `CLEANED` marker live after that block - because the shutdown has to
+    # happen first, including when the clean failed. The `try` used to end in `return 0`, so:
+    #
+    #     no clean ever re-compressed its disk
+    #     no clean ever wrote CLEANED
+    #     every workflow that reads CLEANED was reading a file nothing wrote
+    #
+    # It surfaced only when the separate verdict step finally ran (run 42925475964):
+    #
+    #     === THE CLEAN DID NOT FINISH: no CLEANED line ===
+    #
+    # about a clean that had finished. An AST check rather than a grep, because the bug is the
+    # SHAPE - a `return` inside the block - and the fix is the absence of that shape.
+    import ast as _ast
+
+    tree = _ast.parse(read("lib/clean_step.py"))
+    mfn = [n for n in _ast.walk(tree)
+           if isinstance(n, _ast.FunctionDef) and n.name == "main"][0]
+    try_block = [n for n in _ast.walk(mfn) if isinstance(n, _ast.Try) and n.finalbody][0]
+    last = try_block.body[-1].end_lineno
+    zero_returns = [n.lineno for n in _ast.walk(try_block)
+                    if isinstance(n, _ast.Return)
+                    and isinstance(n.value, _ast.Constant)
+                    and n.value.value == 0
+                    and try_block.body[0].lineno <= n.lineno <= last]
+    check("the clean's success path is not an early return", "lib/clean_step.py",
+          not zero_returns)
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))

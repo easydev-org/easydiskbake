@@ -382,7 +382,21 @@ def main(argv: list[str]) -> int:
         if not ok:
             note("=== THE CLEAN DID NOT FINISH ===")
             return 1
-        return 0
+        # NO `return 0` HERE. THE SUCCESS PATH HAS TO LEAVE THE `try` TO REACH THE REST.
+        #
+        # It used to return here, and that made everything below this block unreachable: the
+        # re-compress and the `CLEANED` marker both live after the `try`/`finally`, so NO clean
+        # in this repository had ever compressed its disk or written the marker its workflow
+        # reads. Run 42925475964 is how it surfaced - the clean succeeded, the separate verdict
+        # step ran for the first time, and it correctly reported
+        #
+        #     === THE CLEAN DID NOT FINISH: no CLEANED line ===
+        #
+        # about a clean that had finished, because the line was past a `return`.
+        #
+        # Falling out of the `try` runs `finally` (the shutdown, which needs `ok` and is why this
+        # is a `finally` at all) and then continues.
+        pass
     finally:
         # ACPI FIRST WHEN IT WORKED, AND LONG ENOUGH. The clean wrote gigabytes of zeros
         # seconds ago; a disk killed mid-write repairs itself on every later boot. 60s was
