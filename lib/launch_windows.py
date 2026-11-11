@@ -215,7 +215,23 @@ def main(argv: list[str]) -> int:
     # THE DEFAULT IS NO TPM, the way dockur-windows runs Windows 11. --tpm is for the
     # case that wants the pairing on purpose, and then the swtpm state this run creates is
     # the only one the guest has ever seen - which is the situation the flag is for.
-    tpm = sshstage.start_swtpm(work) if args.tpm else ""
+    # `swtpm.start` RATHER THAN `sshstage.start_swtpm`, BECAUSE THAT FUNCTION NO LONGER EXISTS.
+    #
+    # Run 42981506178's launch_ssh died with
+    #
+    #     AttributeError: module 'ssh' has no attribute 'stop_swtpm'
+    #
+    # and the same function would have failed one line earlier with `start_swtpm` had `--tpm`
+    # been passed. `windows/11/ssh.py` moved its TPM handling into lib/swtpm.py (commit ff22976,
+    # which turned the stage into a YAML file) and this caller kept the old names.
+    #
+    # THE TELL WAS THAT THE TWO DRIFTED IN DIFFERENT FILES: the function exists in
+    # windows/11/devtools.py as a private helper and in lib/swtpm.py as a module, and the only
+    # name that was ever importable from `ssh` is the module-level one. `ssh.py` itself now calls
+    # `swtpmmod.start(work)`; this is the same call.
+    import swtpm as swtpmmod
+
+    tpm = swtpmmod.start(work) if args.tpm else ""
     note("starting WITHOUT a TPM, the way dockur-windows does"
          if not args.tpm else "starting WITH a TPM and the state from the archive")
     shape = vm.Shape(
@@ -309,7 +325,7 @@ def main(argv: list[str]) -> int:
         # close() deletes the overlay and checks the published base is untouched.
         guest.stop(acpi_first=False)
         run_overlay.close()
-        sshstage.stop_swtpm(work)
+        swtpmmod.stop(work)
 
     note(f"=== {'A DESKTOP IS ON SCREEN' if arrived else 'NO DESKTOP'} ===")
     note(f"  {len(seen)} frames captured over {time.time() - started:.0f}s")

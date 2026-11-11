@@ -2019,6 +2019,38 @@ def main() -> int:
           "windows/11/steps/dev.yaml", "--installer-type wix" in body4)
     check("and still asks for machine scope",
           "windows/11/steps/dev.yaml", "--scope machine" in body4)
+    # AND A CALLER OF `ssh` NAMES ONLY FUNCTIONS `ssh` STILL HAS.
+    #
+    # Run 42981506178's launch_ssh, the first time either Windows launch job ever ran:
+    #
+    #     AttributeError: module 'ssh' has no attribute 'stop_swtpm'
+    #
+    # `windows/11/ssh.py` moved its TPM handling to lib/swtpm.py when commit ff22976 turned the
+    # stage into a YAML file; `lib/launch_windows.py` kept calling `sshstage.start_swtpm` and
+    # `sshstage.stop_swtpm`. `start_swtpm` would have failed FIRST had --tpm been passed, so the
+    # attribute error was luck: it named the second of two dead references.
+    #
+    # A grep is enough here because the question is exactly "does this name exist in that
+    # module", which is what the interpreter asked and what nothing checked.
+    import ast as _ast6
+    ssh_tree = _ast6.parse(read("windows/11/ssh.py"))
+    # CLASSES COUNT TOO. The first version of this check collected only `FunctionDef`, so it
+    # reported `Keyboard` as dead - and `Keyboard` is a class in that file, used by this caller
+    # for the lock screen. A check that cries wolf about a name that is there is the same defect
+    # as one that stays silent about a name that is not.
+    ssh_names = {n.name for n in _ast6.walk(ssh_tree)
+                 if isinstance(n, (_ast6.FunctionDef, _ast6.ClassDef))}
+    lw_tree = _ast6.parse(read("lib/launch_windows.py"))
+    dead = sorted({
+        c.func.attr for c in _ast6.walk(lw_tree)
+        if isinstance(c, _ast6.Call) and isinstance(c.func, _ast6.Attribute)
+        and isinstance(c.func.value, _ast6.Name) and c.func.value.id == "sshstage"
+        and c.func.attr not in ssh_names
+    })
+    check("a caller names only functions ssh still has", "lib/launch_windows.py", not dead)
+    # AND THE TPM IS STARTED THROUGH THE MODULE THAT HAS IT.
+    check("launch_windows starts the TPM through lib/swtpm", "lib/launch_windows.py",
+          "swtpmmod.start(work)" in read("lib/launch_windows.py"))
     check("a failed clean reports what DHCP saw", "lib/clean_step.py",
           "DHCPDISCOVER" in read("lib/clean_step.py")
           or "dnsmasq.vm.log" in read("lib/clean_step.py"))
