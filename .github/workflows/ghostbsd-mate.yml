@@ -313,7 +313,10 @@ jobs:
           interval: "20"
           command: |
             set -euo pipefail
-            DISK=$(ls out/*.qcow2 2>/dev/null | head -1)
+            # NO `DISK=$(ls out/*.qcow2)` HERE. This stage PULLS its disk by tag, so at this point
+            # `out/` is empty - and under `set -euo pipefail` a failing `ls` inside `$( )` ends the
+            # step before python starts, which is why the first run of this job produced no
+            # `ssh.txt` and no log at all. The variable was also never used.
             python3 lib/ssh_step.py \
               --tag "${{ inputs.ssh_from || needs.bake.outputs.tag || 'bsd-ghostbsd-mate' }}" \
               --kind ghostbsd-mate \
