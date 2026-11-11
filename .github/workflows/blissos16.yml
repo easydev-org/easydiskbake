@@ -238,8 +238,23 @@ jobs:
               --out out/install/blissos16-out.qcow2 \
               --boot-mem "${{ inputs.mem_mb || '4096' }}"
 
+      # THE VERDICT IS DIAGNOSTIC, AND A FAILED UPLOAD MUST NOT FAIL THE JOB.
+      #
+      # Run 43093086278: the install was green in 15m2s and this step failed with
+      #
+      #     Failed to CreateArtifact: Failed to make request after 5 attempts:
+      #     Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+      #
+      # which is the artifact service answering with an HTML error page. The install job then
+      # failed, and `launch` and `ssh` - both `needs: install` - were skipped entirely. A log and
+      # some screenshots are evidence for a human; they are not what the job is FOR, and a stage
+      # that cannot publish its evidence has still done its work.
+      #
+      # `continue-on-error` is right here and wrong two steps above: `oci-push` failing IS a
+      # failure, because the artifact is the product.
       - name: keep the verdict
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: blissos-install
@@ -351,6 +366,7 @@ jobs:
 
       - name: keep the screen and the verdict
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: blissos-launch
@@ -445,6 +461,7 @@ jobs:
 
       - name: keep the key and the verdict
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: blissos16-ssh-key
