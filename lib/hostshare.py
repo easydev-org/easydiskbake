@@ -234,9 +234,31 @@ def config_text(directory: str) -> str:
    path = {directory}
    browseable = yes
    writable = yes
-   # NOT `guest ok`. The account is what admits a client now, and it has no password - allowing
-   # guest as well would be a second, wider door onto the same directory.
-   guest ok = no
+   # `guest ok = yes` IS WHAT THE BSD CLIENT REQUIRES, AND IT WAS THE LAST BLOCKER.
+   #
+   # The comment here used to say "not `guest ok`", because the named account was supposed to be
+   # what admitted a client. RUN c06388b ASKED THE SERVER AND IT SAID OTHERWISE:
+   #
+   #     ntlmssp_server_preauth: Got user=[] domain=[] workstation=[] len1=0 len2=0
+   #     auth_check_ntlm_password: anonymous authentication for user [] succeeded
+   #     Auth: [SMB2,(null)] user []\[] ... with [No-Password] status [NT_STATUS_OK]
+   #
+   # smbnetfs's `auth "guest" ""` does NOT send a user name and an empty password - libsmbclient
+   # treats an empty password as "no credentials" and performs an ANONYMOUS session setup. The
+   # server accepted that session (NT_STATUS_OK) and then refused the TREE CONNECT with EACCES,
+   # because `guest ok = no` says only a named account may map this share.
+   #
+   #     so the settings disagreed with the client, not the other way round
+   #
+   # MEASURED LOCALLY, same samba, same config, one line changed: with `guest ok = yes` an
+   # anonymous `smbclient -N` prints `Anonymous login successful` and lists the directory; with
+   # `no` it is refused. That is the whole difference, and it is why nothing on the client side
+   # ever helped.
+   #
+   # WHAT IT COSTS: an anonymous session can read and write this directory while the stage runs.
+   # It is the same door `null passwords = yes` already opened for the named account - both admit
+   # a session with no secret - and this bridge exists only for the duration of one guest.
+   guest ok = yes
    force user = root
    create mask = 0666
    directory mask = 0777
